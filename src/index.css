@@ -2791,3 +2791,44 @@ button {
 .momo-panel label {
   min-width: 0;
 }
+
+/* Admin on phones/tablets: the sidebar becomes a top bar with a scrollable
+   row of labelled tabs, so every section (Settings included) stays reachable. */
+@media (max-width: 850px) {
+  .admin-side {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .admin-side nav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+  .admin-side nav button,
+  .admin-side nav button:not(.active) {
+    display: flex;
+    flex: 0 0 auto;
+    font-size: 13px;
+    white-space: nowrap;
+    padding: 9px 12px;
+    min-height: 40px;
+  }
+  .admin-side nav button svg {
+    width: 16px;
+  }
+  .admin-logout {
+    display: flex;
+    margin: 0 0 0 auto;
+    padding: 9px 12px;
+    min-height: 40px;
+  }
+}

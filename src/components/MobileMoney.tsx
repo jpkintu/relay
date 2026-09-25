@@ -28,8 +28,8 @@ export function MobileMoneyPanel({
   if (!mobileMoney.length)
     return (
       <p className="ops-error full-row">
-        Mobile money is not set up yet. Ask the owner to add the Airtel and MTN merchant codes in
-        Settings.
+        Mobile money is not set up yet. The owner adds the Airtel and MTN merchant codes in Admin →
+        Settings → Mobile money merchant codes.
       </p>
     );
 
