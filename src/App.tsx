@@ -9,6 +9,7 @@ import { CashierWorkspace } from './components/CashierWorkspace';
 import { AdminWorkspace } from './components/AdminWorkspace';
 import { SessionProvider, homePath, useSession } from './lib/session';
 import type { Role } from './lib/session';
+import { useDeviceAttribute } from './lib/device';
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ const ACCESS: Record<string, Role[]> = {
 };
 
 function AppRoutes() {
+  useDeviceAttribute();
   const session = useSession();
   const { user, profile, preview, status } = session;
 
