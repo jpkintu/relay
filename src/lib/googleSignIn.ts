@@ -1,4 +1,4 @@
-import Parse from '../parse'
+import Parse from '../parse';
 
 // "Managed by Back4app" Google Sign-In (docs/managed-google-signin.md in the
 // platform repo). The OAuth dance runs on the platform's fixed public host —
@@ -33,27 +33,22 @@ import Parse from '../parse'
 // the proxy does not). Sandbox dev build: the var is unset and the preview
 // is served through the platform API's own origin, so same-origin relative
 // paths reach the proxy directly.
-const OAUTH_PROXY_BASE = (
-  import.meta.env.VITE_BACK4APP_OAUTH_PROXY_URL || ''
-).replace(/\/+$/, '')
+const OAUTH_PROXY_BASE = (import.meta.env.VITE_BACK4APP_OAUTH_PROXY_URL || '').replace(/\/+$/, '');
 
-const AUTHORIZE_PATH = '/oauth-auth/google/authorize'
-const POPUP_MESSAGE_TYPE = 'back4app-google-signin'
-const POPUP_NAME = 'back4app_google_signin'
+const AUTHORIZE_PATH = '/oauth-auth/google/authorize';
+const POPUP_MESSAGE_TYPE = 'back4app-google-signin';
+const POPUP_NAME = 'back4app_google_signin';
 
 function inIframe(): boolean {
   try {
-    return window.self !== window.top
+    return window.self !== window.top;
   } catch {
     // Cross-origin access to window.top throws → we ARE framed.
-    return true
+    return true;
   }
 }
 
-function buildAuthorizeUrl(options?: {
-  redirectPath?: string
-  echo?: string
-}): string {
+function buildAuthorizeUrl(options?: { redirectPath?: string; echo?: string }): string {
   // The redirect must land back on THIS app's preview surface, so the OAuth
   // result reloads the app (running completeGoogleSignIn) AND passes the
   // platform's redirect-ownership check. In the dashboard's PATH-based preview
@@ -64,20 +59,17 @@ function buildAuthorizeUrl(options?: {
   // published app the base is empty and the app owns its origin root, so this
   // collapses to the previous origin + pathname behavior.
   const previewBase = (
-    (window as unknown as { __BACK4APP_PREVIEW_BASE__?: string })
-      .__BACK4APP_PREVIEW_BASE__ || ''
-  ).replace(/\/+$/, '')
-  const path = options?.redirectPath ?? (previewBase ? '/' : window.location.pathname)
+    (window as unknown as { __BACK4APP_PREVIEW_BASE__?: string }).__BACK4APP_PREVIEW_BASE__ || ''
+  ).replace(/\/+$/, '');
+  const path = options?.redirectPath ?? (previewBase ? '/' : window.location.pathname);
   const redirectUri =
-    window.location.origin +
-    previewBase +
-    (path.startsWith('/') ? path : '/' + path)
+    window.location.origin + previewBase + (path.startsWith('/') ? path : '/' + path);
 
-  const url = new URL(OAUTH_PROXY_BASE + AUTHORIZE_PATH, window.location.origin)
-  url.searchParams.set('appId', Parse.applicationId)
-  url.searchParams.set('redirectUri', redirectUri)
-  if (options?.echo) url.searchParams.set('echo', options.echo)
-  return url.toString()
+  const url = new URL(OAUTH_PROXY_BASE + AUTHORIZE_PATH, window.location.origin);
+  url.searchParams.set('appId', Parse.applicationId);
+  url.searchParams.set('redirectUri', redirectUri);
+  if (options?.echo) url.searchParams.set('echo', options.echo);
+  return url.toString();
 }
 
 /**
@@ -89,18 +81,15 @@ function buildAuthorizeUrl(options?: {
  *   (same-origin path, e.g. '/login'); defaults to the current page.
  * @param options.echo opaque value returned verbatim as `state` in the result.
  */
-export function startGoogleSignIn(options?: {
-  redirectPath?: string
-  echo?: string
-}): void {
-  const authorizeUrl = buildAuthorizeUrl(options)
+export function startGoogleSignIn(options?: { redirectPath?: string; echo?: string }): void {
+  const authorizeUrl = buildAuthorizeUrl(options);
 
   if (inIframe()) {
-    const w = 480
-    const h = 640
+    const w = 480;
+    const h = 640;
     // Center over the current screen for a native feel.
-    const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2)
-    const top = window.screenY + Math.max(0, (window.outerHeight - h) / 2)
+    const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
+    const top = window.screenY + Math.max(0, (window.outerHeight - h) / 2);
     // A user-gesture window.open is not caught by popup blockers. NOTE: a
     // sandboxed iframe often returns `null` here EVEN WHEN the popup opened
     // (it gets no cross-origin handle), so we must NOT treat null as
@@ -109,37 +98,33 @@ export function startGoogleSignIn(options?: {
     window.open(
       authorizeUrl,
       POPUP_NAME,
-      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
-    )
-    return
+      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`,
+    );
+    return;
   }
 
-  window.location.assign(authorizeUrl)
+  window.location.assign(authorizeUrl);
 }
 
 export class GoogleSignInError extends Error {
   constructor(public readonly code: string) {
-    super(`Google sign-in failed: ${code}`)
+    super(`Google sign-in failed: ${code}`);
   }
 }
 
 function readResultFromFragment(): {
-  sessionToken: string | null
-  error: string | null
-  present: boolean
+  sessionToken: string | null;
+  error: string | null;
+  present: boolean;
 } {
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-  const sessionToken = params.get('session_token')
-  const error = params.get('error')
-  return { sessionToken, error, present: !!(sessionToken || error) }
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const sessionToken = params.get('session_token');
+  const error = params.get('error');
+  return { sessionToken, error, present: !!(sessionToken || error) };
 }
 
 function clearFragment(): void {
-  window.history.replaceState(
-    null,
-    '',
-    window.location.pathname + window.location.search
-  )
+  window.history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
 /**
@@ -158,20 +143,20 @@ function clearFragment(): void {
  *     signed-in user on the fresh mount, for both `await` and `.then` callers.
  */
 export async function completeGoogleSignIn(): Promise<Parse.User | null> {
-  const fromFragment = readResultFromFragment()
+  const fromFragment = readResultFromFragment();
   const isPopup = (() => {
     try {
-      return !!window.opener && window.opener !== window.self
+      return !!window.opener && window.opener !== window.self;
     } catch {
-      return false
+      return false;
     }
-  })()
+  })();
 
   // Case 1 — we ARE the popup that just finished. Hand the result to the
   // opener (same-origin: the app that opened us) and close. Never adopt the
   // session inside the popup.
   if (fromFragment.present && isPopup) {
-    clearFragment()
+    clearFragment();
     try {
       window.opener?.postMessage(
         {
@@ -179,25 +164,25 @@ export async function completeGoogleSignIn(): Promise<Parse.User | null> {
           session_token: fromFragment.sessionToken,
           error: fromFragment.error,
         },
-        window.location.origin
-      )
+        window.location.origin,
+      );
     } catch {
       /* opener gone — nothing we can do */
     }
-    window.close()
-    return null
+    window.close();
+    return null;
   }
 
   // Case 2 — top-level redirect landed back here with the result. Adopt it.
   if (fromFragment.present) {
-    clearFragment()
-    if (fromFragment.error) throw new GoogleSignInError(fromFragment.error)
-    return await adoptSession(fromFragment.sessionToken!)
+    clearFragment();
+    if (fromFragment.error) throw new GoogleSignInError(fromFragment.error);
+    return await adoptSession(fromFragment.sessionToken!);
   }
 
   // Case 3a — top-level page with no result: sign-in comes back via full-page
   // redirect (Case 2 on the next load), so there's nothing to wait for.
-  if (!inIframe()) return null
+  if (!inIframe()) return null;
 
   // Case 3b — framed page, no result in our URL yet.
   //
@@ -212,44 +197,44 @@ export async function completeGoogleSignIn(): Promise<Parse.User | null> {
   // `.then` callers receive it on this fresh mount. Otherwise register a
   // one-time listener that adopts a LATER popup result, persists the session,
   // sets the flag and reloads — and resolve null NOW so nothing blocks.
-  const JUST_SIGNED_IN_KEY = 'b4a_gsi_completed'
+  const JUST_SIGNED_IN_KEY = 'b4a_gsi_completed';
   try {
     if (window.sessionStorage.getItem(JUST_SIGNED_IN_KEY)) {
-      window.sessionStorage.removeItem(JUST_SIGNED_IN_KEY)
-      return Parse.User.current() ?? null
+      window.sessionStorage.removeItem(JUST_SIGNED_IN_KEY);
+      return Parse.User.current() ?? null;
     }
   } catch {
     /* sessionStorage unavailable — fall through to the listener */
   }
 
   const onMessage = async (event: MessageEvent) => {
-    if (event.origin !== window.location.origin) return
+    if (event.origin !== window.location.origin) return;
     const data = event.data as {
-      type?: string
-      session_token?: string | null
-      error?: string | null
-    } | null
-    if (!data || data.type !== POPUP_MESSAGE_TYPE) return
-    window.removeEventListener('message', onMessage)
+      type?: string;
+      session_token?: string | null;
+      error?: string | null;
+    } | null;
+    if (!data || data.type !== POPUP_MESSAGE_TYPE) return;
+    window.removeEventListener('message', onMessage);
     // A cancelled / failed sign-in leaves the app exactly as it was.
-    if (data.error || !data.session_token) return
+    if (data.error || !data.session_token) return;
     try {
-      await adoptSession(data.session_token)
+      await adoptSession(data.session_token);
       try {
-        window.sessionStorage.setItem(JUST_SIGNED_IN_KEY, '1')
+        window.sessionStorage.setItem(JUST_SIGNED_IN_KEY, '1');
       } catch {
         /* ignore */
       }
       // Re-mount with the active session. completeGoogleSignIn() returns the
       // user above on the fresh load, so app auth state updates with no extra
       // wiring — and it never blocks the initial render.
-      window.location.reload()
+      window.location.reload();
     } catch {
       /* adoption failed — leave the app as-is */
     }
-  }
-  window.addEventListener('message', onMessage)
-  return null
+  };
+  window.addEventListener('message', onMessage);
+  return null;
 }
 
 // The platform verified the Google identity server-side and minted this
@@ -257,5 +242,5 @@ export async function completeGoogleSignIn(): Promise<Parse.User | null> {
 // and revocable — the raw Google id_token never reaches the browser, so it
 // can't be replayed at another app that shares the platform Google client.
 async function adoptSession(sessionToken: string): Promise<Parse.User> {
-  return await Parse.User.become(sessionToken)
+  return await Parse.User.become(sessionToken);
 }

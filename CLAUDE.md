@@ -11,6 +11,7 @@ conventions, and the phased checklist. When you finish something, tick its box
 and add a line to the change log there.
 
 Key rules (details in the roadmap, §4):
+
 - Every mutation goes through a Cloud function; the client only reads.
 - Prices, totals, commission and the rider float are computed on the server. The float is derived from orders, not stored.
 - Audit every mutation with `audit(...)`.
