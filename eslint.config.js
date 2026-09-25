@@ -7,6 +7,7 @@ export default tseslint.config(
   {
     ignores: [
       'dist',
+      'back4app',
       'node_modules',
       'src/components/ui',
       'src/hooks/use-toast.ts',
@@ -34,7 +35,7 @@ export default tseslint.config(
     rules: { 'no-unused-vars': ['error', { argsIgnorePattern: '^_' }] },
   },
   {
-    files: ['**/*.test.{js,ts}', 'e2e/**/*.mjs', '*.config.{js,ts}'],
+    files: ['**/*.test.{js,ts}', 'e2e/**/*.mjs', 'scripts/**/*.mjs', '*.config.{js,ts}'],
     languageOptions: { sourceType: 'module', globals: { ...globals.node } },
   },
 );
