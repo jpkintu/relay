@@ -16,7 +16,10 @@ export type AppConfig = {
   allowBatching: boolean;
   commissionRounding?: string;
   requireCashierConfirmForPickup?: boolean;
+  mobileMoney?: MerchantAccount[];
 };
+
+export type MerchantAccount = { provider: string; label: string; code: string; name: string };
 
 export type Profile = {
   id: string;

@@ -3,6 +3,12 @@ import { ChevronRight, MapPin, Phone } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
+import {
+  MobileMoneyPanel,
+  PAYMENT_STATUS_LABEL,
+  providerLabel,
+  referenceProblem,
+} from './MobileMoney';
 
 type Line = { id: string; title: string; quantity: number; total: number; details: string };
 type Detail = {
@@ -26,6 +32,10 @@ type Detail = {
   cancelledReason: string;
   disputeFlag: boolean;
   disputeNote: string;
+  paymentProvider: string;
+  paymentReference: string;
+  paymentStatus: string;
+  paymentRejectReason: string;
   createdAt: Date;
   lines: Line[];
 };
@@ -33,10 +43,12 @@ type Detail = {
 const PAYMENTS = [
   ['cash', 'Cash'],
   ['mobile_money', 'Mobile money'],
-  ['card', 'Card'],
-  ['prepaid', 'Prepaid'],
 ] as const;
-const PAYMENT_LABEL: Record<string, string> = Object.fromEntries(PAYMENTS);
+const PAYMENT_LABEL: Record<string, string> = {
+  ...Object.fromEntries(PAYMENTS),
+  card: 'Card',
+  prepaid: 'Prepaid',
+};
 const CHANNEL_LABEL: Record<string, string> = {
   walkin: 'Walk-in',
   phone: 'Phone',
@@ -68,6 +80,10 @@ async function loadDetail(orderId: string): Promise<Detail> {
     cancelledReason: order.get('cancelledReason') || '',
     disputeFlag: !!order.get('disputeFlag'),
     disputeNote: order.get('disputeNote') || '',
+    paymentProvider: order.get('paymentProvider') || '',
+    paymentReference: order.get('paymentReference') || '',
+    paymentStatus: order.get('paymentStatus') || '',
+    paymentRejectReason: order.get('paymentRejectReason') || '',
     createdAt: order.createdAt!,
     lines: items.map((item) => ({
       id: item.id!,
@@ -102,6 +118,8 @@ export function OrderDetail({
   const [payment, setPayment] = useState('');
   const [collected, setCollected] = useState('');
   const [shortNote, setShortNote] = useState('');
+  const [provider, setProvider] = useState('');
+  const [reference, setReference] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -138,6 +156,8 @@ export function OrderDetail({
   const isCash = method === 'cash';
   const amount = collected === '' ? (order?.amountToCollect ?? 0) : Number(collected);
   const short = !!order && isCash && amount < order.total;
+  const paidByMomo = order?.paymentMethod === 'mobile_money';
+  const switchingToMomo = !!order && !paidByMomo && method === 'mobile_money';
 
   return (
     <main className="rider-shell">
@@ -212,6 +232,53 @@ export function OrderDetail({
             {order.status === 'CANCELLED' && (
               <p className="info-card">Cancelled: {order.cancelledReason || 'no reason given'}</p>
             )}
+            {order.paymentStatus && (
+              <section
+                className={`detail-card payment-card payment-${order.paymentStatus.toLowerCase()}`}
+              >
+                <p className="eyebrow">
+                  {providerLabel(order.paymentProvider)} · Transaction {order.paymentReference}
+                </p>
+                <h3>{PAYMENT_STATUS_LABEL[order.paymentStatus] || order.paymentStatus}</h3>
+                {order.paymentStatus === 'PENDING_VERIFICATION' && (
+                  <p className="muted">
+                    The kitchen starts once the cashier finds this payment on the merchant account.
+                  </p>
+                )}
+                {order.paymentStatus === 'REJECTED' && (
+                  <>
+                    <p className="form-error">Cashier: {order.paymentRejectReason}</p>
+                    {order.status !== 'CANCELLED' && (
+                      <>
+                        <MobileMoneyPanel
+                          provider={provider || order.paymentProvider}
+                          reference={reference}
+                          amount={order.total}
+                          customerPhone={order.customerPhone}
+                          onProvider={setProvider}
+                          onReference={setReference}
+                        />
+                        <button
+                          className="primary-button wide"
+                          disabled={busy || !!referenceProblem(reference)}
+                          onClick={async () => {
+                            if (
+                              await act('resubmitPayment', {
+                                provider: provider || order.paymentProvider,
+                                reference,
+                              })
+                            )
+                              setReference('');
+                          }}
+                        >
+                          Send corrected transaction ID
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
             {order.disputeFlag && (
               <p className="ops-error">Problem reported: {order.disputeNote}</p>
             )}
@@ -256,18 +323,34 @@ export function OrderDetail({
             {order.status === 'PICKED_UP' && (
               <section className="detail-card">
                 <p className="eyebrow">Confirm delivery</p>
-                <div className="channel-row">
-                  <span>Paid by</span>
-                  {PAYMENTS.map(([value, label]) => (
-                    <button
-                      key={value}
-                      className={method === value ? 'active' : ''}
-                      onClick={() => setPayment(value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {paidByMomo ? (
+                  <p className="muted">
+                    Paid by {providerLabel(order.paymentProvider)}. Nothing to collect.
+                  </p>
+                ) : (
+                  <div className="channel-row">
+                    <span>Paid by</span>
+                    {PAYMENTS.map(([value, label]) => (
+                      <button
+                        key={value}
+                        className={method === value ? 'active' : ''}
+                        onClick={() => setPayment(value)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {switchingToMomo && (
+                  <MobileMoneyPanel
+                    provider={provider}
+                    reference={reference}
+                    amount={order.total}
+                    customerPhone={order.customerPhone}
+                    onProvider={setProvider}
+                    onReference={setReference}
+                  />
+                )}
                 {isCash && (
                   <label className="setup-field">
                     Cash collected
@@ -295,6 +378,7 @@ export function OrderDetail({
                   disabled={
                     busy ||
                     (isCash && !Number.isFinite(amount)) ||
+                    (switchingToMomo && (!provider || !!referenceProblem(reference))) ||
                     (short && !order.shortfallNote && shortNote.trim().length < 5)
                   }
                   onClick={() =>
@@ -303,6 +387,10 @@ export function OrderDetail({
                       paymentMethod: method,
                       amountCollected: isCash ? amount : 0,
                       shortfallNote: shortNote,
+                      ...(switchingToMomo && {
+                        paymentProvider: provider,
+                        paymentReference: reference,
+                      }),
                     })
                   }
                 >

@@ -13,6 +13,7 @@ import {
   toggleOption,
 } from '../lib/cart';
 import type { AccompanimentOption, CartLine, MenuItem } from '../lib/cart';
+import { MobileMoneyPanel, referenceProblem } from './MobileMoney';
 
 const SAMPLE: MenuItem[] = [
   { id: '1', title: 'Smoky chicken bowl', category: 'Mains', price: 18500, color: '#f3b35b' },
@@ -32,8 +33,6 @@ const CHANNELS = [
 const PAYMENTS = [
   ['cash', 'Cash'],
   ['mobile_money', 'Mobile money'],
-  ['card', 'Card'],
-  ['prepaid', 'Prepaid'],
 ] as const;
 
 export type OrderPayload = {
@@ -45,6 +44,8 @@ export type OrderPayload = {
   deliveryNotes: string;
   deliveryFee: number;
   paymentMethod: string;
+  paymentProvider?: string;
+  paymentReference?: string;
   amountToCollect?: number;
   shortfallNote: string;
   items: { id: string; quantity: number; notes: string; accompaniments: string[] }[];
@@ -76,6 +77,8 @@ type Draft = {
   cart: CartLine[];
   fee: number | null;
   payment: string;
+  provider: string;
+  reference: string;
   amount: string;
   shortfall: string;
 };
@@ -95,6 +98,8 @@ const emptyDraft = (): Draft => ({
   cart: [],
   fee: null,
   payment: 'cash',
+  provider: '',
+  reference: '',
   amount: '',
   shortfall: '',
 });
@@ -180,6 +185,8 @@ export function NewOrder({
     !draft.cart.length && 'at least one item',
     short && draft.shortfall.trim().length < 5 && 'a note for the short payment',
     isCash && !Number.isFinite(amount) && 'the amount to collect',
+    !isCash && !draft.provider && 'Airtel or MTN',
+    !isCash && draft.provider && referenceProblem(draft.reference),
   ].filter(Boolean) as string[];
 
   const quickAdd = (item: MenuItem) => {
@@ -240,6 +247,8 @@ export function NewOrder({
         deliveryNotes: draft.addressNotes.trim(),
         deliveryFee: fee,
         paymentMethod: draft.payment,
+        paymentProvider: isCash ? undefined : draft.provider,
+        paymentReference: isCash ? undefined : draft.reference.trim(),
         amountToCollect: isCash ? amount : undefined,
         shortfallNote: short ? draft.shortfall.trim() : '',
         items: draft.cart.map((line) => ({
@@ -471,6 +480,16 @@ export function NewOrder({
                 </button>
               ))}
             </div>
+            {!isCash && (
+              <MobileMoneyPanel
+                provider={draft.provider}
+                reference={draft.reference}
+                amount={total}
+                customerPhone={draft.phone}
+                onProvider={(provider) => update({ provider })}
+                onReference={(reference) => update({ reference })}
+              />
+            )}
             {isCash && (
               <label>
                 <span>Cash to collect</span>

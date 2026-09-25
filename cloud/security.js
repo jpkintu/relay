@@ -133,6 +133,12 @@ const SCHEMAS = {
     disputedBy: user,
     disputedAt: D,
     disputeResolution: S,
+    paymentProvider: S,
+    paymentReference: S,
+    paymentStatus: S,
+    paymentCheckedBy: user,
+    paymentCheckedAt: D,
+    paymentRejectReason: S,
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -187,6 +193,10 @@ const SCHEMAS = {
     allowBatching: B,
     commissionRounding: S,
     requireCashierConfirmForPickup: B,
+    airtelMerchantCode: S,
+    airtelMerchantName: S,
+    mtnMerchantCode: S,
+    mtnMerchantName: S,
   },
   MenuItem: {
     title: S,

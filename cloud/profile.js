@@ -1,6 +1,7 @@
 const { MASTER, requireUser, getRoleName, loadConfig, countUsers } = require('./lib/core');
 const { canBootstrapOwner } = require('./admin');
 const { previewEnabled } = require('./preview');
+const { merchantAccounts } = require('./lib/mobileMoney');
 
 // Settings every signed-in screen needs. Configuration itself is not
 // client-readable; this is the public subset.
@@ -15,6 +16,7 @@ function publicConfig(values) {
     allowBatching: values.allowBatching,
     commissionRounding: values.commissionRounding,
     requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
+    mobileMoney: merchantAccounts(values),
   };
 }
 

@@ -35,6 +35,10 @@ type Settings = {
   maxRiderFloat: number;
   allowBatching: boolean;
   requireCashierConfirmForPickup?: boolean;
+  airtelMerchantCode?: string;
+  airtelMerchantName?: string;
+  mtnMerchantCode?: string;
+  mtnMerchantName?: string;
 };
 const input = (
   label: string,
@@ -452,6 +456,30 @@ export function AdminSetup({
               />{' '}
               Only the cashier can confirm pickup (“Hand to rider”)
             </label>
+            <div className="full-row merchant-settings">
+              <p className="setup-field-label">Mobile money merchant codes</p>
+              <p className="muted">
+                Riders show these to customers who pay by mobile money. Leave a code empty to hide
+                that provider.
+              </p>
+              {(
+                [
+                  ['airtelMerchantCode', 'Airtel Money merchant code'],
+                  ['airtelMerchantName', 'Airtel merchant name'],
+                  ['mtnMerchantCode', 'MTN MoMo merchant code'],
+                  ['mtnMerchantName', 'MTN merchant name'],
+                ] as const
+              ).map(([key, label]) => (
+                <label className="setup-field" key={key}>
+                  {label}
+                  <input
+                    value={settings[key] || ''}
+                    onChange={(e) => setSettings((p) => ({ ...p, [key]: e.target.value }))}
+                    inputMode={key.endsWith('Code') ? 'numeric' : undefined}
+                  />
+                </label>
+              ))}
+            </div>
             <button className="setup-submit" disabled={busy || preview}>
               Save settings
             </button>

@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   Clock3,
   Package,
+  Smartphone,
   HandCoins,
   LayoutDashboard,
   LogOut,
@@ -18,6 +19,8 @@ import { CashierHandovers } from './CashierHandovers';
 import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
+import { formatDate } from '../lib/format';
+import { providerLabel } from './MobileMoney';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -34,6 +37,9 @@ type Ticket = {
   payment: string;
   createdAt: Date | null;
   issue: string;
+  paymentStatus: string;
+  paymentProvider: string;
+  paymentReference: string;
 };
 
 const stageOf = (status: string): Stage =>
@@ -86,11 +92,20 @@ async function loadLiveTickets(): Promise<Ticket[]> {
     payment: order.get('paymentMethod') || '',
     createdAt: order.createdAt || null,
     issue: order.get('disputeFlag') ? order.get('disputeNote') || 'Problem reported' : '',
+    paymentStatus: order.get('paymentStatus') || '',
+    paymentProvider: order.get('paymentProvider') || '',
+    paymentReference: order.get('paymentReference') || '',
   }));
 }
 
 const minutesSince = (date: Date | null) =>
   date ? Math.max(0, Math.round((Date.now() - date.getTime()) / 60000)) : 0;
+
+async function countPendingPayments(): Promise<number> {
+  const query = new Parse.Query('Order');
+  query.equalTo('paymentStatus', 'PENDING_VERIFICATION');
+  return query.count();
+}
 
 async function countPendingHandovers(): Promise<number> {
   const query = new Parse.Query('CashHandover');
@@ -103,13 +118,18 @@ export function CashierWorkspace() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [pendingHandovers, setPendingHandovers] = useState(0);
+  const [pendingPayments, setPendingPayments] = useState(0);
 
   useEffect(() => {
     if (preview) return;
-    const refresh = () =>
+    const refresh = () => {
       countPendingHandovers()
         .then(setPendingHandovers)
         .catch(() => undefined);
+      countPendingPayments()
+        .then(setPendingPayments)
+        .catch(() => undefined);
+    };
     void refresh();
     const timer = window.setInterval(refresh, 10000);
     return () => window.clearInterval(timer);
@@ -121,7 +141,9 @@ export function CashierWorkspace() {
       ? 'shift'
       : pathname.startsWith('/cashier/stock')
         ? 'stock'
-        : 'orders';
+        : pathname.startsWith('/cashier/payments')
+          ? 'payments'
+          : 'orders';
   return (
     <main className="ops-shell">
       <header className="ops-header">
@@ -140,6 +162,13 @@ export function CashierWorkspace() {
           >
             <HandCoins />
             Cash handovers {pendingHandovers > 0 && <b>{pendingHandovers}</b>}
+          </button>
+          <button
+            className={tab === 'payments' ? 'active' : ''}
+            onClick={() => navigate('/cashier/payments')}
+          >
+            <Smartphone />
+            Mobile money {pendingPayments > 0 && <b>{pendingPayments}</b>}
           </button>
           <button
             className={tab === 'stock' ? 'active' : ''}
@@ -173,6 +202,7 @@ export function CashierWorkspace() {
         <Route index element={<KitchenBoard />} />
         <Route path="handovers" element={<CashierHandovers preview={preview} />} />
         <Route path="stock" element={<StockPanel />} />
+        <Route path="payments" element={<MobileMoneyLedger />} />
         <Route
           path="shift"
           element={
@@ -192,7 +222,10 @@ function KitchenBoard() {
   const money = useMoney();
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState('');
-  const [closing, setClosing] = useState<{ id: string; action: 'reject' | 'cancel' } | null>(null);
+  const [closing, setClosing] = useState<{
+    id: string;
+    action: 'reject' | 'cancel' | 'payment';
+  } | null>(null);
   const [reason, setReason] = useState('');
 
   const load = useCallback(async () => {
@@ -216,6 +249,9 @@ function KitchenBoard() {
             payment: '',
             createdAt: null,
             issue: '',
+            paymentStatus: '',
+            paymentProvider: '',
+            paymentReference: '',
           })),
         );
       } else {
@@ -232,6 +268,18 @@ function KitchenBoard() {
     const timer = window.setInterval(() => void load(), 10000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  const checkPayment = async (ticket: Ticket, received: boolean, why = '') => {
+    try {
+      await Parse.Cloud.run('verifyPayment', { orderId: ticket.id, received, reason: why });
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update the payment');
+      return false;
+    }
+    await load();
+    return true;
+  };
 
   const run = async (ticket: Ticket, action: string, extra: Record<string, unknown> = {}) => {
     try {
@@ -296,6 +344,16 @@ function KitchenBoard() {
                       ))}
                     </ul>
                     {ticket.issue && <p className="ticket-issue">⚠ {ticket.issue}</p>}
+                    {ticket.paymentStatus && (
+                      <p className={`ticket-payment payment-${ticket.paymentStatus.toLowerCase()}`}>
+                        {providerLabel(ticket.paymentProvider)} · {ticket.paymentReference} ·{' '}
+                        {ticket.paymentStatus === 'VERIFIED'
+                          ? 'paid ✓'
+                          : ticket.paymentStatus === 'REJECTED'
+                            ? 'not received: waiting for rider'
+                            : 'check payment'}
+                      </p>
+                    )}
                     <small>{ticket.rider}</small>
                     {isClosing ? (
                       <div className="ticket-close">
@@ -306,7 +364,9 @@ function KitchenBoard() {
                           placeholder={
                             closing.action === 'reject'
                               ? 'Why reject? e.g. out of chicken'
-                              : 'Why cancel?'
+                              : closing.action === 'payment'
+                                ? 'Why not? e.g. not on the MTN statement'
+                                : 'Why cancel?'
                           }
                         />
                         <div className="ticket-actions">
@@ -315,38 +375,78 @@ function KitchenBoard() {
                             className="reject"
                             disabled={reason.trim().length < 3}
                             onClick={async () => {
-                              if (await run(ticket, closing.action, { reason })) {
+                              const done =
+                                closing.action === 'payment'
+                                  ? await checkPayment(ticket, false, reason)
+                                  : await run(ticket, closing.action, { reason });
+                              if (done) {
                                 setClosing(null);
                                 setReason('');
                               }
                             }}
                           >
                             <X />
-                            {closing.action === 'reject' ? 'Reject order' : 'Cancel order'}
+                            {closing.action === 'reject'
+                              ? 'Reject order'
+                              : closing.action === 'payment'
+                                ? 'Payment not received'
+                                : 'Cancel order'}
                           </button>
                         </div>
                       </div>
                     ) : (
                       <div className="ticket-actions">
-                        {stage === 'Incoming' && (
-                          <>
-                            <button
-                              className="reject"
-                              disabled={preview}
-                              onClick={() => {
-                                setClosing({ id: ticket.id, action: 'reject' });
-                                setReason('');
-                              }}
-                            >
-                              <X />
-                              Reject
-                            </button>
-                            <button onClick={() => void run(ticket, 'accept')}>
-                              <Check />
-                              Accept
-                            </button>
-                          </>
+                        {stage === 'Incoming' &&
+                          ticket.paymentStatus === 'PENDING_VERIFICATION' && (
+                            <>
+                              <button
+                                className="reject"
+                                onClick={() => {
+                                  setClosing({ id: ticket.id, action: 'payment' });
+                                  setReason('');
+                                }}
+                              >
+                                <X />
+                                Not received
+                              </button>
+                              <button onClick={() => void checkPayment(ticket, true)}>
+                                <Check />
+                                Payment received
+                              </button>
+                            </>
+                          )}
+                        {stage === 'Incoming' && ticket.paymentStatus === 'REJECTED' && (
+                          <button
+                            className="reject"
+                            onClick={() => {
+                              setClosing({ id: ticket.id, action: 'reject' });
+                              setReason('');
+                            }}
+                          >
+                            <X />
+                            Reject order
+                          </button>
                         )}
+                        {stage === 'Incoming' &&
+                          !['PENDING_VERIFICATION', 'REJECTED'].includes(ticket.paymentStatus) && (
+                            <>
+                              <button
+                                className="reject"
+                                disabled={preview}
+                                onClick={() => {
+                                  setClosing({ id: ticket.id, action: 'reject' });
+                                  setReason('');
+                                }}
+                              >
+                                <X />
+                                Reject
+                              </button>
+                              <button onClick={() => void run(ticket, 'accept')}>
+                                <Check />
+                                Accept
+                              </button>
+                            </>
+                          )}
                         {stage === 'Preparing' && (
                           <button onClick={() => void run(ticket, 'ready')}>
                             Mark ready <ChevronRight />
@@ -464,6 +564,175 @@ function StockPanel() {
             {stock.items.map((i) => row('menuItem', i, i.category))}
           </section>
         </div>
+      )}
+    </div>
+  );
+}
+
+type PaymentRow = {
+  id: string;
+  code: string;
+  customer: string;
+  rider: string;
+  provider: string;
+  reference: string;
+  amount: number;
+  paymentStatus: string;
+  orderStatus: string;
+  createdAt: string;
+  checkedAt: string | null;
+  checkedBy: string;
+  rejectReason: string;
+};
+type Ledger = {
+  pending: PaymentRow[];
+  verified: PaymentRow[];
+  rejected: PaymentRow[];
+  totals: { provider: string; label: string; code: string; count: number; amount: number }[];
+};
+
+// Mobile money reconciliation: confirm payments against the Airtel/MTN
+// merchant accounts, and compare today's totals with the merchant statements.
+function MobileMoneyLedger() {
+  const { preview, config } = useSession();
+  const money = useMoney();
+  const [ledger, setLedger] = useState<Ledger | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+
+  const load = useCallback(async () => {
+    if (preview) return;
+    try {
+      setLedger(await Parse.Cloud.run('getMobileMoneyLedger'));
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load payments');
+    }
+  }, [preview]);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 10000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const check = async (row: PaymentRow, received: boolean) => {
+    setBusy(row.id);
+    try {
+      await Parse.Cloud.run('verifyPayment', { orderId: row.id, received, reason });
+      setRejecting(null);
+      setReason('');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update the payment');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const line = (row: PaymentRow, actions?: React.ReactNode) => (
+    <div className="payment-row" key={row.id}>
+      <div>
+        <b>
+          {providerLabel(row.provider)} · {row.reference}
+        </b>
+        <small>
+          {row.code} · {row.customer} · {row.rider} ·{' '}
+          {formatDate(row.checkedAt || row.createdAt, config.timezone, { timeStyle: 'short' })}
+          {row.rejectReason && ` · ${row.rejectReason}`}
+        </small>
+      </div>
+      <strong>{money(row.amount)}</strong>
+      {actions}
+    </div>
+  );
+
+  return (
+    <div className="ops-content">
+      <div className="ops-title">
+        <div>
+          <p className="eyebrow">Reconciliation</p>
+          <h1>Mobile money</h1>
+        </div>
+        <span>Check each transaction ID on the merchant account before confirming.</span>
+      </div>
+      {error && <p className="ops-error">{error}</p>}
+      {preview && <p className="setup-notice">Mobile money needs a signed-in cashier.</p>}
+      {ledger && (
+        <>
+          <div className="admin-metrics">
+            {ledger.totals.map((t) => (
+              <article key={t.provider}>
+                <span>
+                  {t.label} · {t.code}
+                </span>
+                <strong>{money(t.amount)}</strong>
+                <small>{t.count} confirmed today</small>
+              </article>
+            ))}
+            {!ledger.totals.length && (
+              <article>
+                <span>No merchant codes</span>
+                <small>The owner adds Airtel/MTN merchant codes in Settings.</small>
+              </article>
+            )}
+          </div>
+          <section className="admin-panel">
+            <h2>Waiting for a check ({ledger.pending.length})</h2>
+            {ledger.pending.map((row) =>
+              line(
+                row,
+                rejecting === row.id ? (
+                  <div className="payment-actions">
+                    <input
+                      autoFocus
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      placeholder="Why not? e.g. not on statement"
+                    />
+                    <button onClick={() => setRejecting(null)}>Back</button>
+                    <button
+                      className="reject"
+                      disabled={busy === row.id || reason.trim().length < 3}
+                      onClick={() => void check(row, false)}
+                    >
+                      Not received
+                    </button>
+                  </div>
+                ) : (
+                  <div className="payment-actions">
+                    <button
+                      className="reject"
+                      disabled={busy === row.id}
+                      onClick={() => {
+                        setRejecting(row.id);
+                        setReason('');
+                      }}
+                    >
+                      Not received
+                    </button>
+                    <button disabled={busy === row.id} onClick={() => void check(row, true)}>
+                      <Check /> Received
+                    </button>
+                  </div>
+                ),
+              ),
+            )}
+            {!ledger.pending.length && <p className="empty-orders">Nothing waiting.</p>}
+          </section>
+          <section className="admin-panel">
+            <h2>Confirmed today ({ledger.verified.length})</h2>
+            {ledger.verified.map((row) => line(row, <span className="paid-badge">Paid</span>))}
+            {!ledger.verified.length && <p className="empty-orders">None yet today.</p>}
+          </section>
+          {ledger.rejected.length > 0 && (
+            <section className="admin-panel">
+              <h2>Not received today ({ledger.rejected.length})</h2>
+              {ledger.rejected.map((row) => line(row))}
+            </section>
+          )}
+        </>
       )}
     </div>
   );
