@@ -81,10 +81,14 @@ Back4App **Parse app**:
 
 1. **Create the backend.** Back4App dashboard → New App → Backend as a Service
    (Parse). In Server Settings pick a recent Parse Server (6 or later).
-2. **Deploy Cloud Code.** Upload the whole `cloud/` folder (`main.js`, the other
-   `*.js` files, `lib/`, `package.json`) as the app's Cloud Code, using the
-   dashboard Cloud Code page or the `b4a` CLI (`b4a deploy`), then deploy. The
-   Cloud Code logs must not show load errors.
+2. **Deploy Cloud Code.** Back4App's Cloud Code page takes uploaded files,
+   not a GitHub folder, so the repo ships a single-file bundle:
+   **`back4app/cloud/main.js`** (built from `cloud/` by `npm run build:cloud`;
+   CI fails if it is stale). Download it from GitHub (open the file → Download
+   raw file), then in the Parse app's dashboard → **Cloud Code** upload it as
+   `main.js` in the `cloud` folder, replacing the existing `main.js` (or open
+   `main.js` there and paste the whole file). Click **Deploy**. Nothing else
+   needs uploading. The Cloud Code logs must not show load errors.
 3. **Point the frontend at it.** On the Container app → Settings → Environment,
    set these and redeploy (Vite bakes them in at build time):
    - `VITE_PARSE_SERVER_URL=https://parseapi.back4app.com`
@@ -630,3 +634,4 @@ agent's "remaining" list.
 | 2026-09-25 | Phase 0: Cloud Code split + write protection (S1–S4, S8), `getMyProfile` + role routes (B1), sequential codes (B3), preview flags, config-driven money/timezone (U1–U5), ESLint/Prettier/Vitest, e2e suite (23 tests) and CI. S5/S7 need Back4App server settings.                        |
 | 2026-09-25 | Deploy follow-up: master-key owner recovery (`recoverOwner` / job `createOwner`), sign-in shows when Cloud Code is unreachable, usernames no longer fail on phone auto-capitalisation.                                                                                                    |
 | 2026-09-25 | Deployment fix: the Container served only a static frontend (no Parse), and `vite preview` blocked the b4a.run host. Frontend now reads `VITE_PARSE_SERVER_URL` / `VITE_PARSE_APP_ID` / `VITE_PARSE_JS_KEY`; backend runs as a Back4App Parse app; Node pinned to 22; deploy steps in §2. |
+| 2026-09-25 | Single-file Cloud Code bundle `back4app/cloud/main.js` (`npm run build:cloud`) for upload to Back4App; CI checks it is current and runs the e2e suite against it.                                                                                                                         |

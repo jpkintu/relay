@@ -21,7 +21,10 @@ Key rules (details in the roadmap, §4):
 
 Checks:
 
-- `npm run check`: typecheck, lint, format, unit tests, build.
+- `npm run check`: typecheck, lint, format, unit tests, build, and the Cloud Code bundle.
+- After changing anything in `cloud/`, run `npm run build:cloud` and commit
+  `back4app/cloud/main.js`. That single file is what gets uploaded to Back4App,
+  and CI fails if it is stale.
 - `cd e2e && npm ci && PARSE_TEST_DATABASE_URI=... npm test`: Cloud Code end to
   end on a real Parse Server (MongoDB URI ending in `/`, or an empty Postgres
   database). Add an e2e test for every new Cloud function.

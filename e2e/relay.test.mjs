@@ -27,13 +27,19 @@ function databaseUri() {
   return uri.startsWith('mongodb') && uri.endsWith('/') ? `${uri}relay_e2e_${Date.now()}` : uri;
 }
 
+// RELAY_CLOUD_MAIN=../back4app/cloud/main.js tests the single-file bundle that
+// is uploaded to Back4App; the default tests the cloud/ sources directly.
+const CLOUD_MAIN = process.env.RELAY_CLOUD_MAIN
+  ? path.resolve(process.env.RELAY_CLOUD_MAIN)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cloud/main.js');
+
 let httpServer;
 let parseServer;
 
 before(async () => {
   parseServer = new ParseServer({
     databaseURI: databaseUri(),
-    cloud: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cloud/main.js'),
+    cloud: CLOUD_MAIN,
     appId: APP_ID,
     masterKey: MASTER_KEY,
     serverURL: SERVER_URL,

@@ -21,6 +21,10 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+      - name: Cloud Code bundle is up to date
+        run: |
+          npm run build:cloud
+          git diff --exit-code -- back4app || (echo "::error::back4app/cloud/main.js is stale. Run 'npm run build:cloud' and commit it." && exit 1)
 
   e2e:
     name: Cloud Code end-to-end (Parse Server + MongoDB)
@@ -43,3 +47,5 @@ jobs:
         working-directory: e2e
         env:
           PARSE_TEST_DATABASE_URI: mongodb://localhost:27017/
+          # Test the single-file bundle that is uploaded to Back4App.
+          RELAY_CLOUD_MAIN: ../back4app/cloud/main.js
