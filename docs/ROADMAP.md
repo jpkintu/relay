@@ -45,15 +45,15 @@ mobile-money gateway (phase 2).
 
 ## 2. Stack & deployment
 
-| Layer       | What                                                                                                                                                              |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Frontend    | React 18 + Vite 5 + TypeScript, plain CSS in `src/index.css` (Tailwind + shadcn/ui kit installed in `src/components/ui/` but **not used** by the app screens yet) |
-| Backend     | Parse Server on **Back4App**; business logic in Cloud Code under `cloud/` (`main.js` loads the modules, see §3.2)                                                 |
-| Data access | Parse JS SDK 7.1.2 (`src/parse.ts`); client talks to `/parse`                                                                                                     |
-| Hosting     | Back4App "promote" build: nginx (`nginx.conf`) serves `dist/` and proxies `/parse` (REST + LiveQuery WS) to Parse on `127.0.0.1:1337`                             |
-| Auth        | Parse username/password (PIN used as the password); optional Back4App-managed Google sign-in (`src/lib/googleSignIn.ts`)                                          |
+| Layer       | What                                                                                                                                                                                                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Frontend    | React 18 + Vite 5 + TypeScript, plain CSS in `src/index.css` (Tailwind + shadcn/ui kit installed in `src/components/ui/` but **not used** by the app screens yet)                                                                                                                                            |
+| Backend     | Parse Server on **Back4App**; business logic in Cloud Code under `cloud/` (`main.js` loads the modules, see §3.2)                                                                                                                                                                                            |
+| Data access | Parse JS SDK 7.1.2 (`src/parse.ts`); server URL, app id and JS key from `VITE_PARSE_*` build env (local default: `/parse`)                                                                                                                                                                                   |
+| Hosting     | **Two Back4App apps.** Backend: a Back4App **Parse app** (managed DB, Cloud Code from `cloud/`, dashboard, Jobs). Frontend: a Back4App **Container** built from this repo (static build served by `npm run preview`). `nginx.conf` / `README-EXPORT.md` are leftovers from the Agent export and are not used |
+| Auth        | Parse username/password (PIN used as the password); optional Back4App-managed Google sign-in (`src/lib/googleSignIn.ts`)                                                                                                                                                                                     |
 
-**Local dev:** Node 20, `npm install`, `npm run dev`. Point
+**Local dev:** Node 22, `npm install`, `npm run dev`. Point
 `vite.config.ts → server.proxy['/parse'].target` at a Parse Server and set
 `VITE_PARSE_APP_ID` in `.env.local` (see `.env.local.example` and
 `README-EXPORT.md`). Remove the `server.hmr` block when running locally.
@@ -72,6 +72,35 @@ PARSE_TEST_DATABASE_URI=postgres://postgres:postgres@localhost:5432/relaytest np
 
 GitHub Actions (`.github/workflows/ci.yml`) runs both on every PR, with MongoDB 7
 as a service for the e2e job.
+
+### Deploying (backend + frontend)
+
+A Back4App **Container** only serves the frontend. It does **not** run Parse or
+Cloud Code. Without a backend, nothing can sign in. The backend is a separate
+Back4App **Parse app**:
+
+1. **Create the backend.** Back4App dashboard → New App → Backend as a Service
+   (Parse). In Server Settings pick a recent Parse Server (6 or later).
+2. **Deploy Cloud Code.** Upload the whole `cloud/` folder (`main.js`, the other
+   `*.js` files, `lib/`, `package.json`) as the app's Cloud Code, using the
+   dashboard Cloud Code page or the `b4a` CLI (`b4a deploy`), then deploy. The
+   Cloud Code logs must not show load errors.
+3. **Point the frontend at it.** On the Container app → Settings → Environment,
+   set these and redeploy (Vite bakes them in at build time):
+   - `VITE_PARSE_SERVER_URL=https://parseapi.back4app.com`
+   - `VITE_PARSE_APP_ID=<Application ID>`
+   - `VITE_PARSE_JS_KEY=<JavaScript key>`
+
+   The IDs are under the Parse app → App Settings → Security & Keys. They are
+   public client keys. If the Container does not pass environment variables to
+   the build, commit them in a `.env.production` file instead.
+
+4. **Check.** Open the site. On a new, empty Parse app the sign-in card shows
+   "First owner? Create account". If it says "Can't reach the Relay server
+   functions", step 2 or 3 is wrong.
+
+The frontend is pinned to Node 22 (`engines`); `vite.config.ts` lets `vite
+preview` answer on any host name (b4a.run URL or a custom domain).
 
 ### Back4App release checklist
 
@@ -97,15 +126,15 @@ Code:
 
 **Bubble notes in the original brief → Parse equivalents**
 
-| Brief (Bubble)          | Relay (Parse / Back4App)                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------- |
-| Option sets             | String enums validated in Cloud Code (see §4.2)                                       |
-| Backend workflow        | `Parse.Cloud.define` / `beforeSave` / `afterSave`                                     |
-| Scheduled workflow      | Back4App **Cloud Jobs** (`Parse.Cloud.job`) + dashboard schedule                      |
-| "Do every 10 s" refresh | Polling today; move to **LiveQuery** (already proxied in nginx + `parse.ts`)          |
-| Privacy rules           | Class-Level Permissions (CLP) + per-object ACL + role checks in cloud functions       |
-| OneSignal               | Web Push (VAPID) or OneSignal via Cloud Code HTTP                                     |
-| PDF Conjurer / CSV      | Server-side HTML email or PDF from a Cloud Job; client CSV export (exists for orders) |
+| Brief (Bubble)          | Relay (Parse / Back4App)                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
+| Option sets             | String enums validated in Cloud Code (see §4.2)                                                   |
+| Backend workflow        | `Parse.Cloud.define` / `beforeSave` / `afterSave`                                                 |
+| Scheduled workflow      | Back4App **Cloud Jobs** (`Parse.Cloud.job`) + dashboard schedule                                  |
+| "Do every 10 s" refresh | Polling today; move to **LiveQuery** (enable it on the Parse app, set `VITE_PARSE_LIVEQUERY_URL`) |
+| Privacy rules           | Class-Level Permissions (CLP) + per-object ACL + role checks in cloud functions                   |
+| OneSignal               | Web Push (VAPID) or OneSignal via Cloud Code HTTP                                                 |
+| PDF Conjurer / CSV      | Server-side HTML email or PDF from a Cloud Job; client CSV export (exists for orders)             |
 
 ### Can't sign in as owner? (recovery)
 
@@ -595,8 +624,9 @@ agent's "remaining" list.
 
 ## 10. Change log
 
-| Date       | Change                                                                                                                                                                                                                                                             |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-09-25 | Initial review of the Back4App export; this roadmap created; `.gitignore` added. Typecheck + build pass.                                                                                                                                                           |
-| 2026-09-25 | Phase 0: Cloud Code split + write protection (S1–S4, S8), `getMyProfile` + role routes (B1), sequential codes (B3), preview flags, config-driven money/timezone (U1–U5), ESLint/Prettier/Vitest, e2e suite (23 tests) and CI. S5/S7 need Back4App server settings. |
-| 2026-09-25 | Deploy follow-up: master-key owner recovery (`recoverOwner` / job `createOwner`), sign-in shows when Cloud Code is unreachable, usernames no longer fail on phone auto-capitalisation.                                                                             |
+| Date       | Change                                                                                                                                                                                                                                                                                    |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-09-25 | Initial review of the Back4App export; this roadmap created; `.gitignore` added. Typecheck + build pass.                                                                                                                                                                                  |
+| 2026-09-25 | Phase 0: Cloud Code split + write protection (S1–S4, S8), `getMyProfile` + role routes (B1), sequential codes (B3), preview flags, config-driven money/timezone (U1–U5), ESLint/Prettier/Vitest, e2e suite (23 tests) and CI. S5/S7 need Back4App server settings.                        |
+| 2026-09-25 | Deploy follow-up: master-key owner recovery (`recoverOwner` / job `createOwner`), sign-in shows when Cloud Code is unreachable, usernames no longer fail on phone auto-capitalisation.                                                                                                    |
+| 2026-09-25 | Deployment fix: the Container served only a static frontend (no Parse), and `vite preview` blocked the b4a.run host. Frontend now reads `VITE_PARSE_SERVER_URL` / `VITE_PARSE_APP_ID` / `VITE_PARSE_JS_KEY`; backend runs as a Back4App Parse app; Node pinned to 22; deploy steps in §2. |

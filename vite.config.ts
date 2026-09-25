@@ -80,6 +80,12 @@ export default defineConfig({
       '@radix-ui/react-tooltip',
     ],
   },
+  // `npm run preview` is how Back4App Containers serves the built site. Accept
+  // any host name (the b4a.run URL, custom domains); it only serves static files.
+  preview: {
+    host: '0.0.0.0',
+    allowedHosts: true,
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
