@@ -393,3 +393,258 @@ describe('owner recovery (master key only)', () => {
     );
   });
 });
+
+describe('phase 1: accompaniments, stock and the full order flow', () => {
+  const ids = {};
+  const settings = async (overrides) => {
+    const { settings: current } = await run('adminListSetup', {}, s.owner);
+    const base = { defaultDeliveryFee: 3000, maxRiderFloat: 200000 };
+    await run('adminSaveSettings', { ...base, ...current, ...overrides }, s.owner);
+  };
+  const order = (extra = {}) =>
+    run(
+      'createOrder',
+      {
+        customerName: 'Joan Nakato',
+        customerPhone: '+256 700 111222',
+        deliveryAddress: 'Plot 4, Bukoto',
+        deliveryNotes: 'Blue gate',
+        channel: 'whatsapp',
+        paymentMethod: 'cash',
+        items: [{ id: ids.stew, quantity: 1, accompaniments: [ids.friedrice, ids.matooke] }],
+        ...extra,
+      },
+      s.rider2,
+    );
+  const get = (id, user = s.rider2) => new Parse.Query('Order').get(id, as(user));
+
+  before(async () => {
+    s.rider2 = await login('ron', '4321');
+    await settings({ allowBatching: true, maxRiderFloat: 1000000 });
+  });
+
+  test('owner sets up accompaniments and a dish with "one rice, any sides"', async () => {
+    for (const [key, title] of [
+      ['matooke', 'Matooke'],
+      ['vegrice', 'Vegetable rice'],
+      ['friedrice', 'Fried rice'],
+      ['pumpkin', 'Pumpkin'],
+      ['yams', 'Yams'],
+    ])
+      ids[key] = (await run('adminSaveAccompaniment', { title }, s.owner)).id;
+    const groups = [
+      { label: 'Rice', options: [ids.vegrice, ids.friedrice], min: 0, max: 1 },
+      { label: 'Sides', options: [ids.matooke, ids.pumpkin, ids.yams], min: 0, max: 3 },
+    ];
+    await rejects(
+      run(
+        'adminSaveMenuItem',
+        { title: 'Bad', price: 1, accompanimentGroups: [{ label: 'X', options: ['nope'] }] },
+        s.owner,
+      ),
+      /does not exist/,
+    );
+    ids.stew = (
+      await run(
+        'adminSaveMenuItem',
+        { title: 'Chicken stew', price: 25000, category: 'Mains', accompanimentGroups: groups },
+        s.owner,
+      )
+    ).id;
+    const menu = await run('getOperationalMenu', {}, s.rider2);
+    const stew = menu.items.find((item) => item.id === ids.stew);
+    assert.deepEqual(
+      stew.accompanimentGroups.map((g) => [g.label, g.max, g.options.map((o) => o.title)]),
+      [
+        ['Rice', 1, ['Vegetable rice', 'Fried rice']],
+        ['Sides', 3, ['Matooke', 'Pumpkin', 'Yams']],
+      ],
+    );
+  });
+
+  test('cashier marks fried rice sold out; riders stop seeing it and cannot order it', async () => {
+    await rejects(
+      run(
+        'setAvailability',
+        { type: 'accompaniment', id: ids.friedrice, available: false },
+        s.rider2,
+      ),
+      /cashier or admin role required/,
+    );
+    await run(
+      'setAvailability',
+      { type: 'accompaniment', id: ids.friedrice, available: false },
+      s.cashier,
+    );
+    const stock = await run('getStock', {}, s.cashier);
+    assert.equal(stock.accompaniments.find((a) => a.id === ids.friedrice).available, false);
+    const menu = await run('getOperationalMenu', {}, s.rider2);
+    const rice = menu.items
+      .find((item) => item.id === ids.stew)
+      .accompanimentGroups.find((g) => g.label === 'Rice');
+    assert.deepEqual(
+      rice.options.map((o) => o.title),
+      ['Vegetable rice'],
+    );
+    await rejects(order(), /Chicken stew: An accompaniment is not available/);
+    await run(
+      'setAvailability',
+      { type: 'accompaniment', id: ids.friedrice, available: true },
+      s.cashier,
+    );
+  });
+
+  test('vegetable rice and fried rice cannot both be ordered', async () => {
+    await rejects(
+      order({
+        items: [{ id: ids.stew, quantity: 1, accompaniments: [ids.vegrice, ids.friedrice] }],
+      }),
+      /Choose only one rice option/,
+    );
+  });
+
+  test('a full order records channel, phone, notes and accompaniments, once', async () => {
+    const placed = await order({
+      clientId: 'draft-1',
+      items: [
+        {
+          id: ids.stew,
+          quantity: 2,
+          notes: 'Extra soup',
+          accompaniments: [ids.friedrice, ids.matooke],
+        },
+      ],
+    });
+    const again = await order({ clientId: 'draft-1' });
+    assert.equal(again.id, placed.id);
+    assert.equal(again.duplicate, true);
+    const row = await get(placed.id, s.cashier);
+    assert.equal(row.get('channel'), 'whatsapp');
+    assert.equal(row.get('customerPhone'), '+256700111222');
+    assert.equal(row.get('deliveryNotes'), 'Blue gate');
+    assert.equal(row.get('total'), 25000 * 2 + 3000);
+    const [line] = await new Parse.Query('OrderItem').equalTo('order', row).find(as(s.cashier));
+    assert.deepEqual(line.get('accompanimentNames'), ['Fried rice', 'Matooke']);
+    assert.equal(line.get('notes'), 'Extra soup');
+    s.joanOrder = placed.id;
+  });
+
+  test('customer search returns the saved customer and their last order for repeat', async () => {
+    for (const q of ['joan', '700111']) {
+      const [match] = await run('searchCustomers', { q }, s.rider2);
+      assert.equal(match.name, 'Joan Nakato');
+      assert.equal(match.addresses[0].text, 'Plot 4, Bukoto');
+      assert.equal(match.lastOrder[0].menuItemId, ids.stew);
+      assert.deepEqual(match.lastOrder[0].accompanimentIds, [ids.friedrice, ids.matooke]);
+    }
+  });
+
+  test('a rider can cancel only before the kitchen accepts; the cashier can reject or cancel', async () => {
+    await rejects(
+      run('transitionOrder', { orderId: s.joanOrder, action: 'cancel' }, s.rider2),
+      /Give a reason/,
+    );
+    const second = await order();
+    await run(
+      'transitionOrder',
+      { orderId: second.id, action: 'cancel', reason: 'Customer changed mind' },
+      s.rider2,
+    );
+    assert.equal((await get(second.id)).get('status'), 'CANCELLED');
+
+    const third = await order();
+    await run('transitionOrder', { orderId: third.id, action: 'accept' }, s.cashier);
+    await rejects(
+      run('transitionOrder', { orderId: third.id, action: 'cancel', reason: 'oops' }, s.rider2),
+      /Ask the cashier to cancel/,
+    );
+    await rejects(
+      run('transitionOrder', { orderId: third.id, action: 'reject', reason: 'late' }, s.cashier),
+      /Invalid status transition/,
+    );
+    await run(
+      'transitionOrder',
+      { orderId: third.id, action: 'cancel', reason: 'Out of chicken' },
+      s.cashier,
+    );
+    const row = await get(third.id);
+    assert.equal(row.get('cancelledReason'), 'Out of chicken');
+
+    const fourth = await order();
+    await run(
+      'transitionOrder',
+      { orderId: fourth.id, action: 'reject', reason: 'Kitchen closed' },
+      s.cashier,
+    );
+    assert.equal((await get(fourth.id)).get('restaurantStatus'), 'rejected');
+  });
+
+  test('paying less than the total needs a note', async () => {
+    await rejects(order({ amountToCollect: 20000 }), /Add a note/);
+    const short = await order({
+      amountToCollect: 25000,
+      shortfallNote: 'Regular, pays balance tomorrow',
+    });
+    const row = await get(short.id);
+    assert.equal(row.get('amountToCollect'), 25000);
+    await run('transitionOrder', { orderId: short.id, action: 'cancel', reason: 'test' }, s.rider2);
+  });
+
+  test('B2: an order that would take the rider over the cash limit is blocked', async () => {
+    await settings({ maxRiderFloat: 20000 });
+    try {
+      await rejects(order(), /Hand over cash first/);
+      const mm = await order({ paymentMethod: 'mobile_money' });
+      await run('transitionOrder', { orderId: mm.id, action: 'cancel', reason: 'test' }, s.rider2);
+    } finally {
+      await settings({ maxRiderFloat: 1000000 });
+    }
+  });
+
+  test('with cashier-confirmed pickup on, only staff can hand the bag over', async () => {
+    await settings({ requireCashierConfirmForPickup: true });
+    try {
+      for (const action of ['accept', 'ready'])
+        await run('transitionOrder', { orderId: s.joanOrder, action }, s.cashier);
+      await rejects(
+        run('transitionOrder', { orderId: s.joanOrder, action: 'pickup' }, s.rider2),
+        /cashier confirms pickup/,
+      );
+      await run('transitionOrder', { orderId: s.joanOrder, action: 'pickup' }, s.cashier);
+    } finally {
+      await settings({ requireCashierConfirmForPickup: false });
+    }
+  });
+
+  test('delivery can record that the customer paid by mobile money instead', async () => {
+    await run(
+      'transitionOrder',
+      { orderId: s.joanOrder, action: 'deliver', paymentMethod: 'mobile_money' },
+      s.rider2,
+    );
+    const row = await get(s.joanOrder);
+    assert.equal(row.get('status'), 'DELIVERED');
+    assert.equal(row.get('paymentMethod'), 'mobile_money');
+    assert.equal(row.get('cashStatus'), 'NOT_APPLICABLE');
+    assert.equal(row.get('amountCollected'), 0);
+  });
+
+  test('order issues are flagged by the rider or staff and resolved by the owner', async () => {
+    await rejects(
+      run('flagOrderIssue', { orderId: s.joanOrder, note: 'Soup spilled' }, s.rider),
+      /Not allowed/,
+    );
+    await run('flagOrderIssue', { orderId: s.joanOrder, note: 'Soup spilled' }, s.rider2);
+    assert.equal((await get(s.joanOrder)).get('disputeFlag'), true);
+    await rejects(
+      run('resolveOrderIssue', { orderId: s.joanOrder, resolution: 'Refunded' }, s.cashier),
+      /admin role required/,
+    );
+    await run('resolveOrderIssue', { orderId: s.joanOrder, resolution: 'Refunded soup' }, s.owner);
+    assert.equal((await get(s.joanOrder)).get('disputeFlag'), false);
+  });
+
+  after(async () => {
+    await settings({ allowBatching: false });
+  });
+});

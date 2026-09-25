@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
   maxRiderFloat: 200000,
   allowBatching: false,
   commissionRounding: 'none',
+  requireCashierConfirmForPickup: false,
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);

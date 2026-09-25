@@ -31,6 +31,8 @@ const PROTECTED_CLASSES = [
   'Configuration',
   'MenuItem',
   'MenuCategory',
+  'Accompaniment',
+  'Customer',
   'Counter',
   'DemoOrder',
 ];
@@ -116,6 +118,21 @@ const SCHEMAS = {
     pickedUpAt: D,
     deliveredAt: D,
     settledAt: D,
+    customer: ['Pointer', 'Customer'],
+    deliveryNotes: S,
+    amountToCollect: N,
+    shortfallNote: S,
+    clientId: S,
+    acceptedAt: D,
+    readyAt: D,
+    cancelledReason: S,
+    cancelledBy: user,
+    cancelledAt: D,
+    disputeFlag: B,
+    disputeNote: S,
+    disputedBy: user,
+    disputedAt: D,
+    disputeResolution: S,
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -124,6 +141,9 @@ const SCHEMAS = {
     quantity: N,
     lineTotal: N,
     notes: S,
+    menuItem: ['Pointer', 'MenuItem'],
+    accompanimentIds: 'Array',
+    accompanimentNames: 'Array',
   },
   CashHandover: {
     handoverCode: S,
@@ -166,8 +186,28 @@ const SCHEMAS = {
     maxRiderFloat: N,
     allowBatching: B,
     commissionRounding: S,
+    requireCashierConfirmForPickup: B,
   },
-  MenuItem: { title: S, price: N, category: S, active: B, availableToday: B, sortOrder: N },
+  MenuItem: {
+    title: S,
+    price: N,
+    category: S,
+    active: B,
+    availableToday: B,
+    sortOrder: N,
+    accompanimentGroups: 'Array',
+  },
+  Accompaniment: { title: S, active: B, available: B, sortOrder: N },
+  Customer: {
+    key: S,
+    name: S,
+    nameLower: S,
+    phone: S,
+    addresses: 'Array',
+    orderCount: N,
+    lastOrderAt: D,
+    lastOrder: ['Pointer', 'Order'],
+  },
   MenuCategory: { title: S, active: B, sortOrder: N },
   Counter: { key: S, value: N },
   DemoOrder: {
@@ -243,7 +283,14 @@ async function applySecurity() {
   updated.Shift = await eachObject('Shift', (s) =>
     saveAcl(s, readAcl(s.get('operator'), ['admin'])),
   );
-  for (const className of ['MenuItem', 'MenuCategory', 'Configuration', 'AuditLog'])
+  for (const className of [
+    'MenuItem',
+    'MenuCategory',
+    'Accompaniment',
+    'Customer',
+    'Configuration',
+    'AuditLog',
+  ])
     updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ['admin'])));
   updated._User = await eachObject(Parse.User, async (user) => {
     const role = await getRoleName(user);
