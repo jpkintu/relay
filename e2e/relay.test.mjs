@@ -342,3 +342,48 @@ describe('preview mode (S2)', () => {
     }
   });
 });
+
+describe('owner recovery (master key only)', () => {
+  const master = { useMasterKey: true };
+
+  test('is refused without the master key', async () => {
+    await rejects(
+      run('recoverOwner', { username: 'boss', password: 'boss-pass-1' }, s.owner),
+      /Master key required/,
+    );
+    await rejects(
+      run('recoverOwner', { username: 'boss', password: 'boss-pass-1' }),
+      /Master key required/,
+    );
+  });
+
+  test('creates a new owner even though accounts already exist', async () => {
+    const result = await Parse.Cloud.run(
+      'recoverOwner',
+      { username: 'Boss', password: 'boss-pass-1', email: 'boss@example.com' },
+      master,
+    );
+    assert.deepEqual(result, { username: 'boss', created: true, role: 'admin' });
+    const boss = await login('boss', 'boss-pass-1');
+    assert.equal((await run('getMyProfile', {}, boss)).role, 'admin');
+  });
+
+  test('resets the password of an existing account', async () => {
+    const result = await Parse.Cloud.run(
+      'recoverOwner',
+      { username: 'boss', password: 'new-boss-pass' },
+      master,
+    );
+    assert.equal(result.created, false);
+    await rejects(login('boss', 'boss-pass-1'), /Invalid username\/password/);
+    const boss = await login('boss', 'new-boss-pass');
+    assert.equal((await run('getMyProfile', {}, boss)).role, 'admin');
+  });
+
+  test('rejects weak passwords', async () => {
+    await rejects(
+      Parse.Cloud.run('recoverOwner', { username: 'boss', password: 'short' }, master),
+      /at least 8 characters/,
+    );
+  });
+});

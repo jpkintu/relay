@@ -55,6 +55,8 @@ type Session = {
   user: Parse.User | null;
   profile: Profile | null;
   appInfo: AppInfo;
+  // Set when getAppInfo fails: usually the Cloud Code is not deployed or not running.
+  serverError: string;
   config: AppConfig;
   preview: boolean;
   previewAvailable: boolean;
@@ -74,11 +76,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [preview, setPreview] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(!!user);
   const [error, setError] = useState('');
+  const [serverError, setServerError] = useState('');
 
   useEffect(() => {
     Parse.Cloud.run('getAppInfo')
       .then((info: AppInfo) => setAppInfo(info))
-      .catch(() => undefined);
+      .catch((e) => setServerError(e instanceof Error ? e.message : String(e)));
     completeGoogleSignIn()
       .then((signedIn) => signedIn && setUserState(signedIn))
       .catch(() => undefined);
@@ -139,6 +142,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     user,
     profile,
     appInfo,
+    serverError,
     config,
     preview,
     previewAvailable,

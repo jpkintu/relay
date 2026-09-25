@@ -33,11 +33,9 @@ async function canBootstrapOwner() {
   return !(await adminRoleExists()) && (await countUsers()) === 1;
 }
 
-Parse.Cloud.define('bootstrapOwner', async (request) => {
-  const user = requireUser(request);
-  if (await adminRoleExists()) throw forbidden('Owner already configured');
-  if ((await countUsers()) !== 1)
-    throw forbidden('Owner setup requires exactly one existing account');
+// Makes `user` an owner (admin), creates the staff roles, seeds a starter menu
+// on an empty restaurant and applies the security rules.
+async function makeOwner(user, actor) {
   const role = await ensureRole('admin');
   role.getUsers().add(user);
   await role.save(null, MASTER);
@@ -59,8 +57,59 @@ Parse.Cloud.define('bootstrapOwner', async (request) => {
     await Parse.Object.saveAll(seed, MASTER);
   }
   await applySecurity();
-  await audit(user, 'owner.initialized', role, null, { userId: user.id });
+  await audit(actor, 'owner.initialized', role, null, { userId: user.id });
+}
+
+Parse.Cloud.define('bootstrapOwner', async (request) => {
+  const user = requireUser(request);
+  if (await adminRoleExists()) throw forbidden('Owner already configured');
+  if ((await countUsers()) !== 1)
+    throw forbidden('Owner setup requires exactly one existing account');
+  await makeOwner(user, user);
   return { ok: true };
+});
+
+// Recovery for a restaurant where nobody can sign in as owner (lost password,
+// or accounts already existed so the in-app owner sign-up is closed).
+// Creates the account, or resets its password if the username exists, and
+// makes it an owner. Master key only: run it from the Back4App dashboard as
+// the Cloud Job "createOwner" or via the REST console / curl with the master
+// key. Params: { username, password, email?, name? }.
+async function createOrResetOwner(params) {
+  const username = String(params.username || '')
+    .trim()
+    .toLowerCase();
+  const password = String(params.password || '');
+  if (!/^[-a-z0-9_.@]{3,64}$/.test(username) || password.length < 8)
+    throw invalid('Give a username (3+ characters) and a password of at least 8 characters');
+  const query = new Parse.Query(Parse.User);
+  query.equalTo('username', username);
+  let user = await query.first(MASTER);
+  const created = !user;
+  if (!user) {
+    user = new Parse.User();
+    user.set({ username, password, active: true });
+    if (params.email) user.set('email', String(params.email).trim());
+    user.set('name', String(params.name || username).trim());
+    await user.signUp(null, MASTER);
+  } else {
+    user.set({ password, active: true });
+    await user.save(null, MASTER);
+  }
+  user.setACL(userAcl(user, 'admin'));
+  await user.save(null, MASTER);
+  await makeOwner(user, user);
+  return { username, created, role: 'admin' };
+}
+
+Parse.Cloud.define('recoverOwner', async (request) => {
+  if (!request.master) throw forbidden('Master key required');
+  return createOrResetOwner(request.params);
+});
+
+Parse.Cloud.job('createOwner', async (request) => {
+  const result = await createOrResetOwner(request.params || {});
+  return `Owner ${result.created ? 'created' : 'password reset'}: ${result.username}`;
 });
 
 async function roleMembership() {
