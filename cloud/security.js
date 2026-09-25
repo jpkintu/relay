@@ -5,7 +5,8 @@
 // 2. _User saves from clients cannot touch role, commission, status or code
 //    fields, and client sign-up is only open while the database has no users
 //    (first owner setup).
-// 3. applySecurity() re-applies CLPs and ACLs to existing data and assigns
+// 3. applySecurity() creates the business classes with their fields, applies
+//    class-level permissions, re-applies ACLs to existing data and assigns
 //    staff codes. Run it once after deploying (Cloud Job "applySecurity", or
 //    Settings → "Apply security rules"); bootstrapOwner also runs it.
 
@@ -85,19 +86,127 @@ function classLevelPermissions(className) {
   };
 }
 
-// Only classes that already exist are touched: creating an empty schema here
-// would break queries on Postgres. Re-run applySecurity after new classes
-// appear; the beforeSave guards above protect them in the meantime.
-async function applyClassLevelPermissions() {
-  const existing = new Set((await Parse.Schema.all()).map((schema) => schema.className));
-  const applied = [];
-  for (const className of PROTECTED_CLASSES.filter((name) => existing.has(name))) {
+// Field definitions for every business class. Creating the classes up front
+// (during owner setup) lets clients query them before the first row exists
+// and keeps Postgres deployments from failing on unknown columns.
+const S = 'String';
+const N = 'Number';
+const B = 'Boolean';
+const D = 'Date';
+const user = ['Pointer', '_User'];
+const SCHEMAS = {
+  Order: {
+    orderCode: S,
+    channel: S,
+    createdBy: user,
+    customerName: S,
+    customerPhone: S,
+    deliveryAddress: S,
+    subtotal: N,
+    deliveryFee: N,
+    total: N,
+    paymentMethod: S,
+    amountCollected: N,
+    paymentCollectedBy: user,
+    status: S,
+    restaurantStatus: S,
+    cashStatus: S,
+    commissionAmount: N,
+    commissionPaid: B,
+    pickedUpAt: D,
+    deliveredAt: D,
+    settledAt: D,
+  },
+  OrderItem: {
+    order: ['Pointer', 'Order'],
+    itemNameSnapshot: S,
+    unitPriceSnapshot: N,
+    quantity: N,
+    lineTotal: N,
+    notes: S,
+  },
+  CashHandover: {
+    handoverCode: S,
+    rider: user,
+    cashier: user,
+    amount: N,
+    countedAmount: N,
+    orderCount: N,
+    orders: 'Array',
+    status: S,
+    handedOverAt: D,
+    confirmedAt: D,
+    disputedAt: D,
+    disputeReason: S,
+    notes: S,
+    resolutionNote: S,
+    resolvedBy: user,
+    resolvedAt: D,
+  },
+  Shift: {
+    operator: user,
+    kind: S,
+    status: S,
+    openingFloat: N,
+    startedAt: D,
+    endedAt: D,
+    closingFloat: N,
+    acknowledgedCash: B,
+    expectedTill: N,
+    physicalCount: N,
+    variance: N,
+  },
+  AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
+  Configuration: {
+    restaurantName: S,
+    currencySymbol: S,
+    currencyCode: S,
+    timezone: S,
+    defaultDeliveryFee: N,
+    maxRiderFloat: N,
+    allowBatching: B,
+    commissionRounding: S,
+  },
+  MenuItem: { title: S, price: N, category: S, active: B, availableToday: B, sortOrder: N },
+  MenuCategory: { title: S, active: B, sortOrder: N },
+  Counter: { key: S, value: N },
+  DemoOrder: {
+    orderCode: S,
+    customerName: S,
+    deliveryAddress: S,
+    riderName: S,
+    itemSummary: S,
+    subtotal: N,
+    deliveryFee: N,
+    total: N,
+    status: S,
+    restaurantStatus: S,
+    isDemo: B,
+  },
+};
+
+// Creates missing classes with their fields, adds any missing fields to
+// existing ones, and (re)applies class-level permissions to all of them.
+async function applySchemas() {
+  const existing = new Map((await Parse.Schema.all()).map((schema) => [schema.className, schema]));
+  const created = [];
+  for (const className of PROTECTED_CLASSES) {
     const schema = new Parse.Schema(className);
+    const current = existing.get(className);
+    const known = current ? Object.keys(current.fields || {}) : [];
+    for (const [field, type] of Object.entries(SCHEMAS[className])) {
+      if (known.includes(field)) continue;
+      if (Array.isArray(type)) schema.addField(field, type[0], { targetClass: type[1] });
+      else schema.addField(field, type);
+    }
     schema.setCLP(classLevelPermissions(className));
-    await schema.update();
-    applied.push(className);
+    if (current) await schema.update();
+    else {
+      await schema.save();
+      created.push(className);
+    }
   }
-  return applied;
+  return created;
 }
 
 async function eachObject(className, visit, configure) {
@@ -121,7 +230,7 @@ async function saveAcl(object, acl) {
 }
 
 async function applySecurity() {
-  const updated = { classLevelPermissions: await applyClassLevelPermissions() };
+  const updated = { createdClasses: await applySchemas() };
   updated.Order = await eachObject('Order', (o) => saveAcl(o, readAcl(o.get('createdBy'))));
   updated.OrderItem = await eachObject(
     'OrderItem',

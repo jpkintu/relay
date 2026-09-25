@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, HandCoins } from 'lucide-react';
 import Parse from '../parse';
+import { useConfig, useMoney } from '../lib/session';
+import { formatDate } from '../lib/format';
+import { personLabel } from '../lib/people';
 
 type Handover = {
   id: string;
@@ -11,8 +14,9 @@ type Handover = {
   createdAt: Date;
   orders: { code: string; amount: number }[];
 };
-const money = (n: number) => `UGX ${n.toLocaleString()}`;
 export function CashierHandovers({ preview }: { preview: boolean }) {
+  const money = useMoney();
+  const { timezone } = useConfig();
   const [rows, setRows] = useState<Handover[]>([]),
     [selected, setSelected] = useState<string | null>(null),
     [counted, setCounted] = useState(''),
@@ -33,7 +37,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
         found.map((h) => ({
           id: h.id!,
           code: h.get('handoverCode'),
-          rider: h.get('rider')?.get('name') || h.get('rider')?.id || 'Rider',
+          rider: personLabel(h.get('rider')),
           amount: h.get('amount'),
           orderCount: h.get('orderCount'),
           createdAt: h.createdAt || new Date(),
@@ -129,7 +133,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
             <HandCoins />
             <div>
               <b>{row.code}</b>
-              <span>{row.createdAt.toLocaleString()}</span>
+              <span>{formatDate(row.createdAt, timezone)}</span>
             </div>
           </div>
           <div>

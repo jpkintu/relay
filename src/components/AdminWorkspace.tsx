@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Bike,
+  UtensilsCrossed,
   ClipboardList,
   HandCoins,
   LayoutDashboard,
@@ -12,26 +14,31 @@ import {
 import Parse from '../parse';
 import { AdminOrders, type AdminOrder } from './AdminOrders';
 import { AdminSetup } from './AdminSetup';
+import { useConfig, useMoney, useSession } from '../lib/session';
+import { formatDate, isToday } from '../lib/format';
+import { personLabel } from '../lib/people';
 
 const NAV = [
-  [LayoutDashboard, 'Overview'],
-  [ClipboardList, 'Orders'],
-  [HandCoins, 'Cash ledger'],
-  [CircleDollarSign, 'Commissions'],
-  [Users, 'Team'],
-  [ClipboardList, 'Menu'],
-  [Settings, 'Settings'],
+  [LayoutDashboard, 'Overview', ''],
+  [ClipboardList, 'Orders', 'orders'],
+  [HandCoins, 'Cash ledger', 'cash'],
+  [CircleDollarSign, 'Commissions', 'commissions'],
+  [Users, 'Team', 'team'],
+  [ClipboardList, 'Menu', 'menu'],
+  [Settings, 'Settings', 'settings'],
 ] as const;
-const money = (n: number) => `UGX ${n.toLocaleString()}`;
+type Section = (typeof NAV)[number][1];
 
-export function AdminWorkspace({
-  onExit,
-  preview = false,
-}: {
-  onExit: () => void;
-  preview?: boolean;
-}) {
-  const [section, setSection] = useState('Overview');
+export function AdminWorkspace() {
+  const { preview, logout } = useSession();
+  const { timezone } = useConfig();
+  const money = useMoney();
+  const navigate = useNavigate();
+  const slug = useLocation().pathname.split('/')[2] || '';
+  const current = NAV.find((entry) => entry[2] === slug);
+  const section: Section = current ? current[1] : 'Overview';
+  const setSection = (label: Section) =>
+    navigate(`/admin/${NAV.find((entry) => entry[1] === label)?.[2] ?? ''}`);
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [handovers, setHandovers] = useState<
     {
@@ -69,9 +76,11 @@ export function AdminWorkspace({
         setHandovers([]);
       } else {
         const orderQ = new Parse.Query('Order');
+        orderQ.include('createdBy');
         orderQ.descending('createdAt');
         orderQ.limit(100);
         const handoverQ = new Parse.Query('CashHandover');
+        handoverQ.include('rider');
         handoverQ.descending('createdAt');
         handoverQ.limit(100);
         const [orderRows, cashRows] = await Promise.all([orderQ.find(), handoverQ.find()]);
@@ -79,7 +88,7 @@ export function AdminWorkspace({
           orderRows.map((o) => ({
             id: o.id!,
             code: o.get('orderCode'),
-            rider: o.get('createdBy')?.id || '—',
+            rider: personLabel(o.get('createdBy')),
             customer: o.get('customerName'),
             status: o.get('status'),
             total: o.get('total'),
@@ -95,7 +104,7 @@ export function AdminWorkspace({
             code: h.get('handoverCode'),
             amount: h.get('amount'),
             status: h.get('status'),
-            rider: h.get('rider')?.id || '—',
+            rider: personLabel(h.get('rider')),
             reason: h.get('disputeReason') || '',
             countedAmount: h.get('countedAmount') ?? null,
             createdAt: h.createdAt || new Date(),
@@ -112,7 +121,8 @@ export function AdminWorkspace({
     const timer = window.setInterval(() => void load(), 10000);
     return () => window.clearInterval(timer);
   }, [load]);
-  const today = orders.filter((o) => o.createdAt.toDateString() === new Date().toDateString());
+  if (!current) return <Navigate to="/admin" replace />;
+  const today = orders.filter((o) => isToday(o.createdAt, timezone));
   const cashWithRiders = orders
     .filter(
       (o) => o.status === 'DELIVERED' && ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.cashStatus),
@@ -137,8 +147,12 @@ export function AdminWorkspace({
               {label}
             </button>
           ))}
+          <button onClick={() => navigate('/cashier')}>
+            <UtensilsCrossed />
+            Kitchen board
+          </button>
         </nav>
-        <button className="admin-logout" onClick={onExit}>
+        <button className="admin-logout" onClick={() => void logout()}>
           <LogOut />
           Log out
         </button>
@@ -147,11 +161,11 @@ export function AdminWorkspace({
         <header>
           <div>
             <p className="eyebrow">
-              {new Intl.DateTimeFormat('en', {
+              {formatDate(new Date(), timezone, {
                 weekday: 'long',
                 day: 'numeric',
                 month: 'long',
-              }).format(new Date())}
+              })}
             </p>
             <h1>{section === 'Overview' ? 'Restaurant overview' : section}</h1>
           </div>
@@ -235,7 +249,7 @@ export function AdminWorkspace({
                   <span>{h.rider}</span>
                   <span className="status-pill">{h.status}</span>
                   <span>{money(h.amount)}</span>
-                  <span>{h.createdAt.toLocaleDateString()}</span>
+                  <span>{formatDate(h.createdAt, timezone, { dateStyle: 'medium' })}</span>
                 </div>
                 {h.status === 'disputed' && (
                   <DisputeResolution handover={h} onResolved={() => void load()} />
@@ -279,6 +293,7 @@ function DisputeResolution({
   handover: { id: string; reason: string; amount: number; countedAmount: number | null };
   onResolved: () => void;
 }) {
+  const money = useMoney();
   const [note, setNote] = useState(''),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false);

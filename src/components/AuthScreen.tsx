@@ -2,13 +2,13 @@ import { useState } from 'react';
 import { ArrowRight, Bike, Eye, LockKeyhole } from 'lucide-react';
 import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
+import { useSession } from '../lib/session';
 
-type Props = { onAuthenticated: (user: Parse.User) => void; onPreview: () => void };
-
-export function AuthScreen({ onAuthenticated, onPreview }: Props) {
+export function AuthScreen() {
+  const { setUser, startPreview, appInfo, previewAvailable, error: sessionError } = useSession();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(sessionError);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [email, setEmail] = useState('');
@@ -22,8 +22,8 @@ export function AuthScreen({ onAuthenticated, onPreview }: Props) {
         const owner = new Parse.User();
         owner.set({ username: username.trim(), password, email: email.trim() });
         await owner.signUp();
-        onAuthenticated(owner);
-      } else onAuthenticated(await Parse.User.logIn(username.trim(), password));
+        setUser(owner);
+      } else setUser(await Parse.User.logIn(username.trim(), password));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Check your credentials, then try again.');
     } finally {
@@ -62,7 +62,9 @@ export function AuthScreen({ onAuthenticated, onPreview }: Props) {
           <div className="mobile-brand">
             <Bike /> Relay
           </div>
-          <p className="eyebrow">{creating ? 'Restaurant setup' : 'Shift access'}</p>
+          <p className="eyebrow">
+            {creating ? 'Restaurant setup' : appInfo.restaurantName || 'Shift access'}
+          </p>
           <h2>{creating ? 'Create owner account.' : 'Welcome back.'}</h2>
           <p className="muted">
             {creating
@@ -115,18 +117,22 @@ export function AuthScreen({ onAuthenticated, onPreview }: Props) {
           <button className="google-button" onClick={() => startGoogleSignIn()}>
             Continue with Google
           </button>
-          <button className="preview-button" onClick={onPreview}>
-            <Eye size={17} /> Preview rider workspace
-          </button>
-          <button
-            className="preview-button"
-            onClick={() => {
-              setCreating((p) => !p);
-              setError('');
-            }}
-          >
-            {creating ? 'Already have an account? Sign in' : 'First owner? Create account'}
-          </button>
+          {previewAvailable && (
+            <button className="preview-button" onClick={startPreview}>
+              <Eye size={17} /> Preview rider workspace
+            </button>
+          )}
+          {(appInfo.ownerSetupOpen || creating) && (
+            <button
+              className="preview-button"
+              onClick={() => {
+                setCreating((p) => !p);
+                setError('');
+              }}
+            >
+              {creating ? 'Already have an account? Sign in' : 'First owner? Create account'}
+            </button>
+          )}
           <p className="support-copy">Need access? Ask your restaurant administrator.</p>
         </div>
       </section>

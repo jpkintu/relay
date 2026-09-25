@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   Bike,
   ChevronRight,
@@ -7,14 +8,14 @@ import {
   House,
   LogOut,
   Plus,
-  UserRound,
   WalletCards,
 } from 'lucide-react';
 import Parse from '../parse';
 import { NewOrder } from './NewOrder';
 import { ShiftPanel } from './ShiftPanel';
-type Props = { user: Parse.User | null; preview: boolean; onExit: () => void };
-type Screen = 'home' | 'new' | 'active' | 'cash' | 'earnings' | 'profile';
+import { useMoney, useSession } from '../lib/session';
+import { formatDate, greeting, initials, isToday } from '../lib/format';
+
 type LiveOrder = {
   id: string;
   code: string;
@@ -24,78 +25,115 @@ type LiveOrder = {
   cashStatus?: string;
   amountCollected?: number;
   commissionAmount?: number;
+  deliveredAt?: Date;
 };
-const money = (n: number) => `UGX ${n.toLocaleString()}`;
-export function RiderWorkspace({ user, preview, onExit }: Props) {
-  const [screen, setScreen] = useState<Screen>('home');
-  const [orders, setOrders] = useState(0);
-  const [liveOrders, setLiveOrders] = useState<LiveOrder[]>([]);
+
+type SubScreen = 'active' | 'cash' | 'earnings' | 'profile';
+
+const IN_FLIGHT = (o: LiveOrder) => !['DELIVERED', 'CANCELLED'].includes(o.status);
+const sum = (rows: LiveOrder[], pick: (o: LiveOrder) => number | undefined) =>
+  rows.reduce((total, o) => total + (pick(o) || 0), 0);
+
+export function RiderWorkspace() {
+  const { user, preview } = useSession();
+  const navigate = useNavigate();
+  const [orders, setOrders] = useState<LiveOrder[]>([]);
   const [loadError, setLoadError] = useState('');
+
   const loadOrders = useCallback(async () => {
     try {
       if (preview) {
-        const rows: LiveOrder[] = await Parse.Cloud.run('getPreviewOrders');
-        setLiveOrders(rows);
-        setOrders(rows.length);
+        setOrders(await Parse.Cloud.run('getPreviewOrders'));
         return;
       }
       if (!user) return;
-      const q = new Parse.Query('Order');
-      q.equalTo('createdBy', user);
-      q.descending('createdAt');
-      q.limit(100);
-      const rows = await q.find();
-      const mapped = rows.map((row) => ({
-        id: row.id!,
-        code: row.get('orderCode'),
-        customer: row.get('customerName'),
-        status: row.get('status'),
-        total: row.get('total'),
-        cashStatus: row.get('cashStatus'),
-        amountCollected: row.get('amountCollected'),
-        commissionAmount: row.get('commissionAmount'),
-      }));
-      setLiveOrders(mapped);
-      setOrders(mapped.filter((row) => !['DELIVERED', 'CANCELLED'].includes(row.status)).length);
+      const query = new Parse.Query('Order');
+      query.equalTo('createdBy', user);
+      query.descending('createdAt');
+      query.limit(100);
+      const rows = await query.find();
+      setOrders(
+        rows.map((row) => ({
+          id: row.id!,
+          code: row.get('orderCode'),
+          customer: row.get('customerName'),
+          status: row.get('status'),
+          total: row.get('total'),
+          cashStatus: row.get('cashStatus'),
+          amountCollected: row.get('amountCollected'),
+          commissionAmount: row.get('commissionAmount'),
+          deliveredAt: row.get('deliveredAt'),
+        })),
+      );
       setLoadError('');
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Could not load orders');
     }
-  }, [preview, user?.id]);
+  }, [preview, user]);
+
   useEffect(() => {
     void loadOrders();
     const timer = window.setInterval(() => void loadOrders(), 10000);
     return () => window.clearInterval(timer);
   }, [loadOrders]);
-  if (screen === 'new')
-    return (
-      <NewOrder
-        preview={preview}
-        onBack={() => setScreen('home')}
-        onPlaced={async (_total, payload) => {
-          if (user)
-            await Parse.Cloud.run('createOrder', {
-              ...payload,
-              channel: 'walkin',
-              paymentMethod: 'cash',
-            });
-          else if (preview) await Parse.Cloud.run('createPreviewOrder', payload);
-          await loadOrders();
-        }}
+
+  const subPage = (screen: SubScreen) => (
+    <RiderSubPage screen={screen} orders={orders} refresh={loadOrders} />
+  );
+  return (
+    <Routes>
+      <Route index element={<RiderHome orders={orders} loadError={loadError} />} />
+      <Route
+        path="new"
+        element={
+          <NewOrder
+            preview={preview}
+            onBack={() => navigate('/rider')}
+            onPlaced={async (_total, payload) => {
+              if (preview) await Parse.Cloud.run('createPreviewOrder', payload);
+              else
+                await Parse.Cloud.run('createOrder', {
+                  ...payload,
+                  channel: 'walkin',
+                  paymentMethod: 'cash',
+                });
+              await loadOrders();
+            }}
+          />
+        }
       />
-    );
-  if (screen !== 'home')
-    return (
-      <RiderSubPage
-        screen={screen}
-        orders={liveOrders}
-        preview={preview}
-        refresh={loadOrders}
-        onBack={() => setScreen('home')}
-        onNavigate={setScreen}
-        onExit={onExit}
-      />
-    );
+      <Route path="active" element={subPage('active')} />
+      <Route path="cash" element={subPage('cash')} />
+      <Route path="earnings" element={subPage('earnings')} />
+      <Route path="profile" element={subPage('profile')} />
+      <Route path="*" element={<Navigate to="/rider" replace />} />
+    </Routes>
+  );
+}
+
+function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: string }) {
+  const { profile, preview, config } = useSession();
+  const money = useMoney();
+  const navigate = useNavigate();
+  const name = profile?.name || (preview ? 'Preview rider' : 'Rider');
+  const inFlight = orders.filter(IN_FLIGHT);
+  const cashOnMe = preview
+    ? 0
+    : sum(
+        orders.filter(
+          (o) =>
+            o.status === 'DELIVERED' &&
+            ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.cashStatus || ''),
+        ),
+        (o) => o.amountCollected,
+      );
+  const limit = config.maxRiderFloat;
+  const limitShare = limit > 0 ? Math.min(100, Math.round((cashOnMe / limit) * 100)) : 0;
+  const deliveredToday = orders.filter(
+    (o) => o.status === 'DELIVERED' && isToday(o.deliveredAt, config.timezone),
+  );
+  const weekday = formatDate(new Date(), config.timezone, { weekday: 'long' });
+
   return (
     <main className="rider-shell">
       <header className="rider-header">
@@ -103,23 +141,30 @@ export function RiderWorkspace({ user, preview, onExit }: Props) {
           <Bike />
           <span>Relay</span>
         </div>
-        <div className="shift-live">Rider workspace</div>
-        <button className="avatar-button" aria-label="Profile">
-          {(user?.get('name') || 'AK').slice(0, 2).toUpperCase()}
+        <div className="shift-live">{config.restaurantName}</div>
+        <button
+          className="avatar-button"
+          aria-label="Profile"
+          onClick={() => navigate('/rider/profile')}
+        >
+          {initials(name)}
         </button>
       </header>
       <div className="rider-content">
         <ShiftPanel kind="rider" preview={preview} />
         <section className="welcome">
           <div>
-            <p className="eyebrow">Tuesday · Rider R-014</p>
+            <p className="eyebrow">
+              {weekday}
+              {profile?.code ? ` · Rider ${profile.code}` : ''}
+            </p>
             <h1>
-              Good afternoon,
+              {greeting(config.timezone)},
               <br />
-              <em>{user?.get('name') || 'Amina'}.</em>
+              <em>{name.split(' ')[0]}.</em>
             </h1>
           </div>
-          <button className="new-order-hero" onClick={() => setScreen('new')}>
+          <button className="new-order-hero" onClick={() => navigate('/rider/new')}>
             <span>
               <Plus />
             </span>
@@ -134,24 +179,12 @@ export function RiderWorkspace({ user, preview, onExit }: Props) {
               <WalletCards />
             </div>
             <p>Cash on me</p>
-            <strong>
-              {money(
-                preview
-                  ? 0
-                  : liveOrders
-                      .filter(
-                        (o) =>
-                          o.status === 'DELIVERED' &&
-                          ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.cashStatus || ''),
-                      )
-                      .reduce((sum, o) => sum + (o.amountCollected || 0), 0),
-              )}
-            </strong>
+            <strong>{money(cashOnMe)}</strong>
             <span className="limit">
-              <i style={{ width: '34%' }} />
-              34% of your limit
+              <i style={{ width: `${limitShare}%` }} />
+              {limit > 0 ? `${limitShare}% of your ${money(limit)} limit` : 'No cash limit set'}
             </span>
-            <button onClick={() => setScreen('cash')}>
+            <button onClick={() => navigate('/rider/cash')}>
               View cash detail <ChevronRight />
             </button>
           </article>
@@ -160,9 +193,9 @@ export function RiderWorkspace({ user, preview, onExit }: Props) {
               <ClipboardList />
             </div>
             <p>Orders in flight</p>
-            <strong>{orders}</strong>
-            <span>{liveOrders.filter((o) => o.status === 'READY').length} ready for pickup</span>
-            <button onClick={() => setScreen('active')}>
+            <strong>{inFlight.length}</strong>
+            <span>{orders.filter((o) => o.status === 'READY').length} ready for pickup</span>
+            <button onClick={() => navigate('/rider/active')}>
               Open active orders <ChevronRight />
             </button>
           </article>
@@ -171,17 +204,12 @@ export function RiderWorkspace({ user, preview, onExit }: Props) {
               <CircleDollarSign />
             </div>
             <p>Today’s earnings</p>
-            <strong>
-              {money(
-                liveOrders
-                  .filter((o) => o.status === 'DELIVERED')
-                  .reduce((sum, o) => sum + (o.commissionAmount || 0), 0),
-              )}
-            </strong>
+            <strong>{money(sum(deliveredToday, (o) => o.commissionAmount))}</strong>
             <span>
-              {liveOrders.filter((o) => o.status === 'DELIVERED').length} completed deliveries
+              {deliveredToday.length} {deliveredToday.length === 1 ? 'delivery' : 'deliveries'}{' '}
+              today
             </span>
-            <button onClick={() => setScreen('earnings')}>
+            <button onClick={() => navigate('/rider/earnings')}>
               View earnings <ChevronRight />
             </button>
           </article>
@@ -193,52 +221,26 @@ export function RiderWorkspace({ user, preview, onExit }: Props) {
               <p className="eyebrow">Now moving</p>
               <h2>Active orders</h2>
             </div>
-            <button onClick={() => setScreen('active')}>View all</button>
+            <button onClick={() => navigate('/rider/active')}>View all</button>
           </div>
-          {liveOrders
-            .filter((o) => !['DELIVERED', 'CANCELLED'].includes(o.status))
-            .slice(0, 5)
-            .map((o) => (
-              <article className="order-row" key={o.code}>
-                <div className={`status-dot ${o.status.toLowerCase()}`} />
-                <div>
-                  <b>{o.code}</b>
-                  <span>{o.customer}</span>
-                </div>
-                <span className={`status-pill ${o.status.toLowerCase()}`}>{o.status}</span>
-                <strong>{money(o.total)}</strong>
-                <ChevronRight />
-              </article>
-            ))}
-          {!orders && <p className="empty-orders">No orders in flight. Start with a new order.</p>}
+          {inFlight.slice(0, 5).map((o) => (
+            <article className="order-row" key={o.id}>
+              <div className={`status-dot ${o.status.toLowerCase()}`} />
+              <div>
+                <b>{o.code}</b>
+                <span>{o.customer}</span>
+              </div>
+              <span className={`status-pill ${o.status.toLowerCase()}`}>{o.status}</span>
+              <strong>{money(o.total)}</strong>
+              <ChevronRight />
+            </article>
+          ))}
+          {!inFlight.length && (
+            <p className="empty-orders">No orders in flight. Start with a new order.</p>
+          )}
         </section>
       </div>
-      <nav className="bottom-nav">
-        {[
-          [House, 'Home'],
-          [ClipboardList, 'Active'],
-          [Plus, 'New order'],
-          [CircleDollarSign, 'Earnings'],
-          [UserRound, 'Profile'],
-        ].map(([Icon, label], i) => {
-          const C = Icon as typeof House;
-          return (
-            <button
-              key={label as string}
-              className={i === 0 ? 'active' : i === 2 ? 'center' : ''}
-              onClick={() =>
-                setScreen((['home', 'active', 'new', 'earnings', 'profile'] as Screen[])[i])
-              }
-            >
-              <C />
-              <span>{label as string}</span>
-            </button>
-          );
-        })}
-        <button className="logout" onClick={onExit} aria-label="Log out">
-          <LogOut />
-        </button>
-      </nav>
+      <RiderNav />
       {preview && (
         <div className="preview-ribbon">Live preview · changes are saved to demo data</div>
       )}
@@ -246,35 +248,76 @@ export function RiderWorkspace({ user, preview, onExit }: Props) {
   );
 }
 
+const NAV_ITEMS = [
+  [House, 'Home', '/rider'],
+  [ClipboardList, 'Active', '/rider/active'],
+  [Plus, 'New order', '/rider/new'],
+  [WalletCards, 'Cash', '/rider/cash'],
+  [CircleDollarSign, 'Earnings', '/rider/earnings'],
+] as const;
+
+function RiderNav() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  return (
+    <nav className="bottom-nav">
+      {NAV_ITEMS.map(([Icon, label, target]) => (
+        <button
+          key={label}
+          className={
+            pathname.replace(/\/$/, '') === target
+              ? 'active'
+              : target === '/rider/new'
+                ? 'center'
+                : ''
+          }
+          onClick={() => navigate(target)}
+        >
+          <Icon />
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function commissionRule(
+  commission: { type: string; perOrder: number; percent: number } | null | undefined,
+  money: (n: number) => string,
+) {
+  if (!commission) return 'Not set';
+  if (commission.type === 'percent') return `${commission.percent}% of each order subtotal`;
+  if (commission.type === 'hybrid')
+    return `${money(commission.perOrder)} + ${commission.percent}% of each order subtotal`;
+  return `${money(commission.perOrder)} per delivery`;
+}
+
+const TITLES: Record<SubScreen, string> = {
+  active: 'Active orders',
+  cash: 'My cash',
+  earnings: 'Earnings',
+  profile: 'Rider profile',
+};
+
 function RiderSubPage({
   screen,
   orders,
-  preview,
   refresh,
-  onBack,
-  onNavigate,
-  onExit,
 }: {
-  screen: Exclude<Screen, 'home' | 'new'>;
+  screen: SubScreen;
   orders: LiveOrder[];
-  preview: boolean;
   refresh: () => Promise<void>;
-  onBack: () => void;
-  onNavigate: (screen: Screen) => void;
-  onExit: () => void;
 }) {
-  const [selected, setSelected] = useState<string[]>([]),
-    [busy, setBusy] = useState(false),
-    [message, setMessage] = useState('');
-  const active = orders.filter((o) => !['DELIVERED', 'CANCELLED'].includes(o.status));
+  const { preview, profile, logout } = useSession();
+  const money = useMoney();
+  const navigate = useNavigate();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const active = orders.filter(IN_FLIGHT);
   const cash = orders.filter((o) => o.status === 'DELIVERED' && o.cashStatus === 'WITH_RIDER');
   const earned = orders.filter((o) => o.status === 'DELIVERED');
-  const titles = {
-    active: 'Active orders',
-    cash: 'My cash',
-    earnings: 'Earnings',
-    profile: 'Rider profile',
-  };
+
   const transition = async (o: LiveOrder) => {
     setBusy(true);
     setMessage('');
@@ -306,15 +349,16 @@ function RiderSubPage({
       setBusy(false);
     }
   };
+
   return (
     <main className="rider-shell">
       <header className="order-head">
-        <button className="icon-button" onClick={onBack} aria-label="Back">
+        <button className="icon-button" onClick={() => navigate('/rider')} aria-label="Back">
           <ChevronRight style={{ transform: 'rotate(180deg)' }} />
         </button>
         <div>
           <p className="eyebrow">Rider workspace</p>
-          <h2>{titles[screen]}</h2>
+          <h2>{TITLES[screen]}</h2>
         </div>
       </header>
       <div className="subpage-content">
@@ -355,7 +399,7 @@ function RiderSubPage({
           <>
             <div className="cash-balance">
               <p>Cash awaiting handover</p>
-              <strong>{money(cash.reduce((sum, o) => sum + (o.amountCollected || 0), 0))}</strong>
+              <strong>{money(sum(cash, (o) => o.amountCollected))}</strong>
               <span>{cash.length} delivered cash orders</span>
             </div>
             {cash.map((o) => (
@@ -372,7 +416,7 @@ function RiderSubPage({
                 <span>
                   {o.code} · {o.customer}
                 </span>
-                <b>{money(o.amountCollected || 0)}</b>
+                <b>{money(o.amountCollected)}</b>
               </label>
             ))}
             {cash.length > 0 && (
@@ -383,9 +427,10 @@ function RiderSubPage({
               >
                 Hand over{' '}
                 {money(
-                  cash
-                    .filter((o) => selected.includes(o.id))
-                    .reduce((sum, o) => sum + (o.amountCollected || 0), 0),
+                  sum(
+                    cash.filter((o) => selected.includes(o.id)),
+                    (o) => o.amountCollected,
+                  ),
                 )}{' '}
                 <ChevronRight />
               </button>
@@ -401,10 +446,8 @@ function RiderSubPage({
         {screen === 'earnings' && (
           <>
             <div className="cash-balance earnings">
-              <p>Commission earned</p>
-              <strong>
-                {money(earned.reduce((sum, o) => sum + (o.commissionAmount || 0), 0))}
-              </strong>
+              <p>Commission on recent deliveries</p>
+              <strong>{money(sum(earned, (o) => o.commissionAmount))}</strong>
               <span>{earned.length} completed deliveries</span>
             </div>
             {earned.map((o) => (
@@ -412,43 +455,33 @@ function RiderSubPage({
                 <span>
                   {o.code} · {o.customer}
                 </span>
-                <b>{money(o.commissionAmount || 0)}</b>
+                <b>{money(o.commissionAmount)}</b>
               </div>
             ))}
           </>
         )}
         {screen === 'profile' && (
           <div className="profile-card">
-            <div className="profile-avatar">R</div>
-            <h2>Rider profile</h2>
-            <p>Account and shift details are available after signing in.</p>
-            <button onClick={onExit}>
-              <LogOut /> {preview ? 'Sign in' : 'Log out'}
+            <div className="profile-avatar">{initials(profile?.name || 'Rider')}</div>
+            <h2>{profile?.name || 'Preview rider'}</h2>
+            {profile ? (
+              <>
+                <p>
+                  {profile.code && `${profile.code} · `}@{profile.username}
+                  {profile.phone && ` · ${profile.phone}`}
+                </p>
+                <p>Commission: {commissionRule(profile.commission, money)}</p>
+              </>
+            ) : (
+              <p>Account details are available after signing in.</p>
+            )}
+            <button onClick={() => void logout()}>
+              <LogOut /> {preview ? 'Leave preview' : 'Log out'}
             </button>
           </div>
         )}
       </div>
-      <nav className="bottom-nav">
-        {[
-          [House, 'Home', 'home'],
-          [ClipboardList, 'Active', 'active'],
-          [Plus, 'New order', 'new'],
-          [CircleDollarSign, 'Earnings', 'earnings'],
-          [UserRound, 'Profile', 'profile'],
-        ].map(([Icon, label, target]) => {
-          const C = Icon as typeof House;
-          return (
-            <button
-              className={screen === target ? 'active' : target === 'new' ? 'center' : ''}
-              onClick={() => onNavigate(target as Screen)}
-              key={label as string}
-            >
-              <C />
-              <span>{label as string}</span>
-            </button>
-          );
-        })}
-      </nav>
+      <RiderNav />
     </main>
   );
 }

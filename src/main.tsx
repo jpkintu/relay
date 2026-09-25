@@ -65,7 +65,8 @@ try {
       </ErrorBoundary>
     </React.StrictMode>,
   );
-} catch (err: any) {
+} catch (caught) {
+  const err = caught instanceof Error ? caught : new Error(String(caught));
   const root = document.getElementById('root');
   if (root) {
     root.innerHTML = `<div style="font-family:ui-monospace,monospace;padding:24px;background:#1a1a1a;color:#ff6b6b;min-height:100vh;white-space:pre-wrap;font-size:13px"><strong style="color:#f87171;font-size:15px">Mount error:</strong>\n${err?.message || err}\n\n${err?.stack || ''}</div>`;

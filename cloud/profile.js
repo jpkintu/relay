@@ -21,6 +21,9 @@ Parse.Cloud.define('getAppInfo', async () => {
   const [{ values }, users] = await Promise.all([loadConfig(), countUsers()]);
   return {
     restaurantName: values.restaurantName,
+    currencySymbol: values.currencySymbol,
+    currencyCode: values.currencyCode,
+    timezone: values.timezone,
     ownerSetupOpen: users === 0,
     previewEnabled: previewEnabled(),
   };

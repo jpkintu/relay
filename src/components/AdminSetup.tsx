@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import Parse from '../parse';
+import { useMoney, useSession } from '../lib/session';
 
 type Member = {
   id: string;
@@ -7,6 +8,7 @@ type Member = {
   username: string;
   phone: string;
   role: string;
+  code: string;
   active: boolean;
   commissionType: string;
   commissionPerOrder: number;
@@ -24,16 +26,11 @@ type Category = { id: string; title: string; active: boolean };
 type Settings = {
   restaurantName: string;
   currencySymbol: string;
+  currencyCode: string;
+  timezone: string;
   defaultDeliveryFee: number;
   maxRiderFloat: number;
   allowBatching: boolean;
-};
-const defaults: Settings = {
-  restaurantName: 'Restaurant',
-  currencySymbol: 'UGX',
-  defaultDeliveryFee: 3000,
-  maxRiderFloat: 200000,
-  allowBatching: false,
 };
 const input = (
   label: string,
@@ -60,10 +57,12 @@ export function AdminSetup({
   section: 'Team' | 'Menu' | 'Settings';
   preview: boolean;
 }) {
+  const { config, refresh } = useSession();
+  const money = useMoney();
   const [team, setTeam] = useState<Member[]>([]),
     [menu, setMenu] = useState<Item[]>([]),
     [categories, setCategories] = useState<Category[]>([]),
-    [settings, setSettings] = useState<Settings>(defaults);
+    [settings, setSettings] = useState<Settings>(config);
   const [name, setName] = useState(''),
     [username, setUsername] = useState(''),
     [phone, setPhone] = useState(''),
@@ -84,7 +83,7 @@ export function AdminSetup({
       setTeam(data.team);
       setMenu(data.menu);
       setCategories(data.categories || []);
-      if (data.settings) setSettings({ ...defaults, ...data.settings });
+      if (data.settings) setSettings((current) => ({ ...current, ...data.settings }));
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load setup');
@@ -166,7 +165,7 @@ export function AdminSetup({
                   <div>
                     <b>{u.name}</b>
                     <small>
-                      @{u.username} · {u.role}
+                      {u.code && `${u.code} · `}@{u.username} · {u.role}
                     </small>
                   </div>
                   <span>{u.active ? 'Active' : 'Inactive'}</span>
@@ -306,7 +305,7 @@ export function AdminSetup({
                 <div>
                   <b>{item.title}</b>
                   <small>
-                    {item.category} · UGX {item.price.toLocaleString()}
+                    {item.category} · {money(item.price)}
                   </small>
                 </div>
                 <span>{item.availableToday ? 'Available' : 'Unavailable'}</span>
@@ -348,7 +347,7 @@ export function AdminSetup({
             className="setup-form"
             onSubmit={(e) => {
               e.preventDefault();
-              void save('adminSaveSettings', settings, () => {});
+              void save('adminSaveSettings', settings, () => void refresh());
             }}
           >
             {input('Restaurant name', settings.restaurantName, (v) =>
@@ -356,6 +355,12 @@ export function AdminSetup({
             )}
             {input('Currency symbol', settings.currencySymbol, (v) =>
               setSettings((p) => ({ ...p, currencySymbol: v })),
+            )}
+            {input('Currency code (ISO, e.g. UGX)', settings.currencyCode, (v) =>
+              setSettings((p) => ({ ...p, currencyCode: v })),
+            )}
+            {input('Timezone (e.g. Africa/Kampala)', settings.timezone, (v) =>
+              setSettings((p) => ({ ...p, timezone: v })),
             )}
             {input(
               'Default delivery fee',
@@ -386,6 +391,23 @@ export function AdminSetup({
               Save settings
             </button>
           </form>
+        </div>
+      )}
+      {section === 'Settings' && (
+        <div className="admin-panel">
+          <p className="eyebrow">Security</p>
+          <h2>Access rules</h2>
+          <p className="muted">
+            Re-applies database permissions and assigns missing rider and cashier codes. Run it once
+            after each deployment that changes Cloud Code; it is safe to run again.
+          </p>
+          <button
+            className="setup-submit"
+            disabled={busy || preview}
+            onClick={() => void save('adminApplySecurity', {}, () => {})}
+          >
+            Apply security rules
+          </button>
         </div>
       )}
     </div>

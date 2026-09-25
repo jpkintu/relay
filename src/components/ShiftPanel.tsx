@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Clock3 } from 'lucide-react';
 import Parse from '../parse';
+import { useConfig, useMoney } from '../lib/session';
+import { formatDate } from '../lib/format';
 
 type Shift = {
   id: string;
@@ -11,6 +13,8 @@ type Shift = {
   float: number | null;
 };
 export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; preview: boolean }) {
+  const money = useMoney();
+  const { timezone } = useConfig();
   const [shift, setShift] = useState<Shift | null>(null),
     [opening, setOpening] = useState('0'),
     [physical, setPhysical] = useState(''),
@@ -56,9 +60,7 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
       });
       setShift(null);
       setNotice(
-        kind === 'cashier'
-          ? `Shift closed. Variance: UGX ${Number(result.variance).toLocaleString()}.`
-          : 'Shift closed.',
+        kind === 'cashier' ? `Shift closed. Variance: ${money(result.variance)}.` : 'Shift closed.',
       );
       setPhysical('');
       setAcknowledge(false);
@@ -83,16 +85,15 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
         <p>Shift management requires a signed-in {kind}. Demo mode never changes cash balances.</p>
       ) : shift ? (
         <>
-          <p>Started {new Date(shift.startedAt).toLocaleString()}</p>
+          <p>Started {formatDate(shift.startedAt, timezone)}</p>
           {kind === 'cashier' ? (
             <>
               <div className="shift-figures">
                 <span>
-                  Opening float <strong>UGX {shift.openingFloat.toLocaleString()}</strong>
+                  Opening float <strong>{money(shift.openingFloat)}</strong>
                 </span>
                 <span>
-                  Expected till{' '}
-                  <strong>UGX {Number(shift.expectedTill || 0).toLocaleString()}</strong>
+                  Expected till <strong>{money(shift.expectedTill)}</strong>
                 </span>
               </div>
               <label className="setup-field">
@@ -110,8 +111,7 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
           ) : (
             <>
               <p>
-                Cash still accountable:{' '}
-                <strong>UGX {Number(shift.float || 0).toLocaleString()}</strong>
+                Cash still accountable: <strong>{money(shift.float)}</strong>
               </p>
               {Number(shift.float) > 0 && (
                 <label className="setup-checkbox">

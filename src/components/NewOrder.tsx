@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Check, Minus, Plus, Search, ShoppingBag } from 'lucide-react';
 import Parse from '../parse';
+import { useConfig, useMoney } from '../lib/session';
 
 type MenuItem = { id: string; title: string; category: string; price: number; color?: string };
 const SAMPLE: MenuItem[] = [
@@ -27,9 +28,10 @@ export function NewOrder({
   onPlaced: (total: number, payload: Payload) => Promise<void> | void;
   preview: boolean;
 }) {
+  const config = useConfig();
+  const money = useMoney();
   const [items, setItems] = useState<MenuItem[]>(preview ? SAMPLE : []),
-    [fee, setFee] = useState(3000),
-    [currency, setCurrency] = useState('UGX');
+    [fee, setFee] = useState(preview ? 3000 : config.defaultDeliveryFee);
   const [category, setCategory] = useState('All'),
     [query, setQuery] = useState(''),
     [cart, setCart] = useState<Record<string, number>>({}),
@@ -41,10 +43,9 @@ export function NewOrder({
   useEffect(() => {
     if (preview) return;
     Parse.Cloud.run('getOperationalMenu')
-      .then((data: { items: MenuItem[]; deliveryFee: number; currencySymbol: string }) => {
+      .then((data: { items: MenuItem[]; deliveryFee: number }) => {
         setItems(data.items);
         setFee(data.deliveryFee);
-        setCurrency(data.currencySymbol);
       })
       .catch(() => setError('Menu could not be loaded. Please reconnect.'));
   }, [preview]);
@@ -58,7 +59,6 @@ export function NewOrder({
     [items, cart],
   );
   const count = Object.values(cart).reduce((a, b) => a + b, 0);
-  const money = (n: number) => `${currency} ${n.toLocaleString()}`;
   const change = (id: string, d: number) =>
     setCart((prev) => ({ ...prev, [id]: Math.max(0, (prev[id] || 0) + d) }));
   const place = async () => {

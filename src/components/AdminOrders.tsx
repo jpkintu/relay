@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useMoney } from '../lib/session';
 export type AdminOrder = {
   id: string;
   code: string;
@@ -12,6 +13,7 @@ export type AdminOrder = {
   createdAt: Date;
 };
 export function AdminOrders({ orders }: { orders: AdminOrder[] }) {
+  const money = useMoney();
   const [query, setQuery] = useState('');
   const rows = orders.filter((o) =>
     `${o.code} ${o.customer} ${o.rider} ${o.status}`.toLowerCase().includes(query.toLowerCase()),
@@ -86,7 +88,7 @@ export function AdminOrders({ orders }: { orders: AdminOrder[] }) {
             <span>{o.rider}</span>
             <span>{o.customer}</span>
             <span className="status-pill">{o.status}</span>
-            <span>UGX {o.total.toLocaleString()}</span>
+            <span>{money(o.total)}</span>
           </div>
         ))}
       </div>

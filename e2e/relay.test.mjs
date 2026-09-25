@@ -9,6 +9,7 @@ import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { ParseServer } from 'parse-server';
 
@@ -32,7 +33,7 @@ let parseServer;
 before(async () => {
   parseServer = new ParseServer({
     databaseURI: databaseUri(),
-    cloud: path.resolve(import.meta.dirname, '../cloud/main.js'),
+    cloud: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cloud/main.js'),
     appId: APP_ID,
     masterKey: MASTER_KEY,
     serverURL: SERVER_URL,
@@ -229,8 +230,14 @@ describe('order to cash', () => {
   test('the rider cannot rewrite the order through the REST API', async () => {
     const order = await new Parse.Query('Order').get(s.orderId, as(s.rider));
     order.set({ cashStatus: 'RECONCILED', commissionAmount: 999999 });
-    await rejects(order.save(null, as(s.rider)), /must go through the app|Object not found/);
-    await rejects(order.destroy(as(s.rider)), /must go through the app|Object not found/);
+    await rejects(
+      order.save(null, as(s.rider)),
+      /must go through the app|Permission denied|Object not found/,
+    );
+    await rejects(
+      order.destroy(as(s.rider)),
+      /must go through the app|Permission denied|Object not found/,
+    );
   });
 
   test('another rider cannot see the order', async () => {
@@ -239,9 +246,9 @@ describe('order to cash', () => {
 
   test('clients cannot create business objects directly (S1)', async () => {
     const order = new Parse.Object('Order', { total: 1, status: 'DELIVERED' });
-    await rejects(order.save(null, as(s.rider)), /must go through the app/);
+    await rejects(order.save(null, as(s.rider)), /must go through the app|Permission denied/);
     const config = new Parse.Object('Configuration', { maxRiderFloat: 0 });
-    await rejects(config.save(null, as(s.owner)), /must go through the app/);
+    await rejects(config.save(null, as(s.owner)), /must go through the app|Permission denied/);
   });
 
   test('cashier sees the ticket with the rider name and items', async () => {
