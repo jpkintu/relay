@@ -20,6 +20,10 @@ const { applySecurity } = require('./security');
 
 const ROLE_NAMES = ['admin', 'cashier', 'rider'];
 const STAFF_ROLES = ['rider', 'cashier'];
+const merchantField = (value, max) =>
+  String(value ?? '')
+    .trim()
+    .slice(0, max);
 const codeField = (role) => (role === 'rider' ? 'riderCode' : 'cashierCode');
 
 async function adminRoleExists() {
@@ -392,6 +396,10 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     maxRiderFloat: max,
     allowBatching: !!p.allowBatching,
     requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup,
+    airtelMerchantCode: merchantField(p.airtelMerchantCode, 30),
+    airtelMerchantName: merchantField(p.airtelMerchantName, 60),
+    mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
+    mtnMerchantName: merchantField(p.mtnMerchantName, 60),
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

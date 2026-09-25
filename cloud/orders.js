@@ -13,6 +13,7 @@ const {
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
 const { recordCustomerOrder } = require('./customers');
+const { checkMobileMoney, PENDING } = require('./payments');
 
 const CHANNELS = ['walkin', 'phone', 'whatsapp', 'other'];
 const PAYMENT_METHODS = ['cash', 'mobile_money', 'card', 'prepaid'];
@@ -135,6 +136,13 @@ Parse.Cloud.define('createOrder', async (request) => {
   if (isCash && amountToCollect < total && shortfallNote.length < 5)
     throw invalid('The customer is paying less than the total. Add a note explaining why');
 
+  // Mobile money: the customer pays the restaurant's merchant code before
+  // the order is sent; the cashier confirms it before the kitchen accepts.
+  const momo =
+    paymentMethod === 'mobile_money'
+      ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference)
+      : null;
+
   // B2: the rider's cash after this order must stay within the limit.
   const projected = float + (isCash ? amountToCollect : 0);
   if (config.maxRiderFloat > 0 && projected > config.maxRiderFloat)
@@ -165,6 +173,11 @@ Parse.Cloud.define('createOrder', async (request) => {
     commissionAmount: 0,
     commissionPaid: false,
     disputeFlag: false,
+    ...(momo && {
+      paymentProvider: momo.provider,
+      paymentReference: momo.reference,
+      paymentStatus: PENDING,
+    }),
   });
   order.setACL(readAcl(rider));
   await order.save(null, MASTER);
@@ -227,6 +240,8 @@ Parse.Cloud.define('transitionOrder', async (request) => {
   const { values: config } = await loadConfig();
   if (p.action === 'pickup' && !staff && config.requireCashierConfirmForPickup)
     throw forbidden('The cashier confirms pickup when handing over the bag');
+  if (p.action === 'accept' && [PENDING, 'REJECTED'].includes(order.get('paymentStatus')))
+    throw invalid('Confirm the mobile money payment before accepting this order');
   if (p.action === 'cancel' && !staff && order.get('status') !== 'PLACED')
     throw forbidden('The kitchen has accepted this order. Ask the cashier to cancel it');
 
@@ -253,6 +268,19 @@ Parse.Cloud.define('transitionOrder', async (request) => {
   if (p.action === 'deliver') {
     const method = p.paymentMethod || order.get('paymentMethod');
     if (!PAYMENT_METHODS.includes(method)) throw invalid('Invalid payment method');
+    const paidByMomo = order.get('paymentMethod') === 'mobile_money';
+    if (paidByMomo && method !== 'mobile_money')
+      throw invalid('This order was paid by mobile money');
+    // Paying by mobile money at the door instead of cash: record the
+    // transaction for the cashier to confirm.
+    if (!paidByMomo && method === 'mobile_money') {
+      const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
+      order.set({
+        paymentProvider: momo.provider,
+        paymentReference: momo.reference,
+        paymentStatus: PENDING,
+      });
+    }
     const isCash = method === 'cash';
     const total = order.get('total');
     const amount = isCash ? Number(p.amountCollected ?? order.get('amountToCollect') ?? total) : 0;

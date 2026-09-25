@@ -5,6 +5,7 @@
 //   profile.js   getAppInfo, getMyProfile
 //   orders.js    createOrder, transitionOrder (incl. cancel/reject), order issues
 //   customers.js customer records, searchCustomers
+//   payments.js  mobile money: verifyPayment, resubmitPayment, ledger
 //   menu.js      getOperationalMenu, getStock, setAvailability
 //   cash.js      cash handovers and disputes
 //   shifts.js    rider and cashier shifts
@@ -13,6 +14,7 @@
 
 require('./security');
 require('./customers');
+require('./payments');
 require('./orders');
 require('./menu');
 require('./cash');

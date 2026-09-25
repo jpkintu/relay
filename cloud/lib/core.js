@@ -17,6 +17,10 @@ const DEFAULT_CONFIG = {
   allowBatching: false,
   commissionRounding: 'none',
   requireCashierConfirmForPickup: false,
+  airtelMerchantCode: '',
+  airtelMerchantName: '',
+  mtnMerchantCode: '',
+  mtnMerchantName: '',
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);

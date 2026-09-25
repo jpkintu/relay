@@ -420,7 +420,14 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
 
   before(async () => {
     s.rider2 = await login('ron', '4321');
-    await settings({ allowBatching: true, maxRiderFloat: 1000000 });
+    await settings({
+      allowBatching: true,
+      maxRiderFloat: 1000000,
+      mtnMerchantCode: '123456',
+      mtnMerchantName: 'Relay Foods',
+      airtelMerchantCode: '654321',
+      airtelMerchantName: 'Relay Foods',
+    });
   });
 
   test('owner sets up accompaniments and a dish with "one rice, any sides"', async () => {
@@ -594,7 +601,11 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     await settings({ maxRiderFloat: 20000 });
     try {
       await rejects(order(), /Hand over cash first/);
-      const mm = await order({ paymentMethod: 'mobile_money' });
+      const mm = await order({
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'mtn',
+        paymentReference: 'B2TEST001',
+      });
       await run('transitionOrder', { orderId: mm.id, action: 'cancel', reason: 'test' }, s.rider2);
     } finally {
       await settings({ maxRiderFloat: 1000000 });
@@ -619,12 +630,20 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
   test('delivery can record that the customer paid by mobile money instead', async () => {
     await run(
       'transitionOrder',
-      { orderId: s.joanOrder, action: 'deliver', paymentMethod: 'mobile_money' },
+      {
+        orderId: s.joanOrder,
+        action: 'deliver',
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'airtel',
+        paymentReference: 'AT-DOOR-77',
+      },
       s.rider2,
     );
     const row = await get(s.joanOrder);
     assert.equal(row.get('status'), 'DELIVERED');
     assert.equal(row.get('paymentMethod'), 'mobile_money');
+    assert.equal(row.get('paymentStatus'), 'PENDING_VERIFICATION');
+    assert.equal(row.get('paymentReference'), 'AT-DOOR-77');
     assert.equal(row.get('cashStatus'), 'NOT_APPLICABLE');
     assert.equal(row.get('amountCollected'), 0);
   });
@@ -642,6 +661,79 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     );
     await run('resolveOrderIssue', { orderId: s.joanOrder, resolution: 'Refunded soup' }, s.owner);
     assert.equal((await get(s.joanOrder)).get('disputeFlag'), false);
+  });
+
+  test('riders get the configured merchant codes', async () => {
+    const profile = await run('getMyProfile', {}, s.rider2);
+    assert.deepEqual(profile.config.mobileMoney, [
+      { provider: 'airtel', label: 'Airtel Money', code: '654321', name: 'Relay Foods' },
+      { provider: 'mtn', label: 'MTN MoMo', code: '123456', name: 'Relay Foods' },
+    ]);
+  });
+
+  test('a mobile money order needs a provider and a transaction ID, used only once', async () => {
+    const momo = (extra) => order({ paymentMethod: 'mobile_money', ...extra });
+    await rejects(momo({ paymentProvider: 'mtn' }), /Enter the transaction ID/);
+    await rejects(
+      momo({ paymentProvider: 'visa', paymentReference: 'X1234' }),
+      /Choose Airtel Money or MTN MoMo/,
+    );
+    const placed = await momo({ paymentProvider: 'mtn', paymentReference: ' mp 2409 25 ' });
+    const row = await get(placed.id);
+    assert.equal(row.get('paymentStatus'), 'PENDING_VERIFICATION');
+    assert.equal(row.get('paymentReference'), 'MP240925');
+    assert.equal(row.get('cashStatus'), 'NOT_APPLICABLE');
+    await rejects(
+      momo({ paymentProvider: 'mtn', paymentReference: 'MP240925' }),
+      /already used on ORD-/,
+    );
+    s.momoOrder = placed.id;
+  });
+
+  test('the kitchen cannot accept until the cashier confirms the money arrived', async () => {
+    await rejects(
+      run('transitionOrder', { orderId: s.momoOrder, action: 'accept' }, s.cashier),
+      /Confirm the mobile money payment/,
+    );
+    await rejects(
+      run('verifyPayment', { orderId: s.momoOrder, received: true }, s.rider2),
+      /cashier or admin role required/,
+    );
+    await rejects(
+      run('verifyPayment', { orderId: s.momoOrder, received: false }, s.cashier),
+      /Say why/,
+    );
+    await run(
+      'verifyPayment',
+      { orderId: s.momoOrder, received: false, reason: 'Not on MTN statement' },
+      s.cashier,
+    );
+    let row = await get(s.momoOrder);
+    assert.equal(row.get('paymentStatus'), 'REJECTED');
+    assert.equal(row.get('paymentRejectReason'), 'Not on MTN statement');
+
+    // The rider corrects the transaction ID; it goes back to the cashier.
+    await run(
+      'resubmitPayment',
+      { orderId: s.momoOrder, provider: 'mtn', reference: 'MP240926' },
+      s.rider2,
+    );
+    await run('verifyPayment', { orderId: s.momoOrder, received: true }, s.cashier);
+    row = await get(s.momoOrder);
+    assert.equal(row.get('paymentStatus'), 'VERIFIED');
+    await run('transitionOrder', { orderId: s.momoOrder, action: 'accept' }, s.cashier);
+  });
+
+  test("the cashier ledger shows pending payments and today's totals per provider", async () => {
+    const ledger = await run('getMobileMoneyLedger', {}, s.cashier);
+    assert.ok(ledger.pending.some((row) => row.reference === 'AT-DOOR-77'));
+    const mtn = ledger.totals.find((t) => t.provider === 'mtn');
+    assert.equal(mtn.count, 1);
+    assert.equal(mtn.amount, 25000 + 3000);
+    assert.ok(
+      ledger.rejected.length === 0 || ledger.rejected.every((r) => r.paymentStatus === 'REJECTED'),
+    );
+    await rejects(run('getMobileMoneyLedger', {}, s.rider2), /cashier or admin role required/);
   });
 
   after(async () => {

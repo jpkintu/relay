@@ -49,7 +49,11 @@ var require_core = __commonJS({
       maxRiderFloat: 2e5,
       allowBatching: false,
       commissionRounding: "none",
-      requireCashierConfirmForPickup: false
+      requireCashierConfirmForPickup: false,
+      airtelMerchantCode: "",
+      airtelMerchantName: "",
+      mtnMerchantCode: "",
+      mtnMerchantName: ""
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -293,7 +297,13 @@ var require_security = __commonJS({
         disputeNote: S,
         disputedBy: user,
         disputedAt: D,
-        disputeResolution: S
+        disputeResolution: S,
+        paymentProvider: S,
+        paymentReference: S,
+        paymentStatus: S,
+        paymentCheckedBy: user,
+        paymentCheckedAt: D,
+        paymentRejectReason: S
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -347,7 +357,11 @@ var require_security = __commonJS({
         maxRiderFloat: N,
         allowBatching: B,
         commissionRounding: S,
-        requireCashierConfirmForPickup: B
+        requireCashierConfirmForPickup: B,
+        airtelMerchantCode: S,
+        airtelMerchantName: S,
+        mtnMerchantCode: S,
+        mtnMerchantName: S
       },
       MenuItem: {
         title: S,
@@ -564,6 +578,203 @@ var require_customers = __commonJS({
   }
 });
 
+// cloud/lib/mobileMoney.js
+var require_mobileMoney = __commonJS({
+  "cloud/lib/mobileMoney.js"(exports2, module2) {
+    "use strict";
+    var PROVIDERS = [
+      {
+        provider: "airtel",
+        label: "Airtel Money",
+        codeField: "airtelMerchantCode",
+        nameField: "airtelMerchantName"
+      },
+      {
+        provider: "mtn",
+        label: "MTN MoMo",
+        codeField: "mtnMerchantCode",
+        nameField: "mtnMerchantName"
+      }
+    ];
+    function merchantAccounts(config) {
+      return PROVIDERS.filter((p) => String(config[p.codeField] || "").trim()).map((p) => ({
+        provider: p.provider,
+        label: p.label,
+        code: String(config[p.codeField]).trim(),
+        name: String(config[p.nameField] || "").trim()
+      }));
+    }
+    function cleanReference(value) {
+      return String(value ?? "").replace(/\s+/g, "").toUpperCase().slice(0, 40);
+    }
+    function referenceProblem(reference) {
+      if (!reference) return "Enter the transaction ID from the customer\u2019s payment message";
+      if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
+        return "A transaction ID has 4 to 40 letters or digits";
+      return "";
+    }
+    module2.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
+  }
+});
+
+// cloud/payments.js
+var require_payments = __commonJS({
+  "cloud/payments.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireRole,
+      getRoleName,
+      requireUser,
+      audit,
+      loadConfig
+    } = require_core();
+    var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
+    var { dateKey } = require_dates();
+    var PENDING = "PENDING_VERIFICATION";
+    async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId) {
+      const accounts = merchantAccounts(config);
+      if (!accounts.length)
+        throw invalid("Mobile money is not set up. Ask the owner to add merchant codes in Settings");
+      const provider = String(providerParam || "");
+      if (!accounts.some((account) => account.provider === provider))
+        throw invalid(`Choose ${accounts.map((a) => a.label).join(" or ")}`);
+      const reference = cleanReference(referenceParam);
+      const problem = referenceProblem(reference);
+      if (problem) throw invalid(problem);
+      const query = new Parse.Query("Order");
+      query.equalTo("paymentProvider", provider);
+      query.equalTo("paymentReference", reference);
+      query.notEqualTo("paymentStatus", "REJECTED");
+      if (excludeOrderId) query.notEqualTo("objectId", excludeOrderId);
+      const duplicate = await query.first(MASTER);
+      if (duplicate)
+        throw invalid(`This transaction ID was already used on ${duplicate.get("orderCode")}`);
+      return { provider, reference };
+    }
+    Parse.Cloud.define("verifyPayment", async (request) => {
+      const { user: actor } = await requireRole(request, ["cashier", "admin"]);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      if (order.get("paymentStatus") !== PENDING)
+        throw invalid("This payment is not waiting for a check");
+      const received = request.params.received === true;
+      const reason = String(request.params.reason || "").trim().slice(0, 200);
+      if (!received && reason.length < 3) throw invalid("Say why the payment was not accepted");
+      order.set({
+        paymentStatus: received ? "VERIFIED" : "REJECTED",
+        paymentCheckedBy: actor,
+        paymentCheckedAt: /* @__PURE__ */ new Date(),
+        paymentRejectReason: received ? "" : reason
+      });
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        received ? "payment.verified" : "payment.rejected",
+        order,
+        { paymentStatus: PENDING },
+        {
+          paymentStatus: order.get("paymentStatus"),
+          provider: order.get("paymentProvider"),
+          reference: order.get("paymentReference"),
+          amount: order.get("total"),
+          reason
+        }
+      );
+      return { paymentStatus: order.get("paymentStatus") };
+    });
+    Parse.Cloud.define("resubmitPayment", async (request) => {
+      const actor = requireUser(request);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      const role = await getRoleName(actor);
+      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
+        throw forbidden("Not allowed");
+      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
+      if (![PENDING, "REJECTED"].includes(order.get("paymentStatus")))
+        throw invalid("This payment cannot be changed");
+      const { values: config } = await loadConfig();
+      const { provider, reference } = await checkMobileMoney(
+        config,
+        request.params.provider,
+        request.params.reference,
+        order.id
+      );
+      const before = {
+        provider: order.get("paymentProvider"),
+        reference: order.get("paymentReference"),
+        paymentStatus: order.get("paymentStatus")
+      };
+      order.set({
+        paymentProvider: provider,
+        paymentReference: reference,
+        paymentStatus: PENDING,
+        paymentRejectReason: ""
+      });
+      await order.save(null, MASTER);
+      await audit(actor, "payment.resubmitted", order, before, { provider, reference });
+      return { paymentStatus: PENDING };
+    });
+    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name")].filter(Boolean).join(" \xB7 ") : "";
+    function paymentRow(order) {
+      return {
+        id: order.id,
+        code: order.get("orderCode"),
+        customer: order.get("customerName"),
+        rider: nameOf(order.get("createdBy")),
+        provider: order.get("paymentProvider"),
+        reference: order.get("paymentReference"),
+        amount: order.get("total"),
+        paymentStatus: order.get("paymentStatus"),
+        orderStatus: order.get("status"),
+        createdAt: order.createdAt,
+        checkedAt: order.get("paymentCheckedAt") || null,
+        checkedBy: nameOf(order.get("paymentCheckedBy")),
+        rejectReason: order.get("paymentRejectReason") || ""
+      };
+    }
+    Parse.Cloud.define("getMobileMoneyLedger", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const { values: config } = await loadConfig();
+      const pendingQuery = new Parse.Query("Order");
+      pendingQuery.equalTo("paymentStatus", PENDING);
+      pendingQuery.include(["createdBy"]);
+      pendingQuery.ascending("createdAt");
+      pendingQuery.limit(500);
+      const checkedQuery = new Parse.Query("Order");
+      checkedQuery.containedIn("paymentStatus", ["VERIFIED", "REJECTED"]);
+      checkedQuery.greaterThanOrEqualTo("paymentCheckedAt", new Date(Date.now() - 48 * 3600 * 1e3));
+      checkedQuery.include(["createdBy", "paymentCheckedBy"]);
+      checkedQuery.descending("paymentCheckedAt");
+      checkedQuery.limit(1e3);
+      const [pending, checked] = await Promise.all([
+        pendingQuery.find(MASTER),
+        checkedQuery.find(MASTER)
+      ]);
+      const today = dateKey(/* @__PURE__ */ new Date(), config.timezone);
+      const checkedToday = checked.filter(
+        (order) => dateKey(order.get("paymentCheckedAt"), config.timezone) === today
+      );
+      const verified = checkedToday.filter((order) => order.get("paymentStatus") === "VERIFIED");
+      const totals = merchantAccounts(config).map((account) => {
+        const rows = verified.filter((order) => order.get("paymentProvider") === account.provider);
+        return {
+          ...account,
+          count: rows.length,
+          amount: rows.reduce((sum, order) => sum + Number(order.get("total") || 0), 0)
+        };
+      });
+      return {
+        pending: pending.map(paymentRow),
+        verified: verified.map(paymentRow),
+        rejected: checkedToday.filter((order) => order.get("paymentStatus") === "REJECTED").map(paymentRow),
+        totals
+      };
+    });
+    module2.exports = { checkMobileMoney, PENDING };
+  }
+});
+
 // cloud/lib/money.js
 var require_money = __commonJS({
   "cloud/lib/money.js"(exports2, module2) {
@@ -668,6 +879,7 @@ var require_orders = __commonJS({
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
     var { recordCustomerOrder } = require_customers();
+    var { checkMobileMoney, PENDING } = require_payments();
     var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
     var PAYMENT_METHODS = ["cash", "mobile_money", "card", "prepaid"];
     var MAX_LINES = 30;
@@ -771,6 +983,7 @@ var require_orders = __commonJS({
       const shortfallNote = clean(p.shortfallNote, 200);
       if (isCash && amountToCollect < total && shortfallNote.length < 5)
         throw invalid("The customer is paying less than the total. Add a note explaining why");
+      const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
       const projected = float + (isCash ? amountToCollect : 0);
       if (config.maxRiderFloat > 0 && projected > config.maxRiderFloat)
         throw invalid(
@@ -798,7 +1011,12 @@ var require_orders = __commonJS({
         cashStatus: isCash ? "NOT_COLLECTED" : "NOT_APPLICABLE",
         commissionAmount: 0,
         commissionPaid: false,
-        disputeFlag: false
+        disputeFlag: false,
+        ...momo && {
+          paymentProvider: momo.provider,
+          paymentReference: momo.reference,
+          paymentStatus: PENDING
+        }
       });
       order.setACL(readAcl(rider));
       await order.save(null, MASTER);
@@ -855,6 +1073,8 @@ var require_orders = __commonJS({
       const { values: config } = await loadConfig();
       if (p.action === "pickup" && !staff && config.requireCashierConfirmForPickup)
         throw forbidden("The cashier confirms pickup when handing over the bag");
+      if (p.action === "accept" && [PENDING, "REJECTED"].includes(order.get("paymentStatus")))
+        throw invalid("Confirm the mobile money payment before accepting this order");
       if (p.action === "cancel" && !staff && order.get("status") !== "PLACED")
         throw forbidden("The kitchen has accepted this order. Ask the cashier to cancel it");
       const before = {
@@ -880,6 +1100,17 @@ var require_orders = __commonJS({
       if (p.action === "deliver") {
         const method = p.paymentMethod || order.get("paymentMethod");
         if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
+        const paidByMomo = order.get("paymentMethod") === "mobile_money";
+        if (paidByMomo && method !== "mobile_money")
+          throw invalid("This order was paid by mobile money");
+        if (!paidByMomo && method === "mobile_money") {
+          const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
+          order.set({
+            paymentProvider: momo.provider,
+            paymentReference: momo.reference,
+            paymentStatus: PENDING
+          });
+        }
         const isCash = method === "cash";
         const total = order.get("total");
         const amount = isCash ? Number(p.amountCollected ?? order.get("amountToCollect") ?? total) : 0;
@@ -1291,6 +1522,7 @@ var require_admin = __commonJS({
     var { applySecurity } = require_security();
     var ROLE_NAMES = ["admin", "cashier", "rider"];
     var STAFF_ROLES = ["rider", "cashier"];
+    var merchantField = (value, max) => String(value ?? "").trim().slice(0, max);
     var codeField = (role) => role === "rider" ? "riderCode" : "cashierCode";
     async function adminRoleExists() {
       const query = new Parse.Query(Parse.Role);
@@ -1614,7 +1846,11 @@ var require_admin = __commonJS({
         defaultDeliveryFee: fee,
         maxRiderFloat: max,
         allowBatching: !!p.allowBatching,
-        requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup
+        requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup,
+        airtelMerchantCode: merchantField(p.airtelMerchantCode, 30),
+        airtelMerchantName: merchantField(p.airtelMerchantName, 60),
+        mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
+        mtnMerchantName: merchantField(p.mtnMerchantName, 60)
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -1735,6 +1971,7 @@ var require_profile = __commonJS({
     var { MASTER, requireUser, getRoleName, loadConfig, countUsers } = require_core();
     var { canBootstrapOwner } = require_admin();
     var { previewEnabled } = require_preview();
+    var { merchantAccounts } = require_mobileMoney();
     function publicConfig(values) {
       return {
         restaurantName: values.restaurantName,
@@ -1745,7 +1982,8 @@ var require_profile = __commonJS({
         maxRiderFloat: values.maxRiderFloat,
         allowBatching: values.allowBatching,
         commissionRounding: values.commissionRounding,
-        requireCashierConfirmForPickup: values.requireCashierConfirmForPickup
+        requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
+        mobileMoney: merchantAccounts(values)
       };
     }
     Parse.Cloud.define("getAppInfo", async () => {
@@ -1785,6 +2023,7 @@ var require_profile = __commonJS({
 // cloud/main.js
 require_security();
 require_customers();
+require_payments();
 require_orders();
 require_menu();
 require_cash();
