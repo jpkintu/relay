@@ -4,8 +4,30 @@ import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
 import { useSession } from '../lib/session';
 
+// Staff usernames are stored in lowercase, but phone keyboards capitalize the
+// first letter. Try the name as typed first (older accounts may use capitals),
+// then the lowercase form.
+async function logIn(typed: string, password: string): Promise<Parse.User> {
+  const username = typed.trim();
+  try {
+    return await Parse.User.logIn(username, password);
+  } catch (e) {
+    const lower = username.toLowerCase();
+    if (lower !== username && e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND)
+      return Parse.User.logIn(lower, password);
+    throw e;
+  }
+}
+
 export function AuthScreen() {
-  const { setUser, startPreview, appInfo, previewAvailable, error: sessionError } = useSession();
+  const {
+    setUser,
+    startPreview,
+    appInfo,
+    serverError,
+    previewAvailable,
+    error: sessionError,
+  } = useSession();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(sessionError);
@@ -20,12 +42,18 @@ export function AuthScreen() {
     try {
       if (creating) {
         const owner = new Parse.User();
-        owner.set({ username: username.trim(), password, email: email.trim() });
+        owner.set({ username: username.trim().toLowerCase(), password, email: email.trim() });
         await owner.signUp();
         setUser(owner);
-      } else setUser(await Parse.User.logIn(username.trim(), password));
+      } else setUser(await logIn(username, password));
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Check your credentials, then try again.');
+      setError(
+        e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND
+          ? 'Wrong username or PIN.'
+          : e instanceof Error
+            ? e.message
+            : 'Check your credentials, then try again.',
+      );
     } finally {
       setBusy(false);
     }
@@ -79,6 +107,9 @@ export function AuthScreen() {
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="e.g. rider014"
                 autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </label>
             <label>
@@ -109,6 +140,12 @@ export function AuthScreen() {
               </label>
             )}
             {error && <p className="form-error">{error}</p>}
+            {serverError && (
+              <p className="form-error">
+                Can't reach the Relay server functions ({serverError}). Sign-in may still work, but
+                ask your administrator to check the Cloud Code deployment.
+              </p>
+            )}
             <button className="primary-button" disabled={busy}>
               {busy ? 'Please wait…' : creating ? 'Create account' : 'Start shift'}
               <ArrowRight size={19} />

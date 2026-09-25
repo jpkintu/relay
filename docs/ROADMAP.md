@@ -107,6 +107,35 @@ Code:
 | OneSignal               | Web Push (VAPID) or OneSignal via Cloud Code HTTP                                     |
 | PDF Conjurer / CSV      | Server-side HTML email or PDF from a Cloud Job; client CSV export (exists for orders) |
 
+### Can't sign in as owner? (recovery)
+
+The in-app "First owner? Create account" link only appears while the database
+has **no** accounts. If accounts already exist (for example from earlier
+testing), or the owner password is lost, create or reset an owner with the
+**master key**. This works even when accounts exist and never touches other
+users. Use one of these:
+
+- **Dashboard job:** Back4App dashboard → Cloud Code → Jobs → schedule/run
+  `createOwner` with parameters
+  `{"username": "owner", "password": "a-long-password", "email": "you@example.com", "name": "Your Name"}`.
+- **REST (API console or curl)** with the app id and master key from App
+  Settings → Security & Keys:
+
+  ```
+  curl -X POST https://<your-app-domain>/parse/functions/recoverOwner \
+    -H "X-Parse-Application-Id: <APP_ID>" \
+    -H "X-Parse-Master-Key: <MASTER_KEY>" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"owner","password":"a-long-password","email":"you@example.com"}'
+  ```
+
+If the username exists, its password is reset and it is made an owner.
+Otherwise a new owner account is created. Then sign in, open **Team**, and
+create riders and cashiers (username + PIN) to test their flows.
+
+If the sign-in screen shows "Can't reach the Relay server functions", the Cloud
+Code is not running: check that the whole `cloud/` folder (including `lib/` and
+`package.json`) was deployed and look at the Parse server logs for load errors.
 ---
 
 ## 3. Current state inventory (what exists)
@@ -162,6 +191,7 @@ Riders can only open `/rider/*`; cashiers `/cashier/*`; admins `/admin/*` and
 | `disputeHandover`                                                    | cashier / admin      | Reason (≥ 5 chars) + counted amount → handover `disputed`. Orders stay HANDOVER_PENDING                                                                                                                                                                                                                                 |
 | `reopenHandover`                                                     | admin                | disputed → pending with a resolution note (the only resolution path today)                                                                                                                                                                                                                                              |
 | `bootstrapOwner`                                                     | first user           | If there is no admin role and exactly one user exists → make them admin, create roles, seed 6 menu items, run `applySecurity`                                                                                                                                                                                           |
+| `recoverOwner` / job `createOwner`                                   | master key only      | Create an owner, or reset an existing account's password and make it owner (recovery; see §2)                                                                                                                                                                                                                           |
 | `getAppInfo`                                                         | anyone               | Restaurant name, currency, timezone, whether owner sign-up is open, whether preview is enabled                                                                                                                                                                                                                          |
 | `getMyProfile`                                                       | signed in            | Role (roles are not client-readable), name, code, commission rule, `canInitialize`, public config                                                                                                                                                                                                                       |
 | `adminApplySecurity` / job `applySecurity`                           | admin / dashboard    | Create class schemas + CLPs, rewrite ACLs, assign staff codes                                                                                                                                                                                                                                                           |
@@ -569,3 +599,4 @@ agent's "remaining" list.
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 2026-09-25 | Initial review of the Back4App export; this roadmap created; `.gitignore` added. Typecheck + build pass.                                                                                                                                                           |
 | 2026-09-25 | Phase 0: Cloud Code split + write protection (S1–S4, S8), `getMyProfile` + role routes (B1), sequential codes (B3), preview flags, config-driven money/timezone (U1–U5), ESLint/Prettier/Vitest, e2e suite (23 tests) and CI. S5/S7 need Back4App server settings. |
+| 2026-09-25 | Deploy follow-up: master-key owner recovery (`recoverOwner` / job `createOwner`), sign-in shows when Cloud Code is unreachable, usernames no longer fail on phone auto-capitalisation.                                                                             |
