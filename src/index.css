@@ -2604,3 +2604,190 @@ button {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* ---------- Mobile money ---------- */
+.momo-panel {
+  display: grid;
+  gap: 12px;
+}
+.momo-panel .channel-row {
+  flex-wrap: wrap;
+}
+.momo-panel label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.momo-panel label span {
+  color: var(--muted);
+}
+.momo-panel input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 48px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.channel-row button.active.momo-mtn {
+  background: #ffcb05;
+  border-color: #ffcb05;
+  color: #111;
+}
+.channel-row button.active.momo-airtel {
+  background: #e40000;
+  border-color: #e40000;
+  color: white;
+}
+.merchant-card {
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: grid;
+  gap: 2px;
+  background: #fff8d6;
+  border: 1px solid #f3dc6b;
+}
+.merchant-card.momo-airtel {
+  background: #ffecec;
+  border-color: #f5b3b3;
+}
+.merchant-card small {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.merchant-card strong {
+  font: 600 34px 'Fraunces';
+  letter-spacing: 0.08em;
+}
+.merchant-card span {
+  font-size: 13px;
+}
+.merchant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.merchant-actions .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.payment-card.payment-pending_verification {
+  border-color: #f0d58a;
+  background: #fffaf0;
+}
+.payment-card.payment-verified {
+  border-color: #b9dca0;
+  background: #f5fbef;
+}
+.payment-card.payment-rejected {
+  border-color: #f5b3b3;
+  background: #fff5f3;
+}
+.ticket-payment {
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 6px 9px;
+  margin: 6px 0;
+  background: #fff4d6;
+  color: #7a5a00;
+}
+.ticket-payment.payment-verified {
+  background: #ecf7e2;
+  color: #2f6a14;
+}
+.ticket-payment.payment-rejected {
+  background: #fde3dc;
+  color: #a33a1c;
+}
+.payment-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.payment-row > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+.payment-row small {
+  color: var(--muted);
+}
+.payment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.payment-actions button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 14px;
+  font-weight: 700;
+  background: var(--lime);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.payment-actions button.reject {
+  background: #fde3dc;
+  color: #a33a1c;
+}
+.payment-actions button:disabled {
+  opacity: 0.5;
+}
+.payment-actions input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 12px;
+  min-width: 220px;
+}
+.paid-badge {
+  background: #ecf7e2;
+  color: #2f6a14;
+  border-radius: 20px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.merchant-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+.merchant-settings > p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .payment-row {
+    grid-template-columns: 1fr auto;
+  }
+  .payment-row > .payment-actions,
+  .payment-row > .paid-badge {
+    grid-column: 1 / -1;
+  }
+  .merchant-settings {
+    grid-template-columns: 1fr;
+  }
+}
+.bill > .momo-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.merchant-card,
+.momo-panel label {
+  min-width: 0;
+}
