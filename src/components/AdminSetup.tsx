@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
-import Parse from "../parse";
+import { useCallback, useEffect, useState } from 'react';
+import Parse from '../parse';
+import { useMoney, useSession } from '../lib/session';
 
 type Member = {
   id: string;
@@ -7,6 +8,7 @@ type Member = {
   username: string;
   phone: string;
   role: string;
+  code: string;
   active: boolean;
   commissionType: string;
   commissionPerOrder: number;
@@ -20,26 +22,21 @@ type Item = {
   active: boolean;
   availableToday: boolean;
 };
-type Category = {id:string;title:string;active:boolean};
+type Category = { id: string; title: string; active: boolean };
 type Settings = {
   restaurantName: string;
   currencySymbol: string;
+  currencyCode: string;
+  timezone: string;
   defaultDeliveryFee: number;
   maxRiderFloat: number;
   allowBatching: boolean;
-};
-const defaults: Settings = {
-  restaurantName: "Restaurant",
-  currencySymbol: "UGX",
-  defaultDeliveryFee: 3000,
-  maxRiderFloat: 200000,
-  allowBatching: false,
 };
 const input = (
   label: string,
   value: string | number,
   onChange: (value: string) => void,
-  type = "text",
+  type = 'text',
 ) => (
   <label className="setup-field">
     {label}
@@ -47,7 +44,7 @@ const input = (
       required
       value={value}
       type={type}
-      min={type === "number" ? 0 : undefined}
+      min={type === 'number' ? 0 : undefined}
       onChange={(e) => onChange(e.target.value)}
     />
   </label>
@@ -57,61 +54,59 @@ export function AdminSetup({
   section,
   preview,
 }: {
-  section: "Team" | "Menu" | "Settings";
+  section: 'Team' | 'Menu' | 'Settings';
   preview: boolean;
 }) {
+  const { config, refresh } = useSession();
+  const money = useMoney();
   const [team, setTeam] = useState<Member[]>([]),
     [menu, setMenu] = useState<Item[]>([]),
-    [categories,setCategories]=useState<Category[]>([]),
-    [settings, setSettings] = useState<Settings>(defaults);
-  const [name, setName] = useState(""),
-    [username, setUsername] = useState(""),
-    [phone, setPhone] = useState(""),
-    [pin, setPin] = useState(""),
-    [role, setRole] = useState("rider");
-  const [itemTitle, setItemTitle] = useState(""),
-    [itemPrice, setItemPrice] = useState(""),
-    [itemCategory, setItemCategory] = useState("Mains"),
-    [editingItem,setEditingItem]=useState<string|null>(null),
-    [categoryTitle,setCategoryTitle]=useState("");
+    [categories, setCategories] = useState<Category[]>([]),
+    [settings, setSettings] = useState<Settings>(config);
+  const [name, setName] = useState(''),
+    [username, setUsername] = useState(''),
+    [phone, setPhone] = useState(''),
+    [pin, setPin] = useState(''),
+    [role, setRole] = useState('rider');
+  const [itemTitle, setItemTitle] = useState(''),
+    [itemPrice, setItemPrice] = useState(''),
+    [itemCategory, setItemCategory] = useState('Mains'),
+    [editingItem, setEditingItem] = useState<string | null>(null),
+    [categoryTitle, setCategoryTitle] = useState('');
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
+    [error, setError] = useState(''),
+    [notice, setNotice] = useState('');
   const load = useCallback(async () => {
     if (preview) return;
     try {
-      const data = await Parse.Cloud.run("adminListSetup");
+      const data = await Parse.Cloud.run('adminListSetup');
       setTeam(data.team);
       setMenu(data.menu);
-      setCategories(data.categories||[]);
-      if (data.settings) setSettings({ ...defaults, ...data.settings });
-      setError("");
+      setCategories(data.categories || []);
+      if (data.settings) setSettings((current) => ({ ...current, ...data.settings }));
+      setError('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load setup");
+      setError(e instanceof Error ? e.message : 'Could not load setup');
     }
   }, [preview]);
   useEffect(() => {
     void load();
   }, [load]);
-  const save = async (
-    fn: string,
-    payload: Record<string, unknown>,
-    after: () => void,
-  ) => {
+  const save = async (fn: string, payload: Record<string, unknown>, after: () => void) => {
     if (preview) {
-      setError("Sign in as an owner to change operational data.");
+      setError('Sign in as an owner to change operational data.');
       return;
     }
     setBusy(true);
-    setError("");
-    setNotice("");
+    setError('');
+    setNotice('');
     try {
       await Parse.Cloud.run(fn, payload);
       after();
       await load();
-      setNotice("Saved to the restaurant database.");
+      setNotice('Saved to the restaurant database.');
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save");
+      setError(e instanceof Error ? e.message : 'Could not save');
     } finally {
       setBusy(false);
     }
@@ -125,7 +120,7 @@ export function AdminSetup({
           Live setup is available to signed-in owners. Preview is read-only.
         </p>
       )}
-      {section === "Team" && (
+      {section === 'Team' && (
         <>
           <div className="admin-panel">
             <div className="panel-title">
@@ -138,22 +133,18 @@ export function AdminSetup({
               className="setup-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                void save(
-                  "adminCreateTeamMember",
-                  { name, username, phone, pin, role },
-                  () => {
-                    setName("");
-                    setUsername("");
-                    setPhone("");
-                    setPin("");
-                  },
-                );
+                void save('adminCreateTeamMember', { name, username, phone, pin, role }, () => {
+                  setName('');
+                  setUsername('');
+                  setPhone('');
+                  setPin('');
+                });
               }}
             >
-              {input("Full name", name, setName)}
-              {input("Username", username, setUsername)}
-              {input("Phone", phone, setPhone)}
-              {input("PIN (4+ digits)", pin, setPin, "password")}
+              {input('Full name', name, setName)}
+              {input('Username', username, setUsername)}
+              {input('Phone', phone, setPhone)}
+              {input('PIN (4+ digits)', pin, setPin, 'password')}
               <label className="setup-field">
                 Role
                 <select value={role} onChange={(e) => setRole(e.target.value)}>
@@ -174,91 +165,137 @@ export function AdminSetup({
                   <div>
                     <b>{u.name}</b>
                     <small>
-                      @{u.username} · {u.role}
+                      {u.code && `${u.code} · `}@{u.username} · {u.role}
                     </small>
                   </div>
-                  <span>{u.active ? "Active" : "Inactive"}</span>
-                  {['rider','cashier'].includes(u.role)&&<select aria-label={`Role for ${u.name}`} value={u.role} disabled={busy||preview} onChange={e=>void save('adminChangeRole',{userId:u.id,role:e.target.value},()=>{})}><option value="rider">Rider</option><option value="cashier">Cashier</option></select>}
+                  <span>{u.active ? 'Active' : 'Inactive'}</span>
+                  {['rider', 'cashier'].includes(u.role) && (
+                    <select
+                      aria-label={`Role for ${u.name}`}
+                      value={u.role}
+                      disabled={busy || preview}
+                      onChange={(e) =>
+                        void save(
+                          'adminChangeRole',
+                          { userId: u.id, role: e.target.value },
+                          () => {},
+                        )
+                      }
+                    >
+                      <option value="rider">Rider</option>
+                      <option value="cashier">Cashier</option>
+                    </select>
+                  )}
                   <button
-                    disabled={busy || preview || u.role === "admin"}
+                    disabled={busy || preview || u.role === 'admin'}
                     onClick={() =>
-                      void save(
-                        "adminUpdateMember",
-                        { id: u.id, active: !u.active },
-                        () => {},
-                      )
+                      void save('adminUpdateMember', { id: u.id, active: !u.active }, () => {})
                     }
                   >
-                    {u.active ? "Deactivate" : "Activate"}
+                    {u.active ? 'Deactivate' : 'Activate'}
                   </button>
                 </div>
-                {u.role === "rider" && (
+                {u.role === 'rider' && (
                   <CommissionEditor
                     key={`${u.id}-${u.commissionType}-${u.commissionPerOrder}-${u.commissionPercent}`}
                     member={u}
                     disabled={busy || preview}
                     save={(payload) =>
-                      save(
-                        "adminUpdateMember",
-                        { id: u.id, ...payload },
-                        () => {},
-                      )
+                      save('adminUpdateMember', { id: u.id, ...payload }, () => {})
                     }
                   />
                 )}
               </div>
             ))}
-            {!team.length && (
-              <p className="empty-orders">No team members loaded yet.</p>
-            )}
+            {!team.length && <p className="empty-orders">No team members loaded yet.</p>}
           </div>
         </>
       )}
-      {section === "Menu" && (
+      {section === 'Menu' && (
         <>
-          <div className="admin-panel"><p className="eyebrow">Organize the catalog</p><h2>Categories</h2><form className="category-create" onSubmit={e=>{e.preventDefault();void save('adminSaveCategory',{title:categoryTitle},()=>setCategoryTitle(''))}}><input required placeholder="New category name" value={categoryTitle} onChange={e=>setCategoryTitle(e.target.value)}/><button disabled={busy||preview}>Add category</button></form>{categories.map(category=><CategoryEditor key={`${category.id}-${category.title}-${category.active}`} category={category} disabled={busy||preview} save={payload=>save('adminSaveCategory',{id:category.id,...payload},()=>{})}/>)}</div>
+          <div className="admin-panel">
+            <p className="eyebrow">Organize the catalog</p>
+            <h2>Categories</h2>
+            <form
+              className="category-create"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void save('adminSaveCategory', { title: categoryTitle }, () =>
+                  setCategoryTitle(''),
+                );
+              }}
+            >
+              <input
+                required
+                placeholder="New category name"
+                value={categoryTitle}
+                onChange={(e) => setCategoryTitle(e.target.value)}
+              />
+              <button disabled={busy || preview}>Add category</button>
+            </form>
+            {categories.map((category) => (
+              <CategoryEditor
+                key={`${category.id}-${category.title}-${category.active}`}
+                category={category}
+                disabled={busy || preview}
+                save={(payload) =>
+                  save('adminSaveCategory', { id: category.id, ...payload }, () => {})
+                }
+              />
+            ))}
+          </div>
           <div className="admin-panel">
             <p className="eyebrow">Restaurant catalog</p>
-            <h2>{editingItem?'Edit menu item':'Add menu item'}</h2>
+            <h2>{editingItem ? 'Edit menu item' : 'Add menu item'}</h2>
             <form
               className="setup-form"
               onSubmit={(e) => {
                 e.preventDefault();
                 void save(
-                  "adminSaveMenuItem",
+                  'adminSaveMenuItem',
                   {
-                    id:editingItem||undefined,
+                    id: editingItem || undefined,
                     title: itemTitle,
                     price: Number(itemPrice),
                     category: itemCategory,
                   },
                   () => {
-                    setItemTitle("");
-                    setItemPrice("");
+                    setItemTitle('');
+                    setItemPrice('');
                     setEditingItem(null);
                   },
                 );
               }}
             >
-              {input("Item name", itemTitle, setItemTitle)}
-              {input("Price", itemPrice, setItemPrice, "number")}
+              {input('Item name', itemTitle, setItemTitle)}
+              {input('Price', itemPrice, setItemPrice, 'number')}
               <label className="setup-field">
                 Category
-                <select
-                  value={itemCategory}
-                  onChange={(e) => setItemCategory(e.target.value)}
-                >
-                  {(categories.length?categories.filter(c=>c.active).map(c=>c.title):["Breakfast", "Mains", "Drinks", "Sides", "Desserts"]).map(
-                    (c) => (
-                      <option key={c}>{c}</option>
-                    ),
-                  )}
+                <select value={itemCategory} onChange={(e) => setItemCategory(e.target.value)}>
+                  {(categories.length
+                    ? categories.filter((c) => c.active).map((c) => c.title)
+                    : ['Breakfast', 'Mains', 'Drinks', 'Sides', 'Desserts']
+                  ).map((c) => (
+                    <option key={c}>{c}</option>
+                  ))}
                 </select>
               </label>
               <button className="setup-submit" disabled={busy || preview}>
-                {editingItem?'Save item changes':'Add menu item'}
+                {editingItem ? 'Save item changes' : 'Add menu item'}
               </button>
-              {editingItem&&<button type="button" className="setup-secondary" onClick={()=>{setEditingItem(null);setItemTitle('');setItemPrice('')}}>Cancel editing</button>}
+              {editingItem && (
+                <button
+                  type="button"
+                  className="setup-secondary"
+                  onClick={() => {
+                    setEditingItem(null);
+                    setItemTitle('');
+                    setItemPrice('');
+                  }}
+                >
+                  Cancel editing
+                </button>
+              )}
             </form>
           </div>
           <div className="admin-panel">
@@ -268,32 +305,41 @@ export function AdminSetup({
                 <div>
                   <b>{item.title}</b>
                   <small>
-                    {item.category} · UGX {item.price.toLocaleString()}
+                    {item.category} · {money(item.price)}
                   </small>
                 </div>
-                <span>{item.availableToday ? "Available" : "Unavailable"}</span>
-                <button disabled={busy||preview} onClick={()=>{setEditingItem(item.id);setItemTitle(item.title);setItemPrice(String(item.price));setItemCategory(item.category);window.scrollTo({top:0,behavior:'smooth'})}}>Edit</button>
+                <span>{item.availableToday ? 'Available' : 'Unavailable'}</span>
+                <button
+                  disabled={busy || preview}
+                  onClick={() => {
+                    setEditingItem(item.id);
+                    setItemTitle(item.title);
+                    setItemPrice(String(item.price));
+                    setItemCategory(item.category);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                >
+                  Edit
+                </button>
                 <button
                   disabled={busy || preview}
                   onClick={() =>
                     void save(
-                      "adminSaveMenuItem",
+                      'adminSaveMenuItem',
                       { ...item, availableToday: !item.availableToday },
                       () => {},
                     )
                   }
                 >
-                  {item.availableToday ? "Hide today" : "Make available"}
+                  {item.availableToday ? 'Hide today' : 'Make available'}
                 </button>
               </div>
             ))}
-            {!menu.length && (
-              <p className="empty-orders">No menu items saved yet.</p>
-            )}
+            {!menu.length && <p className="empty-orders">No menu items saved yet.</p>}
           </div>
         </>
       )}
-      {section === "Settings" && (
+      {section === 'Settings' && (
         <div className="admin-panel">
           <p className="eyebrow">Restaurant configuration</p>
           <h2>Operating settings</h2>
@@ -301,27 +347,32 @@ export function AdminSetup({
             className="setup-form"
             onSubmit={(e) => {
               e.preventDefault();
-              void save("adminSaveSettings", settings, () => {});
+              void save('adminSaveSettings', settings, () => void refresh());
             }}
           >
-            {input("Restaurant name", settings.restaurantName, (v) =>
+            {input('Restaurant name', settings.restaurantName, (v) =>
               setSettings((p) => ({ ...p, restaurantName: v })),
             )}
-            {input("Currency symbol", settings.currencySymbol, (v) =>
+            {input('Currency symbol', settings.currencySymbol, (v) =>
               setSettings((p) => ({ ...p, currencySymbol: v })),
             )}
-            {input(
-              "Default delivery fee",
-              settings.defaultDeliveryFee,
-              (v) =>
-                setSettings((p) => ({ ...p, defaultDeliveryFee: Number(v) })),
-              "number",
+            {input('Currency code (ISO, e.g. UGX)', settings.currencyCode, (v) =>
+              setSettings((p) => ({ ...p, currencyCode: v })),
+            )}
+            {input('Timezone (e.g. Africa/Kampala)', settings.timezone, (v) =>
+              setSettings((p) => ({ ...p, timezone: v })),
             )}
             {input(
-              "Maximum rider float",
+              'Default delivery fee',
+              settings.defaultDeliveryFee,
+              (v) => setSettings((p) => ({ ...p, defaultDeliveryFee: Number(v) })),
+              'number',
+            )}
+            {input(
+              'Maximum rider float',
               settings.maxRiderFloat,
               (v) => setSettings((p) => ({ ...p, maxRiderFloat: Number(v) })),
-              "number",
+              'number',
             )}
             <label className="setup-checkbox">
               <input
@@ -333,13 +384,30 @@ export function AdminSetup({
                     allowBatching: e.target.checked,
                   }))
                 }
-              />{" "}
+              />{' '}
               Allow riders to batch orders
             </label>
             <button className="setup-submit" disabled={busy || preview}>
               Save settings
             </button>
           </form>
+        </div>
+      )}
+      {section === 'Settings' && (
+        <div className="admin-panel">
+          <p className="eyebrow">Security</p>
+          <h2>Access rules</h2>
+          <p className="muted">
+            Re-applies database permissions and assigns missing rider and cashier codes. Run it once
+            after each deployment that changes Cloud Code; it is safe to run again.
+          </p>
+          <button
+            className="setup-submit"
+            disabled={busy || preview}
+            onClick={() => void save('adminApplySecurity', {}, () => {})}
+          >
+            Apply security rules
+          </button>
         </div>
       )}
     </div>
@@ -368,7 +436,7 @@ function CommissionEditor({
           <option value="hybrid">Fixed + percent</option>
         </select>
       </label>
-      {type !== "percent" && (
+      {type !== 'percent' && (
         <label>
           Fixed amount
           <input
@@ -379,7 +447,7 @@ function CommissionEditor({
           />
         </label>
       )}
-      {type !== "per_order" && (
+      {type !== 'per_order' && (
         <label>
           Percent
           <input
@@ -408,7 +476,29 @@ function CommissionEditor({
   );
 }
 
-function CategoryEditor({category,disabled,save}:{category:Category;disabled:boolean;save:(payload:Record<string,unknown>)=>Promise<void>}){
- const [title,setTitle]=useState(category.title)
- return <div className="setup-row"><input aria-label="Category name" value={title} onChange={e=>setTitle(e.target.value)} /><span>{category.active?'Active':'Hidden'}</span><button disabled={disabled||!title.trim()} onClick={()=>void save({title,active:category.active})}>Save name</button><button disabled={disabled} onClick={()=>void save({title,active:!category.active})}>{category.active?'Hide':'Show'}</button></div>
+function CategoryEditor({
+  category,
+  disabled,
+  save,
+}: {
+  category: Category;
+  disabled: boolean;
+  save: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(category.title);
+  return (
+    <div className="setup-row">
+      <input aria-label="Category name" value={title} onChange={(e) => setTitle(e.target.value)} />
+      <span>{category.active ? 'Active' : 'Hidden'}</span>
+      <button
+        disabled={disabled || !title.trim()}
+        onClick={() => void save({ title, active: category.active })}
+      >
+        Save name
+      </button>
+      <button disabled={disabled} onClick={() => void save({ title, active: !category.active })}>
+        {category.active ? 'Hide' : 'Show'}
+      </button>
+    </div>
+  );
 }

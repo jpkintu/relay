@@ -1,0 +1,14 @@
+{
+  "name": "relay-e2e",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end tests: runs cloud/ on a real Parse Server",
+  "scripts": {
+    "test": "node --test --test-concurrency=1"
+  },
+  "devDependencies": {
+    "express": "^4.21.2",
+    "parse": "7.1.2",
+    "parse-server": "^7.5.0"
+  }
+}
