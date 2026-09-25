@@ -48,7 +48,8 @@ var require_core = __commonJS({
       defaultDeliveryFee: 3e3,
       maxRiderFloat: 2e5,
       allowBatching: false,
-      commissionRounding: "none"
+      commissionRounding: "none",
+      requireCashierConfirmForPickup: false
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -205,6 +206,8 @@ var require_security = __commonJS({
       "Configuration",
       "MenuItem",
       "MenuCategory",
+      "Accompaniment",
+      "Customer",
       "Counter",
       "DemoOrder"
     ];
@@ -275,7 +278,22 @@ var require_security = __commonJS({
         commissionPaid: B,
         pickedUpAt: D,
         deliveredAt: D,
-        settledAt: D
+        settledAt: D,
+        customer: ["Pointer", "Customer"],
+        deliveryNotes: S,
+        amountToCollect: N,
+        shortfallNote: S,
+        clientId: S,
+        acceptedAt: D,
+        readyAt: D,
+        cancelledReason: S,
+        cancelledBy: user,
+        cancelledAt: D,
+        disputeFlag: B,
+        disputeNote: S,
+        disputedBy: user,
+        disputedAt: D,
+        disputeResolution: S
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -283,7 +301,10 @@ var require_security = __commonJS({
         unitPriceSnapshot: N,
         quantity: N,
         lineTotal: N,
-        notes: S
+        notes: S,
+        menuItem: ["Pointer", "MenuItem"],
+        accompanimentIds: "Array",
+        accompanimentNames: "Array"
       },
       CashHandover: {
         handoverCode: S,
@@ -325,9 +346,29 @@ var require_security = __commonJS({
         defaultDeliveryFee: N,
         maxRiderFloat: N,
         allowBatching: B,
-        commissionRounding: S
+        commissionRounding: S,
+        requireCashierConfirmForPickup: B
       },
-      MenuItem: { title: S, price: N, category: S, active: B, availableToday: B, sortOrder: N },
+      MenuItem: {
+        title: S,
+        price: N,
+        category: S,
+        active: B,
+        availableToday: B,
+        sortOrder: N,
+        accompanimentGroups: "Array"
+      },
+      Accompaniment: { title: S, active: B, available: B, sortOrder: N },
+      Customer: {
+        key: S,
+        name: S,
+        nameLower: S,
+        phone: S,
+        addresses: "Array",
+        orderCount: N,
+        lastOrderAt: D,
+        lastOrder: ["Pointer", "Order"]
+      },
       MenuCategory: { title: S, active: B, sortOrder: N },
       Counter: { key: S, value: N },
       DemoOrder: {
@@ -399,7 +440,14 @@ var require_security = __commonJS({
         "Shift",
         (s) => saveAcl(s, readAcl(s.get("operator"), ["admin"]))
       );
-      for (const className of ["MenuItem", "MenuCategory", "Configuration", "AuditLog"])
+      for (const className of [
+        "MenuItem",
+        "MenuCategory",
+        "Accompaniment",
+        "Customer",
+        "Configuration",
+        "AuditLog"
+      ])
         updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ["admin"])));
       updated._User = await eachObject(Parse.User, async (user2) => {
         const role = await getRoleName(user2);
@@ -433,6 +481,89 @@ var require_security = __commonJS({
   }
 });
 
+// cloud/customers.js
+var require_customers = __commonJS({
+  "cloud/customers.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, invalid, requireRole, readAcl } = require_core();
+    var MAX_ADDRESSES = 5;
+    var customerKey = (name, phone) => phone ? `tel:${phone}` : `name:${name.toLowerCase()}`;
+    async function recordCustomerOrder(order) {
+      const name = order.get("customerName");
+      const phone = order.get("customerPhone") || "";
+      const key = customerKey(name, phone);
+      const query = new Parse.Query("Customer");
+      query.equalTo("key", key);
+      query.ascending("createdAt");
+      const customer = await query.first(MASTER) || new Parse.Object("Customer");
+      const address = { text: order.get("deliveryAddress"), notes: order.get("deliveryNotes") || "" };
+      const addresses = [
+        address,
+        ...(customer.get("addresses") || []).filter(
+          (saved) => saved.text.toLowerCase() !== address.text.toLowerCase()
+        )
+      ].slice(0, MAX_ADDRESSES);
+      customer.set({
+        key,
+        name,
+        nameLower: name.toLowerCase(),
+        phone,
+        addresses,
+        orderCount: (customer.get("orderCount") || 0) + 1,
+        lastOrderAt: /* @__PURE__ */ new Date(),
+        lastOrder: order
+      });
+      customer.setACL(readAcl(null, ["admin"]));
+      await customer.save(null, MASTER);
+      return customer;
+    }
+    var escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    Parse.Cloud.define("searchCustomers", async (request) => {
+      await requireRole(request, ["rider", "cashier", "admin"]);
+      const text = String(request.params.q || "").trim().toLowerCase().slice(0, 40);
+      if (text.length < 2) throw invalid("Type at least 2 characters");
+      const byName = new Parse.Query("Customer");
+      byName.matches("nameLower", escapeRegex(text));
+      const queries = [byName];
+      const digits = text.replace(/[^\d]/g, "");
+      if (digits.length >= 3) {
+        const byPhone = new Parse.Query("Customer");
+        byPhone.matches("phone", escapeRegex(digits));
+        queries.push(byPhone);
+      }
+      const query = Parse.Query.or(...queries);
+      query.descending("orderCount");
+      query.limit(5);
+      const customers = await query.find(MASTER);
+      const lastOrders = customers.map((c) => c.get("lastOrder")).filter(Boolean);
+      const itemQuery = new Parse.Query("OrderItem");
+      itemQuery.containedIn("order", lastOrders);
+      itemQuery.limit(1e3);
+      const items = lastOrders.length ? await itemQuery.find(MASTER) : [];
+      return customers.map((customer) => {
+        const lastId = customer.get("lastOrder")?.id;
+        return {
+          id: customer.id,
+          name: customer.get("name"),
+          phone: customer.get("phone") || "",
+          addresses: customer.get("addresses") || [],
+          orderCount: customer.get("orderCount") || 0,
+          lastOrderAt: customer.get("lastOrderAt") || null,
+          lastOrder: items.filter((item) => item.get("order")?.id === lastId && item.get("menuItem")).map((item) => ({
+            menuItemId: item.get("menuItem").id,
+            title: item.get("itemNameSnapshot"),
+            quantity: item.get("quantity"),
+            notes: item.get("notes") || "",
+            accompanimentIds: item.get("accompanimentIds") || [],
+            accompanimentNames: item.get("accompanimentNames") || []
+          }))
+        };
+      });
+    });
+    module2.exports = { recordCustomerOrder };
+  }
+});
+
 // cloud/lib/money.js
 var require_money = __commonJS({
   "cloud/lib/money.js"(exports2, module2) {
@@ -457,6 +588,67 @@ var require_money = __commonJS({
   }
 });
 
+// cloud/lib/accompaniments.js
+var require_accompaniments = __commonJS({
+  "cloud/lib/accompaniments.js"(exports2, module2) {
+    "use strict";
+    var MAX_GROUPS = 6;
+    var MAX_OPTIONS = 20;
+    function normalizeGroups(raw, knownIds) {
+      if (raw === void 0 || raw === null) return [];
+      if (!Array.isArray(raw) || raw.length > MAX_GROUPS)
+        throw new Error(`Use at most ${MAX_GROUPS} accompaniment groups`);
+      return raw.map((group, index) => {
+        const label = String(group?.label || "").trim() || `Choice ${index + 1}`;
+        if (label.length > 40)
+          throw new Error("Accompaniment group names must be 40 characters or less");
+        const options = [...new Set((group?.options || []).map(String))];
+        if (!options.length) throw new Error(`"${label}" needs at least one accompaniment`);
+        if (options.length > MAX_OPTIONS)
+          throw new Error(`"${label}" can offer at most ${MAX_OPTIONS} accompaniments`);
+        const unknown = options.filter((id) => !knownIds.has(id));
+        if (unknown.length)
+          throw new Error(`"${label}" refers to an accompaniment that does not exist`);
+        const max = Number(group?.max ?? options.length);
+        const min = Number(group?.min ?? 0);
+        if (!Number.isInteger(max) || max < 1 || max > options.length)
+          throw new Error(`"${label}": "pick at most" must be between 1 and ${options.length}`);
+        if (!Number.isInteger(min) || min < 0 || min > max)
+          throw new Error(`"${label}": "pick at least" must be between 0 and ${max}`);
+        return { label, options, min, max };
+      });
+    }
+    function availableGroups(groups, isAvailable) {
+      return (groups || []).map((group) => {
+        const options = group.options.filter((id) => isAvailable(id));
+        return {
+          label: group.label,
+          options,
+          min: Math.min(group.min, options.length),
+          max: Math.min(group.max, options.length)
+        };
+      }).filter((group) => group.options.length > 0);
+    }
+    function selectionError(groups, selectedIds) {
+      const selected = (selectedIds || []).map(String);
+      if (new Set(selected).size !== selected.length) return "The same accompaniment was chosen twice";
+      const counts = groups.map(() => 0);
+      for (const id of selected) {
+        const index = groups.findIndex((group) => group.options.includes(id));
+        if (index === -1) return "An accompaniment is not available for this dish";
+        counts[index] += 1;
+      }
+      for (const [index, group] of groups.entries()) {
+        if (counts[index] > group.max)
+          return group.max === 1 ? `Choose only one ${group.label.toLowerCase()} option` : `Choose at most ${group.max} from ${group.label}`;
+        if (counts[index] < group.min) return `Choose at least ${group.min} from ${group.label}`;
+      }
+      return "";
+    }
+    module2.exports = { normalizeGroups, availableGroups, selectionError };
+  }
+});
+
 // cloud/orders.js
 var require_orders = __commonJS({
   "cloud/orders.js"(exports2, module2) {
@@ -467,15 +659,20 @@ var require_orders = __commonJS({
       forbidden,
       requireUser,
       requireRole,
-      isStaff,
+      getRoleName,
       readAcl,
       audit,
       loadConfig,
       nextDailyCode
     } = require_core();
     var { computeCommission, sumBy } = require_money();
+    var { availableGroups, selectionError } = require_accompaniments();
+    var { recordCustomerOrder } = require_customers();
     var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
     var PAYMENT_METHODS = ["cash", "mobile_money", "card", "prepaid"];
+    var MAX_LINES = 30;
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
     async function riderFloat(rider) {
       const query = new Parse.Query("Order");
       query.equalTo("createdBy", rider);
@@ -484,12 +681,71 @@ var require_orders = __commonJS({
       query.limit(1e3);
       return sumBy(await query.find(MASTER), (order) => order.get("amountCollected"));
     }
+    async function servableAccompaniments() {
+      const query = new Parse.Query("Accompaniment");
+      query.equalTo("active", true);
+      query.equalTo("available", true);
+      query.limit(1e3);
+      return new Map((await query.find(MASTER)).map((row) => [row.id, row]));
+    }
+    async function priceLines(items) {
+      if (!Array.isArray(items) || !items.length) throw invalid("Add at least one item");
+      if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
+      const menuQuery = new Parse.Query("MenuItem");
+      menuQuery.containedIn(
+        "objectId",
+        items.map((line) => String(line.id))
+      );
+      const [menu, accompaniments] = await Promise.all([
+        menuQuery.find(MASTER),
+        servableAccompaniments()
+      ]);
+      const byId = new Map(menu.map((item) => [item.id, item]));
+      return items.map((line) => {
+        const saved = byId.get(String(line.id));
+        const qty = Number(line.quantity);
+        if (!saved || !saved.get("active") || !saved.get("availableToday"))
+          throw invalid(`${saved?.get("title") || "An item"} is not available`);
+        if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw invalid("Invalid quantity");
+        const title = saved.get("title");
+        const groups = availableGroups(
+          saved.get("accompanimentGroups") || [],
+          (id) => accompaniments.has(id)
+        );
+        const chosen = (Array.isArray(line.accompaniments) ? line.accompaniments : []).map(String);
+        const problem = selectionError(groups, chosen);
+        if (problem) throw invalid(`${title}: ${problem}`);
+        return {
+          menuItem: saved,
+          name: title,
+          price: Number(saved.get("price")),
+          qty,
+          notes: clean(line.notes, 140),
+          accompanimentIds: chosen,
+          accompanimentNames: chosen.map((id) => accompaniments.get(id).get("title"))
+        };
+      });
+    }
     Parse.Cloud.define("createOrder", async (request) => {
       const { user: rider } = await requireRole(request, ["rider"]);
       const p = request.params;
-      if (!String(p.customerName || "").trim() || !String(p.deliveryAddress || "").trim())
-        throw invalid("Customer and address are required");
-      if (!Array.isArray(p.items) || !p.items.length) throw invalid("Add at least one item");
+      const clientId = clean(p.clientId, 64);
+      if (clientId) {
+        const existingQuery = new Parse.Query("Order");
+        existingQuery.equalTo("createdBy", rider);
+        existingQuery.equalTo("clientId", clientId);
+        const existing = await existingQuery.first(MASTER);
+        if (existing)
+          return {
+            id: existing.id,
+            orderCode: existing.get("orderCode"),
+            total: existing.get("total"),
+            duplicate: true
+          };
+      }
+      const customerName = clean(p.customerName, 80);
+      const deliveryAddress = clean(p.deliveryAddress, 200);
+      if (!customerName || !deliveryAddress) throw invalid("Customer and address are required");
       const channel = p.channel || "walkin";
       const paymentMethod = p.paymentMethod || "cash";
       if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
@@ -497,50 +753,52 @@ var require_orders = __commonJS({
       const activeQuery = new Parse.Query("Order");
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
-      const menuQuery = new Parse.Query("MenuItem");
-      menuQuery.containedIn(
-        "objectId",
-        p.items.map((line) => String(line.id))
-      );
-      const [savedMenu, { values: config }, activeCount, float] = await Promise.all([
-        menuQuery.find(MASTER),
+      const [lines, { values: config }, activeCount, float] = await Promise.all([
+        priceLines(p.items),
         loadConfig(),
         activeQuery.count(MASTER),
         riderFloat(rider)
       ]);
       if (!config.allowBatching && activeCount)
         throw invalid("Finish your current order before creating another");
-      if (config.maxRiderFloat > 0 && float >= config.maxRiderFloat)
-        throw invalid("Hand over cash before creating another order");
-      const byId = new Map(savedMenu.map((item) => [item.id, item]));
-      const lines = p.items.map((line) => {
-        const saved = byId.get(String(line.id));
-        const qty = Number(line.quantity);
-        if (!saved || !saved.get("active") || !saved.get("availableToday") || !Number.isInteger(qty) || qty < 1 || qty > 50)
-          throw invalid("Invalid or unavailable item");
-        return { name: saved.get("title"), price: Number(saved.get("price")), qty };
-      });
       const subtotal = sumBy(lines, (line) => line.price * line.qty);
-      const fee = Math.max(0, Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0);
+      const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
       const total = subtotal + fee;
+      const isCash = paymentMethod === "cash";
+      const amountToCollect = isCash ? Math.round(Number(p.amountToCollect ?? total)) : 0;
+      if (!Number.isFinite(amountToCollect) || amountToCollect < 0)
+        throw invalid("Enter the amount to collect");
+      const shortfallNote = clean(p.shortfallNote, 200);
+      if (isCash && amountToCollect < total && shortfallNote.length < 5)
+        throw invalid("The customer is paying less than the total. Add a note explaining why");
+      const projected = float + (isCash ? amountToCollect : 0);
+      if (config.maxRiderFloat > 0 && projected > config.maxRiderFloat)
+        throw invalid(
+          `Hand over cash first: this order would put ${config.currencySymbol} ${projected.toLocaleString("en-US")} with you (limit ${config.currencySymbol} ${config.maxRiderFloat.toLocaleString("en-US")})`
+        );
       const order = new Parse.Object("Order");
       order.set({
         orderCode: await nextDailyCode("ORD", 4, config.timezone),
+        clientId,
         channel,
         createdBy: rider,
-        customerName: String(p.customerName).trim(),
-        customerPhone: String(p.customerPhone || ""),
-        deliveryAddress: String(p.deliveryAddress).trim(),
+        customerName,
+        customerPhone: cleanPhone(p.customerPhone),
+        deliveryAddress,
+        deliveryNotes: clean(p.deliveryNotes, 200),
         subtotal,
         deliveryFee: fee,
         total,
         paymentMethod,
+        amountToCollect,
+        shortfallNote: isCash && amountToCollect < total ? shortfallNote : "",
         amountCollected: 0,
         status: "PLACED",
         restaurantStatus: "pending",
-        cashStatus: paymentMethod === "cash" ? "NOT_COLLECTED" : "NOT_APPLICABLE",
+        cashStatus: isCash ? "NOT_COLLECTED" : "NOT_APPLICABLE",
         commissionAmount: 0,
-        commissionPaid: false
+        commissionPaid: false,
+        disputeFlag: false
       });
       order.setACL(readAcl(rider));
       await order.save(null, MASTER);
@@ -548,52 +806,93 @@ var require_orders = __commonJS({
         const item = new Parse.Object("OrderItem");
         item.set({
           order,
+          menuItem: line.menuItem,
           itemNameSnapshot: line.name,
           unitPriceSnapshot: line.price,
           quantity: line.qty,
           lineTotal: line.price * line.qty,
-          notes: ""
+          notes: line.notes,
+          accompanimentIds: line.accompanimentIds,
+          accompanimentNames: line.accompanimentNames
         });
         item.setACL(readAcl(rider));
         return item;
       });
       await Parse.Object.saveAll(children, MASTER);
+      const customer = await recordCustomerOrder(order);
+      if (customer) {
+        order.set("customer", customer);
+        await order.save(null, MASTER);
+      }
       await audit(rider, "order.placed", order, null, { status: "PLACED", total });
       return { id: order.id, orderCode: order.get("orderCode"), total };
     });
     var TRANSITIONS = {
-      accept: ["PLACED", "ACCEPTED", "accepted"],
-      prepare: ["ACCEPTED", "PREPARING", "preparing"],
-      ready: ["PREPARING", "READY", "ready"],
-      pickup: ["READY", "PICKED_UP", "picked_up"],
-      deliver: ["PICKED_UP", "DELIVERED", "picked_up"]
+      accept: { from: ["PLACED"], to: "ACCEPTED", kitchen: "accepted", who: "staff" },
+      prepare: { from: ["ACCEPTED"], to: "PREPARING", kitchen: "preparing", who: "staff" },
+      ready: { from: ["ACCEPTED", "PREPARING"], to: "READY", kitchen: "ready", who: "staff" },
+      pickup: { from: ["READY"], to: "PICKED_UP", kitchen: "picked_up", who: "owner" },
+      deliver: { from: ["PICKED_UP"], to: "DELIVERED", kitchen: "picked_up", who: "owner" },
+      reject: { from: ["PLACED"], to: "CANCELLED", kitchen: "rejected", who: "staff" },
+      cancel: {
+        from: ["PLACED", "ACCEPTED", "PREPARING", "READY"],
+        to: "CANCELLED",
+        kitchen: "cancelled",
+        who: "owner"
+      }
     };
     Parse.Cloud.define("transitionOrder", async (request) => {
       const actor = requireUser(request);
-      const { action } = request.params;
-      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
-      const rule = TRANSITIONS[action];
-      if (!rule || order.get("status") !== rule[0]) throw invalid("Invalid status transition");
-      const staff = await isStaff(actor);
-      if (["accept", "prepare", "ready"].includes(action) && !staff)
-        throw forbidden("Staff access required");
-      if (["pickup", "deliver"].includes(action) && order.get("createdBy").id !== actor.id && !staff)
-        throw forbidden("Not allowed");
-      const before = { status: order.get("status"), restaurantStatus: order.get("restaurantStatus") };
-      order.set({ status: rule[1], restaurantStatus: rule[2] });
-      if (action === "pickup") order.set("pickedUpAt", /* @__PURE__ */ new Date());
-      if (action === "deliver") {
-        const amount = Number(request.params.amountCollected ?? order.get("total"));
-        if (!Number.isFinite(amount) || amount < order.get("total"))
-          throw invalid("Collected amount is below total");
-        const [rider, { values: config }] = await Promise.all([
-          order.get("createdBy").fetch(MASTER),
-          loadConfig()
-        ]);
-        const isCash = order.get("paymentMethod") === "cash";
+      const p = request.params;
+      const rule = TRANSITIONS[p.action];
+      const order = await new Parse.Query("Order").get(p.orderId, MASTER);
+      if (!rule || !rule.from.includes(order.get("status"))) throw invalid("Invalid status transition");
+      const role = await getRoleName(actor);
+      const staff = ["cashier", "admin"].includes(role);
+      const owner = order.get("createdBy")?.id === actor.id;
+      if (rule.who === "staff" && !staff) throw forbidden("Staff access required");
+      if (rule.who === "owner" && !owner && !staff) throw forbidden("Not allowed");
+      const { values: config } = await loadConfig();
+      if (p.action === "pickup" && !staff && config.requireCashierConfirmForPickup)
+        throw forbidden("The cashier confirms pickup when handing over the bag");
+      if (p.action === "cancel" && !staff && order.get("status") !== "PLACED")
+        throw forbidden("The kitchen has accepted this order. Ask the cashier to cancel it");
+      const before = {
+        status: order.get("status"),
+        restaurantStatus: order.get("restaurantStatus"),
+        paymentMethod: order.get("paymentMethod")
+      };
+      order.set({ status: rule.to, restaurantStatus: rule.kitchen });
+      const now = /* @__PURE__ */ new Date();
+      if (p.action === "accept") order.set("acceptedAt", now);
+      if (p.action === "ready") order.set("readyAt", now);
+      if (p.action === "pickup") order.set("pickedUpAt", now);
+      if (p.action === "cancel" || p.action === "reject") {
+        const reason = clean(p.reason, 200);
+        if (reason.length < 3) throw invalid("Give a reason");
         order.set({
-          deliveredAt: /* @__PURE__ */ new Date(),
-          amountCollected: isCash ? amount : 0,
+          cancelledReason: reason,
+          cancelledBy: actor,
+          cancelledAt: now,
+          cashStatus: "NOT_APPLICABLE"
+        });
+      }
+      if (p.action === "deliver") {
+        const method = p.paymentMethod || order.get("paymentMethod");
+        if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
+        const isCash = method === "cash";
+        const total = order.get("total");
+        const amount = isCash ? Number(p.amountCollected ?? order.get("amountToCollect") ?? total) : 0;
+        if (!Number.isFinite(amount) || amount < 0) throw invalid("Enter the amount collected");
+        const note = clean(p.shortfallNote, 200) || order.get("shortfallNote") || "";
+        if (isCash && amount < total && note.length < 5)
+          throw invalid("Collected amount is below the total. Add a note explaining why");
+        const rider = await order.get("createdBy").fetch(MASTER);
+        order.set({
+          paymentMethod: method,
+          deliveredAt: now,
+          amountCollected: Math.round(amount),
+          shortfallNote: isCash && amount < total ? note : "",
           paymentCollectedBy: actor,
           commissionAmount: computeCommission({
             type: rider.get("commissionType") || "per_order",
@@ -606,29 +905,125 @@ var require_orders = __commonJS({
         });
       }
       await order.save(null, MASTER);
-      await audit(actor, `order.${action}`, order, before, { status: rule[1] });
-      return { status: rule[1] };
+      await audit(actor, `order.${p.action}`, order, before, {
+        status: rule.to,
+        paymentMethod: order.get("paymentMethod"),
+        reason: order.get("cancelledReason")
+      });
+      return { status: rule.to };
     });
+    Parse.Cloud.define("flagOrderIssue", async (request) => {
+      const actor = requireUser(request);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      const role = await getRoleName(actor);
+      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
+        throw forbidden("Not allowed");
+      const note = clean(request.params.note, 300);
+      if (note.length < 5) throw invalid("Describe the problem");
+      order.set({ disputeFlag: true, disputeNote: note, disputedBy: actor, disputedAt: /* @__PURE__ */ new Date() });
+      await order.save(null, MASTER);
+      await audit(actor, "order.issue_flagged", order, null, { note });
+      return { ok: true };
+    });
+    Parse.Cloud.define("resolveOrderIssue", async (request) => {
+      const { user: actor } = await requireRole(request, ["admin"]);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      if (!order.get("disputeFlag")) throw invalid("This order has no open issue");
+      const resolution = clean(request.params.resolution, 300);
+      if (resolution.length < 5) throw invalid("Describe how it was resolved");
+      order.set({ disputeFlag: false, disputeResolution: resolution });
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        "order.issue_resolved",
+        order,
+        { note: order.get("disputeNote") },
+        { resolution }
+      );
+      return { ok: true };
+    });
+    module2.exports = { riderFloat, servableAccompaniments };
+  }
+});
+
+// cloud/menu.js
+var require_menu = __commonJS({
+  "cloud/menu.js"() {
+    "use strict";
+    var { MASTER, invalid, requireRole, audit, loadConfig } = require_core();
+    var { availableGroups } = require_accompaniments();
+    var { servableAccompaniments } = require_orders();
     Parse.Cloud.define("getOperationalMenu", async (request) => {
-      requireUser(request);
+      await requireRole(request, ["rider", "cashier", "admin"]);
       const query = new Parse.Query("MenuItem");
       query.equalTo("active", true);
       query.equalTo("availableToday", true);
       query.ascending("sortOrder");
       query.limit(500);
-      const [menu, { values: config }] = await Promise.all([query.find(MASTER), loadConfig()]);
+      const [menu, accompaniments, { values: config }] = await Promise.all([
+        query.find(MASTER),
+        servableAccompaniments(),
+        loadConfig()
+      ]);
       return {
         items: menu.map((item) => ({
           id: item.id,
           title: item.get("title"),
           category: item.get("category") || "Mains",
-          price: item.get("price")
+          price: item.get("price"),
+          accompanimentGroups: availableGroups(
+            item.get("accompanimentGroups") || [],
+            (id) => accompaniments.has(id)
+          ).map((group) => ({
+            ...group,
+            options: group.options.map((id) => ({ id, title: accompaniments.get(id).get("title") }))
+          }))
         })),
         deliveryFee: config.defaultDeliveryFee,
         currencySymbol: config.currencySymbol
       };
     });
-    module2.exports = { riderFloat };
+    Parse.Cloud.define("getStock", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const items = new Parse.Query("MenuItem");
+      items.equalTo("active", true);
+      items.ascending("sortOrder");
+      items.limit(500);
+      const extras = new Parse.Query("Accompaniment");
+      extras.equalTo("active", true);
+      extras.ascending("sortOrder");
+      extras.limit(500);
+      const [menu, accompaniments] = await Promise.all([items.find(MASTER), extras.find(MASTER)]);
+      return {
+        items: menu.map((item) => ({
+          id: item.id,
+          title: item.get("title"),
+          category: item.get("category") || "Mains",
+          available: item.get("availableToday") !== false
+        })),
+        accompaniments: accompaniments.map((row) => ({
+          id: row.id,
+          title: row.get("title"),
+          available: row.get("available") !== false
+        }))
+      };
+    });
+    Parse.Cloud.define("setAvailability", async (request) => {
+      const { user: actor } = await requireRole(request, ["cashier", "admin"]);
+      const { type, id } = request.params;
+      const available = request.params.available === true;
+      const className = { menuItem: "MenuItem", accompaniment: "Accompaniment" }[type];
+      if (!className) throw invalid("Unknown item type");
+      const field = type === "menuItem" ? "availableToday" : "available";
+      const row = await new Parse.Query(className).get(String(id), MASTER);
+      const before = { [field]: row.get(field) };
+      row.set(field, available);
+      await row.save(null, MASTER);
+      await audit(actor, `stock.${available ? "available" : "sold_out"}`, row, before, {
+        [field]: available
+      });
+      return { id: row.id, available };
+    });
   }
 });
 
@@ -892,6 +1287,7 @@ var require_admin = __commonJS({
     var { COMMISSION_TYPES } = require_money();
     var { isValidTimeZone } = require_dates();
     var { SEED_MENU } = require_seed();
+    var { normalizeGroups } = require_accompaniments();
     var { applySecurity } = require_security();
     var ROLE_NAMES = ["admin", "cashier", "rider"];
     var STAFF_ROLES = ["rider", "cashier"];
@@ -992,12 +1388,16 @@ var require_admin = __commonJS({
       const categoryQuery = new Parse.Query("MenuCategory");
       categoryQuery.ascending("sortOrder");
       categoryQuery.limit(1e3);
-      const [users, menu, categories, members, { object: config, values }] = await Promise.all([
+      const accompanimentQuery = new Parse.Query("Accompaniment");
+      accompanimentQuery.ascending("sortOrder");
+      accompanimentQuery.limit(1e3);
+      const [users, menu, categories, members, { object: config, values }, accompaniments] = await Promise.all([
         userQuery.find(MASTER),
         menuQuery.find(MASTER),
         categoryQuery.find(MASTER),
         roleMembership(),
-        loadConfig()
+        loadConfig(),
+        accompanimentQuery.find(MASTER)
       ]);
       return {
         team: users.map((user) => ({
@@ -1018,7 +1418,14 @@ var require_admin = __commonJS({
           price: item.get("price"),
           category: item.get("category"),
           active: item.get("active") !== false,
-          availableToday: item.get("availableToday") !== false
+          availableToday: item.get("availableToday") !== false,
+          accompanimentGroups: item.get("accompanimentGroups") || []
+        })),
+        accompaniments: accompaniments.map((row) => ({
+          id: row.id,
+          title: row.get("title"),
+          active: row.get("active") !== false,
+          available: row.get("available") !== false
         })),
         categories: categories.map((category) => ({
           id: category.id,
@@ -1150,10 +1557,42 @@ var require_admin = __commonJS({
         active: p.active !== false,
         availableToday: p.availableToday !== false
       });
+      if (p.accompanimentGroups !== void 0) {
+        const known = new Parse.Query("Accompaniment");
+        known.limit(1e3);
+        const ids = new Set((await known.find(MASTER)).map((row) => row.id));
+        try {
+          item.set("accompanimentGroups", normalizeGroups(p.accompanimentGroups, ids));
+        } catch (e) {
+          throw invalid(e.message);
+        }
+      }
       item.setACL(readAcl(null, ["admin"]));
       await item.save(null, MASTER);
       await audit(actor, "menu.saved", item, before, { title, price });
       return { id: item.id };
+    });
+    Parse.Cloud.define("adminSaveAccompaniment", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const title = String(p.title || "").trim();
+      if (!title || title.length > 60) throw invalid("An accompaniment name is required");
+      const row = p.id ? await new Parse.Query("Accompaniment").get(p.id, MASTER) : new Parse.Object("Accompaniment");
+      const before = p.id ? row.toJSON() : null;
+      row.set({
+        title,
+        active: p.active !== false,
+        available: p.available !== false,
+        sortOrder: Number(p.sortOrder) || 0
+      });
+      row.setACL(readAcl(null, ["admin"]));
+      await row.save(null, MASTER);
+      await audit(actor, "menu.accompaniment_saved", row, before, {
+        title,
+        active: row.get("active"),
+        available: row.get("available")
+      });
+      return { id: row.id };
     });
     Parse.Cloud.define("adminSaveSettings", async (request) => {
       const actor = await adminOnly(request);
@@ -1174,7 +1613,8 @@ var require_admin = __commonJS({
         timezone,
         defaultDeliveryFee: fee,
         maxRiderFloat: max,
-        allowBatching: !!p.allowBatching
+        allowBatching: !!p.allowBatching,
+        requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -1303,7 +1743,9 @@ var require_profile = __commonJS({
         timezone: values.timezone,
         defaultDeliveryFee: values.defaultDeliveryFee,
         maxRiderFloat: values.maxRiderFloat,
-        allowBatching: values.allowBatching
+        allowBatching: values.allowBatching,
+        commissionRounding: values.commissionRounding,
+        requireCashierConfirmForPickup: values.requireCashierConfirmForPickup
       };
     }
     Parse.Cloud.define("getAppInfo", async () => {
@@ -1342,7 +1784,9 @@ var require_profile = __commonJS({
 
 // cloud/main.js
 require_security();
+require_customers();
 require_orders();
+require_menu();
 require_cash();
 require_shifts();
 require_admin();

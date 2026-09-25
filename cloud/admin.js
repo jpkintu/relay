@@ -15,6 +15,7 @@ const {
 const { COMMISSION_TYPES } = require('./lib/money');
 const { isValidTimeZone } = require('./lib/dates');
 const { SEED_MENU } = require('./lib/seed');
+const { normalizeGroups } = require('./lib/accompaniments');
 const { applySecurity } = require('./security');
 
 const ROLE_NAMES = ['admin', 'cashier', 'rider'];
@@ -138,13 +139,18 @@ Parse.Cloud.define('adminListSetup', async (request) => {
   const categoryQuery = new Parse.Query('MenuCategory');
   categoryQuery.ascending('sortOrder');
   categoryQuery.limit(1000);
-  const [users, menu, categories, members, { object: config, values }] = await Promise.all([
-    userQuery.find(MASTER),
-    menuQuery.find(MASTER),
-    categoryQuery.find(MASTER),
-    roleMembership(),
-    loadConfig(),
-  ]);
+  const accompanimentQuery = new Parse.Query('Accompaniment');
+  accompanimentQuery.ascending('sortOrder');
+  accompanimentQuery.limit(1000);
+  const [users, menu, categories, members, { object: config, values }, accompaniments] =
+    await Promise.all([
+      userQuery.find(MASTER),
+      menuQuery.find(MASTER),
+      categoryQuery.find(MASTER),
+      roleMembership(),
+      loadConfig(),
+      accompanimentQuery.find(MASTER),
+    ]);
   return {
     team: users.map((user) => ({
       id: user.id,
@@ -165,6 +171,13 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       category: item.get('category'),
       active: item.get('active') !== false,
       availableToday: item.get('availableToday') !== false,
+      accompanimentGroups: item.get('accompanimentGroups') || [],
+    })),
+    accompaniments: accompaniments.map((row) => ({
+      id: row.id,
+      title: row.get('title'),
+      active: row.get('active') !== false,
+      available: row.get('available') !== false,
     })),
     categories: categories.map((category) => ({
       id: category.id,
@@ -313,10 +326,47 @@ Parse.Cloud.define('adminSaveMenuItem', async (request) => {
     active: p.active !== false,
     availableToday: p.availableToday !== false,
   });
+  if (p.accompanimentGroups !== undefined) {
+    const known = new Parse.Query('Accompaniment');
+    known.limit(1000);
+    const ids = new Set((await known.find(MASTER)).map((row) => row.id));
+    try {
+      item.set('accompanimentGroups', normalizeGroups(p.accompanimentGroups, ids));
+    } catch (e) {
+      throw invalid(e.message);
+    }
+  }
   item.setACL(readAcl(null, ['admin']));
   await item.save(null, MASTER);
   await audit(actor, 'menu.saved', item, before, { title, price });
   return { id: item.id };
+});
+
+// Accompaniments are free sides (matooke, rice, ...) attached to dishes in
+// groups. `available` is the day-to-day sold-out switch cashiers also use.
+Parse.Cloud.define('adminSaveAccompaniment', async (request) => {
+  const actor = await adminOnly(request);
+  const p = request.params;
+  const title = String(p.title || '').trim();
+  if (!title || title.length > 60) throw invalid('An accompaniment name is required');
+  const row = p.id
+    ? await new Parse.Query('Accompaniment').get(p.id, MASTER)
+    : new Parse.Object('Accompaniment');
+  const before = p.id ? row.toJSON() : null;
+  row.set({
+    title,
+    active: p.active !== false,
+    available: p.available !== false,
+    sortOrder: Number(p.sortOrder) || 0,
+  });
+  row.setACL(readAcl(null, ['admin']));
+  await row.save(null, MASTER);
+  await audit(actor, 'menu.accompaniment_saved', row, before, {
+    title,
+    active: row.get('active'),
+    available: row.get('available'),
+  });
+  return { id: row.id };
 });
 
 Parse.Cloud.define('adminSaveSettings', async (request) => {
@@ -341,6 +391,7 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     defaultDeliveryFee: fee,
     maxRiderFloat: max,
     allowBatching: !!p.allowBatching,
+    requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

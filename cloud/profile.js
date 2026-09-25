@@ -13,6 +13,8 @@ function publicConfig(values) {
     defaultDeliveryFee: values.defaultDeliveryFee,
     maxRiderFloat: values.maxRiderFloat,
     allowBatching: values.allowBatching,
+    commissionRounding: values.commissionRounding,
+    requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
   };
 }
 
