@@ -21,7 +21,10 @@ type Item = {
   category: string;
   active: boolean;
   availableToday: boolean;
+  accompanimentGroups: Group[];
 };
+type Group = { label: string; options: string[]; min: number; max: number };
+type Accompaniment = { id: string; title: string; active: boolean; available: boolean };
 type Category = { id: string; title: string; active: boolean };
 type Settings = {
   restaurantName: string;
@@ -31,6 +34,7 @@ type Settings = {
   defaultDeliveryFee: number;
   maxRiderFloat: number;
   allowBatching: boolean;
+  requireCashierConfirmForPickup?: boolean;
 };
 const input = (
   label: string,
@@ -61,6 +65,9 @@ export function AdminSetup({
   const money = useMoney();
   const [team, setTeam] = useState<Member[]>([]),
     [menu, setMenu] = useState<Item[]>([]),
+    [accompaniments, setAccompaniments] = useState<Accompaniment[]>([]),
+    [itemGroups, setItemGroups] = useState<Group[]>([]),
+    [accompanimentTitle, setAccompanimentTitle] = useState(''),
     [categories, setCategories] = useState<Category[]>([]),
     [settings, setSettings] = useState<Settings>(config);
   const [name, setName] = useState(''),
@@ -82,6 +89,7 @@ export function AdminSetup({
       const data = await Parse.Cloud.run('adminListSetup');
       setTeam(data.team);
       setMenu(data.menu);
+      setAccompaniments(data.accompaniments || []);
       setCategories(data.categories || []);
       if (data.settings) setSettings((current) => ({ ...current, ...data.settings }));
       setError('');
@@ -245,6 +253,39 @@ export function AdminSetup({
             ))}
           </div>
           <div className="admin-panel">
+            <p className="eyebrow">Free sides</p>
+            <h2>Accompaniments</h2>
+            <p className="muted">
+              Add matooke, rice, pumpkin and so on here, then choose which ones each dish offers.
+              Cashiers can mark them sold out from their Stock tab.
+            </p>
+            <form
+              className="category-create"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void save('adminSaveAccompaniment', { title: accompanimentTitle }, () =>
+                  setAccompanimentTitle(''),
+                );
+              }}
+            >
+              <input
+                required
+                placeholder="New accompaniment, e.g. Matooke"
+                value={accompanimentTitle}
+                onChange={(e) => setAccompanimentTitle(e.target.value)}
+              />
+              <button disabled={busy || preview}>Add accompaniment</button>
+            </form>
+            {accompaniments.map((a) => (
+              <AccompanimentEditor
+                key={`${a.id}-${a.title}-${a.active}-${a.available}`}
+                accompaniment={a}
+                disabled={busy || preview}
+                save={(payload) => save('adminSaveAccompaniment', { ...a, ...payload }, () => {})}
+              />
+            ))}
+          </div>
+          <div className="admin-panel">
             <p className="eyebrow">Restaurant catalog</p>
             <h2>{editingItem ? 'Edit menu item' : 'Add menu item'}</h2>
             <form
@@ -258,10 +299,12 @@ export function AdminSetup({
                     title: itemTitle,
                     price: Number(itemPrice),
                     category: itemCategory,
+                    accompanimentGroups: itemGroups,
                   },
                   () => {
                     setItemTitle('');
                     setItemPrice('');
+                    setItemGroups([]);
                     setEditingItem(null);
                   },
                 );
@@ -280,6 +323,11 @@ export function AdminSetup({
                   ))}
                 </select>
               </label>
+              <GroupsEditor
+                groups={itemGroups}
+                accompaniments={accompaniments.filter((a) => a.active)}
+                onChange={setItemGroups}
+              />
               <button className="setup-submit" disabled={busy || preview}>
                 {editingItem ? 'Save item changes' : 'Add menu item'}
               </button>
@@ -291,6 +339,7 @@ export function AdminSetup({
                     setEditingItem(null);
                     setItemTitle('');
                     setItemPrice('');
+                    setItemGroups([]);
                   }}
                 >
                   Cancel editing
@@ -306,6 +355,8 @@ export function AdminSetup({
                   <b>{item.title}</b>
                   <small>
                     {item.category} · {money(item.price)}
+                    {item.accompanimentGroups?.length > 0 &&
+                      ` · ${item.accompanimentGroups.map((g) => g.label).join(', ')}`}
                   </small>
                 </div>
                 <span>{item.availableToday ? 'Available' : 'Unavailable'}</span>
@@ -316,6 +367,7 @@ export function AdminSetup({
                     setItemTitle(item.title);
                     setItemPrice(String(item.price));
                     setItemCategory(item.category);
+                    setItemGroups(item.accompanimentGroups || []);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
                 >
@@ -386,6 +438,19 @@ export function AdminSetup({
                 }
               />{' '}
               Allow riders to batch orders
+            </label>
+            <label className="setup-checkbox">
+              <input
+                type="checkbox"
+                checked={!!settings.requireCashierConfirmForPickup}
+                onChange={(e) =>
+                  setSettings((p) => ({
+                    ...p,
+                    requireCashierConfirmForPickup: e.target.checked,
+                  }))
+                }
+              />{' '}
+              Only the cashier can confirm pickup (“Hand to rider”)
             </label>
             <button className="setup-submit" disabled={busy || preview}>
               Save settings
@@ -501,4 +566,143 @@ function CategoryEditor({
       </button>
     </div>
   );
+}
+
+function AccompanimentEditor({
+  accompaniment,
+  disabled,
+  save,
+}: {
+  accompaniment: Accompaniment;
+  disabled: boolean;
+  save: (payload: Partial<Accompaniment>) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(accompaniment.title);
+  return (
+    <div className="setup-row">
+      <input
+        aria-label="Accompaniment name"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+      />
+      <span>
+        {!accompaniment.active ? 'Archived' : accompaniment.available ? 'Available' : 'Sold out'}
+      </span>
+      <button disabled={disabled || !title.trim()} onClick={() => void save({ title })}>
+        Save name
+      </button>
+      {accompaniment.active && (
+        <button
+          disabled={disabled}
+          onClick={() => void save({ available: !accompaniment.available })}
+        >
+          {accompaniment.available ? 'Sold out' : 'Available'}
+        </button>
+      )}
+      <button disabled={disabled} onClick={() => void save({ active: !accompaniment.active })}>
+        {accompaniment.active ? 'Archive' : 'Restore'}
+      </button>
+    </div>
+  );
+}
+
+// Which accompaniments a dish offers, in groups. "Pick at most 1" makes a
+// group one-or-the-other (e.g. vegetable rice OR fried rice).
+function GroupsEditor({
+  groups,
+  accompaniments,
+  onChange,
+}: {
+  groups: Group[];
+  accompaniments: Accompaniment[];
+  onChange: (groups: Group[]) => void;
+}) {
+  const update = (index: number, patch: Partial<Group>) =>
+    onChange(groups.map((g, i) => (i === index ? fixLimits({ ...g, ...patch }) : g)));
+  return (
+    <div className="groups-editor">
+      <p className="setup-field-label">Accompaniments (free)</p>
+      {!accompaniments.length && (
+        <p className="muted">Add accompaniments above first, then choose them here.</p>
+      )}
+      {groups.map((group, index) => (
+        <fieldset className="group-card" key={index}>
+          <div className="group-head">
+            <input
+              aria-label="Group name"
+              value={group.label}
+              onChange={(e) => update(index, { label: e.target.value })}
+              placeholder="Group name, e.g. Rice"
+            />
+            <button
+              type="button"
+              className="setup-secondary"
+              onClick={() => onChange(groups.filter((_, i) => i !== index))}
+            >
+              Remove
+            </button>
+          </div>
+          <div className="choices">
+            {accompaniments.map((a) => {
+              const on = group.options.includes(a.id);
+              return (
+                <button
+                  type="button"
+                  key={a.id}
+                  className={on ? 'choice active' : 'choice'}
+                  aria-pressed={on}
+                  onClick={() =>
+                    update(index, {
+                      options: on
+                        ? group.options.filter((id) => id !== a.id)
+                        : [...group.options, a.id],
+                    })
+                  }
+                >
+                  {a.title}
+                </button>
+              );
+            })}
+          </div>
+          <div className="group-limits">
+            <label>
+              Pick at most
+              <input
+                type="number"
+                min={1}
+                max={Math.max(1, group.options.length)}
+                value={group.max}
+                onChange={(e) => update(index, { max: Number(e.target.value) || 1 })}
+              />
+            </label>
+            <label className="setup-checkbox">
+              <input
+                type="checkbox"
+                checked={group.min > 0}
+                onChange={(e) => update(index, { min: e.target.checked ? 1 : 0 })}
+              />{' '}
+              Required
+            </label>
+            <small className="muted">
+              {group.max === 1 ? 'One or the other, not both.' : `Up to ${group.max}.`}
+            </small>
+          </div>
+        </fieldset>
+      ))}
+      <button
+        type="button"
+        className="setup-secondary"
+        disabled={!accompaniments.length}
+        onClick={() => onChange([...groups, { label: '', options: [], min: 0, max: 1 }])}
+      >
+        + Add accompaniment group
+      </button>
+    </div>
+  );
+}
+
+function fixLimits(group: Group): Group {
+  const count = Math.max(1, group.options.length);
+  const max = Math.min(Math.max(1, group.max), count);
+  return { ...group, max, min: Math.min(group.min, max) };
 }

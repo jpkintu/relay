@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Bike,
   ChevronRight,
@@ -12,8 +12,9 @@ import {
 } from 'lucide-react';
 import Parse from '../parse';
 import { NewOrder } from './NewOrder';
+import { OrderDetail } from './OrderDetail';
 import { ShiftPanel } from './ShiftPanel';
-import { useMoney, useSession } from '../lib/session';
+import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
 
 type LiveOrder = {
@@ -89,19 +90,20 @@ export function RiderWorkspace() {
           <NewOrder
             preview={preview}
             onBack={() => navigate('/rider')}
-            onPlaced={async (_total, payload) => {
-              if (preview) await Parse.Cloud.run('createPreviewOrder', payload);
-              else
-                await Parse.Cloud.run('createOrder', {
-                  ...payload,
-                  channel: 'walkin',
-                  paymentMethod: 'cash',
-                });
+            onGoToCash={() => navigate('/rider/cash')}
+            onOpenOrder={(id) => navigate(`/rider/order/${id}`)}
+            onPlaced={async (payload) => {
+              const result = await Parse.Cloud.run(
+                preview ? 'createPreviewOrder' : 'createOrder',
+                payload,
+              );
               await loadOrders();
+              return result;
             }}
           />
         }
       />
+      <Route path="order/:orderId" element={<OrderRoute refresh={loadOrders} />} />
       <Route path="active" element={subPage('active')} />
       <Route path="cash" element={subPage('cash')} />
       <Route path="earnings" element={subPage('earnings')} />
@@ -224,7 +226,13 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
             <button onClick={() => navigate('/rider/active')}>View all</button>
           </div>
           {inFlight.slice(0, 5).map((o) => (
-            <article className="order-row" key={o.id}>
+            <article
+              className="order-row clickable"
+              key={o.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => !preview && navigate(`/rider/order/${o.id}`)}
+            >
               <div className={`status-dot ${o.status.toLowerCase()}`} />
               <div>
                 <b>{o.code}</b>
@@ -299,6 +307,12 @@ const TITLES: Record<SubScreen, string> = {
   profile: 'Rider profile',
 };
 
+function OrderRoute({ refresh }: { refresh: () => Promise<void> }) {
+  const { orderId = '' } = useParams();
+  const navigate = useNavigate();
+  return <OrderDetail orderId={orderId} onBack={() => navigate(-1)} onChanged={refresh} />;
+}
+
 function RiderSubPage({
   screen,
   orders,
@@ -318,14 +332,14 @@ function RiderSubPage({
   const cash = orders.filter((o) => o.status === 'DELIVERED' && o.cashStatus === 'WITH_RIDER');
   const earned = orders.filter((o) => o.status === 'DELIVERED');
 
-  const transition = async (o: LiveOrder) => {
+  const { requireCashierConfirmForPickup } = useConfig();
+  const pickup = async (o: LiveOrder) => {
     setBusy(true);
     setMessage('');
     try {
       await Parse.Cloud.run(preview ? 'transitionPreviewOrder' : 'transitionOrder', {
         orderId: o.id,
-        action: o.status === 'READY' ? 'pickup' : 'deliver',
-        amountCollected: o.total,
+        action: 'pickup',
       });
       await refresh();
     } catch (e) {
@@ -374,7 +388,13 @@ function RiderSubPage({
             </div>
             <div className="activity">
               {active.map((o) => (
-                <article className="order-row actionable" key={o.id}>
+                <article
+                  className="order-row actionable clickable"
+                  key={o.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => !preview && navigate(`/rider/order/${o.id}`)}
+                >
                   <div className={`status-dot ${o.status.toLowerCase()}`} />
                   <div>
                     <b>{o.code}</b>
@@ -382,9 +402,24 @@ function RiderSubPage({
                   </div>
                   <span className="status-pill">{o.status}</span>
                   <strong>{money(o.total)}</strong>
-                  {['READY', 'PICKED_UP'].includes(o.status) ? (
-                    <button disabled={busy} onClick={() => transition(o)}>
-                      {o.status === 'READY' ? 'Pick up' : 'Deliver'}
+                  {o.status === 'READY' && (preview || !requireCashierConfirmForPickup) ? (
+                    <button
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void pickup(o);
+                      }}
+                    >
+                      Pick up
+                    </button>
+                  ) : o.status === 'PICKED_UP' && !preview ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/rider/order/${o.id}`);
+                      }}
+                    >
+                      Deliver
                     </button>
                   ) : (
                     <ChevronRight />

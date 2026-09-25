@@ -14,6 +14,8 @@ export type AppConfig = {
   defaultDeliveryFee: number;
   maxRiderFloat: number;
   allowBatching: boolean;
+  commissionRounding?: string;
+  requireCashierConfirmForPickup?: boolean;
 };
 
 export type Profile = {
