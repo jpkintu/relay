@@ -145,6 +145,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     error,
     setUser: (next) => {
       setError('');
+      setLoadingProfile(true);
       setUserState(next);
     },
     startPreview: () => previewAvailable && setPreview(true),

@@ -402,6 +402,7 @@ Priority: **P0** = release blocker, **P1** = before first paying client, **P2** 
 - [x] U3 — The preview role switcher nav + "Preview roles" button show in production.
 - [x] U4 — The `SAMPLE` menu in `NewOrder` and the `MENU` seed in Cloud Code are for demos only. _(Demo-only paths are now behind the preview flags; the seed menu lives in `cloud/lib/seed.js`.)_
 - [x] U5 — `UGX` is hard-coded in about 10 places.
+- [ ] U6 P2 — Preview only: two simultaneous first loads of `getPreviewOrders` both seed the demo tickets, so they show twice. Seed idempotently (fixed codes + existence check).
 
 ---
 
