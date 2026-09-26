@@ -20,6 +20,7 @@ const {
 } = require('./lib/core');
 const { floatLevel, handoverReminderDue } = require('./lib/alerts');
 const { dateKey, localClock } = require('./lib/dates');
+const { pushNotifications } = require('./push');
 
 const money = (config, amount) =>
   `${config.currencySymbol} ${Math.round(Number(amount) || 0).toLocaleString('en-US')}`;
@@ -65,7 +66,10 @@ async function notifyUsers(users, payload) {
       row.setACL(readAcl(user, []));
       rows.push(row);
     }
-    if (rows.length) await Parse.Object.saveAll(rows, MASTER);
+    if (rows.length) {
+      await Parse.Object.saveAll(rows, MASTER);
+      await pushNotifications(rows);
+    }
     return rows.length;
   } catch (error) {
     console.error(`notify ${payload.kind} failed`, error);

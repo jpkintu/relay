@@ -6,6 +6,9 @@ import '@fontsource-variable/geist-mono';
 import '@fontsource-variable/space-grotesk';
 import './index.css';
 import './parse';
+import { registerServiceWorker } from './lib/push';
+
+registerServiceWorker();
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },

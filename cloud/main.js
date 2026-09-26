@@ -5,6 +5,7 @@
 //   profile.js   getAppInfo, getMyProfile
 //   orders.js    createOrder, transitionOrder (incl. cancel/reject), order issues
 //   customers.js customer records, searchCustomers
+//   push.js      Web Push: VAPID keys, device subscriptions, sending
 //   notifications.js in-app notifications, reminders, getNotifications
 //   payments.js  mobile money: verifyPayment, resubmitPayment, ledger
 //   menu.js      getOperationalMenu, getStock, setAvailability
@@ -15,6 +16,7 @@
 //   preview.js   optional demo mode (RELAY_ENABLE_PREVIEW=true)
 
 require('./security');
+require('./push');
 require('./notifications');
 require('./customers');
 require('./payments');

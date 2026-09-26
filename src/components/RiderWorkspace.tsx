@@ -18,6 +18,7 @@ import { BrandMark } from './BrandMark';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
 import { NotificationBell } from './NotificationBell';
+import { PushPrompt } from './PushPrompt';
 
 type LiveOrder = {
   id: string;
@@ -209,6 +210,7 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
         </button>
       </header>
       <div className="rider-content">
+        {!preview && <PushPrompt card />}
         <ShiftPanel kind="rider" preview={preview} />
         <section className="welcome">
           <div>

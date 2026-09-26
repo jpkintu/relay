@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import Parse from '../parse';
 import { useSession } from './session';
 import { playTone, strongestTone, unlockAudio } from './sound';
+import { enablePush, pushState, refreshPush } from './push';
+import type { PushState } from './push';
 
 export type AppNotification = {
   id: string;
@@ -20,8 +22,8 @@ type Notifications = {
   unread: number;
   soundOn: boolean;
   setSoundOn: (on: boolean) => void;
-  alertsPermission: NotificationPermission | 'unsupported';
-  enableAlerts: () => Promise<void>;
+  push: PushState;
+  enablePhoneNotifications: () => Promise<void>;
   markRead: (ids: string[]) => Promise<void>;
   markAllRead: () => Promise<void>;
 };
@@ -39,11 +41,6 @@ const storedSound = () => {
   }
 };
 
-const permission = (): NotificationPermission | 'unsupported' =>
-  typeof window !== 'undefined' && 'Notification' in window
-    ? Notification.permission
-    : 'unsupported';
-
 // Polls the server for the signed-in user's notifications. New ones play a
 // sound and, when the app is in the background and alerts are allowed,
 // show a system notification.
@@ -53,7 +50,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [soundOn, setSoundState] = useState(storedSound);
-  const [alertsPermission, setAlertsPermission] = useState(permission);
+  const [push, setPush] = useState<PushState>('unsupported');
+  const pushRef = useRef(push);
+  pushRef.current = push;
   const seen = useRef<Set<string> | null>(null);
   const soundRef = useRef(soundOn);
   soundRef.current = soundOn;
@@ -72,9 +71,16 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       if (!fresh.length) return;
       const tone = strongestTone(fresh.map((n) => n.tone));
       if (tone && soundRef.current) playTone(tone);
-      if (document.hidden && permission() === 'granted') {
+      // Without phone notifications, still show a system banner while the
+      // app is open in another tab or behind another app.
+      if (
+        document.hidden &&
+        pushRef.current !== 'on' &&
+        typeof Notification !== 'undefined' &&
+        Notification.permission === 'granted'
+      ) {
         for (const n of fresh.slice(0, 3))
-          new Notification(n.title, { body: n.body, tag: n.id, icon: '/favicon.ico' });
+          new Notification(n.title, { body: n.body, tag: n.id, icon: '/icons/icon-192.png' });
       }
     } catch {
       // Offline or signed out; try again on the next tick.
@@ -87,12 +93,17 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     setUnread(0);
     if (!enabled) return;
     void load();
+    void refreshPush().then(() => pushState().then(setPush));
+    // A push arrived while the app is open: fetch now instead of waiting.
+    const onMessage = (event: MessageEvent) => event.data?.type === 'relay:push' && void load();
+    navigator.serviceWorker?.addEventListener('message', onMessage);
     const timer = window.setInterval(() => void load(), POLL_MS);
     const onVisible = () => document.visibilityState === 'visible' && void load();
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
+      navigator.serviceWorker?.removeEventListener('message', onMessage);
     };
   }, [enabled, load]);
 
@@ -120,9 +131,13 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const enableAlerts = async () => {
-    if (permission() === 'unsupported') return;
-    setAlertsPermission(await Notification.requestPermission());
+  const enablePhoneNotifications = async () => {
+    unlockAudio();
+    try {
+      setPush(await enablePush());
+    } catch {
+      setPush(await pushState());
+    }
   };
 
   const markRead = async (ids: string[]) => {
@@ -146,8 +161,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         unread,
         soundOn,
         setSoundOn,
-        alertsPermission,
-        enableAlerts,
+        push,
+        enablePhoneNotifications,
         markRead,
         markAllRead,
       }}

@@ -26,6 +26,11 @@ export default tseslint.config(
     },
   },
   {
+    files: ['public/sw.js'],
+    extends: [js.configs.recommended],
+    languageOptions: { globals: globals.serviceworker, sourceType: 'script' },
+  },
+  {
     files: ['cloud/**/*.js'],
     extends: [js.configs.recommended],
     languageOptions: {

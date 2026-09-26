@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, BellRing, Volume2, VolumeX } from 'lucide-react';
 import { useNotifications } from '../lib/notifications';
 import { timeAgo } from '../lib/format';
+import { PushPrompt } from './PushPrompt';
 
 // Bell with the unread count; opens the list of notifications.
 export function NotificationBell() {
@@ -25,7 +26,7 @@ export function NotificationBell() {
   }, [open]);
 
   if (!notifications) return null;
-  const { items, unread, soundOn, setSoundOn, alertsPermission, enableAlerts } = notifications;
+  const { items, unread, soundOn, setSoundOn } = notifications;
   const label = unread ? `Notifications, ${unread} unread` : 'Notifications';
 
   return (
@@ -78,15 +79,7 @@ export function NotificationBell() {
               {soundOn ? <Volume2 /> : <VolumeX />}
               {soundOn ? 'Sound on' : 'Sound off'}
             </button>
-            {alertsPermission === 'default' && (
-              <button onClick={() => void enableAlerts()}>
-                <BellRing />
-                Allow alerts in the background
-              </button>
-            )}
-            {alertsPermission === 'denied' && (
-              <small>Phone alerts are blocked in the browser settings.</small>
-            )}
+            <PushPrompt />
           </footer>
         </section>
       )}

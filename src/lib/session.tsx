@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import Parse from '../parse';
 import { completeGoogleSignIn } from './googleSignIn';
 import { formatMoney } from './format';
+import { forgetPush } from './push';
 
 export type Role = 'admin' | 'cashier' | 'rider';
 
@@ -95,6 +96,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    await forgetPush();
     try {
       await Parse.User.logOut();
     } catch {

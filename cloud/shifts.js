@@ -21,6 +21,39 @@ async function expectedTill(cashier, shift) {
   return Number(shift.get('openingFloat') || 0) + sumBy(handovers, (h) => h.get('amount'));
 }
 
+// What stops a rider from ending their shift: orders not yet delivered or
+// cancelled, and cash not yet reconciled (held, or handed over but not yet
+// confirmed by the cashier).
+async function riderOutstanding(rider) {
+  const openQuery = new Parse.Query('Order');
+  openQuery.equalTo('createdBy', rider);
+  openQuery.notContainedIn('status', ['DELIVERED', 'CANCELLED']);
+  const cashQuery = new Parse.Query('Order');
+  cashQuery.equalTo('createdBy', rider);
+  cashQuery.equalTo('status', 'DELIVERED');
+  cashQuery.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
+  cashQuery.limit(1000);
+  const [openOrders, cashOrders] = await Promise.all([
+    openQuery.count(MASTER),
+    cashQuery.find(MASTER),
+  ]);
+  const sum = (status) =>
+    sumBy(
+      cashOrders.filter((o) => o.get('cashStatus') === status),
+      (o) => o.get('amountCollected'),
+    );
+  return { openOrders, cashWithRider: sum('WITH_RIDER'), cashPending: sum('HANDOVER_PENDING') };
+}
+
+function outstandingProblem({ openOrders, cashWithRider, cashPending }) {
+  if (openOrders)
+    return `Finish or cancel your ${openOrders} open order${openOrders === 1 ? '' : 's'} before ending your shift`;
+  if (cashWithRider) return 'Hand over the cash you are holding before ending your shift';
+  if (cashPending)
+    return 'Wait for the cashier to confirm your cash handover before ending your shift';
+  return '';
+}
+
 function openShiftQuery(user) {
   const query = new Parse.Query('Shift');
   query.equalTo('operator', user);
@@ -42,6 +75,7 @@ Parse.Cloud.define('getMyShift', async (request) => {
       openingFloat: shift.get('openingFloat'),
       expectedTill: isCashier ? await expectedTill(user, shift) : null,
       float: isCashier ? null : await riderFloat(user),
+      outstanding: isCashier ? null : await riderOutstanding(user),
     },
   };
 });
@@ -77,9 +111,11 @@ Parse.Cloud.define('endShift', async (request) => {
   if (row.get('operator')?.id !== user.id || row.get('status') !== 'open')
     throw forbidden('No open shift found');
   const isCashier = row.get('kind') === 'cashier';
-  const balance = isCashier ? 0 : await riderFloat(user);
-  if (balance > 0 && request.params.acknowledgeCash !== true)
-    throw invalid('Cash remains with you. Acknowledge it before ending your shift');
+  if (!isCashier) {
+    const problem = outstandingProblem(await riderOutstanding(user));
+    if (problem) throw invalid(problem);
+  }
+  const balance = 0;
   let expected = null;
   let counted = null;
   let variance = null;

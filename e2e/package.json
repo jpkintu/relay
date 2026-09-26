@@ -9,6 +9,7 @@
   "devDependencies": {
     "express": "^4.21.2",
     "parse": "7.1.2",
-    "parse-server": "^7.5.0"
+    "parse-server": "^7.5.0",
+    "web-push": "^3.6.7"
   }
 }
