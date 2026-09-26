@@ -12,9 +12,11 @@ import {
   LogOut,
   UtensilsCrossed,
   X,
+  Banknote,
 } from 'lucide-react';
 import Parse from '../parse';
 import { CashierHandovers } from './CashierHandovers';
+import { CashierPayouts } from './CashierPayouts';
 import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
@@ -43,6 +45,9 @@ type Ticket = {
   paymentStatus: string;
   paymentProvider: string;
   paymentReference: string;
+  // The cashier handling this order (empty until someone takes it).
+  holderId: string;
+  holderName: string;
 };
 
 const stageOf = (status: string): Stage =>
@@ -98,6 +103,8 @@ async function loadLiveTickets(): Promise<Ticket[]> {
     paymentStatus: order.get('paymentStatus') || '',
     paymentProvider: order.get('paymentProvider') || '',
     paymentReference: order.get('paymentReference') || '',
+    holderId: order.get('cashier')?.id || '',
+    holderName: order.get('cashierName') || '',
   }));
 }
 
@@ -161,7 +168,9 @@ export function CashierWorkspace() {
         ? 'stock'
         : pathname.startsWith('/cashier/payments')
           ? 'payments'
-          : 'orders';
+          : pathname.startsWith('/cashier/payouts')
+            ? 'payouts'
+            : 'orders';
   return (
     <main className="ops-shell">
       <header className="ops-header">
@@ -184,6 +193,13 @@ export function CashierWorkspace() {
           >
             <Smartphone />
             Mobile money {pendingPayments > 0 && <b>{pendingPayments}</b>}
+          </button>
+          <button
+            className={tab === 'payouts' ? 'active' : ''}
+            onClick={() => navigate('/cashier/payouts')}
+          >
+            <Banknote />
+            Payouts
           </button>
           <button
             className={tab === 'stock' ? 'active' : ''}
@@ -234,6 +250,7 @@ export function CashierWorkspace() {
           <Route path="handovers" element={<CashierHandovers preview={preview} />} />
           <Route path="stock" element={<StockPanel />} />
           <Route path="payments" element={<MobileMoneyLedger />} />
+          <Route path="payouts" element={<CashierPayouts />} />
           <Route
             path="shift"
             element={
@@ -250,9 +267,15 @@ export function CashierWorkspace() {
 }
 
 function KitchenBoard() {
-  const { preview, config } = useSession();
+  const { preview, config, user, profile } = useSession();
   const money = useMoney();
+  const me = user?.id || '';
+  const isCashier = profile?.role === 'cashier';
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [mineOnly, setMineOnly] = useState(false);
+  const [passing, setPassing] = useState<string | null>(null);
+  const [colleagues, setColleagues] = useState<{ id: string; name: string }[] | null>(null);
+  const [passTo, setPassTo] = useState('');
   const [error, setError] = useState('');
   const [closing, setClosing] = useState<{
     id: string;
@@ -284,6 +307,8 @@ function KitchenBoard() {
             paymentStatus: '',
             paymentProvider: '',
             paymentReference: '',
+            holderId: '',
+            holderName: '',
           })),
         );
       } else {
@@ -328,6 +353,32 @@ function KitchenBoard() {
     return true;
   };
 
+  const openPass = async (ticket: Ticket) => {
+    setPassing(ticket.id);
+    setPassTo('');
+    setColleagues(null);
+    try {
+      setColleagues(await Parse.Cloud.run('getOnShiftCashiers'));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load colleagues on shift');
+      setColleagues([]);
+    }
+  };
+
+  const pass = async (ticket: Ticket) => {
+    try {
+      await Parse.Cloud.run('transferOrder', { orderId: ticket.id, toUserId: passTo });
+      setPassing(null);
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not transfer the order');
+      return;
+    }
+    await load();
+  };
+
+  const visible = tickets.filter((t) => !mineOnly || !t.holderId || t.holderId === me);
+
   return (
     <div className="ops-content">
       {error && <div className="ops-error">{error}</div>}
@@ -339,21 +390,34 @@ function KitchenBoard() {
           <Clock3 /> Refreshes every 10 seconds
         </span>
       </div>
+      {isCashier && !preview && (
+        <div className="filter-toggle board-filter" role="group" aria-label="Show orders">
+          <button className={mineOnly ? '' : 'active'} onClick={() => setMineOnly(false)}>
+            All orders
+          </button>
+          <button className={mineOnly ? 'active' : ''} onClick={() => setMineOnly(true)}>
+            Mine and new
+          </button>
+        </div>
+      )}
       <div className="board-grid">
         {(['Incoming', 'Preparing', 'Ready'] as const).map((stage) => (
           <section className="board-column" key={stage}>
             <header>
               <span className={`board-dot ${stage.toLowerCase()}`} />
               <h2>{stage}</h2>
-              <b>{tickets.filter((t) => t.stage === stage).length}</b>
+              <b>{visible.filter((t) => t.stage === stage).length}</b>
             </header>
-            {tickets
+            {visible
               .filter((t) => t.stage === stage)
               .map((ticket) => {
                 const age = minutesSince(ticket.createdAt);
                 const isClosing = closing?.id === ticket.id;
+                const mine = !!ticket.holderId && ticket.holderId === me;
+                const heldByOther = isCashier && !!ticket.holderId && !mine;
+                const canPass = !preview && (!isCashier || !heldByOther);
                 return (
-                  <article className="ticket" key={ticket.id}>
+                  <article className={heldByOther ? 'ticket held' : 'ticket'} key={ticket.id}>
                     <div className="ticket-top">
                       <b>{ticket.code}</b>
                       <span>{money(ticket.total)}</span>
@@ -386,7 +450,45 @@ function KitchenBoard() {
                       </p>
                     )}
                     <small>{ticket.rider}</small>
-                    {isClosing ? (
+                    {!preview && (
+                      <p className={mine ? 'ticket-holder mine' : 'ticket-holder'}>
+                        {mine
+                          ? 'You are handling this'
+                          : ticket.holderName
+                            ? `Handled by ${ticket.holderName}`
+                            : 'Not taken yet'}
+                      </p>
+                    )}
+                    {passing === ticket.id ? (
+                      <div className="ticket-close">
+                        <select
+                          aria-label="Pass to"
+                          value={passTo}
+                          onChange={(e) => setPassTo(e.target.value)}
+                        >
+                          <option value="">Anyone on shift (release it)</option>
+                          {(colleagues || []).map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        {colleagues && !colleagues.length && (
+                          <small>No other cashier is on shift right now.</small>
+                        )}
+                        <div className="ticket-actions">
+                          <button onClick={() => setPassing(null)}>Back</button>
+                          <button onClick={() => void pass(ticket)}>
+                            {passTo ? 'Transfer' : 'Release'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : heldByOther ? (
+                      <p className="ticket-held">
+                        Ask {ticket.holderName.split(' · ').pop()} to transfer it if you need to
+                        take over.
+                      </p>
+                    ) : isClosing ? (
                       <div className="ticket-close">
                         <input
                           autoFocus
@@ -491,16 +593,25 @@ function KitchenBoard() {
                         )}
                       </div>
                     )}
-                    {stage !== 'Incoming' && !isClosing && !preview && (
-                      <button
-                        className="link-button"
-                        onClick={() => {
-                          setClosing({ id: ticket.id, action: 'cancel' });
-                          setReason('');
-                        }}
-                      >
-                        Cancel order
-                      </button>
+                    {!isClosing && passing !== ticket.id && !heldByOther && !preview && (
+                      <div className="ticket-links">
+                        {stage !== 'Incoming' && (
+                          <button
+                            className="link-button"
+                            onClick={() => {
+                              setClosing({ id: ticket.id, action: 'cancel' });
+                              setReason('');
+                            }}
+                          >
+                            Cancel order
+                          </button>
+                        )}
+                        {canPass && (mine || !ticket.holderId || !isCashier) && (
+                          <button className="link-button" onClick={() => void openPass(ticket)}>
+                            Pass to a colleague
+                          </button>
+                        )}
+                      </div>
                     )}
                   </article>
                 );
@@ -613,6 +724,8 @@ type PaymentRow = {
   checkedAt: string | null;
   checkedBy: string;
   rejectReason: string;
+  holderId: string;
+  holderName: string;
 };
 type Ledger = {
   pending: PaymentRow[];
@@ -624,7 +737,9 @@ type Ledger = {
 // Mobile money reconciliation: confirm payments against the Airtel/MTN
 // merchant accounts, and compare today's totals with the merchant statements.
 function MobileMoneyLedger() {
-  const { preview, config } = useSession();
+  const { preview, config, user, profile } = useSession();
+  const me = user?.id || '';
+  const isCashier = profile?.role === 'cashier';
   const money = useMoney();
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [error, setError] = useState('');
@@ -756,7 +871,9 @@ function MobileMoneyLedger() {
                           {money(row.amount)}
                         </td>
                         <td data-label="Check" className="actions-cell">
-                          {rejecting === row.id ? (
+                          {isCashier && row.holderId && row.holderId !== me ? (
+                            <span className="muted">{row.holderName} has this order</span>
+                          ) : rejecting === row.id ? (
                             <div className="payment-actions">
                               <input
                                 autoFocus

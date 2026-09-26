@@ -4415,3 +4415,226 @@ table.data.compact-table {
   resize: vertical;
   background: var(--surface);
 }
+
+/* PIN re-entry prompt */
+.pin-modal {
+  width: min(380px, 100%);
+  text-align: center;
+}
+.pin-modal .pin-icon {
+  width: 34px;
+  height: 34px;
+  color: var(--blue);
+}
+.pin-modal h2 {
+  font: 600 22px var(--font-display);
+  margin: 8px 0 4px;
+}
+.pin-modal .setup-field {
+  text-align: left;
+}
+.pin-modal input {
+  font-size: 22px;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+.pin-modal .cash-modal-actions {
+  justify-content: center;
+}
+
+/* Handover counting: tick received orders; flag long waits */
+.handover-orders .cash-order {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.handover-orders .cash-order input {
+  width: 18px;
+  height: 18px;
+}
+.handover-orders .ticked-total {
+  grid-template-columns: 1fr auto;
+  font-weight: 700;
+  border-top: 1px solid var(--line);
+}
+.handover.stale {
+  border-color: #e7a38e;
+  background: #fff4ef;
+}
+.stale-tag {
+  display: inline-block;
+  margin-top: 4px;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b3401c;
+}
+.collect-note {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+/* Kitchen board: one cashier per order */
+.board-filter {
+  margin: -8px 0 14px;
+  width: fit-content;
+}
+.ticket-holder {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.ticket-holder.mine {
+  color: var(--blue);
+}
+.ticket.held {
+  opacity: 0.72;
+}
+.ticket-held {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.ticket-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.ticket-close select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 10px;
+  font: inherit;
+  background: var(--surface);
+}
+.ticket-close small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+/* Owner cash controls */
+.dispute-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.receive-cash {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.receive-cash-form {
+  margin-bottom: 14px;
+}
+.receive-cash-form select,
+.receive-cash-form input {
+  width: 100%;
+}
+.check-problems {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: #a3361a;
+  line-height: 1.6;
+}
+.payout-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+@media (max-width: 700px) {
+  .payout-form {
+    grid-template-columns: 1fr;
+  }
+}
+.my-handovers,
+.my-payouts {
+  margin-top: 22px;
+}
+.my-handovers h3,
+.my-payouts h3 {
+  font: 600 16px var(--font-display);
+  margin: 0 0 10px;
+}
+.my-handover {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 12px;
+  background: var(--surface);
+  margin-bottom: 8px;
+}
+.my-handover div {
+  display: grid;
+}
+.my-handover small {
+  color: var(--muted);
+}
+.my-handover p {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+.my-handover.good {
+  border-left-color: #3f9d5a;
+}
+.my-handover.warn {
+  border-left-color: #e0a526;
+}
+.my-handover.bad {
+  border-left-color: #d9532c;
+}
+.cash-balance.owed small {
+  display: block;
+  margin-top: 6px;
+  opacity: 0.8;
+}
+
+/* Cashier header with the Payouts tab: icons never squash; the tab row
+   scrolls sideways instead of overflowing when space runs out. */
+.ops-header nav {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ops-header nav::-webkit-scrollbar {
+  display: none;
+}
+.ops-header nav button svg {
+  flex-shrink: 0;
+}
+.ops-header .shift-live {
+  white-space: nowrap;
+}
+@media (min-width: 1200px) and (max-width: 1439px) {
+  .ops-header {
+    gap: 16px;
+    padding: 0 22px;
+  }
+  .ops-header nav button {
+    padding: 0 11px;
+    gap: 6px;
+  }
+}
+.admin-section-panel .panel-title {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.panel-title .receive-cash-form {
+  flex: 1 0 100%;
+  margin: 4px 0 0;
+}
+.receive-cash-form label {
+  display: grid;
+  gap: 4px;
+  max-width: 420px;
+}

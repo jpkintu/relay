@@ -244,7 +244,7 @@ export function AdminWorkspace() {
                 <small>Delivered cash orders not reconciled</small>
               </article>
               <article>
-                <span>Commission earned today</span>
+                <span>Rider pay earned today</span>
                 <strong>{money(today.reduce((n, o) => n + o.commission, 0))}</strong>
                 <small>Recorded on delivered orders</small>
               </article>

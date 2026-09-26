@@ -9193,7 +9193,9 @@ var require_payments = __commonJS({
         createdAt: order.createdAt,
         checkedAt: order.get("paymentCheckedAt") || null,
         checkedBy: nameOf(order.get("paymentCheckedBy")),
-        rejectReason: order.get("paymentRejectReason") || ""
+        rejectReason: order.get("paymentRejectReason") || "",
+        holderId: order.get("cashier")?.id || "",
+        holderName: order.get("cashierName") || ""
       };
     }
     Parse.Cloud.define("getMobileMoneyLedger", async (request) => {
@@ -11269,7 +11271,12 @@ var require_reports2 = __commonJS({
         status: h.get("status"),
         reason: h.get("disputeReason") || "",
         createdAt: h.createdAt,
-        confirmedAt: h.get("confirmedAt") || null
+        confirmedAt: h.get("confirmedAt") || null,
+        returnedAmount: Number(h.get("returnedAmount") || 0),
+        shortage: Number(h.get("shortage") || 0),
+        shortageStatus: h.get("shortageStatus") || "",
+        resolutionNote: h.get("resolutionNote") || "",
+        receivedByOwner: h.get("receivedByOwner") === true
       }));
       const transactions = [...cashRows, ...momoRows].sort(byNewest("at"));
       return {

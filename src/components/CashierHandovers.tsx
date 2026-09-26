@@ -12,8 +12,12 @@ type Handover = {
   amount: number;
   orderCount: number;
   createdAt: Date;
-  orders: { code: string; amount: number }[];
+  orders: { id: string; code: string; amount: number }[];
 };
+
+// Matches the server: handovers waiting longer than this are flagged.
+const STALE_HOURS = 4;
+const hoursWaiting = (date: Date) => Math.floor((Date.now() - date.getTime()) / 3600000);
 export function CashierHandovers({ preview }: { preview: boolean }) {
   const money = useMoney();
   const { timezone } = useConfig();
@@ -21,6 +25,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     [selected, setSelected] = useState<string | null>(null),
     [counted, setCounted] = useState(''),
     [reason, setReason] = useState(''),
+    [received, setReceived] = useState<string[]>([]),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false);
@@ -29,7 +34,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     try {
       const q = new Parse.Query('CashHandover');
       q.equalTo('status', 'pending');
-      q.descending('createdAt');
+      q.ascending('createdAt');
       q.include('rider');
       q.limit(100);
       const found = await q.find();
@@ -40,7 +45,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
           rider: personLabel(h.get('rider')),
           amount: h.get('amount'),
           orderCount: h.get('orderCount'),
-          createdAt: h.createdAt || new Date(),
+          createdAt: h.get('handedOverAt') || h.createdAt || new Date(),
           orders: [],
         })),
       );
@@ -59,18 +64,21 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     setSelected(row.id);
     setCounted('');
     setReason('');
+    setReceived([]);
     if (preview) return;
     try {
       const q = new Parse.Query('CashHandover');
       const handover = await q.get(row.id);
       const pointers = handover.get('orders') || [];
       const orders = await Promise.all(pointers.map((p: Parse.Object) => p.fetch()));
+      setReceived(orders.map((o: Parse.Object) => o.id!));
       setRows((prev) =>
         prev.map((h) =>
           h.id === row.id
             ? {
                 ...h,
                 orders: orders.map((o: Parse.Object) => ({
+                  id: o.id!,
                   code: o.get('orderCode'),
                   amount: o.get('amountCollected'),
                 })),
@@ -96,12 +104,21 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     setBusy(true);
     setError('');
     try {
-      await Parse.Cloud.run(action, { handoverId: selected, countedAmount: amount, reason });
+      const result = await Parse.Cloud.run(action, {
+        handoverId: selected,
+        countedAmount: amount,
+        reason,
+        ...(action === 'confirmHandover' && { receivedOrderIds: received }),
+      });
       setSelected(null);
       setNotice(
-        action === 'confirmHandover'
-          ? 'Cash receipt confirmed.'
-          : 'Dispute recorded for owner review.',
+        action === 'disputeHandover'
+          ? 'Dispute recorded for owner review.'
+          : result?.returned
+            ? `Cash receipt confirmed. ${result.returned} ${
+                result.returned === 1 ? 'order went' : 'orders went'
+              } back to the rider to hand over again.`
+            : 'Cash receipt confirmed.',
       );
       await load();
     } catch (e) {
@@ -111,6 +128,10 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     }
   };
   const current = rows.find((h) => h.id === selected);
+  const tickedTotal = current
+    ? current.orders.filter((o) => received.includes(o.id)).reduce((n, o) => n + o.amount, 0)
+    : 0;
+  const countedValue = counted.trim() === '' ? null : Number(counted);
   return (
     <div className="ops-content">
       <div className="ops-title">
@@ -127,12 +148,18 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
         </p>
       )}
       {rows.map((row) => (
-        <article className="handover" key={row.id}>
+        <article
+          className={hoursWaiting(row.createdAt) >= STALE_HOURS ? 'handover stale' : 'handover'}
+          key={row.id}
+        >
           <div className="handover-code">
             <HandCoins />
             <div>
               <b>{row.code}</b>
               <span>{formatDate(row.createdAt, timezone)}</span>
+              {hoursWaiting(row.createdAt) >= STALE_HOURS && (
+                <em className="stale-tag">Waiting {hoursWaiting(row.createdAt)} h</em>
+              )}
             </div>
           </div>
           <div>
@@ -174,14 +201,30 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
             </div>
             <p>
               Rider claims <strong>{money(current.amount)}</strong> across {current.orderCount}{' '}
-              orders.
+              orders. Untick any order whose cash you did not get: it goes back to the rider to hand
+              over again.
             </p>
-            {current.orders.map((o) => (
-              <div className="cash-order" key={o.code}>
-                <span>{o.code}</span>
-                <b>{money(o.amount)}</b>
+            <div className="handover-orders">
+              {current.orders.map((o) => (
+                <label className="cash-order" key={o.id}>
+                  <input
+                    type="checkbox"
+                    checked={received.includes(o.id)}
+                    onChange={() =>
+                      setReceived((ids) =>
+                        ids.includes(o.id) ? ids.filter((id) => id !== o.id) : [...ids, o.id],
+                      )
+                    }
+                  />
+                  <span>{o.code}</span>
+                  <b>{money(o.amount)}</b>
+                </label>
+              ))}
+              <div className="cash-order ticked-total">
+                <span>Ticked orders</span>
+                <b>{money(tickedTotal)}</b>
               </div>
-            ))}
+            </div>
             <label className="setup-field">
               Cash physically received
               <input
@@ -193,8 +236,15 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                 placeholder="Enter counted amount"
               />
             </label>
+            {countedValue !== null && countedValue !== tickedTotal && (
+              <p className="till-difference short">
+                {countedValue < tickedTotal
+                  ? `${money(tickedTotal - countedValue)} missing: untick the orders not paid in, or flag a dispute.`
+                  : `That is ${money(countedValue - tickedTotal)} more than the ticked orders.`}
+              </p>
+            )}
             <label className="setup-field">
-              Dispute reason, if amounts differ
+              Dispute reason, if cash is missing
               <textarea
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
@@ -203,13 +253,18 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
             </label>
             <div className="cash-modal-actions">
               <button
-                disabled={busy || !counted || Number(counted) !== current.amount}
+                disabled={busy || !received.length || countedValue !== tickedTotal}
                 onClick={() => void submit('confirmHandover')}
               >
                 <Check /> Confirm received
               </button>
               <button
-                disabled={busy || !counted || reason.trim().length < 5}
+                disabled={
+                  busy ||
+                  countedValue === null ||
+                  countedValue >= current.amount ||
+                  reason.trim().length < 5
+                }
                 onClick={() => void submit('disputeHandover')}
               >
                 Flag dispute

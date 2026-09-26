@@ -19,6 +19,8 @@ import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
+import { MyHandovers, MyPay } from './RiderMoney';
+import { usePin } from '../lib/pin';
 
 type LiveOrder = {
   id: string;
@@ -369,10 +371,11 @@ function commissionRule(
   money: (n: number) => string,
 ) {
   if (!commission) return 'Not set';
-  if (commission.type === 'percent') return `${commission.percent}% of each order subtotal`;
+  const fee = ', plus the delivery fee';
+  if (commission.type === 'percent') return `${commission.percent}% of each order subtotal${fee}`;
   if (commission.type === 'hybrid')
-    return `${money(commission.perOrder)} + ${commission.percent}% of each order subtotal`;
-  return `${money(commission.perOrder)} per delivery`;
+    return `${money(commission.perOrder)} + ${commission.percent}% of each order subtotal${fee}`;
+  return `${money(commission.perOrder)} per delivery${fee}`;
 }
 
 const TITLES: Record<SubScreen, string> = {
@@ -403,6 +406,8 @@ function RiderSubPage({
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [handoverVersion, setHandoverVersion] = useState(0);
+  const withPin = usePin();
   const active = orders.filter(IN_FLIGHT);
   const cash = orders.filter((o) => o.status === 'DELIVERED' && o.cashStatus === 'WITH_RIDER');
   const earned = orders.filter((o) => o.status === 'DELIVERED');
@@ -425,18 +430,23 @@ function RiderSubPage({
   };
   const handover = async () => {
     if (!selected.length) return;
-    setBusy(true);
     setMessage('');
-    try {
-      await Parse.Cloud.run('createHandover', { orderIds: selected });
-      setSelected([]);
-      await refresh();
-      setMessage('Handover sent. Waiting for cashier confirmation.');
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : 'Handover failed');
-    } finally {
-      setBusy(false);
-    }
+    const total = sum(
+      cash.filter((o) => selected.includes(o.id)),
+      (o) => o.amountCollected,
+    );
+    // One id per attempt: a retry after a dropped connection is not doubled.
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const sent = await withPin(
+      `Hand over ${money(total)}`,
+      (pin) => Parse.Cloud.run('createHandover', { orderIds: selected, pin, requestId }),
+      'Give the cash to the cashier, then enter your PIN.',
+    );
+    if (!sent) return;
+    setSelected([]);
+    setHandoverVersion((n) => n + 1);
+    await refresh();
+    setMessage('Handover sent. Waiting for cashier confirmation.');
   };
 
   return (
@@ -545,6 +555,7 @@ function RiderSubPage({
                 <ChevronRight />
               </button>
             )}
+            {!preview && <MyHandovers version={handoverVersion} />}
             {preview && (
               <p className="info-card">
                 Demo orders do not carry physical cash. Sign in as a rider to submit a real
@@ -571,7 +582,10 @@ function RiderSubPage({
               ))}
             </>
           ) : (
-            <RiderEarnings />
+            <>
+              <MyPay />
+              <RiderEarnings />
+            </>
           ))}
         {screen === 'profile' && (
           <div className="profile-card">

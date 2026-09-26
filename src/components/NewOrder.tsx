@@ -46,8 +46,6 @@ export type OrderPayload = {
   paymentMethod: string;
   paymentProvider?: string;
   paymentReference?: string;
-  amountToCollect?: number;
-  shortfallNote: string;
   items: { id: string; quantity: number; notes: string; accompaniments: string[] }[];
 };
 
@@ -79,8 +77,6 @@ type Draft = {
   payment: string;
   provider: string;
   reference: string;
-  amount: string;
-  shortfall: string;
 };
 
 const newClientId = () =>
@@ -100,8 +96,6 @@ const emptyDraft = (): Draft => ({
   payment: 'cash',
   provider: '',
   reference: '',
-  amount: '',
-  shortfall: '',
 });
 
 function loadDraft(key: string): Draft | null {
@@ -179,9 +173,8 @@ export function NewOrder({
   const subtotal = cartSubtotal(draft.cart);
   const total = subtotal + fee;
   const isCash = draft.payment === 'cash';
-  const amount = draft.amount.trim() === '' ? total : Number(draft.amount);
-  const short = isCash && Number.isFinite(amount) && amount < total;
-  const earn = previewCommission(profile?.commission, subtotal, config.commissionRounding);
+  // Riders earn their commission plus the delivery fee.
+  const earn = previewCommission(profile?.commission, subtotal, config.commissionRounding) + fee;
   const categories = ['All', ...new Set(items.map((i) => i.category))];
   const filtered = items.filter(
     (i) =>
@@ -192,8 +185,6 @@ export function NewOrder({
     !draft.name.trim() && 'customer name',
     !draft.address.trim() && 'delivery address',
     !draft.cart.length && 'at least one item',
-    short && draft.shortfall.trim().length < 5 && 'a note for the short payment',
-    isCash && !Number.isFinite(amount) && 'the amount to collect',
     !isCash && !draft.provider && 'Airtel or MTN',
     !isCash && draft.provider && referenceProblem(draft.reference),
   ].filter(Boolean) as string[];
@@ -258,8 +249,6 @@ export function NewOrder({
         paymentMethod: draft.payment,
         paymentProvider: isCash ? undefined : draft.provider,
         paymentReference: isCash ? undefined : draft.reference.trim(),
-        amountToCollect: isCash ? amount : undefined,
-        shortfallNote: short ? draft.shortfall.trim() : '',
         items: draft.cart.map((line) => ({
           id: line.itemId,
           quantity: line.quantity,
@@ -511,26 +500,9 @@ export function NewOrder({
               />
             )}
             {isCash && (
-              <label>
-                <span>Cash to collect</span>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="numeric"
-                  value={draft.amount === '' ? total : draft.amount}
-                  onChange={(e) => update({ amount: e.target.value })}
-                />
-              </label>
-            )}
-            {short && (
-              <label className="full-row">
-                <span>Why is the customer paying less?</span>
-                <input
-                  value={draft.shortfall}
-                  onChange={(e) => update({ shortfall: e.target.value })}
-                  placeholder="Required for short payments"
-                />
-              </label>
+              <p className="collect-note full-row">
+                Collect the full <b>{money(total)}</b> in cash at the door.
+              </p>
             )}
           </div>
         </section>

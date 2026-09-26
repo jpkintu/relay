@@ -158,6 +158,8 @@ function paymentRow(order) {
     checkedAt: order.get('paymentCheckedAt') || null,
     checkedBy: nameOf(order.get('paymentCheckedBy')),
     rejectReason: order.get('paymentRejectReason') || '',
+    holderId: order.get('cashier')?.id || '',
+    holderName: order.get('cashierName') || '',
   };
 }
 

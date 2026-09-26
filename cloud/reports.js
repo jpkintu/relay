@@ -208,6 +208,11 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
       reason: h.get('disputeReason') || '',
       createdAt: h.createdAt,
       confirmedAt: h.get('confirmedAt') || null,
+      returnedAmount: Number(h.get('returnedAmount') || 0),
+      shortage: Number(h.get('shortage') || 0),
+      shortageStatus: h.get('shortageStatus') || '',
+      resolutionNote: h.get('resolutionNote') || '',
+      receivedByOwner: h.get('receivedByOwner') === true,
     }));
   const transactions = [...cashRows, ...momoRows].sort(byNewest('at'));
 

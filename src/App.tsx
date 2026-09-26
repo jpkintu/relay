@@ -12,6 +12,7 @@ import { SessionProvider, homePath, useSession } from './lib/session';
 import type { Role } from './lib/session';
 import { useDeviceAttribute } from './lib/device';
 import { NotificationsProvider } from './lib/notifications';
+import { PinProvider } from './lib/pin';
 
 export default function App() {
   return (
@@ -46,12 +47,14 @@ function AppRoutes() {
     ACCESS[area].includes(role) ? element : <Navigate to={homePath(role)} replace />;
   return (
     <NotificationsProvider>
-      <Routes>
-        <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
-        <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
-        <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
-        <Route path="*" element={<Navigate to={homePath(role)} replace />} />
-      </Routes>
+      <PinProvider>
+        <Routes>
+          <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
+          <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
+          <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
+          <Route path="*" element={<Navigate to={homePath(role)} replace />} />
+        </Routes>
+      </PinProvider>
     </NotificationsProvider>
   );
 }
