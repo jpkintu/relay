@@ -45,8 +45,9 @@ const PROTECTED_CLASSES = [
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = ['Counter', 'DemoOrder', 'Configuration', 'PushSubscription', 'Secret'];
-// Fields a signed-in user may change on their own _User record.
-const SELF_EDITABLE_USER_FIELDS = ['password', 'email'];
+// Fields a signed-in user may change on their own _User record. The PIN
+// (password) is changed through changeMyPin, which checks the old one.
+const SELF_EDITABLE_USER_FIELDS = ['email'];
 
 for (const className of PROTECTED_CLASSES) {
   Parse.Cloud.beforeSave(className, (request) => {
@@ -248,6 +249,9 @@ const SCHEMAS = {
     mtnMerchantName: S,
     cashReminderHour: N,
     floatWarningPercent: N,
+    defaultCommissionType: S,
+    defaultCommissionPerOrder: N,
+    defaultCommissionPercent: N,
   },
   MenuItem: {
     title: S,
@@ -306,8 +310,15 @@ const SCHEMAS = {
   },
 };
 
-// PIN re-entry lockout and the rider payout round (see lib/core.js, payouts.js).
-const USER_FIELDS = { pinFailures: N, pinLockedUntil: D, payRound: N };
+// PIN re-entry lockout, the rider payout round, rider availability and the
+// rider's own cash limit (see lib/core.js, payouts.js, people.js).
+const USER_FIELDS = {
+  pinFailures: N,
+  pinLockedUntil: D,
+  payRound: N,
+  available: B,
+  maxFloat: N,
+};
 
 // Creates missing classes with their fields, adds any missing fields to
 // existing ones, and (re)applies class-level permissions to all of them.

@@ -73,7 +73,7 @@ after(async () => {
 const as = (user) => ({ sessionToken: user.getSessionToken() });
 // Each person's PIN, so steps that ask for it again get it by default.
 const PINS = {
-  rita: '2468', // changed from 1234 in "a rider can still change their own password"
+  rita: '2468', // changed from 1234 in "a rider changes their PIN only through the app"
   carl: '5678',
   ron: '4321',
   cora: '8642',
@@ -210,10 +210,11 @@ describe('write protection (S1, S4, S8)', () => {
     await rejects(again.save(null, as(s.rider)), /cannot change active/);
   });
 
-  test('a rider can still change their own password', async () => {
+  test('a rider changes their PIN only through the app, with the old PIN', async () => {
     const me = Parse.User.createWithoutData(s.rider.id);
     me.set('password', '2468');
-    await me.save(null, as(s.rider));
+    await rejects(me.save(null, as(s.rider)), /cannot change password/);
+    await run('changeMyPin', { oldPin: '1234', newPin: '2468' }, s.rider);
     s.rider = await login('rita', '2468');
   });
 
@@ -2267,4 +2268,195 @@ test('Apply security rules puts door payments rejected before the rule on the ri
   assert.equal(fixed.get('amountCollected'), placed.total);
   // The rider can now hand it over like any other cash.
   await run('createHandover', { orderIds: [placed.id] }, s.pia);
+});
+
+describe("people: PINs, availability, cash limits and the owner's member page", () => {
+  const M = { useMasterKey: true };
+  let item;
+  let pat;
+  let cass;
+  const profile = (user) => run('getMyProfile', {}, user);
+  const orderFor = (name) =>
+    run(
+      'createOrder',
+      { customerName: name, deliveryAddress: 'Ntinda', items: [{ id: item.id, quantity: 1 }] },
+      s.pat,
+    );
+
+  before(async () => {
+    pat = await run(
+      'adminCreateTeamMember',
+      { name: 'Pat Boda', username: 'pat', pin: '1470', role: 'rider' },
+      s.owner,
+    );
+    cass = await run(
+      'adminCreateTeamMember',
+      { name: 'Cass Till', username: 'cass', pin: '2580', role: 'cashier' },
+      s.owner,
+    );
+    Object.assign(PINS, { pat: '1470', cass: '2580' });
+    s.pat = await login('pat', '1470');
+    s.cass = await login('cass', '2580');
+    item = (await run('getOperationalMenu', {}, s.pat)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+
+  test('a rider on a break cannot take orders; starting a shift makes them available', async () => {
+    assert.equal((await profile(s.pat)).available, true);
+    await run('setMyAvailability', { available: false }, s.pat);
+    assert.equal((await profile(s.pat)).available, false);
+    await rejects(orderFor('On break'), /on a break/);
+    await rejects(run('setMyAvailability', { available: true }, s.cass), /rider role required/);
+    await run('startShift', { kind: 'rider' }, s.pat);
+    assert.equal((await profile(s.pat)).available, true);
+    await run('setMyAvailability', { available: false }, s.pat);
+    await run('setMyAvailability', { available: true }, s.pat);
+    const placed = await orderFor('Back from break');
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: placed.id, action }, s.dina);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.pat);
+    await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.pat);
+    s.patOrder = placed;
+  });
+
+  test('the owner can give one rider their own cash limit', async () => {
+    const standard = (await profile(s.pat)).config.maxRiderFloat;
+    await run('adminUpdateMember', { id: pat.id, maxFloat: s.patOrder.total }, s.owner);
+    assert.equal((await profile(s.pat)).config.maxRiderFloat, s.patOrder.total);
+    await rejects(orderFor('Over my limit'), /Cash limit reached/);
+    const team = (await run('adminListSetup', {}, s.owner)).team;
+    const row = team.find((m) => m.id === pat.id);
+    assert.equal(row.cashLimit, s.patOrder.total);
+    assert.equal(row.cashHeld, s.patOrder.total);
+    assert.equal(row.onShift, true);
+    await rejects(run('adminUpdateMember', { id: pat.id, maxFloat: -5 }, s.owner), /cash limit/);
+    await run('adminUpdateMember', { id: pat.id, maxFloat: '' }, s.owner);
+    assert.equal((await profile(s.pat)).config.maxRiderFloat, standard);
+    assert.equal((await profile(s.dina)).config.maxRiderFloat, standard);
+  });
+
+  test("the owner's rider page shows cash, open orders, lifetime figures and history", async () => {
+    await rejects(run('adminGetMember', { id: pat.id }, s.dina), /admin role required/);
+    const open = await orderFor('Still open');
+    const page = await run('adminGetMember', { id: pat.id }, s.owner);
+    assert.equal(page.role, 'rider');
+    assert.equal(page.code, pat.code);
+    assert.equal(page.available, true);
+    assert.ok(page.onShiftSince);
+    assert.equal(page.rider.cash.held, s.patOrder.total);
+    assert.equal(page.rider.cash.withRider, s.patOrder.total);
+    assert.deepEqual(
+      page.rider.openOrders.map((o) => o.id),
+      [open.id],
+    );
+    assert.equal(page.rider.lifetime.deliveries, 1);
+    assert.equal(page.rider.lifetime.sales, s.patOrder.total);
+    assert.equal(page.rider.lifetime.cashSales, s.patOrder.total);
+    assert.equal(page.rider.pay.deliveries, 1);
+    assert.equal(page.rider.pay.owed, page.rider.lifetime.riderPay);
+    await run('createHandover', { orderIds: [s.patOrder.id] }, s.pat);
+    const after = await run('adminGetMember', { id: pat.id }, s.owner);
+    assert.equal(after.rider.handovers.length, 1);
+    assert.equal(after.rider.handovers[0].status, 'pending');
+    assert.equal(after.rider.cash.pending, s.patOrder.total);
+    await run('transitionOrder', { orderId: open.id, action: 'cancel', reason: 'Test' }, s.pat);
+    const done = await run('adminGetMember', { id: pat.id }, s.owner);
+    assert.equal(done.rider.lifetime.cancelled, 1);
+    assert.equal(done.rider.openOrders.length, 0);
+  });
+
+  test("the owner's cashier page shows shifts and orders held", async () => {
+    await run('startShift', { kind: 'cashier', openingFloat: 2500 }, s.cass);
+    const page = await run('adminGetMember', { id: cass.id }, s.owner);
+    assert.equal(page.role, 'cashier');
+    assert.equal(page.rider, null);
+    assert.equal(page.cashier.shifts.length, 1);
+    assert.equal(page.cashier.shifts[0].openingFloat, 2500);
+    assert.equal(page.cashier.shifts[0].status, 'open');
+    assert.deepEqual(page.cashier.heldOrders, []);
+  });
+
+  test('changing a PIN needs the old one and signs out every device', async () => {
+    const other = await login('cass', '2580');
+    await rejects(run('changeMyPin', { oldPin: '0000', newPin: '9999' }, s.cass), /Wrong PIN/);
+    await rejects(run('changeMyPin', { oldPin: '2580', newPin: '12' }, s.cass), /4 to 32/);
+    await rejects(run('changeMyPin', { oldPin: '2580', newPin: '2580' }, s.cass), /different/);
+    await run('changeMyPin', { oldPin: '2580', newPin: '3691' }, s.cass);
+    await rejects(profile(other), /session/i);
+    await rejects(login('cass', '2580'), /Invalid username\/password/);
+    s.cass = await login('cass', '3691');
+    PINS.cass = '3691';
+    assert.equal((await profile(s.cass)).role, 'cashier');
+    await rejects(
+      run('changeMyPin', { oldPin: 'owner-pass', newPin: 'short' }, s.owner),
+      /8 to 64/,
+    );
+  });
+
+  test('the owner can reset a forgotten PIN; it clears the lock and signs them out', async () => {
+    const locked = await new Parse.Query(Parse.User).get(pat.id, M);
+    locked.set({ pinFailures: 3, pinLockedUntil: new Date(Date.now() + 600000) });
+    await locked.save(null, M);
+    assert.equal((await run('adminGetMember', { id: pat.id }, s.owner)).pinLocked, true);
+    await rejects(run('adminResetPin', { id: pat.id, pin: '8080' }, s.dina), /admin role required/);
+    await rejects(run('adminResetPin', { id: s.owner.id, pin: '80808080' }, s.owner), /own/);
+    await rejects(run('adminResetPin', { id: pat.id, pin: '80' }, s.owner), /4 to 32/);
+    await run('adminResetPin', { id: pat.id, pin: '8080' }, s.owner);
+    await rejects(profile(s.pat), /session/i);
+    s.pat = await login('pat', '8080');
+    PINS.pat = '8080';
+    const page = await run('adminGetMember', { id: pat.id }, s.owner);
+    assert.equal(page.pinLocked, false);
+    const audit = await new Parse.Query('AuditLog').equalTo('action', 'team.pin_reset').first(M);
+    assert.equal(audit.get('entityId'), pat.id);
+  });
+
+  test('deactivating someone signs them out; the owner can edit name and phone', async () => {
+    await run(
+      'adminUpdateMember',
+      { id: cass.id, name: 'Cass Tills', phone: '0772 000111' },
+      s.owner,
+    );
+    const page = await run('adminGetMember', { id: cass.id }, s.owner);
+    assert.equal(page.name, 'Cass Tills');
+    assert.equal(page.phone, '0772 000111');
+    await rejects(run('adminUpdateMember', { id: cass.id, name: ' ' }, s.owner), /name/);
+    await run('adminUpdateMember', { id: cass.id, active: false }, s.owner);
+    await rejects(profile(s.cass), /session|inactive/i);
+    // Parse still lets them sign in, but every Cloud function refuses them.
+    await rejects(profile(await login('cass', '3691')), /inactive/);
+    await run('adminUpdateMember', { id: cass.id, active: true }, s.owner);
+    s.cass = await login('cass', '3691');
+  });
+
+  test('new riders get the default commission rule from Settings', async () => {
+    const { settings: current } = await run('adminListSetup', {}, s.owner);
+    await rejects(
+      run('adminSaveSettings', { ...current, commissionRounding: 'constructor' }, s.owner),
+      /rounding/,
+    );
+    await rejects(
+      run('adminSaveSettings', { ...current, defaultCommissionPercent: 150 }, s.owner),
+      /percent/,
+    );
+    await run(
+      'adminSaveSettings',
+      {
+        ...current,
+        defaultCommissionType: 'hybrid',
+        defaultCommissionPerOrder: 700,
+        defaultCommissionPercent: 5,
+      },
+      s.owner,
+    );
+    const quinn = await run(
+      'adminCreateTeamMember',
+      { name: 'Quinn Moto', username: 'quinn', pin: '1122', role: 'rider' },
+      s.owner,
+    );
+    const page = await run('adminGetMember', { id: quinn.id }, s.owner);
+    assert.deepEqual(page.commission, { type: 'hybrid', perOrder: 700, percent: 5 });
+    await run('adminSaveSettings', current, s.owner);
+  });
 });

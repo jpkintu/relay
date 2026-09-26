@@ -11,8 +11,9 @@ const {
   loadConfig,
   countUsers,
   nextStaffCode,
+  endSessions,
 } = require('./lib/core');
-const { COMMISSION_TYPES } = require('./lib/money');
+const { COMMISSION_TYPES, ROUNDING_STEPS } = require('./lib/money');
 const { isValidTimeZone } = require('./lib/dates');
 const { SEED_MENU } = require('./lib/seed');
 const { normalizeGroups } = require('./lib/accompaniments');
@@ -146,15 +147,41 @@ Parse.Cloud.define('adminListSetup', async (request) => {
   const accompanimentQuery = new Parse.Query('Accompaniment');
   accompanimentQuery.ascending('sortOrder');
   accompanimentQuery.limit(1000);
-  const [users, menu, categories, members, { object: config, values }, accompaniments] =
-    await Promise.all([
-      userQuery.find(MASTER),
-      menuQuery.find(MASTER),
-      categoryQuery.find(MASTER),
-      roleMembership(),
-      loadConfig(),
-      accompanimentQuery.find(MASTER),
-    ]);
+  // Cash each rider holds (delivered, not yet reconciled) and who is on shift.
+  const cashQuery = new Parse.Query('Order');
+  cashQuery.equalTo('status', 'DELIVERED');
+  cashQuery.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
+  cashQuery.select('createdBy', 'amountCollected');
+  cashQuery.limit(5000);
+  const shiftQuery = new Parse.Query('Shift');
+  shiftQuery.equalTo('status', 'open');
+  shiftQuery.select('operator');
+  shiftQuery.limit(1000);
+  const [
+    users,
+    menu,
+    categories,
+    members,
+    { object: config, values },
+    accompaniments,
+    cashOrders,
+    openShifts,
+  ] = await Promise.all([
+    userQuery.find(MASTER),
+    menuQuery.find(MASTER),
+    categoryQuery.find(MASTER),
+    roleMembership(),
+    loadConfig(),
+    accompanimentQuery.find(MASTER),
+    cashQuery.find(MASTER),
+    shiftQuery.find(MASTER),
+  ]);
+  const cashHeld = {};
+  for (const order of cashOrders) {
+    const id = order.get('createdBy')?.id;
+    if (id) cashHeld[id] = (cashHeld[id] || 0) + (Number(order.get('amountCollected')) || 0);
+  }
+  const onShift = new Set(openShifts.map((row) => row.get('operator')?.id));
   return {
     team: users.map((user) => ({
       id: user.id,
@@ -167,6 +194,10 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       commissionType: user.get('commissionType') || 'per_order',
       commissionPerOrder: user.get('commissionPerOrder') || 0,
       commissionPercent: user.get('commissionPercent') || 0,
+      available: members[user.id] === 'rider' ? user.get('available') !== false : null,
+      onShift: onShift.has(user.id),
+      cashHeld: cashHeld[user.id] || 0,
+      cashLimit: typeof user.get('maxFloat') === 'number' ? user.get('maxFloat') : null,
     })),
     menu: menu.map((item) => ({
       id: item.id,
@@ -204,6 +235,7 @@ Parse.Cloud.define('adminCreateTeamMember', async (request) => {
   const pin = String(p.pin || '');
   if (!name || !/^[-a-z0-9_.]{3,32}$/.test(username) || pin.length < 4 || pin.length > 32)
     throw invalid('Enter a name, valid username and PIN of at least 4 characters');
+  const { values: config } = await loadConfig();
   const user = new Parse.User();
   user.set({
     username,
@@ -211,9 +243,11 @@ Parse.Cloud.define('adminCreateTeamMember', async (request) => {
     name,
     phone: String(p.phone || ''),
     active: true,
-    commissionType: 'per_order',
-    commissionPerOrder: 0,
-    commissionPercent: 0,
+    commissionType: COMMISSION_TYPES.includes(config.defaultCommissionType)
+      ? config.defaultCommissionType
+      : 'per_order',
+    commissionPerOrder: Number(config.defaultCommissionPerOrder) || 0,
+    commissionPercent: Number(config.defaultCommissionPercent) || 0,
     [codeField(roleName)]: await nextStaffCode(roleName),
   });
   await user.signUp(null, MASTER);
@@ -232,12 +266,39 @@ Parse.Cloud.define('adminUpdateMember', async (request) => {
   const user = await new Parse.Query(Parse.User).get(p.id, MASTER);
   if (user.id === actor.id && p.active === false) throw forbidden('You cannot deactivate yourself');
   const snapshot = () => ({
+    name: user.get('name'),
+    phone: user.get('phone'),
     active: user.get('active'),
     commissionType: user.get('commissionType'),
     commissionPerOrder: user.get('commissionPerOrder'),
     commissionPercent: user.get('commissionPercent'),
+    maxFloat: user.get('maxFloat'),
   });
   const before = snapshot();
+  if (p.name !== undefined) {
+    const name = String(p.name || '').trim();
+    if (!name || name.length > 80) throw invalid('Enter a name');
+    user.set('name', name);
+  }
+  if (p.phone !== undefined)
+    user.set(
+      'phone',
+      String(p.phone || '')
+        .trim()
+        .slice(0, 30),
+    );
+  // The rider's own cash limit; empty or null goes back to the restaurant's.
+  if (p.maxFloat !== undefined) {
+    if (p.maxFloat === null || p.maxFloat === '') {
+      if (user.has('maxFloat')) user.unset('maxFloat');
+    } else {
+      const limit = Number(p.maxFloat);
+      if (!Number.isFinite(limit) || limit < 0 || limit > 100000000)
+        throw invalid('Invalid cash limit');
+      user.set('maxFloat', Math.round(limit));
+    }
+  }
+  const deactivating = p.active === false && user.get('active') !== false;
   if (typeof p.active === 'boolean') user.set('active', p.active);
   if (p.commissionType !== undefined) {
     if (!COMMISSION_TYPES.includes(p.commissionType)) throw invalid('Invalid commission type');
@@ -252,6 +313,8 @@ Parse.Cloud.define('adminUpdateMember', async (request) => {
       user.set(key, value);
     }
   await user.save(null, MASTER);
+  // A deactivated member is signed out of every device.
+  if (deactivating) await endSessions(user);
   await audit(actor, 'team.updated', user, before, snapshot());
   return { ok: true };
 });
@@ -391,6 +454,16 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
   const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
   if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
     throw invalid('Cash warning must be between 50% and 99% of the limit');
+  const rounding = String(p.commissionRounding ?? current.commissionRounding);
+  if (!Object.hasOwn(ROUNDING_STEPS, rounding)) throw invalid('Invalid commission rounding');
+  const commissionType = String(p.defaultCommissionType ?? current.defaultCommissionType);
+  if (!COMMISSION_TYPES.includes(commissionType)) throw invalid('Invalid commission type');
+  const perOrder = Number(p.defaultCommissionPerOrder ?? current.defaultCommissionPerOrder);
+  const percent = Number(p.defaultCommissionPercent ?? current.defaultCommissionPercent);
+  if (!Number.isFinite(perOrder) || perOrder < 0 || perOrder > 1000000)
+    throw invalid('Invalid default commission amount');
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100)
+    throw invalid('Default commission percent must be 0-100');
   config.set({
     restaurantName: String(p.restaurantName || current.restaurantName).trim(),
     currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
@@ -408,6 +481,10 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     mtnMerchantName: merchantField(p.mtnMerchantName, 60),
     cashReminderHour: reminderHour,
     floatWarningPercent: warnPercent,
+    commissionRounding: rounding,
+    defaultCommissionType: commissionType,
+    defaultCommissionPerOrder: perOrder,
+    defaultCommissionPercent: percent,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

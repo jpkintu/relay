@@ -103,6 +103,14 @@ function outstandingProblem({ openOrders, cashWithRider, cashPending, momoPendin
   return '';
 }
 
+// Starting a shift ends any break the rider left on (see setMyAvailability).
+async function setAvailable(user, available) {
+  const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+  if (fresh.get('available') === available) return;
+  fresh.set('available', available);
+  await fresh.save(null, MASTER);
+}
+
 function openShiftQuery(user) {
   const query = new Parse.Query('Shift');
   query.equalTo('operator', user);
@@ -159,6 +167,7 @@ Parse.Cloud.define('startShift', async (request) => {
   row.setACL(readAcl(user, ['admin']));
   await row.save(null, MASTER);
   await audit(user, 'shift.started', row, null, { kind, openingFloat: row.get('openingFloat') });
+  if (kind === 'rider') await setAvailable(user, true);
   return { id: row.id };
 });
 
@@ -274,3 +283,5 @@ Parse.Cloud.define('getShiftReport', async (request) => {
     totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0),
   };
 });
+
+module.exports = { riderOutstanding };

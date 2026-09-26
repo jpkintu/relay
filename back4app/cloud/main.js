@@ -161,7 +161,11 @@ var require_core = __commonJS({
       // Hour of the day (restaurant time) to remind riders to hand over cash.
       cashReminderHour: 20,
       // Warn riders when their cash reaches this % of maxRiderFloat.
-      floatWarningPercent: 80
+      floatWarningPercent: 80,
+      // Commission rule given to new riders (each rider's rule can be changed).
+      defaultCommissionType: "per_order",
+      defaultCommissionPerOrder: 0,
+      defaultCommissionPercent: 0
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -251,6 +255,20 @@ var require_core = __commonJS({
       query.limit(1e3);
       const orders = await query.find(MASTER);
       return orders.reduce((sum, order) => sum + (Number(order.get("amountCollected")) || 0), 0);
+    }
+    function withRiderLimit(config, rider) {
+      const own = rider?.get("maxFloat");
+      return typeof own === "number" && own >= 0 ? { ...config, maxRiderFloat: own } : config;
+    }
+    async function endSessions(user, keepToken) {
+      const query = new Parse.Query(Parse.Session);
+      query.equalTo("user", user);
+      query.limit(1e3);
+      const sessions = (await query.find(MASTER)).filter(
+        (session) => !keepToken || session.get("sessionToken") !== keepToken
+      );
+      if (sessions.length) await Parse.Object.destroyAll(sessions, MASTER);
+      return sessions.length;
     }
     async function requireCashierShift(user, role) {
       if (role !== "cashier") return;
@@ -399,7 +417,9 @@ var require_core = __commonJS({
       nextSequence,
       claimOnce,
       verifyPin,
-      takeOrder
+      takeOrder,
+      withRiderLimit,
+      endSessions
     };
   }
 });
@@ -441,7 +461,7 @@ var require_security = __commonJS({
       "Secret"
     ];
     var PRIVATE_CLASSES = ["Counter", "DemoOrder", "Configuration", "PushSubscription", "Secret"];
-    var SELF_EDITABLE_USER_FIELDS = ["password", "email"];
+    var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
       Parse.Cloud.beforeSave(className, (request) => {
         if (!request.master) throw forbidden("Changes must go through the app");
@@ -630,7 +650,10 @@ var require_security = __commonJS({
         mtnMerchantCode: S,
         mtnMerchantName: S,
         cashReminderHour: N,
-        floatWarningPercent: N
+        floatWarningPercent: N,
+        defaultCommissionType: S,
+        defaultCommissionPerOrder: N,
+        defaultCommissionPercent: N
       },
       MenuItem: {
         title: S,
@@ -688,7 +711,13 @@ var require_security = __commonJS({
         readAt: D
       }
     };
-    var USER_FIELDS = { pinFailures: N, pinLockedUntil: D, payRound: N };
+    var USER_FIELDS = {
+      pinFailures: N,
+      pinLockedUntil: D,
+      payRound: N,
+      available: B,
+      maxFloat: N
+    };
     async function applySchemas() {
       const existing = new Map((await Parse.Schema.all()).map((schema) => [schema.className, schema]));
       const created = [];
@@ -8681,7 +8710,7 @@ var require_payouts = __commonJS({
       const payouts = (await query.find(MASTER)).map(payoutJSON);
       return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
     });
-    module2.exports = { riderPayState, payOut };
+    module2.exports = { riderPayState, payOut, payoutJSON };
   }
 });
 
@@ -9099,6 +9128,7 @@ var require_notifications = __commonJS({
       loadConfig,
       readAcl,
       riderFloat,
+      withRiderLimit,
       personName
     } = require_core();
     var { floatLevel, handoverReminderDue } = require_alerts();
@@ -9205,9 +9235,13 @@ var require_notifications = __commonJS({
       const user = requireUser(request);
       const role = await getRoleName(user);
       if (role === "rider") {
-        const { values: config } = await loadConfig();
-        const float = await riderFloat(user);
-        await cashLimitAlert(user, config, float);
+        const { values: settings } = await loadConfig();
+        const [float, me] = await Promise.all([
+          riderFloat(user),
+          new Parse.Query(Parse.User).get(user.id, MASTER)
+        ]);
+        const config = withRiderLimit(settings, me);
+        await cashLimitAlert(me, config, float);
         await handoverReminder(user, config, float);
       } else if (role === "cashier" || role === "admin") {
         const { staleHandoverAlerts } = require_cash();
@@ -9653,7 +9687,8 @@ var require_orders = __commonJS({
       riderFloat,
       personName,
       requireCashierShift,
-      takeOrder
+      takeOrder,
+      withRiderLimit
     } = require_core();
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
@@ -9738,12 +9773,16 @@ var require_orders = __commonJS({
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
       activeQuery.limit(200);
-      const [lines, { values: config }, active, float] = await Promise.all([
+      const [lines, { values: settings }, active, float, me] = await Promise.all([
         priceLines(p.items),
         loadConfig(),
         activeQuery.find(MASTER),
-        riderFloat(rider)
+        riderFloat(rider),
+        new Parse.Query(Parse.User).get(rider.id, MASTER)
       ]);
+      if (me.get("available") === false)
+        throw invalid("You are on a break. Switch to Available to take orders");
+      const config = withRiderLimit(settings, me);
       if (!config.allowBatching && active.length)
         throw invalid("Finish your current order before creating another");
       const toCollect = cashToCollect(active);
@@ -9984,8 +10023,10 @@ var require_orders = __commonJS({
           order,
           except: actor
         });
-      if (action === "deliver" && order.get("paymentMethod") === "cash")
-        await cashLimitAlert(await rider.fetch(MASTER), config);
+      if (action === "deliver" && order.get("paymentMethod") === "cash") {
+        const fresh = await rider.fetch(MASTER);
+        await cashLimitAlert(fresh, withRiderLimit(config, fresh));
+      }
     }
     Parse.Cloud.define("flagOrderIssue", async (request) => {
       const actor = requireUser(request);
@@ -10328,7 +10369,7 @@ var require_cashcheck = __commonJS({
 
 // cloud/shifts.js
 var require_shifts = __commonJS({
-  "cloud/shifts.js"() {
+  "cloud/shifts.js"(exports2, module2) {
     "use strict";
     var {
       MASTER,
@@ -10420,6 +10461,12 @@ var require_shifts = __commonJS({
         return "Wait for the cashier to confirm the mobile money you took at the door before ending your shift";
       return "";
     }
+    async function setAvailable(user, available) {
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+      if (fresh.get("available") === available) return;
+      fresh.set("available", available);
+      await fresh.save(null, MASTER);
+    }
     function openShiftQuery(user) {
       const query = new Parse.Query("Shift");
       query.equalTo("operator", user);
@@ -10471,6 +10518,7 @@ var require_shifts = __commonJS({
       row.setACL(readAcl(user, ["admin"]));
       await row.save(null, MASTER);
       await audit(user, "shift.started", row, null, { kind, openingFloat: row.get("openingFloat") });
+      if (kind === "rider") await setAvailable(user, true);
       return { id: row.id };
     });
     Parse.Cloud.define("endShift", async (request) => {
@@ -10578,6 +10626,236 @@ var require_shifts = __commonJS({
         totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0)
       };
     });
+    module2.exports = { riderOutstanding };
+  }
+});
+
+// cloud/people.js
+var require_people = __commonJS({
+  "cloud/people.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireUser,
+      requireRole,
+      adminOnly,
+      getRoleName,
+      audit,
+      loadConfig,
+      riderFloat,
+      verifyPin,
+      withRiderLimit,
+      endSessions
+    } = require_core();
+    var { orderRiderPay } = require_money();
+    var { riderOutstanding } = require_shifts();
+    var { riderPayState, payoutJSON } = require_payouts();
+    var { handoverJSON } = require_cash();
+    var STAFF_ROLES = ["rider", "cashier"];
+    function checkNewPin(role, pin) {
+      const [min, max] = role === "admin" ? [8, 64] : [4, 32];
+      if (pin.length < min || pin.length > max)
+        throw invalid(
+          role === "admin" ? "Choose a password of 8 to 64 characters" : "Choose a PIN of 4 to 32 characters"
+        );
+    }
+    Parse.Cloud.define("changeMyPin", async (request) => {
+      const user = requireUser(request);
+      const role = await getRoleName(user);
+      const next = String(request.params.newPin ?? "");
+      checkNewPin(role, next);
+      if (next === String(request.params.oldPin ?? ""))
+        throw invalid("The new PIN must be different from the old one");
+      await verifyPin(user, request.params.oldPin);
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+      fresh.set("password", next);
+      await fresh.save(null, MASTER);
+      const signedOut = await endSessions(fresh);
+      await audit(user, "team.pin_changed", fresh, null, { by: "self", signedOut });
+      return { ok: true };
+    });
+    Parse.Cloud.define("setMyAvailability", async (request) => {
+      const { user } = await requireRole(request, ["rider"]);
+      const available = request.params.available === true;
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+      const before = fresh.get("available") !== false;
+      if (before !== available) {
+        fresh.set("available", available);
+        await fresh.save(null, MASTER);
+        await audit(user, "rider.availability", fresh, { available: before }, { available });
+      }
+      return { available };
+    });
+    Parse.Cloud.define("adminResetPin", async (request) => {
+      const actor = await adminOnly(request);
+      const user = await new Parse.Query(Parse.User).get(String(request.params.id || ""), MASTER);
+      if (user.id === actor.id) throw forbidden("Change your own password from your profile");
+      const role = await getRoleName(user);
+      if (!STAFF_ROLES.includes(role)) throw forbidden("Only rider and cashier PINs can be reset here");
+      const pin = String(request.params.pin ?? "");
+      checkNewPin(role, pin);
+      user.set({ password: pin, pinFailures: 0 });
+      user.unset("pinLockedUntil");
+      await user.save(null, MASTER);
+      const signedOut = await endSessions(user);
+      await audit(actor, "team.pin_reset", user, null, { signedOut });
+      return { ok: true, signedOut };
+    });
+    var openOrderJSON = (order) => ({
+      id: order.id,
+      code: order.get("orderCode"),
+      status: order.get("status"),
+      customer: order.get("customerName") || "",
+      total: Number(order.get("total") || 0),
+      paymentMethod: order.get("paymentMethod"),
+      createdAt: order.createdAt
+    });
+    async function riderLifetime(rider) {
+      const query = new Parse.Query("Order");
+      query.equalTo("createdBy", rider);
+      query.containedIn("status", ["DELIVERED", "CANCELLED"]);
+      query.select(
+        "status",
+        "total",
+        "commissionAmount",
+        "deliveryPay",
+        "deliveryFee",
+        "deliveredAt",
+        "paymentMethod"
+      );
+      const stats = {
+        deliveries: 0,
+        cancelled: 0,
+        sales: 0,
+        riderPay: 0,
+        cashSales: 0,
+        firstDelivery: null,
+        lastDelivery: null
+      };
+      await query.each((order) => {
+        if (order.get("status") === "CANCELLED") {
+          stats.cancelled += 1;
+          return;
+        }
+        const total = Number(order.get("total")) || 0;
+        stats.deliveries += 1;
+        stats.sales += total;
+        stats.riderPay += orderRiderPay(order);
+        if (order.get("paymentMethod") === "cash") stats.cashSales += total;
+        const at = order.get("deliveredAt");
+        if (at && (!stats.firstDelivery || at < stats.firstDelivery)) stats.firstDelivery = at;
+        if (at && (!stats.lastDelivery || at > stats.lastDelivery)) stats.lastDelivery = at;
+      }, MASTER);
+      return stats;
+    }
+    async function riderDetail(rider, config) {
+      const openQuery = new Parse.Query("Order");
+      openQuery.equalTo("createdBy", rider);
+      openQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
+      openQuery.descending("createdAt");
+      openQuery.limit(50);
+      const handoverQuery = new Parse.Query("CashHandover");
+      handoverQuery.equalTo("rider", rider);
+      handoverQuery.descending("handedOverAt");
+      handoverQuery.limit(15);
+      const payoutQuery = new Parse.Query("TillPayout");
+      payoutQuery.equalTo("rider", rider);
+      payoutQuery.include(["rider", "paidBy"]);
+      payoutQuery.descending("paidAt");
+      payoutQuery.limit(15);
+      const [float, outstanding, open, lifetime, pay, handovers, payouts] = await Promise.all([
+        riderFloat(rider),
+        riderOutstanding(rider),
+        openQuery.find(MASTER),
+        riderLifetime(rider),
+        riderPayState(rider),
+        handoverQuery.find(MASTER),
+        payoutQuery.find(MASTER)
+      ]);
+      const limit = withRiderLimit(config, rider).maxRiderFloat;
+      return {
+        cash: {
+          held: float,
+          withRider: outstanding.cashWithRider,
+          pending: outstanding.cashPending,
+          momoPending: outstanding.momoPending,
+          limit
+        },
+        openOrders: open.map(openOrderJSON),
+        lifetime,
+        pay: {
+          owed: pay.owed,
+          earned: pay.earned,
+          deliveryFees: pay.deliveryFees,
+          deductions: pay.deductions,
+          deliveries: pay.orders.length
+        },
+        handovers: handovers.map(handoverJSON),
+        payouts: payouts.map(payoutJSON)
+      };
+    }
+    async function cashierDetail(cashier) {
+      const shiftQuery = new Parse.Query("Shift");
+      shiftQuery.equalTo("operator", cashier);
+      shiftQuery.equalTo("kind", "cashier");
+      shiftQuery.descending("startedAt");
+      shiftQuery.limit(15);
+      const heldQuery = new Parse.Query("Order");
+      heldQuery.equalTo("cashier", cashier);
+      heldQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
+      heldQuery.descending("createdAt");
+      heldQuery.limit(50);
+      const [shifts, held] = await Promise.all([shiftQuery.find(MASTER), heldQuery.find(MASTER)]);
+      return {
+        heldOrders: held.map(openOrderJSON),
+        shifts: shifts.map((row) => ({
+          id: row.id,
+          status: row.get("status"),
+          startedAt: row.get("startedAt"),
+          endedAt: row.get("endedAt") || null,
+          openingFloat: Number(row.get("openingFloat") || 0),
+          cashIn: row.get("cashIn") ?? null,
+          paidOut: row.get("paidOut") ?? null,
+          expectedTill: row.get("expectedTill") ?? null,
+          physicalCount: row.get("physicalCount") ?? null,
+          variance: row.get("variance") ?? null,
+          varianceNote: row.get("varianceNote") || ""
+        }))
+      };
+    }
+    Parse.Cloud.define("adminGetMember", async (request) => {
+      await adminOnly(request);
+      const user = await new Parse.Query(Parse.User).get(String(request.params.id || ""), MASTER);
+      const [role, { values: config }] = await Promise.all([getRoleName(user), loadConfig()]);
+      const shift = await new Parse.Query("Shift").equalTo("operator", user).equalTo("status", "open").first(MASTER);
+      const lockedUntil = user.get("pinLockedUntil");
+      const own = user.get("maxFloat");
+      return {
+        id: user.id,
+        name: user.get("name") || user.getUsername(),
+        username: user.getUsername(),
+        phone: user.get("phone") || "",
+        role: role || "unassigned",
+        code: user.get("riderCode") || user.get("cashierCode") || "",
+        active: user.get("active") !== false,
+        available: role === "rider" ? user.get("available") !== false : null,
+        pinLocked: !!(lockedUntil && lockedUntil > /* @__PURE__ */ new Date()),
+        joinedAt: user.createdAt,
+        onShiftSince: shift ? shift.get("startedAt") : null,
+        commission: {
+          type: user.get("commissionType") || "per_order",
+          perOrder: user.get("commissionPerOrder") || 0,
+          percent: user.get("commissionPercent") || 0
+        },
+        cashLimit: typeof own === "number" ? own : null,
+        defaultCashLimit: config.maxRiderFloat,
+        rider: role === "rider" ? await riderDetail(user, config) : null,
+        cashier: role === "cashier" ? await cashierDetail(user) : null
+      };
+    });
+    module2.exports = { checkNewPin };
   }
 });
 
@@ -10613,9 +10891,10 @@ var require_admin = __commonJS({
       audit,
       loadConfig,
       countUsers,
-      nextStaffCode
+      nextStaffCode,
+      endSessions
     } = require_core();
-    var { COMMISSION_TYPES } = require_money();
+    var { COMMISSION_TYPES, ROUNDING_STEPS } = require_money();
     var { isValidTimeZone } = require_dates();
     var { SEED_MENU } = require_seed();
     var { normalizeGroups } = require_accompaniments();
@@ -10723,14 +11002,40 @@ var require_admin = __commonJS({
       const accompanimentQuery = new Parse.Query("Accompaniment");
       accompanimentQuery.ascending("sortOrder");
       accompanimentQuery.limit(1e3);
-      const [users, menu, categories, members, { object: config, values }, accompaniments] = await Promise.all([
+      const cashQuery = new Parse.Query("Order");
+      cashQuery.equalTo("status", "DELIVERED");
+      cashQuery.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
+      cashQuery.select("createdBy", "amountCollected");
+      cashQuery.limit(5e3);
+      const shiftQuery = new Parse.Query("Shift");
+      shiftQuery.equalTo("status", "open");
+      shiftQuery.select("operator");
+      shiftQuery.limit(1e3);
+      const [
+        users,
+        menu,
+        categories,
+        members,
+        { object: config, values },
+        accompaniments,
+        cashOrders,
+        openShifts
+      ] = await Promise.all([
         userQuery.find(MASTER),
         menuQuery.find(MASTER),
         categoryQuery.find(MASTER),
         roleMembership(),
         loadConfig(),
-        accompanimentQuery.find(MASTER)
+        accompanimentQuery.find(MASTER),
+        cashQuery.find(MASTER),
+        shiftQuery.find(MASTER)
       ]);
+      const cashHeld = {};
+      for (const order of cashOrders) {
+        const id = order.get("createdBy")?.id;
+        if (id) cashHeld[id] = (cashHeld[id] || 0) + (Number(order.get("amountCollected")) || 0);
+      }
+      const onShift = new Set(openShifts.map((row) => row.get("operator")?.id));
       return {
         team: users.map((user) => ({
           id: user.id,
@@ -10742,7 +11047,11 @@ var require_admin = __commonJS({
           code: user.get("riderCode") || user.get("cashierCode") || "",
           commissionType: user.get("commissionType") || "per_order",
           commissionPerOrder: user.get("commissionPerOrder") || 0,
-          commissionPercent: user.get("commissionPercent") || 0
+          commissionPercent: user.get("commissionPercent") || 0,
+          available: members[user.id] === "rider" ? user.get("available") !== false : null,
+          onShift: onShift.has(user.id),
+          cashHeld: cashHeld[user.id] || 0,
+          cashLimit: typeof user.get("maxFloat") === "number" ? user.get("maxFloat") : null
         })),
         menu: menu.map((item) => ({
           id: item.id,
@@ -10777,6 +11086,7 @@ var require_admin = __commonJS({
       const pin = String(p.pin || "");
       if (!name || !/^[-a-z0-9_.]{3,32}$/.test(username) || pin.length < 4 || pin.length > 32)
         throw invalid("Enter a name, valid username and PIN of at least 4 characters");
+      const { values: config } = await loadConfig();
       const user = new Parse.User();
       user.set({
         username,
@@ -10784,9 +11094,9 @@ var require_admin = __commonJS({
         name,
         phone: String(p.phone || ""),
         active: true,
-        commissionType: "per_order",
-        commissionPerOrder: 0,
-        commissionPercent: 0,
+        commissionType: COMMISSION_TYPES.includes(config.defaultCommissionType) ? config.defaultCommissionType : "per_order",
+        commissionPerOrder: Number(config.defaultCommissionPerOrder) || 0,
+        commissionPercent: Number(config.defaultCommissionPercent) || 0,
         [codeField(roleName)]: await nextStaffCode(roleName)
       });
       await user.signUp(null, MASTER);
@@ -10804,12 +11114,36 @@ var require_admin = __commonJS({
       const user = await new Parse.Query(Parse.User).get(p.id, MASTER);
       if (user.id === actor.id && p.active === false) throw forbidden("You cannot deactivate yourself");
       const snapshot = () => ({
+        name: user.get("name"),
+        phone: user.get("phone"),
         active: user.get("active"),
         commissionType: user.get("commissionType"),
         commissionPerOrder: user.get("commissionPerOrder"),
-        commissionPercent: user.get("commissionPercent")
+        commissionPercent: user.get("commissionPercent"),
+        maxFloat: user.get("maxFloat")
       });
       const before = snapshot();
+      if (p.name !== void 0) {
+        const name = String(p.name || "").trim();
+        if (!name || name.length > 80) throw invalid("Enter a name");
+        user.set("name", name);
+      }
+      if (p.phone !== void 0)
+        user.set(
+          "phone",
+          String(p.phone || "").trim().slice(0, 30)
+        );
+      if (p.maxFloat !== void 0) {
+        if (p.maxFloat === null || p.maxFloat === "") {
+          if (user.has("maxFloat")) user.unset("maxFloat");
+        } else {
+          const limit = Number(p.maxFloat);
+          if (!Number.isFinite(limit) || limit < 0 || limit > 1e8)
+            throw invalid("Invalid cash limit");
+          user.set("maxFloat", Math.round(limit));
+        }
+      }
+      const deactivating = p.active === false && user.get("active") !== false;
       if (typeof p.active === "boolean") user.set("active", p.active);
       if (p.commissionType !== void 0) {
         if (!COMMISSION_TYPES.includes(p.commissionType)) throw invalid("Invalid commission type");
@@ -10824,6 +11158,7 @@ var require_admin = __commonJS({
           user.set(key, value);
         }
       await user.save(null, MASTER);
+      if (deactivating) await endSessions(user);
       await audit(actor, "team.updated", user, before, snapshot());
       return { ok: true };
     });
@@ -10944,6 +11279,16 @@ var require_admin = __commonJS({
       const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
       if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
         throw invalid("Cash warning must be between 50% and 99% of the limit");
+      const rounding = String(p.commissionRounding ?? current.commissionRounding);
+      if (!Object.hasOwn(ROUNDING_STEPS, rounding)) throw invalid("Invalid commission rounding");
+      const commissionType = String(p.defaultCommissionType ?? current.defaultCommissionType);
+      if (!COMMISSION_TYPES.includes(commissionType)) throw invalid("Invalid commission type");
+      const perOrder = Number(p.defaultCommissionPerOrder ?? current.defaultCommissionPerOrder);
+      const percent = Number(p.defaultCommissionPercent ?? current.defaultCommissionPercent);
+      if (!Number.isFinite(perOrder) || perOrder < 0 || perOrder > 1e6)
+        throw invalid("Invalid default commission amount");
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100)
+        throw invalid("Default commission percent must be 0-100");
       config.set({
         restaurantName: String(p.restaurantName || current.restaurantName).trim(),
         currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
@@ -10958,7 +11303,11 @@ var require_admin = __commonJS({
         mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
         mtnMerchantName: merchantField(p.mtnMerchantName, 60),
         cashReminderHour: reminderHour,
-        floatWarningPercent: warnPercent
+        floatWarningPercent: warnPercent,
+        commissionRounding: rounding,
+        defaultCommissionType: commissionType,
+        defaultCommissionPerOrder: perOrder,
+        defaultCommissionPercent: percent
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -11659,7 +12008,8 @@ var require_profile = __commonJS({
       requireUser,
       getRoleName,
       loadConfig,
-      countUsers
+      countUsers,
+      withRiderLimit
     } = require_core();
     var { canBootstrapOwner } = require_admin();
     var { previewEnabled } = require_preview();
@@ -11703,13 +12053,15 @@ var require_profile = __commonJS({
         phone: user.get("phone") || "",
         role,
         code: user.get("riderCode") || user.get("cashierCode") || "",
+        // Riders only: false while on a break (new orders are refused).
+        available: role === "rider" ? user.get("available") !== false : null,
         commission: role === "rider" ? {
           type: user.get("commissionType") || "per_order",
           perOrder: user.get("commissionPerOrder") || 0,
           percent: user.get("commissionPercent") || 0
         } : null,
         canInitialize: role === null && await canBootstrapOwner(),
-        config: publicConfig(values)
+        config: publicConfig(role === "rider" ? withRiderLimit(values, user) : values)
       };
     });
   }
@@ -11727,6 +12079,7 @@ require_cash();
 require_payouts();
 require_cashcheck();
 require_shifts();
+require_people();
 require_admin();
 require_preview();
 require_reports2();

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ChevronRight } from 'lucide-react';
 import Parse from '../parse';
 import { useMoney, useSession } from '../lib/session';
+import { ChangePin } from './Profile';
 
 type Member = {
   id: string;
@@ -13,6 +16,10 @@ type Member = {
   commissionType: string;
   commissionPerOrder: number;
   commissionPercent: number;
+  available: boolean | null;
+  onShift: boolean;
+  cashHeld: number;
+  cashLimit: number | null;
 };
 type Item = {
   id: string;
@@ -41,6 +48,10 @@ type Settings = {
   mtnMerchantName?: string;
   cashReminderHour?: number;
   floatWarningPercent?: number;
+  commissionRounding?: string;
+  defaultCommissionType?: string;
+  defaultCommissionPerOrder?: number;
+  defaultCommissionPercent?: number;
 };
 const input = (
   label: string,
@@ -60,6 +71,8 @@ const input = (
   </label>
 );
 
+const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+
 export function AdminSetup({
   section,
   preview,
@@ -69,6 +82,7 @@ export function AdminSetup({
 }) {
   const { config, refresh } = useSession();
   const money = useMoney();
+  const navigate = useNavigate();
   const [team, setTeam] = useState<Member[]>([]),
     [menu, setMenu] = useState<Item[]>([]),
     [accompaniments, setAccompaniments] = useState<Accompaniment[]>([]),
@@ -170,58 +184,86 @@ export function AdminSetup({
               </button>
             </form>
           </div>
-          <div className="admin-panel">
-            <h2>Team members</h2>
-            {team.map((u) => (
-              <div key={u.id}>
-                <div className="setup-row">
-                  <div>
-                    <b>{u.name}</b>
-                    <small>
-                      {u.code && `${u.code} · `}@{u.username} · {u.role}
-                    </small>
-                  </div>
-                  <span>{u.active ? 'Active' : 'Inactive'}</span>
-                  {['rider', 'cashier'].includes(u.role) && (
-                    <select
-                      aria-label={`Role for ${u.name}`}
-                      value={u.role}
-                      disabled={busy || preview}
-                      onChange={(e) =>
-                        void save(
-                          'adminChangeRole',
-                          { userId: u.id, role: e.target.value },
-                          () => {},
-                        )
-                      }
-                    >
-                      <option value="rider">Rider</option>
-                      <option value="cashier">Cashier</option>
-                    </select>
-                  )}
-                  <button
-                    disabled={busy || preview || u.role === 'admin'}
-                    onClick={() =>
-                      void save('adminUpdateMember', { id: u.id, active: !u.active }, () => {})
-                    }
-                  >
-                    {u.active ? 'Deactivate' : 'Activate'}
-                  </button>
-                </div>
-                {u.role === 'rider' && (
-                  <CommissionEditor
-                    key={`${u.id}-${u.commissionType}-${u.commissionPerOrder}-${u.commissionPercent}`}
-                    member={u}
-                    disabled={busy || preview}
-                    save={(payload) =>
-                      save('adminUpdateMember', { id: u.id, ...payload }, () => {})
-                    }
-                  />
-                )}
+          <section className="admin-panel admin-section-panel">
+            <div className="panel-title">
+              <h2>
+                Team members <small>({team.length})</small>
+              </h2>
+            </div>
+            <p className="muted small">
+              Open someone to see their cash, orders and history, change their pay or cash limit,
+              reset a forgotten PIN or deactivate them.
+            </p>
+            {team.length ? (
+              <div className="table-scroll">
+                <table className="data stack-on-phone team-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Role</th>
+                      <th>Status</th>
+                      <th className="num">Cash held</th>
+                      <th>Page</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {team.map((u) => (
+                      <tr key={u.id} className={u.active ? '' : 'inactive'}>
+                        <td data-label="Name">
+                          <b>{u.name}</b>
+                          <small>
+                            {u.code && `${u.code} · `}@{u.username}
+                          </small>
+                        </td>
+                        <td data-label="Role">{u.role === 'admin' ? 'Owner' : capital(u.role)}</td>
+                        <td data-label="Status">
+                          <span className="team-status">
+                            {!u.active ? (
+                              <span className="status-pill bad">Deactivated</span>
+                            ) : (
+                              <>
+                                <span className={`status-pill ${u.onShift ? 'good' : ''}`}>
+                                  {u.onShift ? 'On shift' : 'Off shift'}
+                                </span>
+                                {u.available === false && (
+                                  <span className="status-pill">On a break</span>
+                                )}
+                              </>
+                            )}
+                          </span>
+                        </td>
+                        <td data-label="Cash held" className="num">
+                          {u.role === 'rider' ? (
+                            <>
+                              {money(u.cashHeld)}
+                              {u.cashLimit !== null && (
+                                <small>own limit {money(u.cashLimit)}</small>
+                              )}
+                            </>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td data-label="Page" className="actions-cell">
+                          <div className="payment-actions">
+                            <button
+                              className="setup-secondary"
+                              disabled={preview}
+                              onClick={() => navigate(`/admin/team/${u.id}`)}
+                            >
+                              Open <ChevronRight />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
-            {!team.length && <p className="empty-orders">No team members loaded yet.</p>}
-          </div>
+            ) : (
+              <p className="empty-orders">No team members loaded yet.</p>
+            )}
+          </section>
         </>
       )}
       {section === 'Menu' && (
@@ -422,13 +464,13 @@ export function AdminSetup({
               'number',
             )}
             {input(
-              'Maximum rider float',
+              'Rider cash limit (a rider can have their own)',
               settings.maxRiderFloat,
               (v) => setSettings((p) => ({ ...p, maxRiderFloat: Number(v) })),
               'number',
             )}
             {input(
-              'Warn riders at (% of the float limit)',
+              'Warn riders at (% of their cash limit)',
               settings.floatWarningPercent ?? 80,
               (v) => setSettings((p) => ({ ...p, floatWarningPercent: Number(v) })),
               'number',
@@ -439,6 +481,54 @@ export function AdminSetup({
               (v) => setSettings((p) => ({ ...p, cashReminderHour: Number(v) })),
               'number',
             )}
+            <div className="full-row merchant-settings">
+              <p className="setup-field-label">Rider commission</p>
+              <p className="muted">
+                The rule new riders start with; change any rider&apos;s own rule on their page in
+                Team. Commission is on the food subtotal; riders also get the delivery fee.
+              </p>
+              <label className="setup-field">
+                Rule for new riders
+                <select
+                  value={settings.defaultCommissionType ?? 'per_order'}
+                  onChange={(e) =>
+                    setSettings((p) => ({ ...p, defaultCommissionType: e.target.value }))
+                  }
+                >
+                  <option value="per_order">Fixed per order</option>
+                  <option value="percent">Percent of subtotal</option>
+                  <option value="hybrid">Fixed + percent</option>
+                </select>
+              </label>
+              {settings.defaultCommissionType !== 'percent' &&
+                input(
+                  'Fixed amount per order',
+                  settings.defaultCommissionPerOrder ?? 0,
+                  (v) => setSettings((p) => ({ ...p, defaultCommissionPerOrder: Number(v) })),
+                  'number',
+                )}
+              {(settings.defaultCommissionType ?? 'per_order') !== 'per_order' &&
+                input(
+                  'Percent of subtotal',
+                  settings.defaultCommissionPercent ?? 0,
+                  (v) => setSettings((p) => ({ ...p, defaultCommissionPercent: Number(v) })),
+                  'number',
+                )}
+              <label className="setup-field">
+                Round commission up to
+                <select
+                  value={settings.commissionRounding ?? 'none'}
+                  onChange={(e) =>
+                    setSettings((p) => ({ ...p, commissionRounding: e.target.value }))
+                  }
+                >
+                  <option value="none">No rounding</option>
+                  <option value="up_100">Next 100</option>
+                  <option value="up_500">Next 500</option>
+                  <option value="up_1000">Next 1,000</option>
+                </select>
+              </label>
+            </div>
             <label className="setup-checkbox">
               <input
                 type="checkbox"
@@ -495,6 +585,13 @@ export function AdminSetup({
           </form>
         </div>
       )}
+      {section === 'Settings' && !preview && (
+        <div className="admin-panel">
+          <h2>Your password</h2>
+          <p className="muted">Changing it signs you out of your other devices.</p>
+          <ChangePin />
+        </div>
+      )}
       {section === 'Settings' && (
         <div className="admin-panel">
           <h2>Access rules</h2>
@@ -515,12 +612,12 @@ export function AdminSetup({
   );
 }
 
-function CommissionEditor({
+export function CommissionEditor({
   member,
   disabled,
   save,
 }: {
-  member: Member;
+  member: Pick<Member, 'commissionType' | 'commissionPerOrder' | 'commissionPercent'>;
   disabled: boolean;
   save: (payload: Record<string, unknown>) => Promise<void>;
 }) {

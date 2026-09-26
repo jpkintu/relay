@@ -31,6 +31,8 @@ export type Profile = {
   phone: string;
   role: Role | null;
   code: string;
+  // Riders only: false while on a break.
+  available?: boolean | null;
   commission: { type: string; perOrder: number; percent: number } | null;
   canInitialize: boolean;
   config: AppConfig;

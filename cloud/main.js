@@ -13,6 +13,7 @@
 //   payouts.js   money paid out of the till (rider pay, expenses)
 //   cashcheck.js nightly cash check (Cloud Job "cashCheck")
 //   shifts.js    rider and cashier shifts
+//   people.js    PIN change/reset, rider availability, the owner's member page
 //   admin.js     owner setup, team, menu, settings
 //   reports.js   payments ledger, order/commission ledgers, earnings, reports
 //   preview.js   optional demo mode (RELAY_ENABLE_PREVIEW=true)
@@ -28,6 +29,7 @@ require('./cash');
 require('./payouts');
 require('./cashcheck');
 require('./shifts');
+require('./people');
 require('./admin');
 require('./preview');
 require('./reports');

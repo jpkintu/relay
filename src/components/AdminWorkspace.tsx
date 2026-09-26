@@ -21,6 +21,7 @@ import { PaymentsLedger } from './reports/PaymentsLedger';
 import { Commissions } from './reports/Commissions';
 import { Reports } from './reports/Reports';
 import { AdminSetup } from './AdminSetup';
+import { AdminMember } from './AdminMember';
 import { BrandMark } from './BrandMark';
 import { statusLabel, statusTone } from '../lib/labels';
 import { useConfig, useMoney, useSession } from '../lib/session';
@@ -70,7 +71,9 @@ export function AdminWorkspace() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [menuOpen]);
-  const slug = useLocation().pathname.split('/')[2] || '';
+  const pathParts = useLocation().pathname.split('/');
+  const slug = pathParts[2] || '';
+  const memberId = slug === 'team' && !preview ? pathParts[3] || '' : '';
   const current = NAV.find((entry) => entry[2] === slug);
   const section: Section = current ? current[1] : 'Overview';
   const setSection = (label: Section) =>
@@ -314,7 +317,8 @@ export function AdminWorkspace() {
             {section === 'Commissions' && <Commissions />}
           </>
         )}
-        {['Team', 'Menu', 'Settings'].includes(section) && (
+        {memberId && <AdminMember key={memberId} id={memberId} />}
+        {!memberId && ['Team', 'Menu', 'Settings'].includes(section) && (
           <AdminSetup section={section as 'Team' | 'Menu' | 'Settings'} preview={preview} />
         )}
       </section>

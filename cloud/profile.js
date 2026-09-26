@@ -5,6 +5,7 @@ const {
   getRoleName,
   loadConfig,
   countUsers,
+  withRiderLimit,
 } = require('./lib/core');
 const { canBootstrapOwner } = require('./admin');
 const { previewEnabled } = require('./preview');
@@ -56,6 +57,8 @@ Parse.Cloud.define('getMyProfile', async (request) => {
     phone: user.get('phone') || '',
     role,
     code: user.get('riderCode') || user.get('cashierCode') || '',
+    // Riders only: false while on a break (new orders are refused).
+    available: role === 'rider' ? user.get('available') !== false : null,
     commission:
       role === 'rider'
         ? {
@@ -65,6 +68,6 @@ Parse.Cloud.define('getMyProfile', async (request) => {
           }
         : null,
     canInitialize: role === null && (await canBootstrapOwner()),
-    config: publicConfig(values),
+    config: publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
   };
 });
