@@ -16,6 +16,7 @@ const {
   loadConfig,
   readAcl,
   riderFloat,
+  withRiderLimit,
   personName,
 } = require('./lib/core');
 const { floatLevel, handoverReminderDue } = require('./lib/alerts');
@@ -138,9 +139,13 @@ Parse.Cloud.define('getNotifications', async (request) => {
   const user = requireUser(request);
   const role = await getRoleName(user);
   if (role === 'rider') {
-    const { values: config } = await loadConfig();
-    const float = await riderFloat(user);
-    await cashLimitAlert(user, config, float);
+    const { values: settings } = await loadConfig();
+    const [float, me] = await Promise.all([
+      riderFloat(user),
+      new Parse.Query(Parse.User).get(user.id, MASTER),
+    ]);
+    const config = withRiderLimit(settings, me);
+    await cashLimitAlert(me, config, float);
     await handoverReminder(user, config, float);
   } else if (role === 'cashier' || role === 'admin') {
     // Loaded here: cash.js itself sends notifications.

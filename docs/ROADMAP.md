@@ -219,6 +219,7 @@ Riders can only open `/rider/*`; cashiers `/cashier/*`; admins `/admin/*` and
 | `orders.js`                     | `createOrder`, `transitionOrder`, `getOperationalMenu`, `riderFloat`                                                                                                |
 | `cash.js`                       | `createHandover`, `confirmHandover`, `disputeHandover`, `reopenHandover`                                                                                            |
 | `shifts.js`                     | `getMyShift`, `startShift`, `endShift`                                                                                                                              |
+| `people.js`                     | `changeMyPin`, `setMyAvailability`, `adminResetPin`, `adminGetMember` (the owner's page for one rider or cashier)                                                   |
 | `admin.js`                      | `bootstrapOwner`, `adminListSetup`, team, menu, settings                                                                                                            |
 | `reports.js` + `lib/reports.js` | Filtered ledgers and reports (see functions below); aggregation maths is pure and unit-tested                                                                       |
 | `preview.js`                    | Demo functions, only when `RELAY_ENABLE_PREVIEW=true`                                                                                                               |
@@ -245,7 +246,7 @@ Riders can only open `/rider/*`; cashiers `/cashier/*`; admins `/admin/*` and
 | `getOperationsReport`                                                | admin                                 | Revenue/orders by day·week·month, month-on-month growth, growth vs previous period, menu item + accompaniment sales, riders, payment and channel mix, busy hours/days                                                                                                                                                     |
 | `adminListSetup`                                                     | admin                                 | Team (≤ 1000 users) with roles and codes, menu, categories, settings                                                                                                                                                                                                                                                      |
 | `adminCreateTeamMember`                                              | admin                                 | Creates a rider or cashier user (PIN = password), private ACL, code `R-001` / `C-001`, adds the role                                                                                                                                                                                                                      |
-| `adminUpdateMember`                                                  | admin                                 | active flag, commissionType / PerOrder / Percent                                                                                                                                                                                                                                                                          |
+| `adminUpdateMember`                                                  | admin                                 | active flag (deactivating signs them out), name, phone, commissionType / PerOrder / Percent, `maxFloat` (the rider's own cash limit; empty = restaurant limit)                                                                                                                                                            |
 | `adminChangeRole`                                                    | admin                                 | Swap rider ↔ cashier                                                                                                                                                                                                                                                                                                      |
 | `adminSaveCategory` / `adminSaveMenuItem` / `adminSaveSettings`      | admin                                 | CRUD with audit                                                                                                                                                                                                                                                                                                           |
 | `getOperationalMenu`                                                 | signed in staff/rider                 | Active + available dishes with accompaniment groups filtered to available accompaniments, delivery fee, currency                                                                                                                                                                                                          |
@@ -306,7 +307,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | My cash                         | 🟡    | List + multi-select handover. No grouping by date, no over-limit colour, no notes field. Pending handovers not shown                                                           |
 | Handover                        | 🟡    | Inline on the cash screen. No PIN, no "waiting for cashier" state list                                                                                                         |
 | Earnings                        | ✅    | Weekly / Monthly report with date presets or custom dates, change vs previous period, earnings chart (Plotly), per-period table and deliveries list. No payout request yet     |
-| Profile                         | 🟡    | Name, code, username, phone, commission rule, logout. No change PIN yet                                                                                                        |
+| Profile                         | ✅    | Name, code, username, phone, commission rule, available / on a break, change PIN (old PIN required), logout                                                                    |
 | Shift start/end                 | ✅    | Ending is blocked while orders are open, cash is held or a handover is unconfirmed (checklist on the shift card)                                                               |
 
 **Cashier**
@@ -317,22 +318,22 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | Stock        | ✅    | Sold out / back in stock for dishes and accompaniments                                                                                 |
 | Handovers    | ✅    | No search by rider or handover code. No partial acceptance                                                                             |
 | Shift / till | 🟡    | Board locked until a shift starts with a counted till; differences must be explained. Expected till ignores cash paid out (no payouts) |
-| Profile      | ❌    |                                                                                                                                        |
+| Profile      | ✅    | Open from the name in the header (works before a shift starts): name, code, phone, change PIN, logout                                  |
 
 **Admin**
 
-| Brief screen                      | State | Notes                                                                                                                 |
-| --------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------- |
-| Overview                          | 🟡    | 4 KPIs + feed. No top rider, no charts, "cash reconciled today" missing                                               |
-| Orders                            | 🟡    | Server filters: dates, rider, cash / mobile money, status; totals; search; CSV. No detail/override yet                |
-| Riders list/detail                | ❌    | Only the Team list with commission editor. No float, lifetime stats, per-rider max float, force handover or history   |
-| New rider / cashier               | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                  |
-| Menu                              | 🟡    | Accompaniments + groups per dish. No description, image, prep time, sort, delete. Category is a free string           |
-| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction, filters (dates, rider, type), totals, handovers + reopen dispute. No write-off |
-| Commissions                       | 🟡    | Date + rider filters, totals per rider, CSV. No paid toggle, bulk pay or owed total                                   |
-| Settings                          | 🟡    | 7 of about 14 config fields, plus Apply security rules                                                                |
-| Audit viewer                      | ❌    | Data is written but there is no UI                                                                                    |
-| Reports                           | 🟡    | Reports tab: revenue, MoM growth, item/accompaniment sales, riders, payment mix, busy hours. No Z-report/variance     |
+| Brief screen                      | State | Notes                                                                                                                                                                  |
+| --------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview                          | 🟡    | 4 KPIs + feed. No top rider, no charts, "cash reconciled today" missing                                                                                                |
+| Orders                            | 🟡    | Server filters: dates, rider, cash / mobile money, status; totals; search; CSV. No detail/override yet                                                                 |
+| Riders list/detail                | ✅    | Team table (role, on shift, on a break, cash held) → member page: cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, cash limit, deactivate |
+| New rider / cashier               | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                                                                   |
+| Menu                              | 🟡    | Accompaniments + groups per dish. No description, image, prep time, sort, delete. Category is a free string                                                            |
+| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction, filters (dates, rider, type), totals, handovers + reopen dispute. No write-off                                                  |
+| Commissions                       | 🟡    | Date + rider filters, totals per rider, CSV. No paid toggle, bulk pay or owed total                                                                                    |
+| Settings                          | 🟡    | 7 of about 14 config fields, plus Apply security rules                                                                                                                 |
+| Audit viewer                      | ❌    | Data is written but there is no UI                                                                                                                                     |
+| Reports                           | 🟡    | Reports tab: revenue, MoM growth, item/accompaniment sales, riders, payment mix, busy hours. No Z-report/variance                                                      |
 
 ---
 
@@ -650,12 +651,12 @@ starts.
 
 ### Phase 3 — People & access
 
-- [ ] Rider profile: change PIN (with old PIN). (Name, code, phone, commission rule and logout done in Phase 0)
-- [ ] Cashier profile screen
-- [ ] Admin rider detail: float, lifetime stats, per-rider max float, open orders, cash history, commission history, deactivate, reset PIN
-- [ ] `available` toggle for the rider (auto codes done in Phase 0)
-- [ ] Commission defaults from Configuration; `hybridBase` handling; rounding
-- [ ] Update lifetime stats in `deliver`
+- [x] Rider profile: change PIN (with old PIN; `changeMyPin`, signs out other devices). Clients can no longer set their own password directly. (Name, code, phone, commission rule and logout done in Phase 0)
+- [x] Cashier profile screen (`/cashier/profile`, from the name in the header): details, change PIN, logout. The owner changes their password in Settings
+- [x] Admin rider detail (`/admin/team/:id`, `adminGetMember`): cash held and limit, open orders, lifetime figures, handovers, pay received, commission rule, own cash limit (`maxFloat`), edit name/phone, change role, reset PIN (`adminResetPin`, clears the PIN lock, signs out), deactivate (signs out). Cashiers get shifts and kitchen orders held
+- [x] `available` toggle for the rider (`setMyAvailability`): on a break, new orders are refused; starting a shift makes them available again (auto codes done in Phase 0)
+- [x] Commission defaults from Configuration (`defaultCommissionType` / `PerOrder` / `Percent` for new riders) and commission rounding in Settings; hybrid = fixed amount + percent
+- [x] ~~Update lifetime stats in `deliver`~~ Lifetime figures are derived from orders on the member page (like the float), so they cannot drift
 - [ ] Extend `e2e/` to a full role/permission matrix: every function × every role (the harness and core cases exist)
 
 ### Phase 4 — Operations & notifications
@@ -710,7 +711,7 @@ Open items above, grouped into release-sized batches in recommended order.
    force handover); pending handovers on the rider cash screen (B8); stale-handover
    (> 4 h) highlight + admin alert; till payouts so expected till is right; nightly
    invariant check.
-2. **People.** Change PIN (rider/cashier), cashier profile, admin rider detail (float,
+2. ~~**People.**~~ Done 2026-09-27. Change PIN (rider/cashier), cashier profile, admin rider detail (float,
    lifetime stats, per-rider cash limit override, open orders, cash and commission
    history, deactivate, reset PIN), rider availability toggle.
 3. **Owner reporting & control.** Server `getDashboard` (fixes B7), audit viewer,
@@ -787,3 +788,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-26 | Reports: the headline is what the restaurant keeps (food sales − rider commission); delivery fees are shown as all paid to riders; the payment mix and cash / mobile money split count confirmed money only (cash counted in by a cashier, verified mobile money), with the rest shown as "not yet confirmed".                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 2026-09-26 | Apply security rules also moves door mobile money payments rejected before the "owed as cash" rule onto the rider's cash list (delivered + mobile money + REJECTED → cash WITH_RIDER). e2e 88.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 2026-09-26 | Paying at the cash handover now pays only the delivery fees of those orders (`deliveryFeePaid`); their commission stays owed and is paid from Payouts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 2026-09-27 | Batch 2, People: `people.js` (`changeMyPin`, `setMyAvailability`, `adminResetPin`, `adminGetMember`); rider and cashier profiles with PIN change; rider break toggle (new orders refused while on a break); Team table and a page per member (cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, own cash limit `maxFloat`, deactivate signs out); default commission rule and rounding in Settings. `_User` gains `available`, `maxFloat` (run Apply security rules).                                                                                                                                                                                                                                                                 |

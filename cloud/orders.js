@@ -13,6 +13,7 @@ const {
   personName,
   requireCashierShift,
   takeOrder,
+  withRiderLimit,
 } = require('./lib/core');
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
@@ -111,12 +112,16 @@ Parse.Cloud.define('createOrder', async (request) => {
   activeQuery.equalTo('createdBy', rider);
   activeQuery.notContainedIn('status', ['DELIVERED', 'CANCELLED']);
   activeQuery.limit(200);
-  const [lines, { values: config }, active, float] = await Promise.all([
+  const [lines, { values: settings }, active, float, me] = await Promise.all([
     priceLines(p.items),
     loadConfig(),
     activeQuery.find(MASTER),
     riderFloat(rider),
+    new Parse.Query(Parse.User).get(rider.id, MASTER),
   ]);
+  if (me.get('available') === false)
+    throw invalid('You are on a break. Switch to Available to take orders');
+  const config = withRiderLimit(settings, me);
   if (!config.allowBatching && active.length)
     throw invalid('Finish your current order before creating another');
   // Cash limit: the rider may place an order while their cash (held, plus
@@ -394,8 +399,10 @@ async function notifyTransition(order, action, { staff, owner, actor, config }) 
       order,
       except: actor,
     });
-  if (action === 'deliver' && order.get('paymentMethod') === 'cash')
-    await cashLimitAlert(await rider.fetch(MASTER), config);
+  if (action === 'deliver' && order.get('paymentMethod') === 'cash') {
+    const fresh = await rider.fetch(MASTER);
+    await cashLimitAlert(fresh, withRiderLimit(config, fresh));
+  }
 }
 
 // A food/delivery complaint, independent of the cash status.

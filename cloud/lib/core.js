@@ -25,6 +25,10 @@ const DEFAULT_CONFIG = {
   cashReminderHour: 20,
   // Warn riders when their cash reaches this % of maxRiderFloat.
   floatWarningPercent: 80,
+  // Commission rule given to new riders (each rider's rule can be changed).
+  defaultCommissionType: 'per_order',
+  defaultCommissionPerOrder: 0,
+  defaultCommissionPercent: 0,
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
@@ -136,6 +140,27 @@ async function riderFloat(rider) {
   query.limit(1000);
   const orders = await query.find(MASTER);
   return orders.reduce((sum, order) => sum + (Number(order.get('amountCollected')) || 0), 0);
+}
+
+// The rider's cash limit: their own override (set by the owner on the rider's
+// page) or the restaurant default. Returns config with maxRiderFloat replaced,
+// so every limit check and message uses the rider's own figure.
+function withRiderLimit(config, rider) {
+  const own = rider?.get('maxFloat');
+  return typeof own === 'number' && own >= 0 ? { ...config, maxRiderFloat: own } : config;
+}
+
+// Signs a user out everywhere (after a PIN reset or change). `keepToken`
+// keeps one session alive.
+async function endSessions(user, keepToken) {
+  const query = new Parse.Query(Parse.Session);
+  query.equalTo('user', user);
+  query.limit(1000);
+  const sessions = (await query.find(MASTER)).filter(
+    (session) => !keepToken || session.get('sessionToken') !== keepToken,
+  );
+  if (sessions.length) await Parse.Object.destroyAll(sessions, MASTER);
+  return sessions.length;
 }
 
 // Cashiers work the board only during a shift that started with a counted
@@ -335,4 +360,6 @@ module.exports = {
   claimOnce,
   verifyPin,
   takeOrder,
+  withRiderLimit,
+  endSessions,
 };

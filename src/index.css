@@ -4705,3 +4705,318 @@ table.data.compact-table {
   font-weight: 600;
   color: var(--muted);
 }
+
+/* People: profiles, PIN change, availability, the owner's member page */
+.profile-link {
+  cursor: pointer;
+  color: var(--ink);
+}
+.profile-link.active,
+.profile-link:hover {
+  border-color: var(--ink);
+}
+.profile-card .change-pin {
+  margin: 18px 0 14px;
+}
+.change-pin button svg {
+  width: 16px;
+  height: 16px;
+}
+.profile-card .change-pin > button,
+.profile-card .change-pin .setup-secondary {
+  background: #e5e7ec;
+  color: var(--ink);
+}
+.change-pin > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.change-pin.open {
+  display: grid;
+  gap: 12px;
+  text-align: left;
+  max-width: 420px;
+  margin: 18px auto 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+.admin-panel .change-pin.open {
+  margin: 14px 0 0;
+}
+.change-pin h3 {
+  font-size: 15px;
+  margin: 0;
+}
+.change-pin-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.change-pin-actions button,
+.profile-card .change-pin-actions button {
+  border: 0;
+  border-radius: 9px;
+  padding: 11px 16px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--on-dark);
+}
+.change-pin-actions button.setup-secondary,
+.profile-card .change-pin-actions button.setup-secondary {
+  background: #e5e7ec;
+  color: var(--ink);
+}
+.change-pin-actions button:disabled {
+  opacity: 0.5;
+}
+.profile-card .profile-logout {
+  margin-top: 6px;
+}
+.availability {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  margin: 16px 0 0;
+}
+.availability.off {
+  background: #fff4dc;
+  border-color: #eed49a;
+}
+.availability > span {
+  flex: 1;
+  min-width: 180px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 10px;
+  align-items: center;
+}
+.availability > span svg {
+  grid-row: span 2;
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+.availability small {
+  color: var(--muted);
+}
+.availability > button,
+.profile-card .availability > button {
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 16px;
+  font-weight: 700;
+  background: var(--ink);
+  color: #fff;
+  min-height: 44px;
+}
+.availability.on > button,
+.profile-card .availability.on > button {
+  background: #e5e7ec;
+  color: var(--ink);
+}
+.availability .ops-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+.cashier-profile {
+  max-width: 560px;
+  margin: 0 auto 20px;
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 6px 0;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.back-link svg {
+  width: 16px;
+  height: 16px;
+}
+.member-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.member-page > * {
+  min-width: 0;
+}
+.member-page > .back-link {
+  justify-self: start;
+  margin-bottom: 0;
+}
+.member-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.member-head .profile-avatar {
+  margin: 0;
+  flex-shrink: 0;
+}
+.member-head h2 {
+  font: 600 28px var(--font-display);
+  margin: 0 0 2px;
+}
+.member-head p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.member-tags,
+.team-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.team-status {
+  margin-top: 0;
+}
+.member-tags .status-pill,
+.team-status .status-pill {
+  font-size: 12px;
+}
+.member-actions {
+  display: grid;
+}
+.member-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.member-action:first-child {
+  border-top: 0;
+}
+.member-action > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 200px;
+  flex: 1;
+}
+.member-action small {
+  color: var(--muted);
+}
+.member-action select {
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--surface);
+  min-width: 130px;
+}
+.member-action .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+}
+.member-action .setup-secondary svg {
+  width: 15px;
+  height: 15px;
+}
+.inline-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inline-form input {
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--surface);
+  min-width: 0;
+  width: 190px;
+  max-width: 100%;
+}
+.inline-form button:not(.setup-secondary) {
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-dark);
+  padding: 9px 14px;
+  font-weight: 700;
+}
+.inline-form button:disabled {
+  opacity: 0.5;
+}
+.member-edit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  align-items: end;
+  padding: 14px 0;
+}
+.member-edit .payment-actions {
+  grid-column: 1 / -1;
+}
+.member-page .commission-editor {
+  padding-left: 0;
+}
+.member-page .commission-editor button.setup-secondary {
+  background: #e5e7ec;
+}
+.member-lifetime {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0 28px;
+  margin: 0;
+}
+.member-lifetime > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+.member-lifetime dt {
+  color: var(--muted);
+}
+.member-lifetime dd {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+}
+.team-table tr.inactive td {
+  opacity: 0.6;
+}
+.team-table .payment-actions button svg {
+  width: 15px;
+  height: 15px;
+}
+@media (max-width: 640px) {
+  .member-head h2 {
+    font-size: 23px;
+  }
+  .member-action > button,
+  .member-action > select,
+  .inline-form,
+  .inline-form input {
+    width: 100%;
+  }
+  .inline-form button {
+    flex: 1;
+  }
+}
+.change-pin h3 {
+  font-weight: 700;
+}

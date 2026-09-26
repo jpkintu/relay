@@ -278,4 +278,4 @@ Parse.Cloud.define('getTillPayouts', async (request) => {
   return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
 });
 
-module.exports = { riderPayState, payOut };
+module.exports = { riderPayState, payOut, payoutJSON };

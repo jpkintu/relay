@@ -21,6 +21,7 @@ import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
 import { MyHandovers, MyPay } from './RiderMoney';
 import { usePin } from '../lib/pin';
+import { AvailabilityToggle, ChangePin } from './Profile';
 
 type LiveOrder = {
   id: string;
@@ -215,6 +216,7 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
       </header>
       <div className="rider-content">
         {!preview && <PushPrompt card />}
+        <AvailabilityToggle compact />
         <ShiftPanel kind="rider" preview={preview} />
         <section className="welcome">
           <div>
@@ -631,11 +633,17 @@ function RiderSubPage({
                   {profile.phone && ` · ${profile.phone}`}
                 </p>
                 <p>Commission: {commissionRule(profile.commission, money)}</p>
+                {!preview && (
+                  <>
+                    <AvailabilityToggle />
+                    <ChangePin />
+                  </>
+                )}
               </>
             ) : (
               <p>Account details are available after signing in.</p>
             )}
-            <button onClick={() => void logout()}>
+            <button className="profile-logout" onClick={() => void logout()}>
               <LogOut /> {preview ? 'Leave preview' : 'Log out'}
             </button>
           </div>

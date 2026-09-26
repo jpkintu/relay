@@ -17,6 +17,7 @@ import {
 import Parse from '../parse';
 import { CashierHandovers } from './CashierHandovers';
 import { CashierPayouts } from './CashierPayouts';
+import { CashierProfile } from './Profile';
 import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
@@ -222,16 +223,22 @@ export function CashierWorkspace() {
             </button>
           )}
         </nav>
-        <div className="shift-live">
+        <button
+          className={`shift-live profile-link ${pathname.startsWith('/cashier/profile') ? 'active' : ''}`}
+          onClick={() => navigate('/cashier/profile')}
+          aria-label="Your profile"
+        >
           {profile ? `${profile.code ? `${profile.code} · ` : ''}${profile.name}` : 'Cashier'}
-        </div>
+        </button>
         <NotificationBell />
         <button className="icon-button" onClick={() => void logout()} aria-label="Log out">
           <LogOut />
         </button>
       </header>
       {!preview && <PushPrompt card />}
-      {onShift === null ? (
+      {pathname.startsWith('/cashier/profile') ? (
+        <CashierProfile />
+      ) : onShift === null ? (
         <div className="ops-content">
           <p className="muted">Checking your shift…</p>
         </div>
