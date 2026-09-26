@@ -98,7 +98,7 @@ export function RiderEarnings({ riderId }: { riderId?: string }) {
         constraintext: 'none',
         textposition: 'outside',
         cliponaxis: false,
-        textfont: { color: '#15231d' },
+        textfont: { color: '#0b1633' },
         customdata: data.series.map((row) => [
           money(row.earnings),
           `${bucketLabel(row.key, data.period)} · ${row.deliveries} deliveries`,
