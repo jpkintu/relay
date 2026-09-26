@@ -10,6 +10,7 @@ const { merchantAccounts } = require('./lib/mobileMoney');
 const { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require('./lib/dates');
 const R = require('./lib/reports');
 const { orderRiderPay } = require('./lib/money');
+const { payOwed } = require('./payouts');
 
 const MAX_ROWS = 2000;
 const PERIODS = ['day', 'week', 'month'];
@@ -289,19 +290,44 @@ Parse.Cloud.define('adminSearchOrders', async (request) => {
   };
 });
 
-// Commission earned on deliveries in the range, with a total per rider.
+// Rider pay earned on deliveries in the range, with a total per rider and
+// what is paid or still owed. `paid`: 'all' (default), 'paid' or 'owed'.
+const PAID_FILTERS = ['all', 'paid', 'owed'];
 Parse.Cloud.define('getCommissionLedger', async (request) => {
   await requireRole(request, ['admin']);
   const p = request.params;
+  const paidFilter = p.paid || 'all';
+  if (!PAID_FILTERS.includes(paidFilter)) throw invalid('Show all, paid or owed');
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
   const query = ordersIn(range, 'deliveredAt', p.riderId);
   query.equalTo('status', 'DELIVERED');
-  const facts = (await findAll(query)).map(factOf).sort(byNewest('deliveredAt'));
+  const all = (await findAll(query))
+    .map((order) => {
+      const fact = factOf(order);
+      const owed = order.get('commissionPaid') === true ? 0 : payOwed(order);
+      return {
+        ...fact,
+        owed,
+        payState: owed === 0 ? 'paid' : owed < fact.commission ? 'part' : 'owed',
+      };
+    })
+    .sort(byNewest('deliveredAt'));
+  const facts =
+    paidFilter === 'all'
+      ? all
+      : all.filter((f) => (paidFilter === 'paid' ? f.payState === 'paid' : f.owed > 0));
+  const owedBy = new Map();
+  for (const f of facts) owedBy.set(f.riderId, (owedBy.get(f.riderId) || 0) + f.owed);
   const riders = R.riderStats(facts).sort((a, b) => b.commission - a.commission);
+  const total = facts.reduce((n, f) => n + f.commission, 0);
+  const owed = facts.reduce((n, f) => n + f.owed, 0);
   return {
     range: rangeInfo(range),
-    total: facts.reduce((n, f) => n + f.commission, 0),
+    paid: paidFilter,
+    total,
+    owed,
+    paidOut: total - owed,
     deliveries: facts.length,
     riders: riders.map(({ riderId, rider, delivered, revenue, commission }) => ({
       riderId,
@@ -309,6 +335,7 @@ Parse.Cloud.define('getCommissionLedger', async (request) => {
       deliveries: delivered,
       sales: revenue,
       commission,
+      owed: owedBy.get(riderId) || 0,
     })),
     rows: facts.slice(0, MAX_ROWS).map((f) => ({
       id: f.id,
@@ -319,6 +346,8 @@ Parse.Cloud.define('getCommissionLedger', async (request) => {
       total: f.total,
       subtotal: f.subtotal,
       commission: f.commission,
+      owed: f.owed,
+      payState: f.payState,
       method: f.method,
       deliveredAt: f.deliveredAt,
     })),
@@ -454,3 +483,5 @@ Parse.Cloud.define('getOperationsReport', async (request) => {
     ...R.timeOfDay(facts, (f) => localClock(f.createdAt, tz)),
   };
 });
+
+module.exports = { factOf, findAll, ordersIn, orderLines };

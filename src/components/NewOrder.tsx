@@ -405,11 +405,16 @@ export function NewOrder({
               .reduce((n, line) => n + line.quantity, 0);
             return (
               <article className="food-card" key={i.id}>
-                <div className="food-art" style={{ background: i.color || '#819c72' }}>
-                  {i.title[0]}
-                </div>
+                {i.image ? (
+                  <img className="food-art photo" src={i.image} alt="" loading="lazy" />
+                ) : (
+                  <div className="food-art" style={{ background: i.color || '#819c72' }}>
+                    {i.title[0]}
+                  </div>
+                )}
                 <button className="food-info" onClick={() => setSheet(i)}>
                   <h3>{i.title}</h3>
+                  {i.description && <small className="food-description">{i.description}</small>}
                   <p>
                     {money(i.price)}
                     {i.accompanimentGroups.length > 0 && ' · with sides'}
@@ -665,6 +670,7 @@ function ItemSheet({
           <div>
             <h2>{item.title}</h2>
             <p>{money(item.price)}</p>
+            {item.description && <p className="sheet-description">{item.description}</p>}
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">
             <X />

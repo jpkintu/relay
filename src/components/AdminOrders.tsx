@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
@@ -60,6 +61,7 @@ const STATUSES = [
 export function AdminOrders() {
   const money = useMoney();
   const { timezone } = useConfig();
+  const navigate = useNavigate();
   const [filters, setFilters] = useFilters('last7');
   const [status, setStatus] = useState('');
   const [query, setQuery] = useState('');
@@ -178,7 +180,14 @@ export function AdminOrders() {
               </thead>
               <tbody>
                 {rows.map((o) => (
-                  <tr key={o.id}>
+                  <tr
+                    key={o.id}
+                    className="clickable"
+                    tabIndex={0}
+                    title="Open the order"
+                    onClick={() => navigate(`/admin/orders/${o.id}`)}
+                    onKeyDown={(e) => e.key === 'Enter' && navigate(`/admin/orders/${o.id}`)}
+                  >
                     <td>
                       <span className="code">{o.code}</span>
                       <small>{o.customer}</small>

@@ -7,6 +7,7 @@ const {
   audit,
   loadConfig,
   requireCashierShift,
+  fileUrl,
 } = require('./lib/core');
 const { availableGroups } = require('./lib/accompaniments');
 const { servableAccompaniments } = require('./orders');
@@ -31,6 +32,8 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
       title: item.get('title'),
       category: item.get('category') || 'Mains',
       price: item.get('price'),
+      description: item.get('description') || '',
+      image: fileUrl(item.get('image')),
       accompanimentGroups: availableGroups(item.get('accompanimentGroups') || [], (id) =>
         accompaniments.has(id),
       ).map((group) => ({

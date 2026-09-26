@@ -16,6 +16,7 @@ type RiderPay = {
   deliveryFees: number;
   deductions: number;
   owed: number;
+  requestedAt: string | null;
 };
 
 type Payout = {
@@ -146,6 +147,12 @@ export function CashierPayouts() {
                   <tr key={row.riderId}>
                     <td data-label="Rider">
                       <b>{row.rider}</b>
+                      {row.requestedAt && (
+                        <small className="pay-asked">
+                          Asked to be paid at{' '}
+                          {formatDate(row.requestedAt, timezone, { timeStyle: 'short' })}
+                        </small>
+                      )}
                     </td>
                     <td data-label="Deliveries" className="num">
                       {row.deliveries}

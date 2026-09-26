@@ -128,6 +128,10 @@ Code:
    **Cash check job:** Back4App dashboard → Cloud Code → Jobs → schedule
    `cashCheck` nightly (e.g. 23:30). It notifies the owner if cash records
    disagree.
+   **Z-report job:** schedule `dailyZReport` hourly. It saves the day's
+   Z-report once the Z-report hour in Settings has passed (default 23:00) and
+   pushes it to the owner; it also runs when the owner opens the app. Dish
+   photos are stored with Back4App's files; nothing to set up.
 4. **Mobile money.** Owner → Settings → enter the Airtel and/or MTN merchant
    code and name, or riders cannot take mobile money orders.
 5. **Fresh restaurant.** On an empty database, the first person to open the app
@@ -194,7 +198,7 @@ Code is not running: check that the whole `cloud/` folder (including `lib/` and
 | `src/components/CashierHandovers.tsx` | Pending handovers, count-cash modal, confirm / dispute                                                                                            | Works                                                                         |
 | `src/components/ShiftPanel.tsx`       | Start / end shift for rider & cashier; cashier till variance                                                                                      | Works                                                                         |
 | `src/components/AdminWorkspace.tsx`   | `/admin/{,reports,orders,payments,commissions,team,menu,settings}` (`/admin/cash` redirects)                                                      | Basic; KPIs still computed client-side from the last 100 orders (B7)          |
-| `src/components/AdminOrders.tsx`      | Orders ledger: date / rider / payment / status filters (server), search, totals, CSV                                                              | No detail view or override yet                                                |
+| `src/components/AdminOrders.tsx`      | Orders ledger: date / rider / payment / status filters (server), search, totals, CSV; rows open `/admin/orders/:id` (`AdminOrder.tsx`)            | Order page with history and audited overrides                                 |
 | `src/components/reports/`             | `common.tsx` (filter bar, `useCloud`, stat tiles, CSV), `Chart.tsx` (lazy Plotly.js), `PaymentsLedger`, `Commissions`, `Reports`, `RiderEarnings` | Plotly (`plotly.js-basic-dist-min`) loads on the first chart only             |
 | `src/lib/range.ts`                    | Date presets in the restaurant timezone, bucket labels, `formatChange`                                                                            | Unit-tested                                                                   |
 | `src/components/AdminSetup.tsx`       | Team (with codes), menu, settings (incl. currency code, timezone), Apply security rules                                                           | Works (limited fields)                                                        |
@@ -322,18 +326,18 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 **Admin**
 
-| Brief screen                      | State | Notes                                                                                                                                                                  |
-| --------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Overview                          | 🟡    | 4 KPIs + feed. No top rider, no charts, "cash reconciled today" missing                                                                                                |
-| Orders                            | 🟡    | Server filters: dates, rider, cash / mobile money, status; totals; search; CSV. No detail/override yet                                                                 |
-| Riders list/detail                | ✅    | Team table (role, on shift, on a break, cash held) → member page: cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, cash limit, deactivate |
-| New rider / cashier               | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                                                                   |
-| Menu                              | 🟡    | Accompaniments + groups per dish. No description, image, prep time, sort, delete. Category is a free string                                                            |
-| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction, filters (dates, rider, type), totals, handovers + reopen dispute. No write-off                                                  |
-| Commissions                       | 🟡    | Date + rider filters, totals per rider, CSV. No paid toggle, bulk pay or owed total                                                                                    |
-| Settings                          | 🟡    | 7 of about 14 config fields, plus Apply security rules                                                                                                                 |
-| Audit viewer                      | ❌    | Data is written but there is no UI                                                                                                                                     |
-| Reports                           | 🟡    | Reports tab: revenue, MoM growth, item/accompaniment sales, riders, payment mix, busy hours. No Z-report/variance                                                      |
+| Brief screen                      | State | Notes                                                                                                                                                                                          |
+| --------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview                          | ✅    | Server `getDashboard`: kept today, orders, cash with riders, cash counted in, rider pay owed, top rider, average order, on shift; needs attention; orders by hour; 30-day sales; recent orders |
+| Orders                            | ✅    | Server filters: dates, rider, cash / mobile money, status; totals; search; CSV. Order page: items, payment, rider pay, history, overrides (cancel, payment, deliver, undo, move)               |
+| Riders list/detail                | ✅    | Team table (role, on shift, on a break, cash held) → member page: cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, cash limit, deactivate                         |
+| New rider / cashier               | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                                                                                           |
+| Menu                              | ✅    | Accompaniments + groups per dish, description, photo, order (arrows), archive/restore. No prep time; category is a free string                                                                 |
+| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction, filters (dates, rider, type), totals, handovers + reopen dispute. No write-off                                                                          |
+| Commissions                       | ✅    | Date + rider filters, All / Owed / Paid, paid out and still owed totals, per-rider owed, CSV                                                                                                   |
+| Settings                          | ✅    | Every Configuration field (incl. commission defaults, rounding, Z-report hour), owner password, Apply security rules                                                                           |
+| Audit viewer                      | ✅    | `/admin/audit`: dates, kind, person; what changed (before → after); links to orders and people; CSV; load older                                                                                |
+| Reports                           | ✅    | Reports tab: revenue, MoM growth, item/accompaniment sales, riders, payment mix, busy hours; daily Z-report (`/admin/reports/z/:day`, printable, saved nightly)                                |
 
 ---
 
@@ -504,8 +508,7 @@ Priority: **P0** = release blocker, **P1** = before first paying client, **P2** 
 - [ ] **B6 P2 — Row limits.** Several queries use `limit(100)` / `limit(1000)`
       (float, admin lists, `adminListSetup` users). Paginate, or use aggregates on
       the server.
-- [ ] **B7 P2 — "Today" is computed on the client** (now in the restaurant timezone, but still only over on client-loaded rows
-      the last 100 orders). Move KPIs to a server `getDashboard` function.
+- [x] **B7 P2 — "Today" is computed on the client** _Fixed 2026-09-27: the Overview uses the server `getDashboard`._
 - [x] **B8 P2 — The home "Cash on me" tile** _Done 2026-09-26: the Cash screen
       lists the rider's handovers with their status (waiting, returned, disputed,
       shortage) under the cash still in hand._ counts WITH_RIDER + HANDOVER_PENDING,
@@ -666,26 +669,29 @@ starts.
 - [x] Rider cash reminders: warning at `floatWarningPercent` (default 80 %) of the limit, "limit reached" at 100 % (new orders of any payment type are blocked), and an end-of-day handover reminder from `cashReminderHour` (default 20:00); each at most once a day
 - [x] Web Push to the lock screen, even with the app closed (`cloud/push.js`, `public/sw.js`): VAPID keys are generated on first use and kept in the private `Secret` class; each device registers a `PushSubscription` (only real browser push services are accepted); every notification is pushed with high urgency for new/alert, vibration, and "stay until tapped" for alerts; dead subscriptions are dropped. Relay is installable (manifest + icons); on iPhone/iPad push works once Relay is added to the Home Screen (iOS 16.4+). Riders and cashiers get a "Turn on phone notifications" card; signing out unregisters the device
 - [x] Stale-handover alert: handovers waiting over 4 h are highlighted on the cashier's list and notified once to cashiers and the owner
-- [x] Rider pay from the till: rider pay = commission + delivery fee (owner's decision 2026-09-26); the cashier pays everything owed (less shortages charged to the rider) with a PIN; `commissionPaid` flags; the rider sees "Owed to you" and recent pay. Still open: rider payout request
+- [x] Rider pay from the till: rider pay = commission + delivery fee (owner's decision 2026-09-26); the cashier pays everything owed (less shortages charged to the rider) with a PIN; `commissionPaid` flags; the rider sees "Owed to you" and recent pay. Riders can ask to be paid (`requestPayout`, done 2026-09-27)
 - [x] Rider earnings: Week / Month summaries with date presets and custom dates, count, average, change, chart, list (`getRiderEarnings`)
 - [x] PWA basics: manifest, icons, service worker (for push)
 - [ ] PWA: install prompt, offline shell
 
 ### Phase 5 — Admin & reporting
 
-- [ ] Server `getDashboard`: orders today, gross sales, cash in transit, reconciled today, commission today, top rider; charts for orders/hour today and orders/day over 30 days (recharts is already installed)
+- [x] Server `getDashboard`: orders today, sales and what is kept, cash with riders, cash counted in today, rider pay owed, top rider, on shift, needs attention; charts for orders/hour today and sales/day over 30 days
 - [x] Orders table: server-side filters by date range, rider, payment type and status, totals, CSV (`adminSearchOrders`). Still open: channel/cashStatus filters, pagination beyond 2,000 rows, detail + admin override
-- [ ] Orders table (rest): server-side filters (date range, rider, cashStatus, restaurantStatus, channel), search (code, phone, rider code), pagination, detail + admin override (audited), full CSV export via cloud function
+- [x] Order detail + audited admin override (`adminGetOrder`, `adminOverrideOrder`: cancel at any stage before delivery, switch cash ↔ mobile money while the money is with the rider / unverified, mark a ready or picked-up order delivered, undo a delivery before the money is handed over and before the rider is paid, move an open order to another rider; reason required; riders told) — owner's decisions 2026-09-27
+- [ ] Orders table (rest): channel / cashStatus filters, pagination beyond 2,000 rows
 - [x] Payments ledger (renamed from Cash ledger): all cash and mobile money transactions, filters (dates, rider, cash / mobile money), totals (reconciled / with riders / verified / pending / per provider), handovers (`getPaymentsLedger`)
 - [ ] Payments ledger: > 4 h pending highlight
 - [x] Commission ledger: date + rider filters, totals per rider, CSV (`getCommissionLedger`)
-- [ ] Commission ledger: paid toggle and an owed total
-- [ ] Settings form with every Configuration field
-- [ ] Audit viewer filtered by actor, action and entity, with a before/after diff
+- [x] Commission ledger: All / Owed / Paid, paid out and still owed totals, owed per rider and per order
+- [x] Settings form with every Configuration field
+- [x] Audit viewer filtered by dates, person, kind of action and record, with a before/after diff (`adminGetAuditLog`)
 - [x] Reports tab (`getOperationsReport`, Plotly charts): revenue by day/week/month, growth vs previous period, month-on-month growth, menu item sales (by revenue or quantity, CSV), accompaniments, payment and channel mix, busiest hours and weekdays, rider performance
-- [ ] Reports: Daily Z-report, rider reconciliation (per rider per day: opening float, collected, handed over, closing, commission), item sales (top 20 by qty/revenue), variance report
-- [ ] Cloud Job `dailyZReport` at `reconciliationCutoffTime` (restaurant timezone), emailed as HTML (via Back4App email adapter / Mailgun / SendGrid)
-- [ ] Menu: description, image upload, prep time, sort order, category pointer migration, archive instead of delete
+- [x] Daily Z-report (`adminGetZReport`): sales and what is kept, orders, how customers paid, cash counted in and paid out, till differences, tills closed, per-rider delivered / cash collected / handed over / rider pay, top dishes; printable
+- [ ] Reports: variance report across days
+- [x] Cloud Job `dailyZReport` (schedule hourly): saves the day's report after `zReportHour` (restaurant time) into `ZReport` and pushes it to the owner — owner's decision 2026-09-27: in app + phone, no email for now
+- [x] Menu: description, photo (`adminSetMenuImage`, shrunk in the browser), sort order (`adminSortMenu`), archive / restore; riders see photos and descriptions
+- [ ] Menu: prep time, category pointer migration
 
 ### Phase 6 — Release readiness & commercialisation
 
@@ -714,7 +720,7 @@ Open items above, grouped into release-sized batches in recommended order.
 2. ~~**People.**~~ Done 2026-09-27. Change PIN (rider/cashier), cashier profile, admin rider detail (float,
    lifetime stats, per-rider cash limit override, open orders, cash and commission
    history, deactivate, reset PIN), rider availability toggle.
-3. **Owner reporting & control.** Server `getDashboard` (fixes B7), audit viewer,
+3. ~~**Owner reporting & control.**~~ Done 2026-09-27. Server `getDashboard` (fixes B7), audit viewer,
    commission payouts (paid/owed, rider payout request), daily Z-report + emailed job,
    order detail with audited admin override, complete Settings form, menu
    description/image/sort/archive.
@@ -789,3 +795,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-26 | Apply security rules also moves door mobile money payments rejected before the "owed as cash" rule onto the rider's cash list (delivered + mobile money + REJECTED → cash WITH_RIDER). e2e 88.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 2026-09-26 | Paying at the cash handover now pays only the delivery fees of those orders (`deliveryFeePaid`); their commission stays owed and is paid from Payouts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 2026-09-27 | Batch 2, People: `people.js` (`changeMyPin`, `setMyAvailability`, `adminResetPin`, `adminGetMember`); rider and cashier profiles with PIN change; rider break toggle (new orders refused while on a break); Team table and a page per member (cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, own cash limit `maxFloat`, deactivate signs out); default commission rule and rounding in Settings. `_User` gains `available`, `maxFloat` (run Apply security rules).                                                                                                                                                                                                                                                                 |
+| 2026-09-27 | Batch 3, Owner reporting & control: `owner.js` (`getDashboard` fixes B7, `adminGetAuditLog`, Z-report `adminGetZReport` / `adminListZReports` + Cloud Job `dailyZReport`, saved in `ZReport`, pushed to the owner), `overrides.js` (`adminGetOrder`, `adminOverrideOrder`: cancel, payment switch, mark delivered, undo delivery, move rider; reason required, audited, riders told), commission ledger paid/owed, riders ask to be paid (`requestPayout`), menu description / photo / order / archive, Z-report hour in Settings. New Overview, order page, Audit log, Z-report page.                                                                                                                                                                            |

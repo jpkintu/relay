@@ -42,9 +42,17 @@ const PROTECTED_CLASSES = [
   'Notification',
   'PushSubscription',
   'Secret',
+  'ZReport',
 ];
 // Classes clients never read directly either.
-const PRIVATE_CLASSES = ['Counter', 'DemoOrder', 'Configuration', 'PushSubscription', 'Secret'];
+const PRIVATE_CLASSES = [
+  'Counter',
+  'DemoOrder',
+  'Configuration',
+  'PushSubscription',
+  'Secret',
+  'ZReport',
+];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
 const SELF_EDITABLE_USER_FIELDS = ['email'];
@@ -252,6 +260,7 @@ const SCHEMAS = {
     defaultCommissionType: S,
     defaultCommissionPerOrder: N,
     defaultCommissionPercent: N,
+    zReportHour: N,
   },
   MenuItem: {
     title: S,
@@ -261,7 +270,11 @@ const SCHEMAS = {
     availableToday: B,
     sortOrder: N,
     accompanimentGroups: 'Array',
+    description: S,
+    image: 'File',
+    archivedAt: D,
   },
+  ZReport: { day: S, data: 'Object', generatedAt: D, auto: B },
   Accompaniment: { title: S, active: B, available: B, sortOrder: N },
   Customer: {
     key: S,
@@ -318,6 +331,7 @@ const USER_FIELDS = {
   payRound: N,
   available: B,
   maxFloat: N,
+  payoutRequestedAt: D,
 };
 
 // Creates missing classes with their fields, adds any missing fields to

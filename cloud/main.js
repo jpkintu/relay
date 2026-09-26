@@ -16,6 +16,8 @@
 //   people.js    PIN change/reset, rider availability, the owner's member page
 //   admin.js     owner setup, team, menu, settings
 //   reports.js   payments ledger, order/commission ledgers, earnings, reports
+//   owner.js     dashboard, audit log, daily Z-report (Cloud Job "dailyZReport")
+//   overrides.js the owner's order page and overrides
 //   preview.js   optional demo mode (RELAY_ENABLE_PREVIEW=true)
 
 require('./security');
@@ -33,4 +35,6 @@ require('./people');
 require('./admin');
 require('./preview');
 require('./reports');
+require('./owner');
+require('./overrides');
 require('./profile');
