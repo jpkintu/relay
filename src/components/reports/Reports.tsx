@@ -324,17 +324,18 @@ export function Reports() {
         <>
           <div className="report-hero">
             <div>
-              <span>Revenue · {rangeLabel(data.range)}</span>
-              <strong>{money(s.revenue)}</strong>
+              <span>Revenue after rider pay · {rangeLabel(data.range)}</span>
+              <strong>{money(s.net)}</strong>
               <small>
+                Gross {money(s.revenue)}
                 {data.change.revenue !== null
-                  ? `${formatChange(data.change.revenue)} vs ${rangeLabel(data.previousRange)} (${money(data.previous.revenue)})`
-                  : `No sales in ${rangeLabel(data.previousRange)} to compare with`}
+                  ? ` · ${formatChange(data.change.revenue)} vs ${rangeLabel(data.previousRange)} (${money(data.previous.revenue)})`
+                  : ` · no sales in ${rangeLabel(data.previousRange)} to compare with`}
               </small>
             </div>
             <dl>
               <div>
-                <dt>Food</dt>
+                <dt>Food sales</dt>
                 <dd>{money(s.foodSales)}</dd>
               </div>
               <div>
@@ -346,7 +347,7 @@ export function Reports() {
                 <dd>−{money(s.commission)}</dd>
               </div>
               <div>
-                <dt>After commission</dt>
+                <dt>Kept by the restaurant</dt>
                 <dd>{money(s.net)}</dd>
               </div>
             </dl>

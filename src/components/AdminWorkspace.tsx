@@ -27,6 +27,7 @@ import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, isToday } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { useDevice } from '../lib/device';
+import { riderPayOf } from '../lib/pay';
 import { NotificationBell } from './NotificationBell';
 
 type AdminOrder = {
@@ -117,7 +118,7 @@ export function AdminWorkspace() {
             total: o.get('total'),
             amountCollected: o.get('amountCollected') || 0,
             cashStatus: o.get('cashStatus'),
-            commission: o.get('commissionAmount') || 0,
+            commission: o.get('status') === 'DELIVERED' ? riderPayOf(o) : 0,
             createdAt: o.createdAt || new Date(),
           })),
         );
@@ -222,13 +223,21 @@ export function AdminWorkspace() {
             )}
             <div className="admin-metrics">
               <article>
-                <span>Gross sales today</span>
+                <span>Sales after rider pay today</span>
                 <strong>
                   {money(
-                    today.filter((o) => o.status === 'DELIVERED').reduce((n, o) => n + o.total, 0),
+                    today
+                      .filter((o) => o.status === 'DELIVERED')
+                      .reduce((n, o) => n + o.total - o.commission, 0),
                   )}
                 </strong>
-                <small>Delivered orders</small>
+                <small>
+                  Gross{' '}
+                  {money(
+                    today.filter((o) => o.status === 'DELIVERED').reduce((n, o) => n + o.total, 0),
+                  )}{' '}
+                  · less commission and delivery fees
+                </small>
               </article>
               <article>
                 <span>Orders today</span>

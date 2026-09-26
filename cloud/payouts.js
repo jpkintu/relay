@@ -16,7 +16,7 @@ const {
   personName,
   getRoleName,
 } = require('./lib/core');
-const { sumBy } = require('./lib/money');
+const { sumBy, orderRiderPay } = require('./lib/money');
 const { money, notifyUser, notifyAdmins } = require('./notifications');
 const { resolveRange } = require('./lib/dates');
 
@@ -25,26 +25,31 @@ const clean = (value, max) =>
     .trim()
     .slice(0, max);
 
+// The delivery-fee part of an order's rider pay.
+const feeOf = (order) => order.get('deliveryPay') ?? order.get('deliveryFee') ?? 0;
+
 // What the restaurant owes a rider right now.
 async function riderPayState(rider) {
   const orderQuery = new Parse.Query('Order');
   orderQuery.equalTo('createdBy', rider);
   orderQuery.equalTo('status', 'DELIVERED');
   orderQuery.notEqualTo('commissionPaid', true);
-  orderQuery.greaterThan('commissionAmount', 0);
   orderQuery.ascending('deliveredAt');
   orderQuery.limit(1000);
   const shortageQuery = new Parse.Query('CashHandover');
   shortageQuery.equalTo('rider', rider);
   shortageQuery.equalTo('shortageStatus', 'owed');
   shortageQuery.limit(200);
-  const [orders, shortages] = await Promise.all([
+  const [delivered, shortages] = await Promise.all([
     orderQuery.find(MASTER),
     shortageQuery.find(MASTER),
   ]);
-  const earned = sumBy(orders, (order) => order.get('commissionAmount'));
+  // Commission + delivery fee per order (see riderPay in lib/money.js).
+  const orders = delivered.filter((order) => orderRiderPay(order) > 0);
+  const earned = sumBy(orders, orderRiderPay);
+  const deliveryFees = sumBy(orders, feeOf);
   const deductions = sumBy(shortages, (row) => row.get('shortage'));
-  return { orders, shortages, earned, deductions, owed: earned - deductions };
+  return { orders, shortages, earned, deliveryFees, deductions, owed: earned - deductions };
 }
 
 // Cashier's open shift, required for till payouts (admins pay without a till).
@@ -63,6 +68,7 @@ function payoutJSON(row) {
     kind: row.get('kind'),
     amount: Number(row.get('amount') || 0),
     earned: Number(row.get('earned') || 0),
+    deliveryFees: Number(row.get('deliveryFees') || 0),
     deductions: Number(row.get('deductions') || 0),
     orderCount: (row.get('orders') || []).length,
     note: row.get('note') || '',
@@ -87,6 +93,8 @@ Parse.Cloud.define('getRiderPay', async (request) => {
         active: rider.get('active') !== false,
         deliveries: state.orders.length,
         earned: state.earned,
+        commission: state.earned - state.deliveryFees,
+        deliveryFees: state.deliveryFees,
         deductions: state.deductions,
         owed: state.owed,
       };
@@ -108,6 +116,7 @@ Parse.Cloud.define('getMyPay', async (request) => {
   return {
     deliveries: state.orders.length,
     earned: state.earned,
+    deliveryFees: state.deliveryFees,
     deductions: state.deductions,
     owed: state.owed,
     payouts: payouts.map(payoutJSON),
@@ -130,33 +139,36 @@ async function newPayout(fields, config) {
 
 // Cashier (from the till, during a shift) or owner pays a rider everything
 // they are owed. One payout per rider at a time.
-Parse.Cloud.define('payRider', async (request) => {
-  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
-  await requireCashierShift(actor, role);
-  await verifyPin(actor, request.params.pin);
-  const rider = await new Parse.Query(Parse.User).get(String(request.params.riderId), MASTER);
-  if ((await getRoleName(rider)) !== 'rider') throw invalid('Choose a rider');
+// Pays a rider from the till (cashier on shift) or directly (owner): their
+// rider pay (commission + delivery fee) for the given orders, or for every
+// unpaid delivery, less any cash shortage charged to them. One payout per
+// rider at a time. Used by payRider and when confirming a cash handover.
+async function payOut({ actor, role, rider, orderIds }) {
   const round = Number(rider.get('payRound') || 0);
   if (!(await claimOnce(`pay-rider:${rider.id}:${round}`)))
     throw invalid('This rider is already being paid. Refresh in a moment');
   try {
     const state = await riderPayState(rider);
-    if (state.owed <= 0)
-      throw invalid(
-        state.deductions > state.earned
-          ? 'Nothing to pay: the rider’s shortages are more than their earnings'
-          : 'Nothing to pay',
-      );
+    const orders = orderIds
+      ? state.orders.filter((order) => orderIds.includes(order.id))
+      : state.orders;
+    const earned = sumBy(orders, orderRiderPay);
+    const amount = earned - state.deductions;
+    if (!orders.length) throw invalid('Nothing to pay');
+    if (amount <= 0)
+      throw invalid('Nothing to pay: the rider’s shortages are more than their earnings');
+    const deliveryFees = sumBy(orders, feeOf);
     const { values: config } = await loadConfig();
     const shift = role === 'cashier' ? await openCashierShift(actor) : null;
     const row = await newPayout(
       {
         kind: 'rider',
         rider,
-        amount: state.owed,
-        earned: state.earned,
+        amount,
+        earned,
+        deliveryFees,
         deductions: state.deductions,
-        orders: state.orders,
+        orders,
         shortages: state.shortages,
         paidBy: actor,
         ...(shift && { shift }),
@@ -164,29 +176,42 @@ Parse.Cloud.define('payRider', async (request) => {
       config,
     );
     await row.save(null, MASTER);
-    state.orders.forEach((order) => order.set({ commissionPaid: true, commissionPayout: row }));
+    orders.forEach((order) => order.set({ commissionPaid: true, commissionPayout: row }));
     state.shortages.forEach((h) => h.set({ shortageStatus: 'deducted', shortagePayout: row }));
-    await Parse.Object.saveAll([...state.orders, ...state.shortages], MASTER);
+    await Parse.Object.saveAll([...orders, ...state.shortages], MASTER);
     await audit(actor, 'payout.rider', row, null, {
-      amount: state.owed,
-      earned: state.earned,
+      amount,
+      earned,
+      deliveryFees,
       deductions: state.deductions,
-      orders: state.orders.length,
+      orders: orders.length,
     });
     await notifyUser(rider, {
       kind: 'payout.rider',
       tone: 'update',
-      title: `You were paid ${money(config, state.owed)}`,
-      body: `${state.orders.length} ${state.orders.length === 1 ? 'delivery' : 'deliveries'}${
+      title: `You were paid ${money(config, amount)}`,
+      body: `${orders.length} ${orders.length === 1 ? 'delivery' : 'deliveries'} (commission + ${money(
+        config,
+        deliveryFees,
+      )} delivery fees)${
         state.deductions ? ` less ${money(config, state.deductions)} shortage` : ''
       } · paid by ${personName(await actor.fetch(MASTER))}`,
       link: '/rider/earnings',
     });
-    return { id: row.id, amount: state.owed };
+    return { id: row.id, amount, deliveries: orders.length };
   } finally {
     rider.increment('payRound');
     await rider.save(null, MASTER);
   }
+}
+
+Parse.Cloud.define('payRider', async (request) => {
+  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(actor, role);
+  await verifyPin(actor, request.params.pin);
+  const rider = await new Parse.Query(Parse.User).get(String(request.params.riderId), MASTER);
+  if ((await getRoleName(rider)) !== 'rider') throw invalid('Choose a rider');
+  return payOut({ actor, role, rider });
 });
 
 // Cashier: any other cash taken out of the till (e.g. buying charcoal).
@@ -235,4 +260,4 @@ Parse.Cloud.define('getTillPayouts', async (request) => {
   return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
 });
 
-module.exports = { riderPayState };
+module.exports = { riderPayState, payOut };

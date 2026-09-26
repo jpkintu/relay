@@ -2018,3 +2018,96 @@ describe('cash integrity: PINs, one cashier per order, safe handovers, payouts',
     await order.save(null, M);
   });
 });
+
+describe('rider pay includes the delivery fee; pay at handover', () => {
+  const M = { useMasterKey: true };
+  let item;
+  const deliveredFor = async (name) => {
+    const placed = await run(
+      'createOrder',
+      { customerName: name, deliveryAddress: 'Muyenga', items: [{ id: item.id, quantity: 1 }] },
+      s.pia,
+    );
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: placed.id, action }, s.dina);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.pia);
+    await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.pia);
+    return placed.id;
+  };
+
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+
+  test('older deliveries stored without the fee are still paid it, and repaired', async () => {
+    const id = await deliveredFor('Before the fee rule');
+    // Shape of an order delivered before rider pay included the fee.
+    const order = await new Parse.Query('Order').get(id, M);
+    const base = order.get('commissionBase');
+    order.set('commissionAmount', base);
+    order.unset('deliveryPay');
+    order.unset('commissionBase');
+    await order.save(null, M);
+    const fee = order.get('deliveryFee');
+    assert.ok(fee > 0);
+
+    const ledger = await run('getCommissionLedger', { riderId: s.pia.id }, s.owner);
+    assert.equal(ledger.rows.find((r) => r.id === id).commission, base + fee);
+    const row = (await run('getRiderPay', {}, s.dina)).find((r) => r.riderId === s.pia.id);
+    assert.ok(row.deliveryFees >= fee);
+    assert.equal(row.earned, row.commission + row.deliveryFees);
+
+    await run('adminApplySecurity', {}, s.owner);
+    const fixed = await new Parse.Query('Order').get(id, M);
+    assert.equal(fixed.get('deliveryPay'), fee);
+    assert.equal(fixed.get('commissionAmount'), base + fee);
+    assert.equal(
+      (await run('getCommissionLedger', { riderId: s.pia.id }, s.owner)).rows.find(
+        (r) => r.id === id,
+      ).commission,
+      base + fee,
+    );
+  });
+
+  test('revenue after rider pay takes the delivery fees off too', async () => {
+    const report = await run('getOperationsReport', {}, s.owner);
+    const s1 = report.summary;
+    assert.ok(s1.commission >= s1.deliveryFees);
+    assert.equal(s1.net, s1.revenue - s1.commission);
+  });
+
+  test('the cashier can pay the rider for the handed-over orders straight away', async () => {
+    // Settle what Pia is already owed so only the new order is unpaid.
+    await run('payRider', { riderId: s.pia.id }, s.dina).catch(() => undefined);
+    const id = await deliveredFor('Pay at handover');
+    const pay = (await new Parse.Query('Order').get(id, M)).get('commissionAmount');
+    const h = await run('createHandover', { orderIds: [id] }, s.pia);
+    const before = (await run('getMyShift', {}, s.dina)).shift;
+    await rejects(
+      run(
+        'confirmHandover',
+        { handoverId: h.id, countedAmount: h.amount, payRider: true, pin: '0000' },
+        s.dina,
+      ),
+      /Wrong PIN/,
+    );
+    const result = await run(
+      'confirmHandover',
+      { handoverId: h.id, countedAmount: h.amount, payRider: true, pin: '2244' },
+      s.dina,
+    );
+    assert.equal(result.paid, pay);
+    assert.equal(result.payProblem, '');
+    const after = (await run('getMyShift', {}, s.dina)).shift;
+    assert.equal(after.cashIn - before.cashIn, h.amount);
+    assert.equal(after.paidOut - before.paidOut, pay);
+    const order = await new Parse.Query('Order').get(id, M);
+    assert.equal(order.get('commissionPaid'), true);
+    assert.equal(order.get('cashStatus'), 'RECONCILED');
+    const mine = await run('getMyPay', {}, s.pia);
+    assert.equal(mine.payouts[0].amount, pay);
+    assert.ok(mine.payouts[0].deliveryFees > 0);
+  });
+});

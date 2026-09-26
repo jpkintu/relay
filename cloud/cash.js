@@ -14,6 +14,7 @@ const {
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
 const { money, notifyUser, notifyStaff, notifyAdmins } = require('./notifications');
+const { payOut } = require('./payouts');
 
 // A handover waiting this long for the cashier is flagged to staff and owner.
 const STALE_HOURS = 4;
@@ -158,6 +159,10 @@ Parse.Cloud.define('confirmHandover', async (request) => {
     throw invalid('Counted cash must match the ticked orders; dispute any missing cash');
   if (orders.some((order) => order.get('cashStatus') !== 'HANDOVER_PENDING'))
     throw invalid('Orders are no longer pending this handover');
+  // "Pay the rider now": their pay for these orders comes out of the till as
+  // a payout, so it needs the PIN like any other payout.
+  const payNow = p.payRider === true;
+  if (payNow) await verifyPin(cashier, p.pin);
   await startReview(row);
 
   const now = new Date();
@@ -201,7 +206,19 @@ Parse.Cloud.define('confirmHandover', async (request) => {
       : `${money(config, counted)} received by ${by}.`,
     link: '/rider/cash',
   });
-  return { status: 'confirmed', returned: returned.length };
+  let paid = 0;
+  let payProblem = '';
+  if (payNow) {
+    try {
+      const rider = await new Parse.Query(Parse.User).get(row.get('rider').id, MASTER);
+      paid = (await payOut({ actor: cashier, role, rider, orderIds: received.map((o) => o.id) }))
+        .amount;
+    } catch (error) {
+      // The cash is confirmed either way; the pay can be made from Payouts.
+      payProblem = error.message;
+    }
+  }
+  return { status: 'confirmed', returned: returned.length, paid, payProblem };
 });
 
 // The count is short: the cashier keeps what they counted and the owner

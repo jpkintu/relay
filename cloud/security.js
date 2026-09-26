@@ -202,6 +202,7 @@ const SCHEMAS = {
     rider: user,
     amount: N,
     earned: N,
+    deliveryFees: N,
     deductions: N,
     orders: 'Array',
     shortages: 'Array',
@@ -366,6 +367,28 @@ async function applySecurity() {
   );
   updated.CashHandover = await eachObject('CashHandover', (h) =>
     saveAcl(h, readAcl(h.get('rider'))),
+  );
+  // Rider pay became commission + delivery fee: unpaid deliveries recorded
+  // before that store the commission only. Add the fee so every report,
+  // earnings screen and payout agrees.
+  updated.riderPay = await eachObject(
+    'Order',
+    async (order) => {
+      const commission = Number(order.get('commissionAmount') || 0);
+      const fee = Number(order.get('deliveryFee') || 0);
+      order.set({
+        commissionBase: commission,
+        deliveryPay: fee,
+        commissionAmount: commission + fee,
+      });
+      await order.save(null, MASTER);
+      return true;
+    },
+    (query) => {
+      query.equalTo('status', 'DELIVERED');
+      query.doesNotExist('deliveryPay');
+      query.notEqualTo('commissionPaid', true);
+    },
   );
   updated.TillPayout = await eachObject('TillPayout', (row) =>
     saveAcl(row, readAcl(row.get('rider') || null)),

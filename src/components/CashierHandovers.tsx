@@ -4,6 +4,8 @@ import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { personLabel } from '../lib/people';
+import { usePin } from '../lib/pin';
+import { riderPayOf } from '../lib/pay';
 
 type Handover = {
   id: string;
@@ -12,7 +14,9 @@ type Handover = {
   amount: number;
   orderCount: number;
   createdAt: Date;
-  orders: { id: string; code: string; amount: number }[];
+  // `pay`: what the rider is still owed for the order (commission +
+  // delivery fee), 0 once paid.
+  orders: { id: string; code: string; amount: number; pay: number }[];
 };
 
 // Matches the server: handovers waiting longer than this are flagged.
@@ -21,11 +25,13 @@ const hoursWaiting = (date: Date) => Math.floor((Date.now() - date.getTime()) / 
 export function CashierHandovers({ preview }: { preview: boolean }) {
   const money = useMoney();
   const { timezone } = useConfig();
+  const withPin = usePin();
   const [rows, setRows] = useState<Handover[]>([]),
     [selected, setSelected] = useState<string | null>(null),
     [counted, setCounted] = useState(''),
     [reason, setReason] = useState(''),
     [received, setReceived] = useState<string[]>([]),
+    [payNow, setPayNow] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false);
@@ -67,6 +73,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     setCounted('');
     setReason('');
     setReceived([]);
+    setPayNow(false);
     if (preview) return;
     try {
       const q = new Parse.Query('CashHandover');
@@ -83,6 +90,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                   id: o.id!,
                   code: o.get('orderCode'),
                   amount: o.get('amountCollected'),
+                  pay: o.get('commissionPaid') ? 0 : riderPayOf(o),
                 })),
               }
             : h,
@@ -105,22 +113,45 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     }
     setBusy(true);
     setError('');
+    const params = {
+      handoverId: selected,
+      countedAmount: amount,
+      reason,
+      ...(action === 'confirmHandover' && { receivedOrderIds: received }),
+    };
+    type Result = { returned?: number; paid?: number; payProblem?: string } | undefined;
     try {
-      const result = await Parse.Cloud.run(action, {
-        handoverId: selected,
-        countedAmount: amount,
-        reason,
-        ...(action === 'confirmHandover' && { receivedOrderIds: received }),
-      });
+      let result: Result;
+      if (action === 'confirmHandover' && payNow) {
+        // Paying out of the till needs the PIN.
+        const done = await withPin(
+          `Confirm and pay ${money(payTotal)}`,
+          async (pin) => {
+            result = await Parse.Cloud.run(action, { ...params, payRider: true, pin });
+          },
+          'After counting the cash, take the rider’s pay out of the till and hand it over, then enter your PIN.',
+        );
+        if (!done) return;
+      } else {
+        result = await Parse.Cloud.run(action, params);
+      }
+      const r = result as Result;
       setSelected(null);
       setNotice(
         action === 'disputeHandover'
           ? 'Dispute recorded for owner review.'
-          : result?.returned
-            ? `Cash receipt confirmed. ${result.returned} ${
-                result.returned === 1 ? 'order went' : 'orders went'
-              } back to the rider to hand over again.`
-            : 'Cash receipt confirmed.',
+          : [
+              'Cash receipt confirmed.',
+              r?.returned
+                ? `${r.returned} ${
+                    r.returned === 1 ? 'order went' : 'orders went'
+                  } back to the rider to hand over again.`
+                : '',
+              r?.paid ? `Paid the rider ${money(r.paid)} from the till.` : '',
+              r?.payProblem ? `Rider not paid: ${r.payProblem}.` : '',
+            ]
+              .filter(Boolean)
+              .join(' '),
       );
       await load();
     } catch (e) {
@@ -134,6 +165,9 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     ? current.orders.filter((o) => received.includes(o.id)).reduce((n, o) => n + o.amount, 0)
     : 0;
   const countedValue = counted.trim() === '' ? null : Number(counted);
+  const payTotal = current
+    ? current.orders.filter((o) => received.includes(o.id)).reduce((n, o) => n + o.pay, 0)
+    : 0;
   return (
     <div className="ops-content">
       <div className="ops-title">
@@ -245,6 +279,20 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                   : `That is ${money(countedValue - tickedTotal)} more than the ticked orders.`}
               </p>
             )}
+            {payTotal > 0 && (
+              <label className="pay-now">
+                <input
+                  type="checkbox"
+                  checked={payNow}
+                  onChange={(e) => setPayNow(e.target.checked)}
+                />
+                <span>
+                  Pay the rider now: <b>{money(payTotal)}</b> for these orders (commission +
+                  delivery fees, less any shortage they owe). It is recorded as a payout from your
+                  till.
+                </span>
+              </label>
+            )}
             <label className="setup-field">
               Dispute reason, if cash is missing
               <textarea
@@ -258,7 +306,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                 disabled={busy || !received.length || countedValue !== tickedTotal}
                 onClick={() => void submit('confirmHandover')}
               >
-                <Check /> Confirm received
+                <Check /> {payNow ? 'Confirm and pay rider' : 'Confirm received'}
               </button>
               <button
                 disabled={

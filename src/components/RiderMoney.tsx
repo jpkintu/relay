@@ -79,6 +79,7 @@ export function MyHandovers({ version }: { version: number }) {
 type MyPayData = {
   deliveries: number;
   earned: number;
+  deliveryFees: number;
   deductions: number;
   owed: number;
   payouts: { id: string; code: string; amount: number; paidBy: string; paidAt: string }[];
@@ -97,8 +98,9 @@ export function MyPay() {
         <p>Owed to you</p>
         <strong>{money(data.owed)}</strong>
         <span>
-          {data.deliveries} unpaid {data.deliveries === 1 ? 'delivery' : 'deliveries'} · commission
-          + delivery fees
+          {data.deliveries} unpaid {data.deliveries === 1 ? 'delivery' : 'deliveries'} ·{' '}
+          {money(data.earned - data.deliveryFees)} commission + {money(data.deliveryFees)} delivery
+          fees
           {data.deductions > 0 && ` · less ${money(data.deductions)} cash shortage`}
         </span>
         <small>The cashier pays you from the till.</small>
