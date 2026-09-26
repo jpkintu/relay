@@ -538,7 +538,8 @@ var require_security = __commonJS({
         handoverRound: N,
         commissionBase: N,
         deliveryPay: N,
-        commissionPayout: ["Pointer", "TillPayout"]
+        commissionPayout: ["Pointer", "TillPayout"],
+        paidAtDoor: B
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -9354,7 +9355,7 @@ var require_payments = __commonJS({
     } = require_core();
     var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
     var { dateKey } = require_dates();
-    var { notifyUser, notifyStaff, personName } = require_notifications();
+    var { money, notifyUser, notifyStaff, personName } = require_notifications();
     var PENDING = "PENDING_VERIFICATION";
     async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId) {
       const accounts = merchantAccounts(config);
@@ -9392,6 +9393,13 @@ var require_payments = __commonJS({
         paymentCheckedAt: /* @__PURE__ */ new Date(),
         paymentRejectReason: received ? "" : reason
       });
+      const owedByRider = !received && order.get("status") === "DELIVERED";
+      if (owedByRider)
+        order.set({
+          paymentMethod: "cash",
+          amountCollected: Number(order.get("total") || 0),
+          cashStatus: "WITH_RIDER"
+        });
       await order.save(null, MASTER);
       await audit(
         actor,
@@ -9407,11 +9415,12 @@ var require_payments = __commonJS({
         }
       );
       const code = order.get("orderCode");
+      const { values: config } = await loadConfig();
       await notifyUser(order.get("createdBy"), {
         kind: received ? "payment.verified" : "payment.rejected",
         tone: received ? "update" : "alert",
         title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
-        body: received ? "The kitchen can start on it." : `${reason}. Correct the transaction ID or cancel the order.`,
+        body: received ? order.get("status") === "DELIVERED" ? "It is off your list." : "The kitchen can start on it." : owedByRider ? `${reason}. You owe ${money(config, order.get("total"))}: hand it over in cash, or send the correct transaction ID.` : `${reason}. Correct the transaction ID or cancel the order.`,
         link: `/rider/order/${order.id}`,
         order
       });
@@ -9426,6 +9435,9 @@ var require_payments = __commonJS({
       if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
       if (![PENDING, "REJECTED"].includes(order.get("paymentStatus")))
         throw invalid("This payment cannot be changed");
+      const owedAsCash = order.get("status") === "DELIVERED" && order.get("paymentMethod") === "cash";
+      if (owedAsCash && order.get("cashStatus") !== "WITH_RIDER")
+        throw invalid("This order was already handed over as cash");
       const { values: config } = await loadConfig();
       const { provider, reference } = await checkMobileMoney(
         config,
@@ -9442,7 +9454,12 @@ var require_payments = __commonJS({
         paymentProvider: provider,
         paymentReference: reference,
         paymentStatus: PENDING,
-        paymentRejectReason: ""
+        paymentRejectReason: "",
+        ...owedAsCash && {
+          paymentMethod: "mobile_money",
+          amountCollected: 0,
+          cashStatus: "NOT_APPLICABLE"
+        }
       });
       await order.save(null, MASTER);
       await audit(actor, "payment.resubmitted", order, before, { provider, reference });
@@ -9855,7 +9872,10 @@ var require_orders = __commonJS({
           order.set({
             paymentProvider: momo.provider,
             paymentReference: momo.reference,
-            paymentStatus: PENDING
+            paymentStatus: PENDING,
+            // Paid at the door: until the cashier confirms it, the order stays on
+            // the rider's list; if it is not received, the rider owes it as cash.
+            paidAtDoor: true
           });
         }
         const isCash = method === "cash";
@@ -10332,22 +10352,34 @@ var require_shifts = __commonJS({
       cashQuery.equalTo("status", "DELIVERED");
       cashQuery.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
       cashQuery.limit(1e3);
-      const [openOrders, cashOrders] = await Promise.all([
+      const momoQuery = new Parse.Query("Order");
+      momoQuery.equalTo("createdBy", rider);
+      momoQuery.equalTo("status", "DELIVERED");
+      momoQuery.equalTo("paymentStatus", "PENDING_VERIFICATION");
+      const [openOrders, cashOrders, momoPending] = await Promise.all([
         openQuery.count(MASTER),
-        cashQuery.find(MASTER)
+        cashQuery.find(MASTER),
+        momoQuery.count(MASTER)
       ]);
       const sum = (status) => sumBy(
         cashOrders.filter((o) => o.get("cashStatus") === status),
         (o) => o.get("amountCollected")
       );
-      return { openOrders, cashWithRider: sum("WITH_RIDER"), cashPending: sum("HANDOVER_PENDING") };
+      return {
+        openOrders,
+        cashWithRider: sum("WITH_RIDER"),
+        cashPending: sum("HANDOVER_PENDING"),
+        momoPending
+      };
     }
-    function outstandingProblem({ openOrders, cashWithRider, cashPending }) {
+    function outstandingProblem({ openOrders, cashWithRider, cashPending, momoPending }) {
       if (openOrders)
         return `Finish or cancel your ${openOrders} open order${openOrders === 1 ? "" : "s"} before ending your shift`;
       if (cashWithRider) return "Hand over the cash you are holding before ending your shift";
       if (cashPending)
         return "Wait for the cashier to confirm your cash handover before ending your shift";
+      if (momoPending)
+        return "Wait for the cashier to confirm the mobile money you took at the door before ending your shift";
       return "";
     }
     function openShiftQuery(user) {

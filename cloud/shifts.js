@@ -69,24 +69,37 @@ async function riderOutstanding(rider) {
   cashQuery.equalTo('status', 'DELIVERED');
   cashQuery.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
   cashQuery.limit(1000);
-  const [openOrders, cashOrders] = await Promise.all([
+  // Mobile money taken at the door that the cashier has not confirmed yet.
+  const momoQuery = new Parse.Query('Order');
+  momoQuery.equalTo('createdBy', rider);
+  momoQuery.equalTo('status', 'DELIVERED');
+  momoQuery.equalTo('paymentStatus', 'PENDING_VERIFICATION');
+  const [openOrders, cashOrders, momoPending] = await Promise.all([
     openQuery.count(MASTER),
     cashQuery.find(MASTER),
+    momoQuery.count(MASTER),
   ]);
   const sum = (status) =>
     sumBy(
       cashOrders.filter((o) => o.get('cashStatus') === status),
       (o) => o.get('amountCollected'),
     );
-  return { openOrders, cashWithRider: sum('WITH_RIDER'), cashPending: sum('HANDOVER_PENDING') };
+  return {
+    openOrders,
+    cashWithRider: sum('WITH_RIDER'),
+    cashPending: sum('HANDOVER_PENDING'),
+    momoPending,
+  };
 }
 
-function outstandingProblem({ openOrders, cashWithRider, cashPending }) {
+function outstandingProblem({ openOrders, cashWithRider, cashPending, momoPending }) {
   if (openOrders)
     return `Finish or cancel your ${openOrders} open order${openOrders === 1 ? '' : 's'} before ending your shift`;
   if (cashWithRider) return 'Hand over the cash you are holding before ending your shift';
   if (cashPending)
     return 'Wait for the cashier to confirm your cash handover before ending your shift';
+  if (momoPending)
+    return 'Wait for the cashier to confirm the mobile money you took at the door before ending your shift';
   return '';
 }
 

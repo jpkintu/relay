@@ -33,6 +33,7 @@ type LiveOrder = {
   commissionAmount?: number;
   deliveredAt?: Date;
   paymentMethod?: string;
+  paymentStatus?: string;
   amountToCollect?: number;
 };
 
@@ -73,6 +74,7 @@ export function RiderWorkspace() {
           commissionAmount: row.get('commissionAmount'),
           deliveredAt: row.get('deliveredAt'),
           paymentMethod: row.get('paymentMethod'),
+          paymentStatus: row.get('paymentStatus') || '',
           amountToCollect: row.get('amountToCollect') ?? row.get('total'),
         })),
       );
@@ -410,6 +412,10 @@ function RiderSubPage({
   const withPin = usePin();
   const active = orders.filter(IN_FLIGHT);
   const cash = orders.filter((o) => o.status === 'DELIVERED' && o.cashStatus === 'WITH_RIDER');
+  // Mobile money taken at the door that the cashier has not confirmed yet.
+  const momoWaiting = orders.filter(
+    (o) => o.status === 'DELIVERED' && o.paymentStatus === 'PENDING_VERIFICATION',
+  );
   const earned = orders.filter((o) => o.status === 'DELIVERED');
 
   const { requireCashierConfirmForPickup } = useConfig();
@@ -535,6 +541,11 @@ function RiderSubPage({
                 />
                 <span>
                   {o.code} · {o.customer}
+                  {o.paymentStatus === 'REJECTED' && (
+                    <small className="cash-note">
+                      Mobile money not received: hand over the cash or send the right ID
+                    </small>
+                  )}
                 </span>
                 <b>{money(o.amountCollected)}</b>
               </label>
@@ -554,6 +565,28 @@ function RiderSubPage({
                 )}{' '}
                 <ChevronRight />
               </button>
+            )}
+            {momoWaiting.length > 0 && (
+              <section className="my-handovers">
+                <h3>Mobile money waiting for the cashier</h3>
+                {momoWaiting.map((o) => (
+                  <button
+                    key={o.id}
+                    className="my-handover warn momo-waiting"
+                    onClick={() => navigate(`/rider/order/${o.id}`)}
+                  >
+                    <div>
+                      <b>{o.code}</b>
+                      <small>{o.customer}</small>
+                    </div>
+                    <strong>{money(o.total)}</strong>
+                    <p>
+                      Stays on your list until the cashier confirms it. If it is not received, you
+                      owe it in cash.
+                    </p>
+                  </button>
+                ))}
+              </section>
             )}
             {!preview && <MyHandovers version={handoverVersion} />}
             {preview && (

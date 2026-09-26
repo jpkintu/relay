@@ -156,6 +156,7 @@ const SCHEMAS = {
     commissionBase: N,
     deliveryPay: N,
     commissionPayout: ['Pointer', 'TillPayout'],
+    paidAtDoor: B,
   },
   OrderItem: {
     order: ['Pointer', 'Order'],

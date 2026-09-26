@@ -15,7 +15,12 @@ type Shift = {
   paidOut: number | null;
   heldOrders: number | null;
   float: number | null;
-  outstanding: { openOrders: number; cashWithRider: number; cashPending: number } | null;
+  outstanding: {
+    openOrders: number;
+    cashWithRider: number;
+    cashPending: number;
+    momoPending?: number;
+  } | null;
 };
 export function ShiftPanel({
   kind,
@@ -98,7 +103,10 @@ export function ShiftPanel({
       : null;
   const riderBlocked =
     !!outstanding &&
-    (outstanding.openOrders > 0 || outstanding.cashWithRider > 0 || outstanding.cashPending > 0);
+    (outstanding.openOrders > 0 ||
+      outstanding.cashWithRider > 0 ||
+      outstanding.cashPending > 0 ||
+      (outstanding.momoPending ?? 0) > 0);
   return (
     <section className="shift-panel">
       <div className="shift-panel-title">
@@ -179,6 +187,12 @@ export function ShiftPanel({
                   ? `${money(outstanding.cashWithRider)} cash to hand over`
                   : 'No cash in hand'}
               </li>
+              {Boolean(outstanding?.momoPending) && (
+                <li className="todo">
+                  {outstanding!.momoPending} mobile money payment
+                  {outstanding!.momoPending === 1 ? '' : 's'} waiting for the cashier to confirm
+                </li>
+              )}
               {Boolean(outstanding?.cashPending) && (
                 <li className="todo">
                   {money(outstanding!.cashPending)} handed over, waiting for the cashier to confirm
