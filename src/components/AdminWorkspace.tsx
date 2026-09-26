@@ -20,6 +20,7 @@ import { PaymentsLedger } from './reports/PaymentsLedger';
 import { Commissions } from './reports/Commissions';
 import { Reports } from './reports/Reports';
 import { AdminSetup } from './AdminSetup';
+import { PoweredBy } from './PoweredBy';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, isToday } from '../lib/format';
 import { personLabel } from '../lib/people';
@@ -263,6 +264,9 @@ export function AdminWorkspace() {
         {['Team', 'Menu', 'Settings'].includes(section) && (
           <AdminSetup section={section as 'Team' | 'Menu' | 'Settings'} preview={preview} />
         )}
+        <footer className="app-credit">
+          <PoweredBy />
+        </footer>
       </section>
     </main>
   );

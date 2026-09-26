@@ -14,6 +14,7 @@ await build({
   legalComments: 'none',
   banner: {
     js: [
+      '// Relay, designed and developed by Embiro Concepts. See NOTICE.',
       '// GENERATED FILE: do not edit. Source: cloud/ in the Relay repository.',
       '// Rebuild with `npm run build:cloud`. Upload this single file as the',
       "// Back4App app's Cloud Code main.js (see docs/ROADMAP.md §2).",
