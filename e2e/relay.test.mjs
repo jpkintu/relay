@@ -600,16 +600,55 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     await run('transitionOrder', { orderId: short.id, action: 'cancel', reason: 'test' }, s.rider2);
   });
 
-  test('B2: an order that would take the rider over the cash limit is blocked', async () => {
-    await settings({ maxRiderFloat: 20000 });
+  test('cash limit: the order that crosses the limit goes ahead, the next one waits', async () => {
+    // What the rider already has: cash held plus cash still to collect.
+    const M = { useMasterKey: true };
+    const mine = await new Parse.Query('Order').equalTo('createdBy', s.rider2).limit(1000).find(M);
+    const held = mine
+      .filter(
+        (o) =>
+          o.get('status') === 'DELIVERED' &&
+          ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.get('cashStatus')),
+      )
+      .reduce((n, o) => n + o.get('amountCollected'), 0);
+    const toCollect = mine
+      .filter(
+        (o) =>
+          !['DELIVERED', 'CANCELLED'].includes(o.get('status')) &&
+          o.get('paymentMethod') === 'cash',
+      )
+      .reduce((n, o) => n + (o.get('amountToCollect') ?? o.get('total')), 0);
+    // Just under the limit (e.g. limit 50,000 with 0 held) …
+    await settings({ maxRiderFloat: held + toCollect + 1000 });
     try {
-      await rejects(order(), /Hand over cash first/);
-      const mm = await order({
+      // … an order far bigger than the room left is still allowed …
+      const big = await order({
+        items: [{ id: ids.stew, quantity: 4, accompaniments: [ids.matooke] }],
+      });
+      assert.equal(big.cashLimitReached, true);
+      // … but nothing else until the cash is cleared, whatever the payment type.
+      await rejects(order(), /Cash limit reached.*Deliver and hand over cash/);
+      await rejects(
+        order({
+          paymentMethod: 'mobile_money',
+          paymentProvider: 'mtn',
+          paymentReference: 'B2TEST001',
+        }),
+        /Cash limit reached/,
+      );
+      // Clearing it (here: cancelling the big order) lets the rider order again.
+      await run('transitionOrder', { orderId: big.id, action: 'cancel', reason: 'test' }, s.rider2);
+      const next = await order({
         paymentMethod: 'mobile_money',
         paymentProvider: 'mtn',
-        paymentReference: 'B2TEST001',
+        paymentReference: 'B2TEST002',
       });
-      await run('transitionOrder', { orderId: mm.id, action: 'cancel', reason: 'test' }, s.rider2);
+      assert.equal(next.cashLimitReached, false);
+      await run(
+        'transitionOrder',
+        { orderId: next.id, action: 'cancel', reason: 'test' },
+        s.rider2,
+      );
     } finally {
       await settings({ maxRiderFloat: 1000000 });
     }
@@ -983,4 +1022,210 @@ test('the profile says whether the restaurant name has been set', async () => {
   const after = await run('getMyProfile', {}, s.rider);
   assert.equal(after.config.restaurantName, 'Mama Rose Kitchen');
   assert.equal(after.config.restaurantNameSet, true);
+});
+
+describe('notifications, cash limits and reported problems', () => {
+  const M = { useMasterKey: true };
+  const saveSettings = async (overrides) => {
+    const { settings } = await run('adminListSetup', {}, s.owner);
+    await run('adminSaveSettings', { ...settings, ...overrides }, s.owner);
+  };
+  const inbox = async (user) => (await run('getNotifications', {}, user)).items;
+  const kinds = async (user) => (await inbox(user)).map((n) => n.kind);
+  const clear = (...users) =>
+    Promise.all(users.map((u) => run('markNotificationsRead', { all: true }, u)));
+  const place = async (extra = {}) => {
+    const { items } = await run('getOperationalMenu', {}, s.nia);
+    const item = items.find((i) => !(i.accompanimentGroups || []).some((g) => g.min > 0));
+    return run(
+      'createOrder',
+      {
+        customerName: 'Amina Kato',
+        customerPhone: '0700999888',
+        deliveryAddress: 'Plot 12, Ntinda',
+        items: [{ id: item.id, quantity: 1 }],
+        ...extra,
+      },
+      s.nia,
+    );
+  };
+  const deliver = async (id) => {
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: id, action }, s.cashier);
+    await run('transitionOrder', { orderId: id, action: 'pickup' }, s.nia);
+    await run('transitionOrder', { orderId: id, action: 'deliver' }, s.nia);
+  };
+
+  before(async () => {
+    await run(
+      'adminCreateTeamMember',
+      { name: 'Nia Nansubuga', username: 'nia', pin: '2468', role: 'rider' },
+      s.owner,
+    );
+    s.nia = await login('nia', '2468');
+    await saveSettings({ maxRiderFloat: 1000000, allowBatching: true, cashReminderHour: 23 });
+    await clear(s.nia, s.cashier, s.owner);
+  });
+
+  test('the kitchen hears about new orders; the rider hears about their order', async () => {
+    const order = await place();
+    const staffNote = (await inbox(s.cashier)).find((n) => n.kind === 'order.new');
+    assert.equal(staffNote.title, `New order ${order.orderCode}`);
+    assert.equal(staffNote.tone, 'new');
+    assert.equal(staffNote.link, '/cashier');
+    assert.match(staffNote.body, /Nia Nansubuga · Amina Kato/);
+    assert.ok((await kinds(s.owner)).includes('order.new'));
+
+    await run('transitionOrder', { orderId: order.id, action: 'accept' }, s.cashier);
+    await run('transitionOrder', { orderId: order.id, action: 'ready' }, s.cashier);
+    const riderInbox = await inbox(s.nia);
+    const ready = riderInbox.find((n) => n.kind === 'order.ready');
+    assert.equal(ready.title, `${order.orderCode} is ready for pickup`);
+    assert.equal(ready.tone, 'alert');
+    assert.equal(ready.link, `/rider/order/${order.id}`);
+    assert.ok(riderInbox.some((n) => n.kind === 'order.accept'));
+    s.readyOrder = order.id;
+
+    const { unread } = await run('getNotifications', {}, s.nia);
+    assert.ok(unread >= 2);
+    await run('markNotificationsRead', { ids: [ready.id] }, s.nia);
+    assert.equal((await run('getNotifications', {}, s.nia)).unread, unread - 1);
+    await run('markNotificationsRead', { all: true }, s.nia);
+    assert.equal((await run('getNotifications', {}, s.nia)).unread, 0);
+  });
+
+  test('notifications are private to their recipient', async () => {
+    const theirs = await new Parse.Query('Notification').find(as(s.cashier));
+    const niaUser = await new Parse.Query(Parse.User).equalTo('username', 'nia').first(M);
+    assert.ok(theirs.every((n) => n.get('recipient').id !== niaUser.id));
+    await rejects(
+      new Parse.Object('Notification').save({ title: 'x' }, as(s.nia)),
+      /Permission denied|Changes must go through the app/,
+    );
+  });
+
+  test('handovers and mobile money checks notify both sides', async () => {
+    await run('transitionOrder', { orderId: s.readyOrder, action: 'pickup' }, s.nia);
+    await run('transitionOrder', { orderId: s.readyOrder, action: 'deliver' }, s.nia);
+    const handover = await run('createHandover', { orderIds: [s.readyOrder] }, s.nia);
+    const note = (await inbox(s.cashier)).find((n) => n.kind === 'cash.handover');
+    assert.match(note.body, /Nia Nansubuga/);
+    assert.equal(note.link, '/cashier/handovers');
+    await run(
+      'confirmHandover',
+      { handoverId: handover.id, countedAmount: handover.amount },
+      s.cashier,
+    );
+    assert.ok((await kinds(s.nia)).includes('cash.handover_confirmed'));
+
+    const momo = await place({
+      paymentMethod: 'mobile_money',
+      paymentProvider: 'mtn',
+      paymentReference: 'NIA-CHECK-001',
+    });
+    await run(
+      'verifyPayment',
+      { orderId: momo.id, received: false, reason: 'Not on the statement' },
+      s.cashier,
+    );
+    const rejected = (await inbox(s.nia)).find((n) => n.kind === 'payment.rejected');
+    assert.match(rejected.body, /Not on the statement/);
+    await run('transitionOrder', { orderId: momo.id, action: 'cancel', reason: 'Test' }, s.nia);
+  });
+
+  test('cash limit: warning, then every new order is blocked until cash is handed over', async () => {
+    const first = await place();
+    await deliver(first.id);
+    const second = await place();
+    await deliver(second.id);
+    const float = first.total + second.total;
+
+    // Exactly at the limit: a "limit reached" alert and no new orders at all.
+    await saveSettings({ maxRiderFloat: float });
+    assert.ok((await kinds(s.nia)).includes('cash.limit_reached'));
+    await rejects(place(), /Cash limit reached/);
+    await rejects(
+      place({ paymentMethod: 'mobile_money', paymentProvider: 'mtn', paymentReference: 'NIA-LIM' }),
+      /Cash limit reached/,
+    );
+
+    // Raise the limit so the rider is at 80-99%: a warning, and orders allowed again.
+    await saveSettings({ maxRiderFloat: Math.ceil(float / 0.9), floatWarningPercent: 80 });
+    const alerts = await inbox(s.nia);
+    const near = alerts.find((n) => n.kind === 'cash.limit_near');
+    assert.equal(near.tone, 'alert');
+    assert.equal(near.link, '/rider/cash');
+    // Reminders are sent once per day, not on every check.
+    await inbox(s.nia);
+    assert.equal((await kinds(s.nia)).filter((k) => k === 'cash.limit_near').length, 1);
+  });
+
+  test('riders are reminded to hand over cash at the end of the day', async () => {
+    await saveSettings({ cashReminderHour: 0, maxRiderFloat: 1000000 });
+    const reminders = (await kinds(s.nia)).filter((k) => k === 'cash.handover_reminder');
+    assert.equal(reminders.length, 1);
+    assert.equal((await kinds(s.nia)).filter((k) => k === 'cash.handover_reminder').length, 1);
+    await rejects(saveSettings({ cashReminderHour: 24 }), /0-23/);
+    await saveSettings({ cashReminderHour: 20 });
+  });
+
+  test('limit 50,000 with nothing held: a 100,000 order goes ahead, then deposit first', async () => {
+    const handOver = async () => {
+      const cash = await new Parse.Query('Order')
+        .equalTo('createdBy', Parse.User.createWithoutData(s.nia.id))
+        .equalTo('cashStatus', 'WITH_RIDER')
+        .find(M);
+      if (!cash.length) return;
+      const h = await run('createHandover', { orderIds: cash.map((o) => o.id) }, s.nia);
+      await run('confirmHandover', { handoverId: h.id, countedAmount: h.amount }, s.cashier);
+    };
+    await handOver();
+    await saveSettings({ maxRiderFloat: 50000 });
+    try {
+      const { items } = await run('getOperationalMenu', {}, s.nia);
+      const item = items.find((i) => !(i.accompanimentGroups || []).some((g) => g.min > 0));
+      const quantity = Math.ceil(100000 / item.price);
+      const big = await place({ items: [{ id: item.id, quantity }] });
+      assert.ok(big.total >= 100000);
+      assert.equal(big.cashLimitReached, true);
+      await rejects(place(), /Cash limit reached/);
+      await deliver(big.id);
+      await rejects(place(), /Cash limit reached: you hold/);
+      await handOver();
+      const next = await place();
+      assert.equal(next.cashLimitReached, false);
+      await run('transitionOrder', { orderId: next.id, action: 'cancel', reason: 'Test' }, s.nia);
+    } finally {
+      await saveSettings({ maxRiderFloat: 1000000 });
+    }
+  });
+
+  test('the owner sees reported problems and resolves them', async () => {
+    const order = await new Parse.Query('Order')
+      .equalTo('status', 'DELIVERED')
+      .equalTo('customerName', 'Amina Kato')
+      .first(M);
+    await run('flagOrderIssue', { orderId: order.id, note: 'Soup was cold on arrival' }, s.nia);
+    const alert = (await inbox(s.owner)).find((n) => n.kind === 'order.issue');
+    assert.match(alert.body, /Soup was cold/);
+    assert.equal(alert.link, '/admin/problems');
+
+    const open = await run('adminListIssues', { state: 'open' }, s.owner);
+    const issue = open.issues.find((i) => i.id === order.id);
+    assert.equal(issue.note, 'Soup was cold on arrival');
+    assert.match(issue.reportedBy, /Nia Nansubuga/);
+    assert.ok(open.open >= 1);
+
+    await run(
+      'resolveOrderIssue',
+      { orderId: order.id, resolution: 'Refunded the delivery fee' },
+      s.owner,
+    );
+    const resolved = await run('adminListIssues', { state: 'resolved' }, s.owner);
+    const done = resolved.issues.find((i) => i.id === order.id);
+    assert.equal(done.resolution, 'Refunded the delivery fee');
+    assert.ok(done.resolvedAt);
+    assert.ok((await kinds(s.nia)).includes('order.issue_resolved'));
+    await rejects(run('adminListIssues', {}, s.cashier), /admin role required/);
+  });
 });

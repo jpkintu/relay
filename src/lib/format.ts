@@ -53,3 +53,13 @@ export function initials(name: string): string {
     parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : parts[0].slice(0, 2)
   ).toUpperCase();
 }
+
+// "just now", "5 min ago", "3 h ago", "2 d ago".
+export function timeAgo(date: Date | string, now = new Date()): string {
+  const minutes = Math.floor((now.getTime() - new Date(date).getTime()) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}

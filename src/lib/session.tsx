@@ -18,6 +18,7 @@ export type AppConfig = {
   requireCashierConfirmForPickup?: boolean;
   mobileMoney?: MerchantAccount[];
   restaurantNameSet?: boolean;
+  floatWarningPercent?: number;
 };
 
 export type MerchantAccount = { provider: string; label: string; code: string; name: string };

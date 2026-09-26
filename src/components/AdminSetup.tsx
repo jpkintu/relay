@@ -39,6 +39,8 @@ type Settings = {
   airtelMerchantName?: string;
   mtnMerchantCode?: string;
   mtnMerchantName?: string;
+  cashReminderHour?: number;
+  floatWarningPercent?: number;
 };
 const input = (
   label: string,
@@ -423,6 +425,18 @@ export function AdminSetup({
               'Maximum rider float',
               settings.maxRiderFloat,
               (v) => setSettings((p) => ({ ...p, maxRiderFloat: Number(v) })),
+              'number',
+            )}
+            {input(
+              'Warn riders at (% of the float limit)',
+              settings.floatWarningPercent ?? 80,
+              (v) => setSettings((p) => ({ ...p, floatWarningPercent: Number(v) })),
+              'number',
+            )}
+            {input(
+              'Cash handover reminder (hour, 0–23)',
+              settings.cashReminderHour ?? 20,
+              (v) => setSettings((p) => ({ ...p, cashReminderHour: Number(v) })),
               'number',
             )}
             <label className="setup-checkbox">

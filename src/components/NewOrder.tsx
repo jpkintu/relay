@@ -119,10 +119,15 @@ export function NewOrder({
   onGoToCash,
   onOpenOrder,
   preview,
+  cashBlocked = '',
 }: {
   onBack: () => void;
-  onPlaced: (payload: OrderPayload) => Promise<{ id?: string; orderCode?: string } | void>;
+  onPlaced: (
+    payload: OrderPayload,
+  ) => Promise<{ id?: string; orderCode?: string; cashLimitReached?: boolean } | void>;
   onGoToCash: () => void;
+  // Set when the rider is at the cash limit: explains why ordering is blocked.
+  cashBlocked?: string;
   onOpenOrder: (id: string) => void;
   preview: boolean;
 }) {
@@ -142,7 +147,11 @@ export function NewOrder({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [placed, setPlaced] = useState<{ id?: string; orderCode?: string } | null>(null);
+  const [placed, setPlaced] = useState<{
+    id?: string;
+    orderCode?: string;
+    cashLimitReached?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (preview) return;
@@ -280,6 +289,12 @@ export function NewOrder({
         <p className="eyebrow">Ticket sent{placed.orderCode ? ` · ${placed.orderCode}` : ''}</p>
         <h2>Order placed.</h2>
         <p>The kitchen has received your order.</p>
+        {placed.cashLimitReached && (
+          <p className="limit-banner" role="status">
+            This order takes you to your cash limit. Deliver it and hand over the cash before taking
+            another order.
+          </p>
+        )}
         {placed.id && !preview && (
           <button className="setup-secondary" onClick={() => onOpenOrder(placed.id!)}>
             View order
@@ -317,6 +332,12 @@ export function NewOrder({
           </button>
         )}
       </header>
+      {cashBlocked && (
+        <div className="limit-banner" role="alert">
+          <span>{cashBlocked}</span>
+          <button onClick={onGoToCash}>Hand over cash</button>
+        </div>
+      )}
 
       <section className="customer-grid">
         <CustomerField
@@ -530,7 +551,7 @@ export function NewOrder({
           {error ? (
             <span className="order-error">
               {error}
-              {error.startsWith('Hand over cash') && (
+              {/^(Hand over cash|Cash limit reached)/.test(error) && (
                 <button className="link-button" onClick={onGoToCash}>
                   Hand over cash
                 </button>
@@ -542,7 +563,7 @@ export function NewOrder({
             <span>Ready to send</span>
           )}
         </div>
-        <button disabled={!!problems.length || saving} onClick={place}>
+        <button disabled={!!problems.length || saving || !!cashBlocked} onClick={place}>
           {saving ? 'Sending…' : 'Place order'}
           <ArrowLeft className="arrow-forward" />
         </button>

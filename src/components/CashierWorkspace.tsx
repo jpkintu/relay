@@ -21,6 +21,7 @@ import { personLabel } from '../lib/people';
 import { formatDate } from '../lib/format';
 import { providerLabel } from './MobileMoney';
 import { BrandMark } from './BrandMark';
+import { NotificationBell } from './NotificationBell';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -191,6 +192,7 @@ export function CashierWorkspace() {
         <div className="shift-live">
           {profile ? `${profile.code ? `${profile.code} · ` : ''}${profile.name}` : 'Cashier'}
         </div>
+        <NotificationBell />
         <button className="icon-button" onClick={() => void logout()} aria-label="Log out">
           <LogOut />
         </button>

@@ -18,6 +18,7 @@ const {
 } = require('./lib/core');
 const { merchantAccounts, cleanReference, referenceProblem } = require('./lib/mobileMoney');
 const { dateKey } = require('./lib/dates');
+const { notifyUser, notifyStaff, personName } = require('./notifications');
 
 const PENDING = 'PENDING_VERIFICATION';
 
@@ -75,6 +76,17 @@ Parse.Cloud.define('verifyPayment', async (request) => {
       reason,
     },
   );
+  const code = order.get('orderCode');
+  await notifyUser(order.get('createdBy'), {
+    kind: received ? 'payment.verified' : 'payment.rejected',
+    tone: received ? 'update' : 'alert',
+    title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
+    body: received
+      ? 'The kitchen can start on it.'
+      : `${reason}. Correct the transaction ID or cancel the order.`,
+    link: `/rider/order/${order.id}`,
+    order,
+  });
   return { paymentStatus: order.get('paymentStatus') };
 });
 
@@ -108,6 +120,15 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
   });
   await order.save(null, MASTER);
   await audit(actor, 'payment.resubmitted', order, before, { provider, reference });
+  await notifyStaff({
+    kind: 'payment.resubmitted',
+    tone: 'new',
+    title: `New transaction ID for ${order.get('orderCode')}`,
+    body: `${personName(await actor.fetch(MASTER))} · ${reference}`,
+    link: '/cashier/payments',
+    order,
+    except: actor,
+  });
   return { paymentStatus: PENDING };
 });
 

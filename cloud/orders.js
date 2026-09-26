@@ -9,11 +9,14 @@ const {
   audit,
   loadConfig,
   nextDailyCode,
+  riderFloat,
+  personName,
 } = require('./lib/core');
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
 const { recordCustomerOrder } = require('./customers');
 const { checkMobileMoney, PENDING } = require('./payments');
+const { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require('./notifications');
 
 const CHANNELS = ['walkin', 'phone', 'whatsapp', 'other'];
 const PAYMENT_METHODS = ['cash', 'mobile_money', 'card', 'prepaid'];
@@ -24,17 +27,6 @@ const clean = (value, max) =>
     .trim()
     .slice(0, max);
 const cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, '');
-
-// Cash the rider is still accountable for: delivered cash orders that have
-// not been reconciled. Derived from orders, never stored.
-async function riderFloat(rider) {
-  const query = new Parse.Query('Order');
-  query.equalTo('createdBy', rider);
-  query.equalTo('status', 'DELIVERED');
-  query.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
-  query.limit(1000);
-  return sumBy(await query.find(MASTER), (order) => order.get('amountCollected'));
-}
 
 // Accompaniments that exist, are active and are not sold out, by id.
 async function servableAccompaniments() {
@@ -116,14 +108,22 @@ Parse.Cloud.define('createOrder', async (request) => {
   const activeQuery = new Parse.Query('Order');
   activeQuery.equalTo('createdBy', rider);
   activeQuery.notContainedIn('status', ['DELIVERED', 'CANCELLED']);
-  const [lines, { values: config }, activeCount, float] = await Promise.all([
+  activeQuery.limit(200);
+  const [lines, { values: config }, active, float] = await Promise.all([
     priceLines(p.items),
     loadConfig(),
-    activeQuery.count(MASTER),
+    activeQuery.find(MASTER),
     riderFloat(rider),
   ]);
-  if (!config.allowBatching && activeCount)
+  if (!config.allowBatching && active.length)
     throw invalid('Finish your current order before creating another');
+  // Cash limit: the rider may place an order while their cash (held, plus
+  // still to collect on open cash orders) is below the limit, even if that
+  // order takes them over it. Once at or over the limit, no new orders of any
+  // kind until the cash is delivered and handed over.
+  const toCollect = cashToCollect(active);
+  if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
+    throw invalid(cashLimitMessage(config, float, toCollect));
 
   const subtotal = sumBy(lines, (line) => line.price * line.qty);
   const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
@@ -142,13 +142,6 @@ Parse.Cloud.define('createOrder', async (request) => {
     paymentMethod === 'mobile_money'
       ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference)
       : null;
-
-  // B2: the rider's cash after this order must stay within the limit.
-  const projected = float + (isCash ? amountToCollect : 0);
-  if (config.maxRiderFloat > 0 && projected > config.maxRiderFloat)
-    throw invalid(
-      `Hand over cash first: this order would put ${config.currencySymbol} ${projected.toLocaleString('en-US')} with you (limit ${config.currencySymbol} ${config.maxRiderFloat.toLocaleString('en-US')})`,
-    );
 
   const order = new Parse.Object('Order');
   order.set({
@@ -208,12 +201,49 @@ Parse.Cloud.define('createOrder', async (request) => {
     await order.save(null, MASTER);
   }
   await audit(rider, 'order.placed', order, null, { status: 'PLACED', total });
-  return { id: order.id, orderCode: order.get('orderCode'), total };
+  await notifyStaff({
+    kind: 'order.new',
+    tone: 'new',
+    title: `New order ${order.get('orderCode')}`,
+    body: [
+      personName(rider),
+      customerName,
+      money(config, total),
+      momo ? 'mobile money to check' : 'cash',
+    ].join(' · '),
+    link: '/cashier',
+    order,
+  });
+  const exposure = float + toCollect + (isCash ? amountToCollect : 0);
+  return {
+    id: order.id,
+    orderCode: order.get('orderCode'),
+    total,
+    // This order takes the rider to or over the limit: it goes ahead, but the
+    // next one is blocked until the cash is handed over.
+    cashLimitReached: config.maxRiderFloat > 0 && exposure >= config.maxRiderFloat,
+  };
 });
 
 // action → allowed current statuses, next status, next restaurantStatus.
 // `who`: 'staff' (cashier/admin), 'owner' (the rider who created it, or
 // staff), or a function deciding per role.
+// Cash still to collect on the rider's open (not yet delivered) cash orders.
+const cashToCollect = (orders) =>
+  sumBy(
+    orders.filter((order) => order.get('paymentMethod') === 'cash'),
+    (order) => order.get('amountToCollect') ?? order.get('total'),
+  );
+
+function cashLimitMessage(config, held, toCollect) {
+  const parts = [];
+  if (held > 0) parts.push(`you hold ${money(config, held)}`);
+  if (toCollect > 0) parts.push(`${money(config, toCollect)} is still to collect on open orders`);
+  return `Cash limit reached: ${parts.join(' and ') || 'no cash room left'} (limit ${money(config, config.maxRiderFloat)}). ${
+    toCollect > 0 ? 'Deliver and hand over' : 'Hand over'
+  } cash before taking new orders`;
+}
+
 const TRANSITIONS = {
   accept: { from: ['PLACED'], to: 'ACCEPTED', kitchen: 'accepted', who: 'staff' },
   prepare: { from: ['ACCEPTED'], to: 'PREPARING', kitchen: 'preparing', who: 'staff' },
@@ -314,8 +344,49 @@ Parse.Cloud.define('transitionOrder', async (request) => {
     paymentMethod: order.get('paymentMethod'),
     reason: order.get('cancelledReason'),
   });
+  await notifyTransition(order, p.action, { staff, owner, actor, config });
   return { status: rule.to };
 });
+
+// What the rider sees when the kitchen moves their order, and what the
+// kitchen sees when a rider cancels.
+const RIDER_MESSAGES = {
+  accept: (code) => [`${code} accepted`, 'The kitchen has started on it.'],
+  prepare: (code) => [`${code} is being prepared`, ''],
+  ready: (code) => [`${code} is ready for pickup`, 'Collect it from the counter.'],
+  pickup: (code) => [`${code} handed to you`, 'Deliver it and record the payment.'],
+  deliver: (code) => [`${code} marked delivered`, ''],
+  reject: (code, reason) => [`${code} was rejected`, reason],
+  cancel: (code, reason) => [`${code} was cancelled`, reason],
+};
+
+async function notifyTransition(order, action, { staff, owner, actor, config }) {
+  const code = order.get('orderCode');
+  const rider = order.get('createdBy');
+  if (staff && !owner && RIDER_MESSAGES[action]) {
+    const [title, detail] = RIDER_MESSAGES[action](code, order.get('cancelledReason') || '');
+    await notifyUser(rider, {
+      kind: `order.${action}`,
+      tone: ['ready', 'reject', 'cancel'].includes(action) ? 'alert' : 'update',
+      title,
+      body: [order.get('customerName'), detail].filter(Boolean).join(' · '),
+      link: `/rider/order/${order.id}`,
+      order,
+    });
+  }
+  if (owner && action === 'cancel')
+    await notifyStaff({
+      kind: 'order.cancelled_by_rider',
+      tone: 'update',
+      title: `${code} cancelled by the rider`,
+      body: order.get('cancelledReason') || '',
+      link: '/cashier',
+      order,
+      except: actor,
+    });
+  if (action === 'deliver' && order.get('paymentMethod') === 'cash')
+    await cashLimitAlert(await rider.fetch(MASTER), config);
+}
 
 // A food/delivery complaint, independent of the cash status.
 Parse.Cloud.define('flagOrderIssue', async (request) => {
@@ -329,6 +400,15 @@ Parse.Cloud.define('flagOrderIssue', async (request) => {
   order.set({ disputeFlag: true, disputeNote: note, disputedBy: actor, disputedAt: new Date() });
   await order.save(null, MASTER);
   await audit(actor, 'order.issue_flagged', order, null, { note });
+  await notifyAdmins({
+    kind: 'order.issue',
+    tone: 'alert',
+    title: `Problem reported on ${order.get('orderCode')}`,
+    body: `${personName(await actor.fetch(MASTER))}: ${note}`,
+    link: '/admin/problems',
+    order,
+    except: actor,
+  });
   return { ok: true };
 });
 
@@ -338,7 +418,12 @@ Parse.Cloud.define('resolveOrderIssue', async (request) => {
   if (!order.get('disputeFlag')) throw invalid('This order has no open issue');
   const resolution = clean(request.params.resolution, 300);
   if (resolution.length < 5) throw invalid('Describe how it was resolved');
-  order.set({ disputeFlag: false, disputeResolution: resolution });
+  order.set({
+    disputeFlag: false,
+    disputeResolution: resolution,
+    disputeResolvedBy: actor,
+    disputeResolvedAt: new Date(),
+  });
   await order.save(null, MASTER);
   await audit(
     actor,
@@ -347,7 +432,56 @@ Parse.Cloud.define('resolveOrderIssue', async (request) => {
     { note: order.get('disputeNote') },
     { resolution },
   );
+  const resolved = {
+    kind: 'order.issue_resolved',
+    tone: 'update',
+    title: `Problem on ${order.get('orderCode')} resolved`,
+    body: resolution,
+    order,
+    except: actor,
+  };
+  const rider = order.get('createdBy');
+  const reporter = order.get('disputedBy');
+  await notifyUser(rider, { ...resolved, link: `/rider/order/${order.id}` });
+  if (reporter && reporter.id !== rider?.id) await notifyUser(reporter, { ...resolved, link: '' });
   return { ok: true };
+});
+
+// Owner: problems reported on orders, open first.
+Parse.Cloud.define('adminListIssues', async (request) => {
+  await requireRole(request, ['admin']);
+  const state = request.params.state || 'open';
+  if (!['open', 'resolved', 'all'].includes(state)) throw invalid('Unknown issue filter');
+  const query = new Parse.Query('Order');
+  query.exists('disputeNote');
+  if (state === 'open') query.equalTo('disputeFlag', true);
+  if (state === 'resolved') query.notEqualTo('disputeFlag', true);
+  query.include(['createdBy', 'disputedBy', 'disputeResolvedBy']);
+  query.descending('disputedAt');
+  query.limit(300);
+  const [rows, open] = await Promise.all([
+    query.find(MASTER),
+    new Parse.Query('Order').equalTo('disputeFlag', true).count(MASTER),
+  ]);
+  return {
+    open,
+    issues: rows.map((order) => ({
+      id: order.id,
+      code: order.get('orderCode'),
+      customer: order.get('customerName'),
+      customerPhone: order.get('customerPhone') || '',
+      rider: personName(order.get('createdBy')),
+      status: order.get('status'),
+      total: order.get('total'),
+      note: order.get('disputeNote'),
+      reportedBy: personName(order.get('disputedBy')),
+      reportedAt: order.get('disputedAt') || null,
+      open: order.get('disputeFlag') === true,
+      resolution: order.get('disputeResolution') || '',
+      resolvedBy: personName(order.get('disputeResolvedBy')),
+      resolvedAt: order.get('disputeResolvedAt') || null,
+    })),
+  };
 });
 
 module.exports = { riderFloat, servableAccompaniments };

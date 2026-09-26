@@ -9,6 +9,8 @@ import {
   providerLabel,
   referenceProblem,
 } from './MobileMoney';
+import { NotificationBell } from './NotificationBell';
+import { statusLabel, statusTone } from '../lib/labels';
 
 type Line = { id: string; title: string; quantity: number; total: number; details: string };
 type Detail = {
@@ -170,8 +172,11 @@ export function OrderDetail({
           <h2>{order?.code || 'Order'}</h2>
         </div>
         {order && (
-          <span className={`status-pill ${order.status.toLowerCase()}`}>{order.status}</span>
+          <span className={`status-pill ${statusTone(order.status)}`}>
+            {statusLabel(order.status)}
+          </span>
         )}
+        <NotificationBell />
       </header>
       <div className="subpage-content order-detail">
         {preview && <p className="info-card">Order details need a signed-in rider.</p>}

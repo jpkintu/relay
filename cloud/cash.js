@@ -9,6 +9,7 @@ const {
   nextDailyCode,
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
+const { money, notifyUser, notifyStaff, notifyAdmins, personName } = require('./notifications');
 
 Parse.Cloud.define('createHandover', async (request) => {
   const { user: rider } = await requireRole(request, ['rider']);
@@ -43,6 +44,15 @@ Parse.Cloud.define('createHandover', async (request) => {
   orders.forEach((order) => order.set('cashStatus', 'HANDOVER_PENDING'));
   await Parse.Object.saveAll(orders, MASTER);
   await audit(rider, 'cash.handover_created', row, null, { amount });
+  await notifyStaff({
+    kind: 'cash.handover',
+    tone: 'new',
+    title: `Cash handover ${row.get('handoverCode')}`,
+    body: `${personName(rider)} · ${money(config, amount)} · ${orders.length} ${
+      orders.length === 1 ? 'order' : 'orders'
+    }`,
+    link: '/cashier/handovers',
+  });
   return { id: row.id, amount };
 });
 
@@ -67,6 +77,14 @@ Parse.Cloud.define('confirmHandover', async (request) => {
     { status: 'pending' },
     { status: 'confirmed', countedAmount: counted },
   );
+  const { values: config } = await loadConfig();
+  await notifyUser(row.get('rider'), {
+    kind: 'cash.handover_confirmed',
+    tone: 'update',
+    title: `Handover ${row.get('handoverCode')} confirmed`,
+    body: `${money(config, counted)} received by ${personName(await cashier.fetch(MASTER))}.`,
+    link: '/rider/cash',
+  });
   return { status: 'confirmed' };
 });
 
@@ -93,6 +111,15 @@ Parse.Cloud.define('disputeHandover', async (request) => {
     { status: 'pending', amount: row.get('amount') },
     { status: 'disputed', countedAmount: counted, reason },
   );
+  const { values: config } = await loadConfig();
+  const disputed = {
+    kind: 'cash.handover_disputed',
+    tone: 'alert',
+    title: `Handover ${row.get('handoverCode')} disputed`,
+    body: `Counted ${money(config, counted)} of ${money(config, row.get('amount'))}: ${reason}`,
+  };
+  await notifyUser(row.get('rider'), { ...disputed, link: '/rider/cash' });
+  await notifyAdmins({ ...disputed, link: '/admin/payments', except: cashier });
   return { status: 'disputed' };
 });
 

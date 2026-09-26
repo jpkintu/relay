@@ -157,7 +157,11 @@ var require_core = __commonJS({
       airtelMerchantCode: "",
       airtelMerchantName: "",
       mtnMerchantCode: "",
-      mtnMerchantName: ""
+      mtnMerchantName: "",
+      // Hour of the day (restaurant time) to remind riders to hand over cash.
+      cashReminderHour: 20,
+      // Warn riders when their cash reaches this % of maxRiderFloat.
+      floatWarningPercent: 80
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -239,6 +243,16 @@ var require_core = __commonJS({
       query.exists("username");
       return query.count(MASTER);
     }
+    async function riderFloat(rider) {
+      const query = new Parse.Query("Order");
+      query.equalTo("createdBy", rider);
+      query.equalTo("status", "DELIVERED");
+      query.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
+      query.limit(1e3);
+      const orders = await query.find(MASTER);
+      return orders.reduce((sum, order) => sum + (Number(order.get("amountCollected")) || 0), 0);
+    }
+    var personName = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
     async function nextSequence(key) {
       const find = () => {
         const query = new Parse.Query("Counter");
@@ -318,6 +332,8 @@ var require_core = __commonJS({
       loadConfig,
       countUsers,
       nextDailyCode,
+      riderFloat,
+      personName,
       isBrokenCode,
       nextStaffCode
     };
@@ -354,7 +370,8 @@ var require_security = __commonJS({
       "Accompaniment",
       "Customer",
       "Counter",
-      "DemoOrder"
+      "DemoOrder",
+      "Notification"
     ];
     var PRIVATE_CLASSES = ["Counter", "DemoOrder", "Configuration"];
     var SELF_EDITABLE_USER_FIELDS = ["password", "email"];
@@ -444,7 +461,9 @@ var require_security = __commonJS({
         paymentStatus: S,
         paymentCheckedBy: user,
         paymentCheckedAt: D,
-        paymentRejectReason: S
+        paymentRejectReason: S,
+        disputeResolvedBy: user,
+        disputeResolvedAt: D
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -502,7 +521,9 @@ var require_security = __commonJS({
         airtelMerchantCode: S,
         airtelMerchantName: S,
         mtnMerchantCode: S,
-        mtnMerchantName: S
+        mtnMerchantName: S,
+        cashReminderHour: N,
+        floatWarningPercent: N
       },
       MenuItem: {
         title: S,
@@ -538,6 +559,17 @@ var require_security = __commonJS({
         status: S,
         restaurantStatus: S,
         isDemo: B
+      },
+      Notification: {
+        recipient: user,
+        kind: S,
+        tone: S,
+        title: S,
+        body: S,
+        link: S,
+        order: ["Pointer", "Order"],
+        key: S,
+        readAt: D
       }
     };
     async function applySchemas() {
@@ -670,6 +702,184 @@ var require_security = __commonJS({
       return updated;
     });
     module2.exports = { applySecurity };
+  }
+});
+
+// cloud/lib/alerts.js
+var require_alerts = __commonJS({
+  "cloud/lib/alerts.js"(exports2, module2) {
+    "use strict";
+    function floatLevel(float, max, warnPercent = 80) {
+      const limit = Number(max) || 0;
+      const cash = Number(float) || 0;
+      if (limit <= 0) return null;
+      if (cash >= limit) return "reached";
+      const percent = Math.min(Math.max(Number(warnPercent) || 80, 1), 99);
+      if (cash >= limit * percent / 100) return "near";
+      return null;
+    }
+    function handoverReminderDue(float, localHour, reminderHour = 20) {
+      const hour = Number(reminderHour);
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return false;
+      return (Number(float) || 0) > 0 && localHour >= hour;
+    }
+    module2.exports = { floatLevel, handoverReminderDue };
+  }
+});
+
+// cloud/notifications.js
+var require_notifications = __commonJS({
+  "cloud/notifications.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      requireUser,
+      getRoleName,
+      loadConfig,
+      readAcl,
+      riderFloat,
+      personName
+    } = require_core();
+    var { floatLevel, handoverReminderDue } = require_alerts();
+    var { dateKey, localClock } = require_dates();
+    var money = (config, amount) => `${config.currencySymbol} ${Math.round(Number(amount) || 0).toLocaleString("en-US")}`;
+    async function roleUsers(names) {
+      const query = new Parse.Query(Parse.Role);
+      query.containedIn("name", names);
+      const roles = await query.find(MASTER);
+      const lists = await Promise.all(
+        roles.map((role) => role.getUsers().query().limit(1e3).find(MASTER))
+      );
+      const byId = /* @__PURE__ */ new Map();
+      for (const user of lists.flat()) if (user.get("active") !== false) byId.set(user.id, user);
+      return [...byId.values()];
+    }
+    async function notifyUsers(users, payload) {
+      try {
+        const recipients = /* @__PURE__ */ new Map();
+        for (const user of users) if (user?.id) recipients.set(user.id, user);
+        if (payload.except) recipients.delete(payload.except.id);
+        const rows = [];
+        for (const user of recipients.values()) {
+          if (payload.key) {
+            const existing = new Parse.Query("Notification");
+            existing.equalTo("recipient", user);
+            existing.equalTo("key", payload.key);
+            if (await existing.first(MASTER)) continue;
+          }
+          const row = new Parse.Object("Notification");
+          row.set({
+            recipient: Parse.User.createWithoutData(user.id),
+            kind: payload.kind,
+            tone: payload.tone || "update",
+            title: String(payload.title).slice(0, 120),
+            body: String(payload.body || "").slice(0, 300),
+            link: payload.link || "",
+            key: payload.key || ""
+          });
+          if (payload.order) row.set("order", payload.order);
+          row.setACL(readAcl(user, []));
+          rows.push(row);
+        }
+        if (rows.length) await Parse.Object.saveAll(rows, MASTER);
+        return rows.length;
+      } catch (error) {
+        console.error(`notify ${payload.kind} failed`, error);
+        return 0;
+      }
+    }
+    var notifyUser = (user, payload) => notifyUsers([user], payload);
+    var notifyStaff = async (payload) => notifyUsers(await roleUsers(["cashier", "admin"]), payload);
+    var notifyAdmins = async (payload) => notifyUsers(await roleUsers(["admin"]), payload);
+    async function cashLimitAlert(rider, config, float) {
+      const cash = float ?? await riderFloat(rider);
+      const level = floatLevel(cash, config.maxRiderFloat, config.floatWarningPercent);
+      if (!level) return 0;
+      const day = dateKey(/* @__PURE__ */ new Date(), config.timezone);
+      const amounts = `${money(config, cash)} of your ${money(config, config.maxRiderFloat)} limit`;
+      return notifyUser(rider, {
+        kind: `cash.limit_${level}`,
+        tone: "alert",
+        key: `cash-${level}:${day}`,
+        link: "/rider/cash",
+        ...level === "reached" ? {
+          title: "Cash limit reached",
+          body: `You hold ${amounts}. Hand over cash: new orders are blocked until you do.`
+        } : {
+          title: "Cash limit almost reached",
+          body: `You hold ${amounts}. Hand over cash soon.`
+        }
+      });
+    }
+    async function handoverReminder(rider, config, float) {
+      const now = /* @__PURE__ */ new Date();
+      if (!handoverReminderDue(float, localClock(now, config.timezone).hour, config.cashReminderHour))
+        return 0;
+      return notifyUser(rider, {
+        kind: "cash.handover_reminder",
+        tone: "alert",
+        key: `handover-reminder:${dateKey(now, config.timezone)}`,
+        link: "/rider/cash",
+        title: "Hand over today's cash",
+        body: `You still hold ${money(config, float)}. Hand it over to the cashier before you finish.`
+      });
+    }
+    function toJSON(row) {
+      return {
+        id: row.id,
+        kind: row.get("kind"),
+        tone: row.get("tone"),
+        title: row.get("title"),
+        body: row.get("body"),
+        link: row.get("link"),
+        read: !!row.get("readAt"),
+        createdAt: row.createdAt
+      };
+    }
+    Parse.Cloud.define("getNotifications", async (request) => {
+      const user = requireUser(request);
+      if (await getRoleName(user) === "rider") {
+        const { values: config } = await loadConfig();
+        const float = await riderFloat(user);
+        await cashLimitAlert(user, config, float);
+        await handoverReminder(user, config, float);
+      }
+      const listQuery = new Parse.Query("Notification");
+      listQuery.equalTo("recipient", user);
+      listQuery.descending("createdAt");
+      listQuery.limit(40);
+      const unreadQuery = new Parse.Query("Notification");
+      unreadQuery.equalTo("recipient", user);
+      unreadQuery.doesNotExist("readAt");
+      const [rows, unread] = await Promise.all([listQuery.find(MASTER), unreadQuery.count(MASTER)]);
+      return { items: rows.map(toJSON), unread };
+    });
+    Parse.Cloud.define("markNotificationsRead", async (request) => {
+      const user = requireUser(request);
+      const query = new Parse.Query("Notification");
+      query.equalTo("recipient", user);
+      query.doesNotExist("readAt");
+      if (!request.params.all) {
+        const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+        if (!ids.length) return { updated: 0 };
+        query.containedIn("objectId", ids.slice(0, 200));
+      }
+      query.limit(500);
+      const rows = await query.find(MASTER);
+      const now = /* @__PURE__ */ new Date();
+      rows.forEach((row) => row.set("readAt", now));
+      if (rows.length) await Parse.Object.saveAll(rows, MASTER);
+      return { updated: rows.length };
+    });
+    module2.exports = {
+      money,
+      personName,
+      notifyUser,
+      notifyUsers,
+      notifyStaff,
+      notifyAdmins,
+      cashLimitAlert
+    };
   }
 });
 
@@ -811,6 +1021,7 @@ var require_payments = __commonJS({
     } = require_core();
     var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
     var { dateKey } = require_dates();
+    var { notifyUser, notifyStaff, personName } = require_notifications();
     var PENDING = "PENDING_VERIFICATION";
     async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId) {
       const accounts = merchantAccounts(config);
@@ -860,6 +1071,15 @@ var require_payments = __commonJS({
           reason
         }
       );
+      const code = order.get("orderCode");
+      await notifyUser(order.get("createdBy"), {
+        kind: received ? "payment.verified" : "payment.rejected",
+        tone: received ? "update" : "alert",
+        title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
+        body: received ? "The kitchen can start on it." : `${reason}. Correct the transaction ID or cancel the order.`,
+        link: `/rider/order/${order.id}`,
+        order
+      });
       return { paymentStatus: order.get("paymentStatus") };
     });
     Parse.Cloud.define("resubmitPayment", async (request) => {
@@ -891,6 +1111,15 @@ var require_payments = __commonJS({
       });
       await order.save(null, MASTER);
       await audit(actor, "payment.resubmitted", order, before, { provider, reference });
+      await notifyStaff({
+        kind: "payment.resubmitted",
+        tone: "new",
+        title: `New transaction ID for ${order.get("orderCode")}`,
+        body: `${personName(await actor.fetch(MASTER))} \xB7 ${reference}`,
+        link: "/cashier/payments",
+        order,
+        except: actor
+      });
       return { paymentStatus: PENDING };
     });
     var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name")].filter(Boolean).join(" \xB7 ") : "";
@@ -1052,25 +1281,20 @@ var require_orders = __commonJS({
       readAcl,
       audit,
       loadConfig,
-      nextDailyCode
+      nextDailyCode,
+      riderFloat,
+      personName
     } = require_core();
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
     var { recordCustomerOrder } = require_customers();
     var { checkMobileMoney, PENDING } = require_payments();
+    var { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require_notifications();
     var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
     var PAYMENT_METHODS = ["cash", "mobile_money", "card", "prepaid"];
     var MAX_LINES = 30;
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
-    async function riderFloat(rider) {
-      const query = new Parse.Query("Order");
-      query.equalTo("createdBy", rider);
-      query.equalTo("status", "DELIVERED");
-      query.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
-      query.limit(1e3);
-      return sumBy(await query.find(MASTER), (order) => order.get("amountCollected"));
-    }
     async function servableAccompaniments() {
       const query = new Parse.Query("Accompaniment");
       query.equalTo("active", true);
@@ -1143,14 +1367,18 @@ var require_orders = __commonJS({
       const activeQuery = new Parse.Query("Order");
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
-      const [lines, { values: config }, activeCount, float] = await Promise.all([
+      activeQuery.limit(200);
+      const [lines, { values: config }, active, float] = await Promise.all([
         priceLines(p.items),
         loadConfig(),
-        activeQuery.count(MASTER),
+        activeQuery.find(MASTER),
         riderFloat(rider)
       ]);
-      if (!config.allowBatching && activeCount)
+      if (!config.allowBatching && active.length)
         throw invalid("Finish your current order before creating another");
+      const toCollect = cashToCollect(active);
+      if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
+        throw invalid(cashLimitMessage(config, float, toCollect));
       const subtotal = sumBy(lines, (line) => line.price * line.qty);
       const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
       const total = subtotal + fee;
@@ -1162,11 +1390,6 @@ var require_orders = __commonJS({
       if (isCash && amountToCollect < total && shortfallNote.length < 5)
         throw invalid("The customer is paying less than the total. Add a note explaining why");
       const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
-      const projected = float + (isCash ? amountToCollect : 0);
-      if (config.maxRiderFloat > 0 && projected > config.maxRiderFloat)
-        throw invalid(
-          `Hand over cash first: this order would put ${config.currencySymbol} ${projected.toLocaleString("en-US")} with you (limit ${config.currencySymbol} ${config.maxRiderFloat.toLocaleString("en-US")})`
-        );
       const order = new Parse.Object("Order");
       order.set({
         orderCode: await nextDailyCode("ORD", 4, config.timezone, {
@@ -1224,8 +1447,39 @@ var require_orders = __commonJS({
         await order.save(null, MASTER);
       }
       await audit(rider, "order.placed", order, null, { status: "PLACED", total });
-      return { id: order.id, orderCode: order.get("orderCode"), total };
+      await notifyStaff({
+        kind: "order.new",
+        tone: "new",
+        title: `New order ${order.get("orderCode")}`,
+        body: [
+          personName(rider),
+          customerName,
+          money(config, total),
+          momo ? "mobile money to check" : "cash"
+        ].join(" \xB7 "),
+        link: "/cashier",
+        order
+      });
+      const exposure = float + toCollect + (isCash ? amountToCollect : 0);
+      return {
+        id: order.id,
+        orderCode: order.get("orderCode"),
+        total,
+        // This order takes the rider to or over the limit: it goes ahead, but the
+        // next one is blocked until the cash is handed over.
+        cashLimitReached: config.maxRiderFloat > 0 && exposure >= config.maxRiderFloat
+      };
     });
+    var cashToCollect = (orders) => sumBy(
+      orders.filter((order) => order.get("paymentMethod") === "cash"),
+      (order) => order.get("amountToCollect") ?? order.get("total")
+    );
+    function cashLimitMessage(config, held, toCollect) {
+      const parts = [];
+      if (held > 0) parts.push(`you hold ${money(config, held)}`);
+      if (toCollect > 0) parts.push(`${money(config, toCollect)} is still to collect on open orders`);
+      return `Cash limit reached: ${parts.join(" and ") || "no cash room left"} (limit ${money(config, config.maxRiderFloat)}). ${toCollect > 0 ? "Deliver and hand over" : "Hand over"} cash before taking new orders`;
+    }
     var TRANSITIONS = {
       accept: { from: ["PLACED"], to: "ACCEPTED", kitchen: "accepted", who: "staff" },
       prepare: { from: ["ACCEPTED"], to: "PREPARING", kitchen: "preparing", who: "staff" },
@@ -1322,8 +1576,45 @@ var require_orders = __commonJS({
         paymentMethod: order.get("paymentMethod"),
         reason: order.get("cancelledReason")
       });
+      await notifyTransition(order, p.action, { staff, owner, actor, config });
       return { status: rule.to };
     });
+    var RIDER_MESSAGES = {
+      accept: (code) => [`${code} accepted`, "The kitchen has started on it."],
+      prepare: (code) => [`${code} is being prepared`, ""],
+      ready: (code) => [`${code} is ready for pickup`, "Collect it from the counter."],
+      pickup: (code) => [`${code} handed to you`, "Deliver it and record the payment."],
+      deliver: (code) => [`${code} marked delivered`, ""],
+      reject: (code, reason) => [`${code} was rejected`, reason],
+      cancel: (code, reason) => [`${code} was cancelled`, reason]
+    };
+    async function notifyTransition(order, action, { staff, owner, actor, config }) {
+      const code = order.get("orderCode");
+      const rider = order.get("createdBy");
+      if (staff && !owner && RIDER_MESSAGES[action]) {
+        const [title, detail] = RIDER_MESSAGES[action](code, order.get("cancelledReason") || "");
+        await notifyUser(rider, {
+          kind: `order.${action}`,
+          tone: ["ready", "reject", "cancel"].includes(action) ? "alert" : "update",
+          title,
+          body: [order.get("customerName"), detail].filter(Boolean).join(" \xB7 "),
+          link: `/rider/order/${order.id}`,
+          order
+        });
+      }
+      if (owner && action === "cancel")
+        await notifyStaff({
+          kind: "order.cancelled_by_rider",
+          tone: "update",
+          title: `${code} cancelled by the rider`,
+          body: order.get("cancelledReason") || "",
+          link: "/cashier",
+          order,
+          except: actor
+        });
+      if (action === "deliver" && order.get("paymentMethod") === "cash")
+        await cashLimitAlert(await rider.fetch(MASTER), config);
+    }
     Parse.Cloud.define("flagOrderIssue", async (request) => {
       const actor = requireUser(request);
       const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
@@ -1335,6 +1626,15 @@ var require_orders = __commonJS({
       order.set({ disputeFlag: true, disputeNote: note, disputedBy: actor, disputedAt: /* @__PURE__ */ new Date() });
       await order.save(null, MASTER);
       await audit(actor, "order.issue_flagged", order, null, { note });
+      await notifyAdmins({
+        kind: "order.issue",
+        tone: "alert",
+        title: `Problem reported on ${order.get("orderCode")}`,
+        body: `${personName(await actor.fetch(MASTER))}: ${note}`,
+        link: "/admin/problems",
+        order,
+        except: actor
+      });
       return { ok: true };
     });
     Parse.Cloud.define("resolveOrderIssue", async (request) => {
@@ -1343,7 +1643,12 @@ var require_orders = __commonJS({
       if (!order.get("disputeFlag")) throw invalid("This order has no open issue");
       const resolution = clean(request.params.resolution, 300);
       if (resolution.length < 5) throw invalid("Describe how it was resolved");
-      order.set({ disputeFlag: false, disputeResolution: resolution });
+      order.set({
+        disputeFlag: false,
+        disputeResolution: resolution,
+        disputeResolvedBy: actor,
+        disputeResolvedAt: /* @__PURE__ */ new Date()
+      });
       await order.save(null, MASTER);
       await audit(
         actor,
@@ -1352,7 +1657,54 @@ var require_orders = __commonJS({
         { note: order.get("disputeNote") },
         { resolution }
       );
+      const resolved = {
+        kind: "order.issue_resolved",
+        tone: "update",
+        title: `Problem on ${order.get("orderCode")} resolved`,
+        body: resolution,
+        order,
+        except: actor
+      };
+      const rider = order.get("createdBy");
+      const reporter = order.get("disputedBy");
+      await notifyUser(rider, { ...resolved, link: `/rider/order/${order.id}` });
+      if (reporter && reporter.id !== rider?.id) await notifyUser(reporter, { ...resolved, link: "" });
       return { ok: true };
+    });
+    Parse.Cloud.define("adminListIssues", async (request) => {
+      await requireRole(request, ["admin"]);
+      const state = request.params.state || "open";
+      if (!["open", "resolved", "all"].includes(state)) throw invalid("Unknown issue filter");
+      const query = new Parse.Query("Order");
+      query.exists("disputeNote");
+      if (state === "open") query.equalTo("disputeFlag", true);
+      if (state === "resolved") query.notEqualTo("disputeFlag", true);
+      query.include(["createdBy", "disputedBy", "disputeResolvedBy"]);
+      query.descending("disputedAt");
+      query.limit(300);
+      const [rows, open] = await Promise.all([
+        query.find(MASTER),
+        new Parse.Query("Order").equalTo("disputeFlag", true).count(MASTER)
+      ]);
+      return {
+        open,
+        issues: rows.map((order) => ({
+          id: order.id,
+          code: order.get("orderCode"),
+          customer: order.get("customerName"),
+          customerPhone: order.get("customerPhone") || "",
+          rider: personName(order.get("createdBy")),
+          status: order.get("status"),
+          total: order.get("total"),
+          note: order.get("disputeNote"),
+          reportedBy: personName(order.get("disputedBy")),
+          reportedAt: order.get("disputedAt") || null,
+          open: order.get("disputeFlag") === true,
+          resolution: order.get("disputeResolution") || "",
+          resolvedBy: personName(order.get("disputeResolvedBy")),
+          resolvedAt: order.get("disputeResolvedAt") || null
+        }))
+      };
     });
     module2.exports = { riderFloat, servableAccompaniments };
   }
@@ -1454,6 +1806,7 @@ var require_cash = __commonJS({
       nextDailyCode
     } = require_core();
     var { sumBy } = require_money();
+    var { money, notifyUser, notifyStaff, notifyAdmins, personName } = require_notifications();
     Parse.Cloud.define("createHandover", async (request) => {
       const { user: rider } = await requireRole(request, ["rider"]);
       const ids = request.params.orderIds;
@@ -1486,6 +1839,13 @@ var require_cash = __commonJS({
       orders.forEach((order) => order.set("cashStatus", "HANDOVER_PENDING"));
       await Parse.Object.saveAll(orders, MASTER);
       await audit(rider, "cash.handover_created", row, null, { amount });
+      await notifyStaff({
+        kind: "cash.handover",
+        tone: "new",
+        title: `Cash handover ${row.get("handoverCode")}`,
+        body: `${personName(rider)} \xB7 ${money(config, amount)} \xB7 ${orders.length} ${orders.length === 1 ? "order" : "orders"}`,
+        link: "/cashier/handovers"
+      });
       return { id: row.id, amount };
     });
     Parse.Cloud.define("confirmHandover", async (request) => {
@@ -1509,6 +1869,14 @@ var require_cash = __commonJS({
         { status: "pending" },
         { status: "confirmed", countedAmount: counted }
       );
+      const { values: config } = await loadConfig();
+      await notifyUser(row.get("rider"), {
+        kind: "cash.handover_confirmed",
+        tone: "update",
+        title: `Handover ${row.get("handoverCode")} confirmed`,
+        body: `${money(config, counted)} received by ${personName(await cashier.fetch(MASTER))}.`,
+        link: "/rider/cash"
+      });
       return { status: "confirmed" };
     });
     Parse.Cloud.define("disputeHandover", async (request) => {
@@ -1534,6 +1902,15 @@ var require_cash = __commonJS({
         { status: "pending", amount: row.get("amount") },
         { status: "disputed", countedAmount: counted, reason }
       );
+      const { values: config } = await loadConfig();
+      const disputed = {
+        kind: "cash.handover_disputed",
+        tone: "alert",
+        title: `Handover ${row.get("handoverCode")} disputed`,
+        body: `Counted ${money(config, counted)} of ${money(config, row.get("amount"))}: ${reason}`
+      };
+      await notifyUser(row.get("rider"), { ...disputed, link: "/rider/cash" });
+      await notifyAdmins({ ...disputed, link: "/admin/payments", except: cashier });
       return { status: "disputed" };
     });
     Parse.Cloud.define("reopenHandover", async (request) => {
@@ -1567,10 +1944,10 @@ var require_shifts = __commonJS({
       requireUser,
       getRoleName,
       readAcl,
-      audit
+      audit,
+      riderFloat
     } = require_core();
     var { sumBy } = require_money();
-    var { riderFloat } = require_orders();
     async function expectedTill(cashier, shift) {
       const query = new Parse.Query("CashHandover");
       query.equalTo("cashier", cashier);
@@ -2022,6 +2399,12 @@ var require_admin = __commonJS({
         throw invalid("Fee and float limit must be nonnegative");
       const timezone = String(p.timezone || current.timezone).trim();
       if (!isValidTimeZone(timezone)) throw invalid("Unknown timezone, e.g. Africa/Kampala");
+      const reminderHour = Number(p.cashReminderHour ?? current.cashReminderHour);
+      if (!Number.isInteger(reminderHour) || reminderHour < 0 || reminderHour > 23)
+        throw invalid("Cash reminder hour must be 0-23");
+      const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
+      if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
+        throw invalid("Cash warning must be between 50% and 99% of the limit");
       config.set({
         restaurantName: String(p.restaurantName || current.restaurantName).trim(),
         currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
@@ -2034,7 +2417,9 @@ var require_admin = __commonJS({
         airtelMerchantCode: merchantField(p.airtelMerchantCode, 30),
         airtelMerchantName: merchantField(p.airtelMerchantName, 60),
         mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
-        mtnMerchantName: merchantField(p.mtnMerchantName, 60)
+        mtnMerchantName: merchantField(p.mtnMerchantName, 60),
+        cashReminderHour: reminderHour,
+        floatWarningPercent: warnPercent
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -2737,6 +3122,7 @@ var require_profile = __commonJS({
         allowBatching: values.allowBatching,
         commissionRounding: values.commissionRounding,
         requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
+        floatWarningPercent: values.floatWarningPercent,
         mobileMoney: merchantAccounts(values),
         // False until the owner saves a restaurant name in Settings.
         restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName
@@ -2778,6 +3164,7 @@ var require_profile = __commonJS({
 
 // cloud/main.js
 require_security();
+require_notifications();
 require_customers();
 require_payments();
 require_orders();
