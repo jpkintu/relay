@@ -3,6 +3,8 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Bike,
   UtensilsCrossed,
+  Menu,
+  X,
   ClipboardList,
   HandCoins,
   LayoutDashboard,
@@ -17,6 +19,7 @@ import { AdminSetup } from './AdminSetup';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, isToday } from '../lib/format';
 import { personLabel } from '../lib/people';
+import { useDevice } from '../lib/device';
 
 const NAV = [
   [LayoutDashboard, 'Overview', ''],
@@ -34,6 +37,15 @@ export function AdminWorkspace() {
   const { timezone } = useConfig();
   const money = useMoney();
   const navigate = useNavigate();
+  const device = useDevice();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const compact = device === 'phone' || device === 'tablet';
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuOpen]);
   const slug = useLocation().pathname.split('/')[2] || '';
   const current = NAV.find((entry) => entry[2] === slug);
   const section: Section = current ? current[1] : 'Overview';
@@ -130,18 +142,33 @@ export function AdminWorkspace() {
     .reduce((n, o) => n + o.amountCollected, 0);
   return (
     <main className="admin-shell">
-      <aside className="admin-side">
+      <aside className={menuOpen && compact ? 'admin-side menu-open' : 'admin-side'}>
         <div className="brand-mark">
           <Bike />
           <span>Relay</span>
         </div>
         <p>Restaurant operations</p>
-        <nav>
+        {compact && (
+          <button
+            className="admin-menu-toggle"
+            aria-expanded={menuOpen}
+            aria-controls="admin-nav"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            {menuOpen ? <X /> : <Menu />}
+            {menuOpen ? 'Close' : section}
+          </button>
+        )}
+        <nav id="admin-nav" aria-label="Admin sections">
           {NAV.map(([Icon, label]) => (
             <button
               key={label}
               className={section === label ? 'active' : ''}
-              onClick={() => setSection(label)}
+              aria-current={section === label ? 'page' : undefined}
+              onClick={() => {
+                setSection(label);
+                setMenuOpen(false);
+              }}
             >
               <Icon />
               {label}
@@ -151,12 +178,15 @@ export function AdminWorkspace() {
             <UtensilsCrossed />
             Kitchen board
           </button>
+          <button className="admin-logout" onClick={() => void logout()}>
+            <LogOut />
+            Log out
+          </button>
         </nav>
-        <button className="admin-logout" onClick={() => void logout()}>
-          <LogOut />
-          Log out
-        </button>
       </aside>
+      {compact && menuOpen && (
+        <div className="admin-menu-backdrop" onClick={() => setMenuOpen(false)} aria-hidden />
+      )}
       <section className="admin-main">
         <header>
           <div>

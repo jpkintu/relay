@@ -360,6 +360,15 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 10. **Every change keeps `npm run check` and the e2e suite green.** Add an e2e
     test for every new Cloud function, including the roles that must be refused.
 
+11. **Responsive layout.** Device classes (`src/lib/device.ts`, CSS "Device
+    breakpoints" at the end of `src/index.css`): phone < 600, tablet 600–1023,
+    laptop 1024–1599, monitor ≥ 1600. Nothing may be wider than the screen
+    (phone browsers then zoom the whole page out); inputs are 16px on touch
+    screens (iOS zooms in on smaller ones); tap targets ≥ 44px. Admin uses a
+    ☰ drawer below 1024px; the cashier tabs become a bottom bar below 850px;
+    the rider app is phone-first everywhere. Check new screens at 360, 390,
+    768, 1024, 1366 and 1920px.
+
 ### 4.2 Status enums (canonical)
 
 ```
@@ -680,3 +689,5 @@ starts.
 | 2026-09-25 | Single-file Cloud Code bundle `back4app/cloud/main.js` (`npm run build:cloud`) for upload to Back4App; CI checks it is current and runs the e2e suite against it.                                                                                                                                                                                                                              |
 | 2026-09-25 | Phase 1 + accompaniments: full order entry (type-ahead, repeat, channel, payment, notes, drafts, earn preview), accompaniment groups with sold-out control (cashier Stock tab), order detail with delivery form, cancel/reject with reasons, richer kitchen tickets, cashier-confirmed pickup option, order problems, B2. e2e 38, unit 30. Map pin and admin problem-resolution UI still open. |
 | 2026-09-25 | Mobile money: Airtel/MTN merchant codes in Settings, rider share + required transaction ID, kitchen blocked until the cashier confirms, reject + rider correction, cashier Mobile money tab with totals per provider, pay-at-door by mobile money. e2e 42, unit 32.                                                                                                                            |
+| 2026-09-25 | Fix: on phones/tablets the admin menu hid every section except the current one (and Log out), so Settings could not be reached; it is now a scrollable tab row. Rider hint names Admin → Settings → Mobile money merchant codes.                                                                                                                                                               |
+| 2026-09-25 | Responsive pass: device classes (phone/tablet/laptop/monitor), admin ☰ drawer on phones and tablets, cashier bottom tab bar on phones, admin tables as cards on phones, 16px inputs on touch screens (no iOS zoom), no page wider than the screen at 360–1920px (audited every page/role), wider layouts on monitors, viewport-fit=cover.                                                     |

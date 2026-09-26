@@ -2791,3 +2791,246 @@ button {
 .momo-panel label {
   min-width: 0;
 }
+
+/* ================= Device breakpoints =================
+   phone < 600 · tablet 600–1023 · laptop 1024–1599 · monitor ≥ 1600
+   (same as src/lib/device.ts). No element may be wider than the screen:
+   phone browsers zoom the whole page out when anything overflows. */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  max-width: 100%;
+  overflow-x: clip;
+}
+img,
+svg {
+  max-width: 100%;
+}
+.admin-side nav .admin-logout {
+  margin-top: 24px;
+}
+.admin-menu-toggle,
+.admin-menu-backdrop {
+  display: none;
+}
+
+/* Touch screens: 16px inputs so iOS does not zoom in when a field is tapped. */
+@media (max-width: 1023px), (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Admin on tablets and phones: top bar + ☰ Menu drawer with every section. */
+@media (max-width: 1023px) {
+  .admin-shell {
+    display: block;
+  }
+  .admin-side {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: 64px;
+    padding: 0 16px;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+  .admin-side > p {
+    display: none;
+  }
+  .admin-menu-toggle {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 10px;
+    border: 1px solid #ffffff40;
+    background: transparent;
+    color: white;
+    font-weight: 700;
+    max-width: 60vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .admin-menu-toggle svg {
+    width: 20px;
+    flex: 0 0 auto;
+  }
+  .admin-side nav {
+    display: none;
+  }
+  .admin-side.menu-open nav {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    position: fixed;
+    top: 64px;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    margin: 0;
+    padding: 14px;
+    background: var(--ink);
+    overflow-y: auto;
+    z-index: 31;
+    box-shadow: 12px 0 30px #0005;
+  }
+  .admin-side.menu-open nav button,
+  .admin-side.menu-open nav .admin-logout {
+    display: flex;
+    font-size: 15px;
+    min-height: 48px;
+    width: 100%;
+  }
+  .admin-menu-backdrop {
+    display: block;
+    position: fixed;
+    inset: 64px 0 0 0;
+    background: #15231d66;
+    z-index: 29;
+  }
+  .admin-main {
+    padding: 22px 16px 40px;
+    overflow: visible;
+  }
+}
+
+/* Cashier on phones and small tablets: tabs move to a bottom bar. */
+@media (max-width: 850px) {
+  .ops-shell .ops-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    height: 60px;
+    gap: 12px;
+  }
+  .ops-shell .ops-header .shift-live {
+    display: block;
+    margin-left: auto;
+    max-width: 48vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  .ops-shell .ops-header nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    margin: 0;
+    height: calc(64px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    background: #fff;
+    border-top: 1px solid var(--line);
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    z-index: 25;
+  }
+  .ops-shell .ops-header nav button {
+    position: relative;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 2px;
+    min-width: 0;
+    font-size: 10px;
+    line-height: 1.1;
+    text-align: center;
+  }
+  .ops-shell .ops-header nav button svg {
+    width: 20px;
+    height: 20px;
+  }
+  .ops-shell .ops-header nav button.active {
+    box-shadow: inset 0 3px var(--lime);
+  }
+  .ops-shell .ops-header nav button b {
+    position: absolute;
+    top: 5px;
+    left: calc(50% + 6px);
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    font-size: 10px;
+    line-height: 18px;
+  }
+  .ops-content {
+    padding: 24px 16px calc(96px + env(safe-area-inset-bottom));
+  }
+  .ops-title {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
+
+/* Admin tables on phones: each row becomes a small card. */
+@media (max-width: 599px) {
+  .table-row,
+  .admin-table-scroll .table-row {
+    min-width: 0;
+  }
+  .table-row:not(.table-heading) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+    padding: 12px 4px;
+  }
+  .table-row:not(.table-heading) > :first-child {
+    font-weight: 700;
+  }
+  .table-row:not(.table-heading) > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .table-heading {
+    display: none;
+  }
+  .admin-main > header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .admin-main h1 {
+    font-size: 30px;
+  }
+  .setup-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .setup-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+}
+
+/* Large monitors: use the extra room. */
+@media (min-width: 1600px) {
+  .ops-content {
+    max-width: 1680px;
+  }
+  .admin-shell {
+    grid-template-columns: 270px 1fr;
+  }
+  .admin-main {
+    padding: 44px 5vw;
+  }
+  .customer-grid,
+  .menu-section {
+    max-width: 1320px;
+  }
+  .menu-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .order-head {
+    max-width: 1320px;
+  }
+}
