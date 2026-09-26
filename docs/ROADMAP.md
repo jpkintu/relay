@@ -302,17 +302,17 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | Handover                        | 🟡    | Inline on the cash screen. No PIN, no "waiting for cashier" state list                                                                                                         |
 | Earnings                        | ✅    | Weekly / Monthly report with date presets or custom dates, change vs previous period, earnings chart (Plotly), per-period table and deliveries list. No payout request yet     |
 | Profile                         | 🟡    | Name, code, username, phone, commission rule, logout. No change PIN yet                                                                                                        |
-| Shift start/end                 | ✅    | End with cash does **not** create the pending handover the brief asks for                                                                                                      |
+| Shift start/end                 | ✅    | Ending is blocked while orders are open, cash is held or a handover is unconfirmed (checklist on the shift card)                                                               |
 
 **Cashier**
 
-| Brief screen | State | Notes                                                                                                                                 |
-| ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Live board   | ✅    | Accompaniments/notes per line, wait time, channel, payment, problems; reject/cancel with reason; one-tap Mark ready. Polls every 10 s |
-| Stock        | ✅    | Sold out / back in stock for dishes and accompaniments                                                                                |
-| Handovers    | ✅    | No search by rider or handover code. No partial acceptance                                                                            |
-| Shift / till | 🟡    | Expected till ignores cash paid out (no payouts model)                                                                                |
-| Profile      | ❌    |                                                                                                                                       |
+| Brief screen | State | Notes                                                                                                                                  |
+| ------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Live board   | ✅    | Accompaniments/notes per line, wait time, channel, payment, problems; reject/cancel with reason; one-tap Mark ready. Polls every 10 s  |
+| Stock        | ✅    | Sold out / back in stock for dishes and accompaniments                                                                                 |
+| Handovers    | ✅    | No search by rider or handover code. No partial acceptance                                                                             |
+| Shift / till | 🟡    | Board locked until a shift starts with a counted till; differences must be explained. Expected till ignores cash paid out (no payouts) |
+| Profile      | ❌    |                                                                                                                                        |
 
 **Admin**
 
@@ -625,7 +625,7 @@ starts.
 - [ ] Partial confirmation: the cashier ticks the orders that are physically covered; the rest go back to `WITH_RIDER` or become `DISPUTED`
 - [ ] Admin dispute resolution: (a) reopen for recount (exists), (b) edit amount + confirm, (c) mark specific orders `DISPUTED`, (d) write off an amount (`WRITTEN_OFF`, audit, variance report). Every path writes to `AuditLog`
 - [ ] Admin "Force handover": creates a pending handover for all of a rider's WITH_RIDER orders (for a rider who is offline)
-- [ ] Rider end-shift with cash auto-creates a pending handover (brief §7)
+- [x] ~~Rider end-shift with cash auto-creates a pending handover (brief §7)~~ _Superseded (owner's decision 2026-09-26): a rider cannot end a shift with open orders, cash in hand or an unconfirmed handover._
 - [ ] Handovers covering orders from previous days, grouped by date on the rider cash screen
 - [ ] Rider cash screen: over-limit red state, limit bar from config/override, list of pending handovers with status
 - [ ] Cashier handover search by rider code / handover code
@@ -683,6 +683,36 @@ starts.
 
 ---
 
+### Next up (reviewed 2026-09-26)
+
+Open items above, grouped into release-sized batches in recommended order.
+
+1. **Cash integrity & security (before selling to more restaurants).**
+   S5 account lockout + S7 session length (Back4App server settings, owner action);
+   S6 PIN re-entry for handover, shift end and PIN change; B4/B5 atomic, idempotent
+   handovers; partial handover acceptance; admin dispute paths (edit amount, write-off,
+   force handover); pending handovers on the rider cash screen (B8); stale-handover
+   (> 4 h) highlight + admin alert; till payouts so expected till is right; nightly
+   invariant check.
+2. **People.** Change PIN (rider/cashier), cashier profile, admin rider detail (float,
+   lifetime stats, per-rider cash limit override, open orders, cash and commission
+   history, deactivate, reset PIN), rider availability toggle.
+3. **Owner reporting & control.** Server `getDashboard` (fixes B7), audit viewer,
+   commission payouts (paid/owed, rider payout request), daily Z-report + emailed job,
+   order detail with audited admin override, complete Settings form, menu
+   description/image/sort/archive.
+4. **Real-time & app feel.** LiveQuery instead of 10 s polling (instant badges),
+   PWA install prompt + offline shell, map pin (needs a Maps/Leaflet decision).
+5. **Release readiness.** Error reporting, backups + staging app, onboarding wizard
+   with menu CSV import, privacy notice / terms, white-label (name, logo, colours from
+   Configuration), admin code-splitting, low-end Android pass, full role/permission
+   e2e matrix.
+6. **Phase 2.** MTN MoMo / Airtel API auto-confirmation, customer QR menu, rider GPS,
+   priced add-ons, native wrapper.
+
+Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions are paid
+(from the till or separately); which Back4App plan limits apply (LiveQuery, email).
+
 ## 8. Non-functional requirements (checklist for every change)
 
 - Mobile-first for riders (phone) and cashiers (tablet/phone); admin is desktop
@@ -699,11 +729,11 @@ starts.
 
 1. Is an address required for walk-in orders collected at the counter, or are they always delivered?
 2. Is commission on subtotal only (current) or subtotal + delivery fee? Does the rider keep the delivery fee?
-3. Should shortfalls (collected < total) be allowed with a note, or blocked (current behaviour)?
+3. Shortfalls (collected < total) are currently **allowed with a note**. Keep, or block?
 4. Are commissions paid out of the till (affects expected till) or separately?
 5. Does Google sign-in stay (owner only), or go?
 6. Is there one cashier device or several at the same time (affects concurrency and shift model)?
-7. Which notification channel is acceptable: web push (needs HTTPS + install), SMS, or WhatsApp?
+7. ~~Which notification channel is acceptable?~~ Answered: in-app + Web Push (built 2026-09-26). SMS/WhatsApp not planned.
 
 ---
 
@@ -731,3 +761,5 @@ starts.
 | 2026-09-26 | Cashier shifts: cashiers must start a shift with a counted till before any board action (accept/ready/pickup/cancel, payment checks, handover confirm/dispute, stock) — enforced in Cloud Code, admins exempt; the cashier workspace shows only the start-shift step until then. A till difference at shift end needs a written explanation; admins are notified; Payments ledger lists cashier shifts (opening, expected, counted, difference, explanation) (`getShiftReport`). e2e 68. |
 | 2026-09-26 | New Relay mark (rider with a food backpack with cutlery, same orange/light colours) as an SVG component (`RelayMark`) and regenerated PWA icons, favicon and notification badge; brand layout: mark + "Relay" on one line, "Powered by Embiro" under both from the mark's left edge; centered, larger loading screen; the Embiro logo is embedded in the bundle so it shows on the first screen.                                                                                         |
 | 2026-09-26 | The notifications panel lists unread notifications only (server and app); opening one or "Mark all read" clears it; empty state "You're all caught up".                                                                                                                                                                                                                                                                                                                                  |
+| 2026-09-26 | Notifications prompt says "this device" instead of "phone". Roadmap reviewed: outdated items closed or marked superseded, "Next up" batches added.                                                                                                                                                                                                                                                                                                                                       |
+| 2026-09-26 | Rider phone layout: the "Pick up" / "Deliver" button on Active orders no longer squashes into the first column, and the order screen header keeps the order code on one line next to its status.                                                                                                                                                                                                                                                                                         |

@@ -4,7 +4,7 @@ import { useNotifications } from '../lib/notifications';
 
 const DISMISS_KEY = 'relay:push-prompt-dismissed';
 
-// Asks to turn on lock-screen notifications for this phone. `card` is the
+// Asks to turn on notifications for this device (phone, tablet or computer). `card` is the
 // prominent version for the rider home and kitchen board; the compact one
 // sits in the notifications panel.
 export function PushPrompt({ card = false }: { card?: boolean }) {
@@ -26,7 +26,7 @@ export function PushPrompt({ card = false }: { card?: boolean }) {
   if (push === 'on')
     return (
       <p className="push-state on">
-        <BellRing aria-hidden /> Notifications on for this phone
+        <BellRing aria-hidden /> Notifications are on for this device
       </p>
     );
   if (push === 'blocked')
@@ -43,14 +43,17 @@ export function PushPrompt({ card = false }: { card?: boolean }) {
         <b>Add to Home Screen</b>, then open Relay from the new icon and turn notifications on.
       </span>
     ) : (
-      <span>Get new orders and updates on your lock screen, even when Relay is closed.</span>
+      <span>
+        Get new orders and updates as they happen, even when Relay is closed or the screen is
+        locked.
+      </span>
     );
 
   return (
     <div className={card ? 'push-prompt card' : 'push-prompt'}>
       {card && <BellRing aria-hidden className="push-prompt-icon" />}
       <div>
-        {card && <strong>Turn on phone notifications</strong>}
+        {card && <strong>Turn on notifications on this device</strong>}
         {body}
       </div>
       {push === 'off' && (
@@ -62,7 +65,7 @@ export function PushPrompt({ card = false }: { card?: boolean }) {
             setBusy(false);
           }}
         >
-          {busy ? 'Turning on…' : card ? 'Turn on' : 'Turn on phone notifications'}
+          {busy ? 'Turning on…' : card ? 'Turn on' : 'Turn on notifications on this device'}
         </button>
       )}
       {card && (

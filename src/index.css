@@ -1675,7 +1675,27 @@ button {
     padding-top: 58px;
   }
   .order-row.actionable {
-    grid-template-columns: 10px 1fr auto;
+    grid-template-columns: 10px minmax(0, 1fr) auto auto;
+    gap: 10px;
+  }
+  .order-row.actionable button {
+    white-space: nowrap;
+  }
+  .order-head:has(> .status-pill) {
+    gap: 10px;
+    padding-inline: 16px;
+  }
+  .order-head:has(> .status-pill) > div {
+    flex: 1;
+    min-width: 0;
+  }
+  .order-head:has(> .status-pill) h2 {
+    font-size: 16px;
+    white-space: nowrap;
+  }
+  .order-head > .status-pill {
+    padding: 6px 10px;
+    font-size: 12px;
   }
   .order-row.actionable > strong {
     display: none;

@@ -71,7 +71,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       if (!fresh.length) return;
       const tone = strongestTone(fresh.map((n) => n.tone));
       if (tone && soundRef.current) playTone(tone);
-      // Without phone notifications, still show a system banner while the
+      // Without device notifications, still show a system banner while the
       // app is open in another tab or behind another app.
       if (
         document.hidden &&
