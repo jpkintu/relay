@@ -80,6 +80,12 @@ export default defineConfig({
       '@radix-ui/react-tooltip',
     ],
   },
+  // Credit comment kept at the top of every built JavaScript file.
+  build: {
+    rollupOptions: {
+      output: { banner: '/*! Relay, designed and developed by Embiro Concepts. See NOTICE. */' },
+    },
+  },
   // `npm run preview` is how Back4App Containers serves the built site. Accept
   // any host name (the b4a.run URL, custom domains); it only serves static files.
   preview: {

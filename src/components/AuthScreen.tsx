@@ -3,6 +3,7 @@ import { ArrowRight, Bike, Eye, LockKeyhole } from 'lucide-react';
 import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
 import { useSession } from '../lib/session';
+import { PoweredBy } from './PoweredBy';
 
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
@@ -171,6 +172,7 @@ export function AuthScreen() {
             </button>
           )}
           <p className="support-copy">Need access? Ask your restaurant administrator.</p>
+          <PoweredBy />
         </div>
       </section>
     </main>

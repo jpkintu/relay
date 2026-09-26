@@ -3,12 +3,12 @@
 @tailwind components;
 @tailwind utilities;
 :root {
-  --ink: #15231d;
-  --cream: #f5f2e9;
-  --lime: #c8f25a;
-  --orange: #ff6b35;
-  --line: #d9d7ce;
-  --muted: #707971;
+  --ink: #0b1633;
+  --cream: #f4f6fb;
+  --accent: #f14c1d;
+  --blue: #0751f0;
+  --line: #ced1d9;
+  --muted: #676f82;
 }
 * {
   box-sizing: border-box;
@@ -31,7 +31,7 @@ button {
   letter-spacing: 0.14em;
   font-size: 11px;
   font-weight: 700;
-  color: #758077;
+  color: #6c7589;
 }
 .brand-mark {
   display: flex;
@@ -41,7 +41,7 @@ button {
   color: white;
 }
 .brand-mark svg {
-  background: var(--lime);
+  background: var(--accent);
   color: var(--ink);
   padding: 7px;
   width: 40px;
@@ -83,7 +83,7 @@ button {
   z-index: 1;
 }
 .story-copy .eyebrow {
-  color: var(--lime);
+  color: var(--accent);
 }
 .story-copy h1 {
   font: 600 clamp(50px, 6vw, 92px)/0.94 'Fraunces';
@@ -93,12 +93,12 @@ button {
 .story-copy h1 em,
 .welcome h1 em {
   font-style: italic;
-  color: var(--lime);
+  color: var(--accent);
 }
 .story-copy > p:last-child {
   font-size: 18px;
   line-height: 1.6;
-  color: #c7d0ca;
+  color: #c5c9d2;
   max-width: 480px;
 }
 .story-metric {
@@ -109,12 +109,12 @@ button {
 }
 .story-metric strong {
   font: 600 42px 'Fraunces';
-  color: var(--lime);
+  color: var(--accent);
 }
 .story-metric span {
   border-left: 1px solid #ffffff50;
   padding-left: 20px;
-  color: #b9c2bd;
+  color: #b6bac5;
 }
 .auth-panel {
   display: grid;
@@ -157,7 +157,7 @@ button {
 .login-card input:focus,
 .customer-grid input:focus {
   border-color: var(--ink);
-  box-shadow: 0 0 0 3px #c8f25a66;
+  box-shadow: 0 0 0 3px #0751f055;
 }
 .input-icon {
   position: relative;
@@ -166,7 +166,7 @@ button {
   position: absolute;
   left: 14px;
   top: 16px;
-  color: #7a827c;
+  color: #6f788d;
 }
 .input-icon input {
   padding-left: 43px;
@@ -175,7 +175,7 @@ button {
   min-height: 54px;
   border: 0;
   border-radius: 12px;
-  background: var(--ink);
+  background: var(--blue);
   color: white;
   font-weight: 700;
   padding: 0 20px;
@@ -200,7 +200,7 @@ button {
   gap: 8px;
   background: transparent;
   border: 0;
-  color: #5c665f;
+  color: #555c6d;
 }
 .support-copy {
   text-align: center;
@@ -218,14 +218,14 @@ button {
 .rider-shell {
   min-height: 100vh;
   padding-bottom: 90px;
-  background: linear-gradient(180deg, #eef1e8, #f7f5ef 45%);
+  background: linear-gradient(180deg, #e8ebf1, #eff1f7 45%);
 }
 .rider-header {
   height: 76px;
   padding: 0 clamp(20px, 5vw, 72px);
   display: flex;
   align-items: center;
-  border-bottom: 1px solid #d6dbd0;
+  border-bottom: 1px solid #d0d3db;
 }
 .rider-header .brand-mark {
   margin-right: auto;
@@ -252,7 +252,7 @@ button {
   height: 40px;
   border: 0;
   border-radius: 50%;
-  background: var(--orange);
+  background: var(--accent);
   color: white;
   font-weight: 800;
 }
@@ -273,11 +273,11 @@ button {
   margin: 12px 0;
 }
 .welcome h1 em {
-  color: #456442;
+  color: #0751f0;
 }
 .new-order-hero {
   border: 0;
-  background: var(--lime);
+  background: var(--accent);
   min-height: 112px;
   padding: 22px;
   border-radius: 18px;
@@ -306,7 +306,7 @@ button {
   font-size: 20px;
 }
 .new-order-hero small {
-  color: #495442;
+  color: #424754;
 }
 .new-order-hero > svg {
   grid-row: 1/3;
@@ -320,7 +320,7 @@ button {
 }
 .metric-card {
   background: white;
-  border: 1px solid #dedfd9;
+  border: 1px solid #d8dae0;
   border-radius: 18px;
   padding: 23px;
   min-height: 220px;
@@ -335,12 +335,12 @@ button {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: #31453b;
+  background: #1d2c55;
   display: grid;
   place-items: center;
 }
 .metric-icon.lime {
-  background: #dff5a9;
+  background: #dbe6fd;
 }
 .metric-icon.yellow {
   background: #f7ddb2;
@@ -348,20 +348,20 @@ button {
 .metric-card p {
   margin: 22px 0 5px;
   font-size: 13px;
-  color: #758078;
+  color: #6c7589;
 }
 .metric-card strong {
   font: 600 30px 'Fraunces';
 }
 .metric-card > span {
   font-size: 12px;
-  color: #78827b;
+  color: #6e778c;
   margin-top: 8px;
 }
 .metric-card button {
   margin-top: auto;
   border: 0;
-  border-top: 1px solid #e5e5df;
+  border-top: 1px solid #dfe1e5;
   background: none;
   padding: 15px 0 0;
   text-align: left;
@@ -389,7 +389,7 @@ button {
   background: #ffffff20;
 }
 .limit i {
-  background: var(--lime);
+  background: var(--accent);
 }
 .activity {
   margin-top: 46px;
@@ -415,7 +415,7 @@ button {
   align-items: center;
   gap: 16px;
   padding: 18px 12px;
-  border-top: 1px solid #d9dcd5;
+  border-top: 1px solid #d4d7dd;
 }
 .order-row > div:nth-child(2) {
   display: grid;
@@ -460,7 +460,7 @@ button {
 }
 .order-page {
   min-height: 100vh;
-  background: #faf9f5;
+  background: #f5f6fa;
   padding-bottom: 130px;
 }
 .order-head {
@@ -504,7 +504,7 @@ button {
   display: grid;
   grid-template-columns: 1fr 1.3fr;
   gap: 16px;
-  background: #f1efe6;
+  background: #e6e9f1;
   border-radius: 18px;
   padding: 20px 24px;
 }
@@ -566,7 +566,7 @@ button {
 }
 .food-card {
   background: white;
-  border: 1px solid #deddd7;
+  border: 1px solid #d6d9df;
   border-radius: 15px;
   padding: 10px;
   display: grid;
@@ -595,7 +595,7 @@ button {
 .add-button,
 .qty button {
   border: 0;
-  background: var(--lime);
+  background: var(--accent);
   border-radius: 50%;
   width: 34px;
   height: 34px;
@@ -641,16 +641,16 @@ button {
 }
 .commission {
   font-size: 12px;
-  color: #aeb9b2;
+  color: #aab0bd;
 }
 .commission b {
-  color: var(--lime);
+  color: var(--accent);
 }
 .cart-dock > button {
   margin-left: auto;
   border: 0;
   border-radius: 12px;
-  background: var(--lime);
+  background: var(--accent);
   color: var(--ink);
   font-weight: 800;
   padding: 16px 24px;
@@ -678,10 +678,10 @@ button {
 }
 .success-state > p {
   max-width: 480px;
-  color: #bdc6c0;
+  color: #babfc9;
 }
 .success-state .primary-button {
-  background: var(--lime);
+  background: var(--accent);
   color: var(--ink);
   margin-top: 25px;
 }
@@ -690,7 +690,7 @@ button {
   width: 70px;
   height: 70px;
   border-radius: 50%;
-  background: var(--lime);
+  background: var(--accent);
   color: var(--ink);
   display: grid;
   place-items: center;
@@ -714,7 +714,7 @@ button {
     margin-bottom: 70px;
   }
   .mobile-brand svg {
-    background: var(--lime);
+    background: var(--accent);
     border-radius: 50%;
     padding: 6px;
     width: 36px;
@@ -786,13 +786,13 @@ button {
     justify-content: center;
     gap: 4px;
     font-size: 10px;
-    color: #778078;
+    color: #6d768a;
   }
   .bottom-nav svg {
     width: 20px;
   }
   .bottom-nav .center svg {
-    background: var(--lime);
+    background: var(--accent);
     color: var(--ink);
     padding: 10px;
     width: 48px;
@@ -864,7 +864,7 @@ button {
   border: 1px solid var(--line);
   padding: 6px;
   border-radius: 12px;
-  box-shadow: 0 10px 30px #10201822;
+  box-shadow: 0 10px 30px #0b163322;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -890,7 +890,7 @@ button {
 }
 .ops-shell {
   min-height: 100vh;
-  background: #f3f1e9;
+  background: #e9ecf3;
 }
 .ops-header {
   height: 76px;
@@ -917,10 +917,10 @@ button {
 }
 .ops-header nav button.active {
   color: var(--ink);
-  box-shadow: inset 0 -3px var(--lime);
+  box-shadow: inset 0 -3px var(--accent);
 }
 .ops-header nav b {
-  background: var(--orange);
+  background: var(--accent);
   color: white;
   border-radius: 20px;
   padding: 2px 7px;
@@ -960,7 +960,7 @@ button {
   align-items: start;
 }
 .board-column {
-  background: #eae8df;
+  background: #dfe2ea;
   border-radius: 18px;
   padding: 13px;
 }
@@ -985,7 +985,7 @@ button {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--orange);
+  background: var(--accent);
 }
 .board-dot.preparing {
   background: #e6b62f;
@@ -995,11 +995,11 @@ button {
 }
 .ticket {
   background: #fff;
-  border: 1px solid #dfddd4;
+  border: 1px solid #d4d7df;
   border-radius: 14px;
   padding: 18px;
   margin-bottom: 10px;
-  box-shadow: 0 3px 10px #1a2a2110;
+  box-shadow: 0 3px 10px #0b163310;
 }
 .ticket-top {
   display: flex;
@@ -1007,7 +1007,7 @@ button {
   font-size: 12px;
 }
 .ticket-top > b {
-  color: #536056;
+  color: #4f5564;
 }
 .ticket h3 {
   font: 600 23px 'Fraunces';
@@ -1031,7 +1031,7 @@ button {
   min-height: 44px;
   flex: 1;
   border: 0;
-  background: var(--ink);
+  background: var(--blue);
   color: white;
   border-radius: 9px;
   font-weight: 700;
@@ -1092,14 +1092,14 @@ button {
 }
 .handover-code > svg {
   padding: 9px;
-  background: #e7f3c3;
+  background: #e3ecfe;
   width: 42px;
   height: 42px;
   border-radius: 10px;
 }
 .handover button {
   border: 0;
-  background: var(--lime);
+  background: var(--accent);
   padding: 13px 16px;
   border-radius: 9px;
   font-weight: 700;
@@ -1118,7 +1118,7 @@ button {
 }
 .admin-shell {
   min-height: 100vh;
-  background: #f4f2ea;
+  background: #eaedf4;
   display: grid;
   grid-template-columns: 240px 1fr;
 }
@@ -1130,7 +1130,7 @@ button {
   flex-direction: column;
 }
 .admin-side > p {
-  color: #8fa097;
+  color: #8b93a4;
   font-size: 11px;
   margin: 8px 10px 35px;
 }
@@ -1142,7 +1142,7 @@ button {
 .admin-logout {
   border: 0;
   background: transparent;
-  color: #aeb9b3;
+  color: #aab0bd;
   padding: 12px;
   border-radius: 9px;
   display: flex;
@@ -1155,7 +1155,7 @@ button {
   width: 19px;
 }
 .admin-side nav button.active {
-  background: #2b4035;
+  background: #1a3a8f;
   color: white;
 }
 .admin-logout {
@@ -1244,7 +1244,7 @@ button {
 .bar-chart i {
   width: 100%;
   max-width: 24px;
-  background: var(--lime);
+  background: var(--accent);
   border-radius: 5px 5px 0 0;
 }
 .bar-chart span {
@@ -1260,7 +1260,7 @@ button {
   border-top: 1px solid #eee;
 }
 .rider-rank > span {
-  background: #e4e9de;
+  background: #dee1e9;
   border-radius: 50%;
   width: 36px;
   height: 36px;
@@ -1407,7 +1407,7 @@ button {
   padding: 13px;
   border-radius: 14px;
   background: #ffffff18;
-  color: var(--lime);
+  color: var(--accent);
 }
 .subpage-hero > div {
   display: flex;
@@ -1425,21 +1425,21 @@ button {
 }
 .cash-balance p {
   margin: 0;
-  color: #b7c1bb;
+  color: #b4b9c4;
 }
 .cash-balance span {
-  color: #a6b2aa;
+  color: #a2a8b6;
   font-size: 13px;
 }
 .cash-balance.earnings {
-  background: #40583e;
+  background: #0751f0;
 }
 .handover-cta {
   width: 100%;
   margin: 16px 0;
   border: 0;
   border-radius: 13px;
-  background: var(--lime);
+  background: var(--accent);
   padding: 18px 20px;
   font-weight: 800;
   display: flex;
@@ -1482,7 +1482,7 @@ button {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: var(--orange);
+  background: var(--accent);
   color: white;
   font: 600 25px 'Fraunces';
 }
@@ -1531,7 +1531,7 @@ button {
 .admin-empty-live {
   margin-top: 28px;
   min-height: 360px;
-  border: 1px dashed #c9ccc3;
+  border: 1px dashed #c1c5ce;
   border-radius: 18px;
   background: #ffffff88;
   display: grid;
@@ -1544,7 +1544,7 @@ button {
   width: 58px;
   height: 58px;
   border-radius: 15px;
-  background: #e6f3bd;
+  background: #e3ecfe;
   display: grid;
   place-items: center;
 }
@@ -1560,7 +1560,7 @@ button {
   margin: auto;
   border: 0;
   border-radius: 9px;
-  background: var(--ink);
+  background: var(--blue);
   color: white;
   padding: 12px 18px;
   font-weight: 700;
@@ -1577,7 +1577,7 @@ button {
   width: 100%;
   height: 60px;
   z-index: 99999 !important;
-  background: #15231d !important;
+  background: #0b1633 !important;
   color: #fff !important;
   border: 0 !important;
   border-radius: 0 !important;
@@ -1589,7 +1589,7 @@ button {
   box-shadow: 0 5px 20px #0003;
 }
 .role-switch strong {
-  color: #c8f25a;
+  color: #f14c1d;
   font-size: 11px;
   letter-spacing: 0.12em;
   margin-right: 14px;
@@ -1601,14 +1601,14 @@ button {
   padding: 8px 14px !important;
 }
 .role-switch button.active {
-  background: #c8f25a !important;
-  color: #15231d !important;
-  border-color: #c8f25a !important;
+  background: #f14c1d !important;
+  color: #0b1633 !important;
+  border-color: #f14c1d !important;
 }
 .role-switch .preview-login {
   margin-left: 14px;
   background: #fff !important;
-  color: #15231d !important;
+  color: #0b1633 !important;
 }
 .cash-order {
   display: flex;
@@ -1621,7 +1621,7 @@ button {
 .cash-order input {
   width: 20px;
   height: 20px;
-  accent-color: #15231d;
+  accent-color: #0b1633;
 }
 .cash-order b {
   margin-left: auto;
@@ -1635,7 +1635,7 @@ button {
 }
 .order-row.actionable button {
   border: 0;
-  background: #c8f25a;
+  background: #f14c1d;
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 12px;
@@ -1704,7 +1704,7 @@ button {
   letter-spacing: 0.08em;
 }
 .refresh-button {
-  background: var(--ink);
+  background: var(--blue);
   color: white;
   border: 0;
   border-radius: 9px;
@@ -1790,8 +1790,8 @@ button {
   cursor: not-allowed;
 }
 .setup-notice {
-  background: #e7f5cf;
-  color: #315628;
+  background: #e6eefe;
+  color: #0a3aa8;
   border-radius: 10px;
   padding: 12px 15px;
 }
@@ -1839,7 +1839,7 @@ button {
   font-size: 13px;
 }
 .owner-initialize button {
-  background: var(--lime);
+  background: var(--accent);
   border: 0;
   padding: 9px 12px;
   border-radius: 8px;
@@ -1889,7 +1889,7 @@ button {
 .commission-editor button {
   border: 0;
   border-radius: 8px;
-  background: var(--lime);
+  background: var(--accent);
   padding: 10px 12px;
   font-weight: 700;
 }
@@ -1917,13 +1917,13 @@ button {
 .category-create button,
 .setup-secondary {
   border: 0;
-  background: var(--lime);
+  background: var(--accent);
   border-radius: 8px;
   padding: 9px 14px;
   font-weight: 700;
 }
 .setup-secondary {
-  background: #eaece5;
+  background: #e5e7ec;
 }
 .category-create button:disabled {
   opacity: 0.5;
@@ -1935,7 +1935,7 @@ button {
   position: fixed;
   inset: 0;
   z-index: 100000;
-  background: #0c1c15a8;
+  background: #07102aa8;
   display: grid;
   place-items: center;
   padding: 18px;
@@ -1972,7 +1972,7 @@ button {
   border: 0;
   border-radius: 9px;
   padding: 12px 16px;
-  background: var(--lime);
+  background: var(--accent);
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -1990,7 +1990,7 @@ button {
   width: 18px;
 }
 .dispute-panel {
-  border-left: 4px solid #d96b44;
+  border-left: 4px solid #e0461a;
   background: #fff8f3;
   padding: 17px;
   margin: 0 0 14px 8px;
@@ -2016,7 +2016,7 @@ button {
 }
 .dispute-panel button {
   border: 0;
-  background: var(--ink);
+  background: var(--blue);
   color: white;
   border-radius: 8px;
   padding: 11px;
@@ -2050,7 +2050,7 @@ button {
   align-items: center;
 }
 .shift-panel-title > svg {
-  background: #e8f5c5;
+  background: #e3ecfe;
   border-radius: 10px;
   padding: 9px;
   width: 44px;
@@ -2070,7 +2070,7 @@ button {
   max-width: 320px;
 }
 .shift-action {
-  background: var(--ink);
+  background: var(--blue);
   color: white;
   border: 0;
   border-radius: 9px;
@@ -2143,7 +2143,7 @@ button {
 }
 .order-error .link-button {
   margin-left: 8px;
-  color: var(--lime);
+  color: var(--accent);
 }
 .food-info {
   border: 0;
@@ -2171,13 +2171,13 @@ button {
   background: white;
   border: 1px solid var(--line);
   border-radius: 14px;
-  box-shadow: 0 14px 30px #15231d22;
+  box-shadow: 0 14px 30px #0b163322;
   overflow: hidden;
 }
 .suggestion {
   display: flex;
   align-items: stretch;
-  border-top: 1px solid #eeede7;
+  border-top: 1px solid #e7e9ee;
 }
 .suggestion:first-child {
   border-top: 0;
@@ -2198,8 +2198,8 @@ button {
 }
 .repeat-button {
   border: 0;
-  border-left: 1px solid #eeede7;
-  background: #f4fbe3;
+  border-left: 1px solid #e7e9ee;
+  background: #eef3fe;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2221,7 +2221,7 @@ button {
   align-items: center;
   gap: 14px;
   padding: 12px 0;
-  border-top: 1px solid #eeede7;
+  border-top: 1px solid #e7e9ee;
 }
 .cart-line > div:first-child {
   display: grid;
@@ -2277,14 +2277,14 @@ button {
 .sheet-backdrop {
   position: fixed;
   inset: 0;
-  background: #15231d88;
+  background: #0b163388;
   z-index: 40;
   display: flex;
   align-items: flex-end;
   justify-content: center;
 }
 .sheet {
-  background: #faf9f5;
+  background: #f5f6fa;
   width: min(640px, 100%);
   max-height: 88vh;
   overflow: auto;
@@ -2420,7 +2420,7 @@ button {
   z-index: 14;
 }
 .collect-bar b {
-  color: var(--lime);
+  color: var(--accent);
 }
 
 /* Kitchen tickets */
@@ -2431,7 +2431,7 @@ button {
   margin: 8px 0 2px;
 }
 .ticket-meta span {
-  background: #f1efe6;
+  background: #e6e9f1;
   border-radius: 20px;
   padding: 3px 9px;
   font-size: 11px;
@@ -2514,10 +2514,10 @@ button {
   border-radius: 10px;
   padding: 0 14px;
   font-weight: 700;
-  background: #eaece5;
+  background: #e5e7ec;
 }
 .stock-row.sold-out button {
-  background: var(--lime);
+  background: var(--accent);
 }
 
 /* Admin: accompaniment groups on a dish */
@@ -2735,7 +2735,7 @@ button {
   border-radius: 10px;
   padding: 0 14px;
   font-weight: 700;
-  background: var(--lime);
+  background: var(--accent);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2960,7 +2960,7 @@ button {
 }
 .report-hero > div > span,
 .report-hero small {
-  color: #b7c1bb;
+  color: #b4b9c4;
   font-size: 13px;
 }
 .report-hero > div > strong {
@@ -2979,7 +2979,7 @@ button {
 }
 .report-hero dt {
   font-size: 12px;
-  color: #b7c1bb;
+  color: #b4b9c4;
 }
 .report-hero dd {
   margin: 2px 0 0;
@@ -3176,6 +3176,38 @@ button {
   }
 }
 
+/* ---------- Powered by Embiro ---------- */
+.powered-by {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  margin: 28px auto 0;
+  padding: 10px 16px 8px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+.powered-by span {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.powered-by img {
+  display: block;
+  width: 112px;
+  height: auto;
+}
+.powered-by.in-panel {
+  margin-top: 20px;
+}
+.app-credit {
+  padding: 32px 0 8px;
+}
+
 /* ================= Device breakpoints =================
    phone < 600 · tablet 600–1023 · laptop 1024–1599 · monitor ≥ 1600
    (same as src/lib/device.ts). No element may be wider than the screen:
@@ -3279,7 +3311,7 @@ svg {
     display: block;
     position: fixed;
     inset: 64px 0 0 0;
-    background: #15231d66;
+    background: #0b163366;
     z-index: 29;
   }
   .admin-main {
@@ -3337,7 +3369,7 @@ svg {
     height: 20px;
   }
   .ops-shell .ops-header nav button.active {
-    box-shadow: inset 0 3px var(--lime);
+    box-shadow: inset 0 3px var(--accent);
   }
   .ops-shell .ops-header nav button b {
     position: absolute;
@@ -3417,4 +3449,12 @@ svg {
   .order-head {
     max-width: 1320px;
   }
+}
+
+/* Embiro blue for primary actions: a darker press/hover state. */
+.primary-button:hover:not(:disabled),
+.ticket-actions button:hover:not(:disabled),
+.refresh-button:hover,
+.shift-action:hover:not(:disabled) {
+  background: #0641c0;
 }

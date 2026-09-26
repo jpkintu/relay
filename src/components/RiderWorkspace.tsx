@@ -15,6 +15,7 @@ import { NewOrder } from './NewOrder';
 import { RiderEarnings } from './reports/RiderEarnings';
 import { OrderDetail } from './OrderDetail';
 import { ShiftPanel } from './ShiftPanel';
+import { PoweredBy } from './PoweredBy';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
 
@@ -517,6 +518,7 @@ function RiderSubPage({
             <button onClick={() => void logout()}>
               <LogOut /> {preview ? 'Leave preview' : 'Log out'}
             </button>
+            <PoweredBy />
           </div>
         )}
       </div>

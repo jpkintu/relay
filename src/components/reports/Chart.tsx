@@ -9,14 +9,15 @@ const loadPlotly = () =>
     (m) => ((m as { default?: PlotlyModule }).default ?? m) as PlotlyModule,
   ));
 
-// Chart colors: the validated reference categorical palette (light surface).
+// Chart colors: Embiro blue and orange first, then the reference palette
+// (validated for colour blindness on the light surface).
 // Slots are assigned in this order and follow the entity, never its rank.
-export const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
+export const SERIES = ['#0751f0', '#f14c1d', '#1baf7a', '#eda100', '#e87ba4'];
 // Diverging pair for growth: up is blue, down is red.
-export const UP = '#2a78d6';
+export const UP = '#0751f0';
 export const DOWN = '#e34948';
-const INK = '#52514e';
-const GRID = '#ecebe6';
+const INK = '#4f5870';
+const GRID = '#e8ecf3';
 const FONT = "'DM Sans', system-ui, sans-serif";
 
 const BASE_LAYOUT: Partial<Layout> = {
@@ -28,15 +29,15 @@ const BASE_LAYOUT: Partial<Layout> = {
   dragmode: false,
   hovermode: 'closest',
   hoverlabel: {
-    bgcolor: '#15231d',
-    bordercolor: '#15231d',
+    bgcolor: '#0b1633',
+    bordercolor: '#0b1633',
     font: { family: FONT, color: '#ffffff', size: 13 },
   },
   xaxis: {
     automargin: true,
     fixedrange: true,
     gridcolor: GRID,
-    linecolor: '#d9d7ce',
+    linecolor: '#d8deea',
     zeroline: false,
     tickfont: { color: INK },
   },
