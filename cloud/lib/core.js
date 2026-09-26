@@ -138,6 +138,19 @@ async function riderFloat(rider) {
   return orders.reduce((sum, order) => sum + (Number(order.get('amountCollected')) || 0), 0);
 }
 
+// Cashiers work the board only during a shift that started with a counted
+// till, so every action falls inside a shift that is reconciled at the end.
+// Admins (the owner) are not till operators and are not held to this.
+async function requireCashierShift(user, role) {
+  if (role !== 'cashier') return;
+  const query = new Parse.Query('Shift');
+  query.equalTo('operator', user);
+  query.equalTo('kind', 'cashier');
+  query.equalTo('status', 'open');
+  if (!(await query.first(MASTER)))
+    throw invalid('Start your shift and count the cash in the till first');
+}
+
 // "R-001 · Rita" style label for notifications and ledgers.
 const personName = (user) =>
   user
@@ -248,6 +261,7 @@ module.exports = {
   nextDailyCode,
   riderFloat,
   personName,
+  requireCashierShift,
   isBrokenCode,
   nextStaffCode,
 };

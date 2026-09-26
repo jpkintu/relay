@@ -1,6 +1,13 @@
 // Menu for order entry, and day-to-day availability ("86ing") for staff.
 
-const { MASTER, invalid, requireRole, audit, loadConfig } = require('./lib/core');
+const {
+  MASTER,
+  invalid,
+  requireRole,
+  audit,
+  loadConfig,
+  requireCashierShift,
+} = require('./lib/core');
 const { availableGroups } = require('./lib/accompaniments');
 const { servableAccompaniments } = require('./orders');
 
@@ -65,7 +72,8 @@ Parse.Cloud.define('getStock', async (request) => {
 
 // Mark a dish or an accompaniment as sold out / available again.
 Parse.Cloud.define('setAvailability', async (request) => {
-  const { user: actor } = await requireRole(request, ['cashier', 'admin']);
+  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(actor, role);
   const { type, id } = request.params;
   const available = request.params.available === true;
   const className = { menuItem: 'MenuItem', accompaniment: 'Accompaniment' }[type];

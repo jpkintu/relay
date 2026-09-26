@@ -7,7 +7,12 @@ const {
   readAcl,
   audit,
   riderFloat,
+  adminOnly,
+  loadConfig,
+  personName,
 } = require('./lib/core');
+const { money, notifyAdmins } = require('./notifications');
+const { resolveRange } = require('./lib/dates');
 const { sumBy } = require('./lib/money');
 
 // Opening float plus every handover this cashier confirmed since the shift began.
@@ -89,7 +94,11 @@ Parse.Cloud.define('startShift', async (request) => {
     (kind === 'cashier' && ['cashier', 'admin'].includes(role));
   if (!allowed) throw forbidden('Not allowed to start this shift');
   if (await openShiftQuery(user).first(MASTER)) throw invalid('Close the current shift first');
-  const opening = Number(request.params.openingFloat || 0);
+  // Cashiers count the till before starting: the count is required, even if 0.
+  const raw = request.params.openingFloat;
+  if (kind === 'cashier' && (raw === undefined || raw === null || raw === ''))
+    throw invalid('Count the cash in the till and enter it to start your shift');
+  const opening = Number(raw || 0);
   if (!Number.isFinite(opening) || opening < 0) throw invalid('Invalid opening cash');
   const row = new Parse.Object('Shift');
   row.set({
@@ -121,10 +130,18 @@ Parse.Cloud.define('endShift', async (request) => {
   let variance = null;
   if (isCashier) {
     expected = await expectedTill(user, row);
-    counted = Number(request.params.physicalCount);
-    if (!Number.isFinite(counted) || counted < 0) throw invalid('Enter physical till count');
+    const rawCount = request.params.physicalCount;
+    counted = Number(rawCount);
+    if (rawCount === undefined || rawCount === '' || !Number.isFinite(counted) || counted < 0)
+      throw invalid('Enter physical till count');
     variance = counted - expected;
   }
+  // A till that does not match must be explained before the shift can close.
+  const varianceNote = String(request.params.varianceNote || '')
+    .trim()
+    .slice(0, 500);
+  if (variance && varianceNote.length < 10)
+    throw invalid('The till is off: explain the difference before ending your shift');
   row.set({
     status: 'closed',
     endedAt: new Date(),
@@ -133,6 +150,7 @@ Parse.Cloud.define('endShift', async (request) => {
     expectedTill: expected,
     physicalCount: counted,
     variance,
+    varianceNote: variance ? varianceNote : '',
   });
   await row.save(null, MASTER);
   await audit(
@@ -140,7 +158,58 @@ Parse.Cloud.define('endShift', async (request) => {
     'shift.closed',
     row,
     { status: 'open' },
-    { balance, expectedTill: expected, physicalCount: counted, variance },
+    { balance, expectedTill: expected, physicalCount: counted, variance, varianceNote },
   );
+  if (variance) {
+    const { values: config } = await loadConfig();
+    await notifyAdmins({
+      kind: 'shift.variance',
+      tone: 'alert',
+      title: `Till ${variance > 0 ? 'over' : 'short'} by ${money(config, Math.abs(variance))}`,
+      body: `${personName(await user.fetch(MASTER))}: counted ${money(config, counted)}, expected ${money(config, expected)}. "${varianceNote}"`,
+      link: '/admin/payments',
+      except: user,
+    });
+  }
   return { balance, expectedTill: expected, variance };
+});
+
+// Owner: cashier shifts in a date range with their till reconciliation.
+Parse.Cloud.define('getShiftReport', async (request) => {
+  await adminOnly(request);
+  const { values: config } = await loadConfig();
+  const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
+  if (range.error) throw invalid(range.error);
+  const query = new Parse.Query('Shift');
+  query.equalTo('kind', 'cashier');
+  query.greaterThanOrEqualTo('startedAt', range.start);
+  query.lessThan('startedAt', range.end);
+  query.include('operator');
+  query.descending('startedAt');
+  query.limit(500);
+  const rows = await query.find(MASTER);
+  const shifts = await Promise.all(
+    rows.map(async (shift) => {
+      const open = shift.get('status') === 'open';
+      return {
+        id: shift.id,
+        cashier: personName(shift.get('operator')),
+        status: shift.get('status'),
+        startedAt: shift.get('startedAt'),
+        endedAt: shift.get('endedAt') || null,
+        openingFloat: Number(shift.get('openingFloat') || 0),
+        expectedTill: open
+          ? await expectedTill(shift.get('operator'), shift)
+          : (shift.get('expectedTill') ?? null),
+        physicalCount: shift.get('physicalCount') ?? null,
+        variance: shift.get('variance') ?? null,
+        varianceNote: shift.get('varianceNote') || '',
+      };
+    }),
+  );
+  return {
+    range: { from: range.from, to: range.to },
+    shifts,
+    totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0),
+  };
 });

@@ -7,6 +7,7 @@ const {
   audit,
   loadConfig,
   nextDailyCode,
+  requireCashierShift,
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
 const { money, notifyUser, notifyStaff, notifyAdmins, personName } = require('./notifications');
@@ -57,7 +58,8 @@ Parse.Cloud.define('createHandover', async (request) => {
 });
 
 Parse.Cloud.define('confirmHandover', async (request) => {
-  const { user: cashier } = await requireRole(request, ['cashier', 'admin']);
+  const { user: cashier, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(cashier, role);
   const row = await new Parse.Query('CashHandover').get(request.params.handoverId, MASTER);
   if (row.get('status') !== 'pending') throw invalid('Already resolved');
   const counted = Number(request.params.countedAmount);
@@ -89,7 +91,8 @@ Parse.Cloud.define('confirmHandover', async (request) => {
 });
 
 Parse.Cloud.define('disputeHandover', async (request) => {
-  const { user: cashier } = await requireRole(request, ['cashier', 'admin']);
+  const { user: cashier, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(cashier, role);
   const row = await new Parse.Query('CashHandover').get(request.params.handoverId, MASTER);
   if (row.get('status') !== 'pending') throw invalid('Only pending handovers can be disputed');
   const reason = String(request.params.reason || '').trim();

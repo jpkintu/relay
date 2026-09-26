@@ -4320,3 +4320,40 @@ table.data.compact-table {
     margin-top: 0;
   }
 }
+
+/* ---------- Cashier shift gate and till difference ---------- */
+.ops-header nav[hidden] {
+  display: none !important;
+}
+.shift-gate {
+  max-width: 640px;
+}
+.shift-gate h1 {
+  margin-bottom: 6px;
+}
+.shift-gate > .muted {
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+.till-difference {
+  margin: 10px 0 4px;
+  font-weight: 700;
+}
+.till-difference.short {
+  color: #a3372a;
+}
+.till-difference.over {
+  color: #8a5a00;
+}
+.till-difference.ok {
+  color: #2b6a1f;
+}
+.shift-panel textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  font: inherit;
+  resize: vertical;
+  background: var(--surface);
+}

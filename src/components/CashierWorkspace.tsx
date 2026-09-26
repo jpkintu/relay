@@ -122,6 +122,21 @@ export function CashierWorkspace() {
   const { pathname } = useLocation();
   const [pendingHandovers, setPendingHandovers] = useState(0);
   const [pendingPayments, setPendingPayments] = useState(0);
+  // Cashiers must start a shift (counting the till) before using the board.
+  // Admins are not till operators and skip this.
+  const needsShift = !preview && profile?.role === 'cashier';
+  const [onShift, setOnShift] = useState<boolean | null>(needsShift ? null : true);
+  const checkShift = useCallback(async () => {
+    if (!needsShift) return setOnShift(true);
+    try {
+      setOnShift(!!(await Parse.Cloud.run('getMyShift')).shift);
+    } catch {
+      setOnShift(false);
+    }
+  }, [needsShift]);
+  useEffect(() => {
+    void checkShift();
+  }, [checkShift]);
 
   useEffect(() => {
     if (preview) return;
@@ -151,7 +166,7 @@ export function CashierWorkspace() {
     <main className="ops-shell">
       <header className="ops-header">
         <BrandMark />
-        <nav>
+        <nav hidden={onShift === false}>
           <button className={tab === 'orders' ? 'active' : ''} onClick={() => navigate('/cashier')}>
             <UtensilsCrossed />
             Kitchen board
@@ -200,21 +215,36 @@ export function CashierWorkspace() {
         </button>
       </header>
       {!preview && <PushPrompt card />}
-      <Routes>
-        <Route index element={<KitchenBoard />} />
-        <Route path="handovers" element={<CashierHandovers preview={preview} />} />
-        <Route path="stock" element={<StockPanel />} />
-        <Route path="payments" element={<MobileMoneyLedger />} />
-        <Route
-          path="shift"
-          element={
-            <div className="ops-content">
-              <ShiftPanel kind="cashier" preview={preview} />
-            </div>
-          }
-        />
-        <Route path="*" element={<Navigate to="/cashier" replace />} />
-      </Routes>
+      {onShift === null ? (
+        <div className="ops-content">
+          <p className="muted">Checking your shift…</p>
+        </div>
+      ) : !onShift ? (
+        <div className="ops-content shift-gate">
+          <p className="muted">
+            Count the cash in the till and enter it to open your shift. The kitchen board, cash
+            handovers, mobile money and stock open once your shift has started, and your till is
+            reconciled against this count when you end it.
+          </p>
+          <ShiftPanel kind="cashier" preview={preview} onChanged={() => void checkShift()} />
+        </div>
+      ) : (
+        <Routes>
+          <Route index element={<KitchenBoard />} />
+          <Route path="handovers" element={<CashierHandovers preview={preview} />} />
+          <Route path="stock" element={<StockPanel />} />
+          <Route path="payments" element={<MobileMoneyLedger />} />
+          <Route
+            path="shift"
+            element={
+              <div className="ops-content">
+                <ShiftPanel kind="cashier" preview={preview} onChanged={() => void checkShift()} />
+              </div>
+            }
+          />
+          <Route path="*" element={<Navigate to="/cashier" replace />} />
+        </Routes>
+      )}
     </main>
   );
 }

@@ -42,6 +42,19 @@ type Handover = {
   createdAt: string;
 };
 
+type TillShift = {
+  id: string;
+  cashier: string;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+  openingFloat: number;
+  expectedTill: number | null;
+  physicalCount: number | null;
+  variance: number | null;
+  varianceNote: string;
+};
+
 type Ledger = {
   summary: {
     total: number;
@@ -104,6 +117,10 @@ export function PaymentsLedger() {
     'getPaymentsLedger',
     filterParams(filters),
   );
+  const tills = useCloud<{ shifts: TillShift[]; totalVariance: number }>('getShiftReport', {
+    from: filters.from,
+    to: filters.to,
+  });
   const s = data?.summary;
   const rows = data?.transactions ?? [];
   const when = (at: string) =>
@@ -279,7 +296,9 @@ export function PaymentsLedger() {
                       <tr>
                         <td>
                           <span className="code">{h.code}</span>
-                          <small>{h.orderCount} orders</small>
+                          <small>
+                            {h.orderCount} order{h.orderCount === 1 ? '' : 's'}
+                          </small>
                         </td>
                         <td>{h.rider}</td>
                         <td className="nowrap">{when(h.createdAt)}</td>
@@ -305,6 +324,75 @@ export function PaymentsLedger() {
           )}
           {data && !data.handovers.length && (
             <p className="empty-orders">No handovers in these dates.</p>
+          )}
+        </section>
+      )}
+      {filters.method !== 'mobile_money' && (
+        <section className="admin-panel admin-section-panel">
+          <div className="panel-title">
+            <h2>
+              Cashier shifts <small>({tills.data?.shifts.length ?? 0})</small>
+            </h2>
+            {tills.data && tills.data.totalVariance !== 0 && (
+              <span className={`status-pill ${tills.data.totalVariance < 0 ? 'bad' : 'good'}`}>
+                Till {tills.data.totalVariance < 0 ? 'short' : 'over'}{' '}
+                {money(Math.abs(tills.data.totalVariance))} in total
+              </span>
+            )}
+          </div>
+          <p className="muted small">
+            Each shift starts with a counted till. Expected = opening count + cash handovers the
+            cashier confirmed during the shift. Any difference must be explained to close.
+          </p>
+          {tills.error && <p className="ops-error">{tills.error}</p>}
+          {(tills.data?.shifts.length ?? 0) > 0 ? (
+            <div className="table-scroll">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Cashier</th>
+                    <th>Shift</th>
+                    <th className="num">Opening</th>
+                    <th className="num">Expected</th>
+                    <th className="num">Counted</th>
+                    <th className="num">Difference</th>
+                    <th>Explanation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tills.data!.shifts.map((t) => (
+                    <tr key={t.id}>
+                      <td>{t.cashier}</td>
+                      <td className="nowrap">
+                        {when(t.startedAt)}
+                        <small>{t.endedAt ? `to ${when(t.endedAt)}` : 'On shift now'}</small>
+                      </td>
+                      <td className="num">{money(t.openingFloat)}</td>
+                      <td className="num">
+                        {t.expectedTill === null ? '—' : money(t.expectedTill)}
+                      </td>
+                      <td className="num">
+                        {t.physicalCount === null ? '—' : money(t.physicalCount)}
+                      </td>
+                      <td
+                        className={`num strong ${
+                          !t.variance ? '' : t.variance < 0 ? 'down' : 'up'
+                        }`}
+                      >
+                        {t.variance === null
+                          ? '—'
+                          : t.variance === 0
+                            ? 'Matched'
+                            : `${t.variance > 0 ? '+' : '−'}${money(Math.abs(t.variance))}`}
+                      </td>
+                      <td>{t.varianceNote || (t.status === 'open' ? '' : '—')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            tills.data && <p className="empty-orders">No cashier shifts in these dates.</p>
           )}
         </section>
       )}
