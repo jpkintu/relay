@@ -1469,7 +1469,12 @@ test('a rider cannot end their shift with open orders or unreconciled cash', asy
   await rejects(run('endShift', { shiftId: shift.id }, s.nia), /Wait for the cashier to confirm/);
 
   await confirm(handover);
-  assert.deepEqual(await outstanding(), { openOrders: 0, cashWithRider: 0, cashPending: 0 });
+  assert.deepEqual(await outstanding(), {
+    openOrders: 0,
+    cashWithRider: 0,
+    cashPending: 0,
+    momoPending: 0,
+  });
   await run('endShift', { shiftId: shift.id }, s.nia);
   assert.equal((await run('getMyShift', {}, s.nia)).shift, null);
 });
@@ -2109,5 +2114,94 @@ describe('rider pay includes the delivery fee; pay at handover', () => {
     const mine = await run('getMyPay', {}, s.pia);
     assert.equal(mine.payouts[0].amount, pay);
     assert.ok(mine.payouts[0].deliveryFees > 0);
+  });
+});
+
+describe('mobile money taken at the door must be confirmed', () => {
+  const M = { useMasterKey: true };
+  let item;
+  const deliveredByMomo = async (name, reference) => {
+    const placed = await run(
+      'createOrder',
+      { customerName: name, deliveryAddress: 'Kabalagala', items: [{ id: item.id, quantity: 1 }] },
+      s.pia,
+    );
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: placed.id, action }, s.dina);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.pia);
+    await run(
+      'transitionOrder',
+      {
+        orderId: placed.id,
+        action: 'deliver',
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'mtn',
+        paymentReference: reference,
+      },
+      s.pia,
+    );
+    return placed;
+  };
+
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+
+  test('an unconfirmed door payment stays on the rider; rejected, it is owed as cash', async () => {
+    const placed = await deliveredByMomo('Door MoMo', 'MP260926D001');
+    let row = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(row.get('paidAtDoor'), true);
+    assert.equal(row.get('paymentStatus'), 'PENDING_VERIFICATION');
+    assert.equal((await run('getMyShift', {}, s.pia)).shift.outstanding.momoPending, 1);
+
+    await run(
+      'verifyPayment',
+      { orderId: placed.id, received: false, reason: 'Not on the MTN statement' },
+      s.dina,
+    );
+    row = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(row.get('paymentMethod'), 'cash');
+    assert.equal(row.get('cashStatus'), 'WITH_RIDER');
+    assert.equal(row.get('amountCollected'), placed.total);
+    const told = (await run('getNotifications', {}, s.pia)).items.find(
+      (n) => n.kind === 'payment.rejected' && n.title.includes(row.get('orderCode')),
+    );
+    assert.match(told.body, /You owe/);
+    const outstanding = (await run('getMyShift', {}, s.pia)).shift.outstanding;
+    assert.equal(outstanding.momoPending, 0);
+    assert.ok(outstanding.cashWithRider >= placed.total);
+
+    // A correct transaction ID takes it off the cash list again, pending a check.
+    await run(
+      'resubmitPayment',
+      { orderId: placed.id, provider: 'mtn', reference: 'MP260926D002' },
+      s.pia,
+    );
+    row = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(row.get('paymentMethod'), 'mobile_money');
+    assert.equal(row.get('cashStatus'), 'NOT_APPLICABLE');
+    assert.equal(row.get('paymentStatus'), 'PENDING_VERIFICATION');
+    await run('verifyPayment', { orderId: placed.id, received: true }, s.dina);
+    assert.equal((await run('getMyShift', {}, s.pia)).shift.outstanding.momoPending, 0);
+  });
+
+  test('once the owed cash is handed over, it cannot switch back to mobile money', async () => {
+    const placed = await deliveredByMomo('Door MoMo 2', 'MP260926D003');
+    await run(
+      'verifyPayment',
+      { orderId: placed.id, received: false, reason: 'Wrong amount received' },
+      s.dina,
+    );
+    await run('createHandover', { orderIds: [placed.id] }, s.pia);
+    await rejects(
+      run(
+        'resubmitPayment',
+        { orderId: placed.id, provider: 'mtn', reference: 'MP260926D004' },
+        s.pia,
+      ),
+      /already handed over as cash/,
+    );
   });
 });

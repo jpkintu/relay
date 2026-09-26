@@ -20,7 +20,7 @@ const {
 } = require('./lib/core');
 const { merchantAccounts, cleanReference, referenceProblem } = require('./lib/mobileMoney');
 const { dateKey } = require('./lib/dates');
-const { notifyUser, notifyStaff, personName } = require('./notifications');
+const { money, notifyUser, notifyStaff, personName } = require('./notifications');
 
 const PENDING = 'PENDING_VERIFICATION';
 
@@ -66,6 +66,16 @@ Parse.Cloud.define('verifyPayment', async (request) => {
     paymentCheckedAt: new Date(),
     paymentRejectReason: received ? '' : reason,
   });
+  // A delivered order whose mobile money did not arrive: the rider collected
+  // nothing we can see, so they owe the total as cash (it goes back on their
+  // cash list) until they hand it over or send a correct transaction ID.
+  const owedByRider = !received && order.get('status') === 'DELIVERED';
+  if (owedByRider)
+    order.set({
+      paymentMethod: 'cash',
+      amountCollected: Number(order.get('total') || 0),
+      cashStatus: 'WITH_RIDER',
+    });
   await order.save(null, MASTER);
   await audit(
     actor,
@@ -81,13 +91,18 @@ Parse.Cloud.define('verifyPayment', async (request) => {
     },
   );
   const code = order.get('orderCode');
+  const { values: config } = await loadConfig();
   await notifyUser(order.get('createdBy'), {
     kind: received ? 'payment.verified' : 'payment.rejected',
     tone: received ? 'update' : 'alert',
     title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
     body: received
-      ? 'The kitchen can start on it.'
-      : `${reason}. Correct the transaction ID or cancel the order.`,
+      ? order.get('status') === 'DELIVERED'
+        ? 'It is off your list.'
+        : 'The kitchen can start on it.'
+      : owedByRider
+        ? `${reason}. You owe ${money(config, order.get('total'))}: hand it over in cash, or send the correct transaction ID.`
+        : `${reason}. Correct the transaction ID or cancel the order.`,
     link: `/rider/order/${order.id}`,
     order,
   });
@@ -104,6 +119,11 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
   if (order.get('status') === 'CANCELLED') throw invalid('This order was cancelled');
   if (![PENDING, 'REJECTED'].includes(order.get('paymentStatus')))
     throw invalid('This payment cannot be changed');
+  // A rejected door payment is owed as cash; once that cash is handed over it
+  // can no longer be switched back to mobile money.
+  const owedAsCash = order.get('status') === 'DELIVERED' && order.get('paymentMethod') === 'cash';
+  if (owedAsCash && order.get('cashStatus') !== 'WITH_RIDER')
+    throw invalid('This order was already handed over as cash');
   const { values: config } = await loadConfig();
   const { provider, reference } = await checkMobileMoney(
     config,
@@ -121,6 +141,11 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
     paymentReference: reference,
     paymentStatus: PENDING,
     paymentRejectReason: '',
+    ...(owedAsCash && {
+      paymentMethod: 'mobile_money',
+      amountCollected: 0,
+      cashStatus: 'NOT_APPLICABLE',
+    }),
   });
   await order.save(null, MASTER);
   await audit(actor, 'payment.resubmitted', order, before, { provider, reference });

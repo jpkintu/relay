@@ -312,6 +312,9 @@ Parse.Cloud.define('transitionOrder', async (request) => {
         paymentProvider: momo.provider,
         paymentReference: momo.reference,
         paymentStatus: PENDING,
+        // Paid at the door: until the cashier confirms it, the order stays on
+        // the rider's list; if it is not received, the rider owes it as cash.
+        paidAtDoor: true,
       });
     }
     const isCash = method === 'cash';

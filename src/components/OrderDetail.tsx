@@ -245,39 +245,48 @@ export function OrderDetail({
                 <h3>{PAYMENT_STATUS_LABEL[order.paymentStatus] || order.paymentStatus}</h3>
                 {order.paymentStatus === 'PENDING_VERIFICATION' && (
                   <p className="muted">
-                    The kitchen starts once the cashier finds this payment on the merchant account.
+                    {order.status === 'DELIVERED'
+                      ? 'The cashier checks this payment on the merchant account. Until it is confirmed, this order stays on your list.'
+                      : 'The kitchen starts once the cashier finds this payment on the merchant account.'}
                   </p>
                 )}
                 {order.paymentStatus === 'REJECTED' && (
                   <>
                     <p className="form-error">Cashier: {order.paymentRejectReason}</p>
-                    {order.status !== 'CANCELLED' && (
-                      <>
-                        <MobileMoneyPanel
-                          provider={provider || order.paymentProvider}
-                          reference={reference}
-                          amount={order.total}
-                          customerPhone={order.customerPhone}
-                          onProvider={setProvider}
-                          onReference={setReference}
-                        />
-                        <button
-                          className="primary-button wide"
-                          disabled={busy || !!referenceProblem(reference)}
-                          onClick={async () => {
-                            if (
-                              await act('resubmitPayment', {
-                                provider: provider || order.paymentProvider,
-                                reference,
-                              })
-                            )
-                              setReference('');
-                          }}
-                        >
-                          Send corrected transaction ID
-                        </button>
-                      </>
+                    {order.status === 'DELIVERED' && order.cashStatus === 'WITH_RIDER' && (
+                      <p className="muted">
+                        You owe {money(order.total)}. Hand it over in cash from My cash, or send the
+                        correct transaction ID below.
+                      </p>
                     )}
+                    {order.status !== 'CANCELLED' &&
+                      !(order.status === 'DELIVERED' && order.cashStatus !== 'WITH_RIDER') && (
+                        <>
+                          <MobileMoneyPanel
+                            provider={provider || order.paymentProvider}
+                            reference={reference}
+                            amount={order.total}
+                            customerPhone={order.customerPhone}
+                            onProvider={setProvider}
+                            onReference={setReference}
+                          />
+                          <button
+                            className="primary-button wide"
+                            disabled={busy || !!referenceProblem(reference)}
+                            onClick={async () => {
+                              if (
+                                await act('resubmitPayment', {
+                                  provider: provider || order.paymentProvider,
+                                  reference,
+                                })
+                              )
+                                setReference('');
+                            }}
+                          >
+                            Send corrected transaction ID
+                          </button>
+                        </>
+                      )}
                   </>
                 )}
               </section>
@@ -345,14 +354,20 @@ export function OrderDetail({
                   </div>
                 )}
                 {switchingToMomo && (
-                  <MobileMoneyPanel
-                    provider={provider}
-                    reference={reference}
-                    amount={order.total}
-                    customerPhone={order.customerPhone}
-                    onProvider={setProvider}
-                    onReference={setReference}
-                  />
+                  <>
+                    <MobileMoneyPanel
+                      provider={provider}
+                      reference={reference}
+                      amount={order.total}
+                      customerPhone={order.customerPhone}
+                      onProvider={setProvider}
+                      onReference={setReference}
+                    />
+                    <p className="collect-note">
+                      The cashier must confirm this payment. Until they do, the order stays on your
+                      list; if the money is not found you owe {money(order.total)} in cash.
+                    </p>
+                  </>
                 )}
                 {isCash && (
                   <p className="collect-note">

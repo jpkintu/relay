@@ -4680,3 +4680,16 @@ table.data.compact-table {
     content: none;
   }
 }
+.cash-note {
+  display: block;
+  color: #b3401c;
+  font-size: 12px;
+  font-weight: 600;
+}
+.momo-waiting {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
