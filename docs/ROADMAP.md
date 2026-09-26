@@ -177,23 +177,25 @@ Code is not running: check that the whole `cloud/` folder (including `lib/` and
 
 ### 3.1 Files
 
-| File                                  | Purpose                                                                                     | State                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `src/App.tsx`                         | Router, role guards, owner-setup / no-access screens, preview role switcher                 | Routes by server role from `getMyProfile`                                    |
-| `src/lib/session.tsx`                 | `SessionProvider`, `useSession`, `useConfig`, `useMoney`, `homePath`                        | Loads `getAppInfo` + `getMyProfile` once; logs out on an invalid session     |
-| `src/lib/format.ts`, `people.ts`      | `formatMoney`, timezone-aware `isToday` / `formatDate` / `greeting`, `personLabel`          | Unit-tested                                                                  |
-| `src/components/AuthScreen.tsx`       | Username + PIN login, owner sign-up (only while no accounts exist), Google, preview         | Works                                                                        |
-| `src/components/RiderWorkspace.tsx`   | `/rider`, `/rider/new`, `/rider/active`, `/rider/cash`, `/rider/earnings`, `/rider/profile` | Real data; earnings list is "recent" (last 100 orders) only                  |
-| `src/components/NewOrder.tsx`         | Order entry: name, address, menu grid, cart, place                                          | Minimal: no phone, channel, payment, notes, qty dialog or commission preview |
-| `src/components/CashierWorkspace.tsx` | `/cashier` board, `/cashier/handovers`, `/cashier/shift`                                    | Tickets show rider code/name and item lines; live pending-handover badge     |
-| `src/components/CashierHandovers.tsx` | Pending handovers, count-cash modal, confirm / dispute                                      | Works                                                                        |
-| `src/components/ShiftPanel.tsx`       | Start / end shift for rider & cashier; cashier till variance                                | Works                                                                        |
-| `src/components/AdminWorkspace.tsx`   | `/admin/{,orders,cash,commissions,team,menu,settings}`, dispute "reopen"                    | Basic; KPIs still computed client-side from the last 100 orders (B7)         |
-| `src/components/AdminOrders.tsx`      | Searchable order table + CSV export                                                         | Basic; no filters or detail view                                             |
-| `src/components/AdminSetup.tsx`       | Team (with codes), menu, settings (incl. currency code, timezone), Apply security rules     | Works (limited fields)                                                       |
-| `cloud/*.js`, `cloud/lib/*.js`        | Cloud Code modules (see 3.2)                                                                | Write-protected, tested end to end                                           |
-| `e2e/relay.test.mjs`                  | End-to-end suite on a real Parse Server                                                     | 23 tests: owner setup, roles, write protection, order-to-cash, preview gate  |
-| `src/lib/googleSignIn.ts`             | Back4App managed Google OAuth                                                               | Platform boilerplate                                                         |
+| File                                  | Purpose                                                                                                                                           | State                                                                         |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `src/App.tsx`                         | Router, role guards, owner-setup / no-access screens, preview role switcher                                                                       | Routes by server role from `getMyProfile`                                     |
+| `src/lib/session.tsx`                 | `SessionProvider`, `useSession`, `useConfig`, `useMoney`, `homePath`                                                                              | Loads `getAppInfo` + `getMyProfile` once; logs out on an invalid session      |
+| `src/lib/format.ts`, `people.ts`      | `formatMoney`, timezone-aware `isToday` / `formatDate` / `greeting`, `personLabel`                                                                | Unit-tested                                                                   |
+| `src/components/AuthScreen.tsx`       | Username + PIN login, owner sign-up (only while no accounts exist), Google, preview                                                               | Works                                                                         |
+| `src/components/RiderWorkspace.tsx`   | `/rider`, `/rider/new`, `/rider/active`, `/rider/cash`, `/rider/earnings`, `/rider/profile`                                                       | Real data; Earnings is a weekly/monthly report with a chart (`RiderEarnings`) |
+| `src/components/NewOrder.tsx`         | Order entry: name, address, menu grid, cart, place                                                                                                | Minimal: no phone, channel, payment, notes, qty dialog or commission preview  |
+| `src/components/CashierWorkspace.tsx` | `/cashier` board, `/cashier/handovers`, `/cashier/shift`                                                                                          | Tickets show rider code/name and item lines; live pending-handover badge      |
+| `src/components/CashierHandovers.tsx` | Pending handovers, count-cash modal, confirm / dispute                                                                                            | Works                                                                         |
+| `src/components/ShiftPanel.tsx`       | Start / end shift for rider & cashier; cashier till variance                                                                                      | Works                                                                         |
+| `src/components/AdminWorkspace.tsx`   | `/admin/{,reports,orders,payments,commissions,team,menu,settings}` (`/admin/cash` redirects)                                                      | Basic; KPIs still computed client-side from the last 100 orders (B7)          |
+| `src/components/AdminOrders.tsx`      | Orders ledger: date / rider / payment / status filters (server), search, totals, CSV                                                              | No detail view or override yet                                                |
+| `src/components/reports/`             | `common.tsx` (filter bar, `useCloud`, stat tiles, CSV), `Chart.tsx` (lazy Plotly.js), `PaymentsLedger`, `Commissions`, `Reports`, `RiderEarnings` | Plotly (`plotly.js-basic-dist-min`) loads on the first chart only             |
+| `src/lib/range.ts`                    | Date presets in the restaurant timezone, bucket labels, `formatChange`                                                                            | Unit-tested                                                                   |
+| `src/components/AdminSetup.tsx`       | Team (with codes), menu, settings (incl. currency code, timezone), Apply security rules                                                           | Works (limited fields)                                                        |
+| `cloud/*.js`, `cloud/lib/*.js`        | Cloud Code modules (see 3.2)                                                                                                                      | Write-protected, tested end to end                                            |
+| `e2e/relay.test.mjs`                  | End-to-end suite on a real Parse Server                                                                                                           | 23 tests: owner setup, roles, write protection, order-to-cash, preview gate   |
+| `src/lib/googleSignIn.ts`             | Back4App managed Google OAuth                                                                                                                     | Platform boilerplate                                                          |
 
 Every screen has a URL (deep links work; nginx falls back to `index.html`).
 Riders can only open `/rider/*`; cashiers `/cashier/*`; admins `/admin/*` and
@@ -201,19 +203,20 @@ Riders can only open `/rider/*`; cashiers `/cashier/*`; admins `/admin/*` and
 
 ### 3.2 Cloud Code (`cloud/`)
 
-| Module                         | Contents                                                                                                                                                            |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.js`                      | Entry point; only `require`s the modules below                                                                                                                      |
-| `lib/core.js`                  | `requireUser`, `getRoleName`, `requireRole`, `adminOnly`, `ensureRole`, `readAcl`, `userAcl`, `audit`, `loadConfig`, `nextDailyCode`, `nextStaffCode`, `countUsers` |
-| `lib/money.js`, `lib/dates.js` | Pure, unit-tested: `computeCommission`, `roundCommission`, `sumBy`; `dateKey`, `isValidTimeZone`                                                                    |
-| `lib/seed.js`                  | Starter menu                                                                                                                                                        |
-| `security.js`                  | Write guards, `_User` rules, class schemas + CLPs, `applySecurity` job and `adminApplySecurity`                                                                     |
-| `profile.js`                   | `getAppInfo` (public), `getMyProfile`                                                                                                                               |
-| `orders.js`                    | `createOrder`, `transitionOrder`, `getOperationalMenu`, `riderFloat`                                                                                                |
-| `cash.js`                      | `createHandover`, `confirmHandover`, `disputeHandover`, `reopenHandover`                                                                                            |
-| `shifts.js`                    | `getMyShift`, `startShift`, `endShift`                                                                                                                              |
-| `admin.js`                     | `bootstrapOwner`, `adminListSetup`, team, menu, settings                                                                                                            |
-| `preview.js`                   | Demo functions, only when `RELAY_ENABLE_PREVIEW=true`                                                                                                               |
+| Module                          | Contents                                                                                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.js`                       | Entry point; only `require`s the modules below                                                                                                                      |
+| `lib/core.js`                   | `requireUser`, `getRoleName`, `requireRole`, `adminOnly`, `ensureRole`, `readAcl`, `userAcl`, `audit`, `loadConfig`, `nextDailyCode`, `nextStaffCode`, `countUsers` |
+| `lib/money.js`, `lib/dates.js`  | Pure, unit-tested: `computeCommission`, `roundCommission`, `sumBy`; `dateKey`, `isValidTimeZone`, `startOfDay`, `resolveRange`, `bucketKeys`                        |
+| `lib/seed.js`                   | Starter menu                                                                                                                                                        |
+| `security.js`                   | Write guards, `_User` rules, class schemas + CLPs, `applySecurity` job and `adminApplySecurity`                                                                     |
+| `profile.js`                    | `getAppInfo` (public), `getMyProfile`                                                                                                                               |
+| `orders.js`                     | `createOrder`, `transitionOrder`, `getOperationalMenu`, `riderFloat`                                                                                                |
+| `cash.js`                       | `createHandover`, `confirmHandover`, `disputeHandover`, `reopenHandover`                                                                                            |
+| `shifts.js`                     | `getMyShift`, `startShift`, `endShift`                                                                                                                              |
+| `admin.js`                      | `bootstrapOwner`, `adminListSetup`, team, menu, settings                                                                                                            |
+| `reports.js` + `lib/reports.js` | Filtered ledgers and reports (see functions below); aggregation maths is pure and unit-tested                                                                       |
+| `preview.js`                    | Demo functions, only when `RELAY_ENABLE_PREVIEW=true`                                                                                                               |
 
 `cloud/package.json` marks the folder as CommonJS (the root package is ESM).
 
@@ -230,6 +233,11 @@ Riders can only open `/rider/*`; cashiers `/cashier/*`; admins `/admin/*` and
 | `getAppInfo`                                                         | anyone                                | Restaurant name, currency, timezone, whether owner sign-up is open, whether preview is enabled                                                                                                                                                                                                                            |
 | `getMyProfile`                                                       | signed in                             | Role (roles are not client-readable), name, code, commission rule, `canInitialize`, public config                                                                                                                                                                                                                         |
 | `adminApplySecurity` / job `applySecurity`                           | admin / dashboard                     | Create class schemas + CLPs, rewrite ACLs, assign staff codes                                                                                                                                                                                                                                                             |
+| `getReportOptions`                                                   | cashier·admin                         | Riders (everyone with a rider code) for filter drop-downs                                                                                                                                                                                                                                                                 |
+| `getPaymentsLedger`                                                  | cashier·admin                         | Every cash collection (by delivery time) and mobile money payment (by order time) for a date range, rider and payment type; totals per status and provider; handovers with disputes                                                                                                                                       |
+| `adminSearchOrders` / `getCommissionLedger`                          | admin                                 | Orders by date, rider, payment type and status with totals; commission by delivery date with totals per rider                                                                                                                                                                                                             |
+| `getRiderEarnings`                                                   | rider (own) · admin (any)             | Earnings by week or month, change vs the same-length period before, deliveries list                                                                                                                                                                                                                                       |
+| `getOperationsReport`                                                | admin                                 | Revenue/orders by day·week·month, month-on-month growth, growth vs previous period, menu item + accompaniment sales, riders, payment and channel mix, busy hours/days                                                                                                                                                     |
 | `adminListSetup`                                                     | admin                                 | Team (≤ 1000 users) with roles and codes, menu, categories, settings                                                                                                                                                                                                                                                      |
 | `adminCreateTeamMember`                                              | admin                                 | Creates a rider or cashier user (PIN = password), private ACL, code `R-001` / `C-001`, adds the role                                                                                                                                                                                                                      |
 | `adminUpdateMember`                                                  | admin                                 | active flag, commissionType / PerOrder / Percent                                                                                                                                                                                                                                                                          |
@@ -292,7 +300,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | Order detail `/rider/order/:id` | ✅    | Customer, call, Maps link, items with accompaniments, bill, cancel, pickup, delivery form, report a problem                                                                    |
 | My cash                         | 🟡    | List + multi-select handover. No grouping by date, no over-limit colour, no notes field. Pending handovers not shown                                                           |
 | Handover                        | 🟡    | Inline on the cash screen. No PIN, no "waiting for cashier" state list                                                                                                         |
-| Earnings                        | 🟡    | All-time only (last 100 orders). No Today/Week/Month/Custom, average or payout request                                                                                         |
+| Earnings                        | ✅    | Weekly / Monthly report with date presets or custom dates, change vs previous period, earnings chart (Plotly), per-period table and deliveries list. No payout request yet     |
 | Profile                         | 🟡    | Name, code, username, phone, commission rule, logout. No change PIN yet                                                                                                        |
 | Shift start/end                 | ✅    | End with cash does **not** create the pending handover the brief asks for                                                                                                      |
 
@@ -308,18 +316,18 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 **Admin**
 
-| Brief screen                       | State | Notes                                                                                                               |
-| ---------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
-| Overview                           | 🟡    | 4 KPIs + feed. No top rider, no charts, "cash reconciled today" missing                                             |
-| Orders                             | 🟡    | Search + CSV. No filters (date, rider, status, channel), no detail/override, max 100 rows                           |
-| Riders list/detail                 | ❌    | Only the Team list with commission editor. No float, lifetime stats, per-rider max float, force handover or history |
-| New rider / cashier                | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                |
-| Menu                               | 🟡    | Accompaniments + groups per dish. No description, image, prep time, sort, delete. Category is a free string         |
-| Cash ledger                        | 🟡    | List + reopen dispute. No filters, totals, > 4 h highlight, write-off or amount edit                                |
-| Commissions                        | 🟡    | Read-only list. No paid toggle, bulk pay or owed total                                                              |
-| Settings                           | 🟡    | 7 of about 14 config fields, plus Apply security rules                                                              |
-| Audit viewer                       | ❌    | Data is written but there is no UI                                                                                  |
-| Reports (Z, rider, item, variance) | ❌    |                                                                                                                     |
+| Brief screen                      | State | Notes                                                                                                                 |
+| --------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------- |
+| Overview                          | 🟡    | 4 KPIs + feed. No top rider, no charts, "cash reconciled today" missing                                               |
+| Orders                            | 🟡    | Server filters: dates, rider, cash / mobile money, status; totals; search; CSV. No detail/override yet                |
+| Riders list/detail                | ❌    | Only the Team list with commission editor. No float, lifetime stats, per-rider max float, force handover or history   |
+| New rider / cashier               | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                  |
+| Menu                              | 🟡    | Accompaniments + groups per dish. No description, image, prep time, sort, delete. Category is a free string           |
+| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction, filters (dates, rider, type), totals, handovers + reopen dispute. No write-off |
+| Commissions                       | 🟡    | Date + rider filters, totals per rider, CSV. No paid toggle, bulk pay or owed total                                   |
+| Settings                          | 🟡    | 7 of about 14 config fields, plus Apply security rules                                                                |
+| Audit viewer                      | ❌    | Data is written but there is no UI                                                                                    |
+| Reports                           | 🟡    | Reports tab: revenue, MoM growth, item/accompaniment sales, riders, payment mix, busy hours. No Z-report/variance     |
 
 ---
 
@@ -368,6 +376,14 @@ Legend: ✅ done · 🟡 partial · ❌ missing
     ☰ drawer below 1024px; the cashier tabs become a bottom bar below 850px;
     the rider app is phone-first everywhere. Check new screens at 360, 390,
     768, 1024, 1366 and 1920px.
+
+12. **Reports and charts.** Money totals for ledgers and reports are
+    aggregated on the server (`cloud/reports.js`, maths in `cloud/lib/reports.js`)
+    over an inclusive `{ from, to }` range of `YYYY-MM-DD` days in the restaurant
+    timezone. Charts use `Chart` (`src/components/reports/Chart.tsx`), which
+    lazy-loads Plotly.js: one y-axis per chart, one blue for single series,
+    categorical colors that follow the entity (cash / Airtel / MTN), blue/red for
+    growth, no number on every bar, and a table beside every chart.
 
 ### 4.2 Status enums (canonical)
 
@@ -626,17 +642,21 @@ starts.
 - [ ] Replace 10 s polling with LiveQuery subscriptions (cashier board, rider active orders, handovers), keeping polling as a fallback
 - [ ] Notifications (in-app `Notification` + Web Push): new order → cashiers; order ready → rider; handover created → cashiers; handover disputed / float over max / handover stale > N h → admin
 - [ ] Commission payouts: the rider requests a payout; the admin marks it paid per line or in bulk for a period; `commissionPaid` flags; optional TillPayout link
-- [ ] Rider earnings: Today / Week / Month / Custom, count, average, list (server aggregate)
+- [x] Rider earnings: Week / Month summaries with date presets and custom dates, count, average, change, chart, list (`getRiderEarnings`)
 - [ ] PWA: manifest, icons, install prompt, offline shell (makes the web app feel native)
 
 ### Phase 5 — Admin & reporting
 
 - [ ] Server `getDashboard`: orders today, gross sales, cash in transit, reconciled today, commission today, top rider; charts for orders/hour today and orders/day over 30 days (recharts is already installed)
-- [ ] Orders table: server-side filters (date range, rider, cashStatus, restaurantStatus, channel), search (code, phone, rider code), pagination, detail + admin override (audited), full CSV export via cloud function
-- [ ] Cash ledger: filters, totals (with riders / confirmed today / disputed), > 4 h pending highlight
-- [ ] Commission ledger with the paid toggle and an owed total
+- [x] Orders table: server-side filters by date range, rider, payment type and status, totals, CSV (`adminSearchOrders`). Still open: channel/cashStatus filters, pagination beyond 2,000 rows, detail + admin override
+- [ ] Orders table (rest): server-side filters (date range, rider, cashStatus, restaurantStatus, channel), search (code, phone, rider code), pagination, detail + admin override (audited), full CSV export via cloud function
+- [x] Payments ledger (renamed from Cash ledger): all cash and mobile money transactions, filters (dates, rider, cash / mobile money), totals (reconciled / with riders / verified / pending / per provider), handovers (`getPaymentsLedger`)
+- [ ] Payments ledger: > 4 h pending highlight
+- [x] Commission ledger: date + rider filters, totals per rider, CSV (`getCommissionLedger`)
+- [ ] Commission ledger: paid toggle and an owed total
 - [ ] Settings form with every Configuration field
 - [ ] Audit viewer filtered by actor, action and entity, with a before/after diff
+- [x] Reports tab (`getOperationsReport`, Plotly charts): revenue by day/week/month, growth vs previous period, month-on-month growth, menu item sales (by revenue or quantity, CSV), accompaniments, payment and channel mix, busiest hours and weekdays, rider performance
 - [ ] Reports: Daily Z-report, rider reconciliation (per rider per day: opening float, collected, handed over, closing, commission), item sales (top 20 by qty/revenue), variance report
 - [ ] Cloud Job `dailyZReport` at `reconciliationCutoffTime` (restaurant timezone), emailed as HTML (via Back4App email adapter / Mailgun / SendGrid)
 - [ ] Menu: description, image upload, prep time, sort order, category pointer migration, archive instead of delete
@@ -680,14 +700,15 @@ starts.
 
 ## 10. Change log
 
-| Date       | Change                                                                                                                                                                                                                                                                                                                                                                                         |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-09-25 | Initial review of the Back4App export; this roadmap created; `.gitignore` added. Typecheck + build pass.                                                                                                                                                                                                                                                                                       |
-| 2026-09-25 | Phase 0: Cloud Code split + write protection (S1–S4, S8), `getMyProfile` + role routes (B1), sequential codes (B3), preview flags, config-driven money/timezone (U1–U5), ESLint/Prettier/Vitest, e2e suite (23 tests) and CI. S5/S7 need Back4App server settings.                                                                                                                             |
-| 2026-09-25 | Deploy follow-up: master-key owner recovery (`recoverOwner` / job `createOwner`), sign-in shows when Cloud Code is unreachable, usernames no longer fail on phone auto-capitalisation.                                                                                                                                                                                                         |
-| 2026-09-25 | Deployment fix: the Container served only a static frontend (no Parse), and `vite preview` blocked the b4a.run host. Frontend now reads `VITE_PARSE_SERVER_URL` / `VITE_PARSE_APP_ID` / `VITE_PARSE_JS_KEY`; backend runs as a Back4App Parse app; Node pinned to 22; deploy steps in §2.                                                                                                      |
-| 2026-09-25 | Single-file Cloud Code bundle `back4app/cloud/main.js` (`npm run build:cloud`) for upload to Back4App; CI checks it is current and runs the e2e suite against it.                                                                                                                                                                                                                              |
-| 2026-09-25 | Phase 1 + accompaniments: full order entry (type-ahead, repeat, channel, payment, notes, drafts, earn preview), accompaniment groups with sold-out control (cashier Stock tab), order detail with delivery form, cancel/reject with reasons, richer kitchen tickets, cashier-confirmed pickup option, order problems, B2. e2e 38, unit 30. Map pin and admin problem-resolution UI still open. |
-| 2026-09-25 | Mobile money: Airtel/MTN merchant codes in Settings, rider share + required transaction ID, kitchen blocked until the cashier confirms, reject + rider correction, cashier Mobile money tab with totals per provider, pay-at-door by mobile money. e2e 42, unit 32.                                                                                                                            |
-| 2026-09-25 | Fix: on phones/tablets the admin menu hid every section except the current one (and Log out), so Settings could not be reached; it is now a scrollable tab row. Rider hint names Admin → Settings → Mobile money merchant codes.                                                                                                                                                               |
-| 2026-09-25 | Responsive pass: device classes (phone/tablet/laptop/monitor), admin ☰ drawer on phones and tablets, cashier bottom tab bar on phones, admin tables as cards on phones, 16px inputs on touch screens (no iOS zoom), no page wider than the screen at 360–1920px (audited every page/role), wider layouts on monitors, viewport-fit=cover.                                                     |
+| Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-09-25 | Initial review of the Back4App export; this roadmap created; `.gitignore` added. Typecheck + build pass.                                                                                                                                                                                                                                                                                                                                                   |
+| 2026-09-25 | Phase 0: Cloud Code split + write protection (S1–S4, S8), `getMyProfile` + role routes (B1), sequential codes (B3), preview flags, config-driven money/timezone (U1–U5), ESLint/Prettier/Vitest, e2e suite (23 tests) and CI. S5/S7 need Back4App server settings.                                                                                                                                                                                         |
+| 2026-09-25 | Deploy follow-up: master-key owner recovery (`recoverOwner` / job `createOwner`), sign-in shows when Cloud Code is unreachable, usernames no longer fail on phone auto-capitalisation.                                                                                                                                                                                                                                                                     |
+| 2026-09-25 | Deployment fix: the Container served only a static frontend (no Parse), and `vite preview` blocked the b4a.run host. Frontend now reads `VITE_PARSE_SERVER_URL` / `VITE_PARSE_APP_ID` / `VITE_PARSE_JS_KEY`; backend runs as a Back4App Parse app; Node pinned to 22; deploy steps in §2.                                                                                                                                                                  |
+| 2026-09-25 | Single-file Cloud Code bundle `back4app/cloud/main.js` (`npm run build:cloud`) for upload to Back4App; CI checks it is current and runs the e2e suite against it.                                                                                                                                                                                                                                                                                          |
+| 2026-09-25 | Phase 1 + accompaniments: full order entry (type-ahead, repeat, channel, payment, notes, drafts, earn preview), accompaniment groups with sold-out control (cashier Stock tab), order detail with delivery form, cancel/reject with reasons, richer kitchen tickets, cashier-confirmed pickup option, order problems, B2. e2e 38, unit 30. Map pin and admin problem-resolution UI still open.                                                             |
+| 2026-09-25 | Mobile money: Airtel/MTN merchant codes in Settings, rider share + required transaction ID, kitchen blocked until the cashier confirms, reject + rider correction, cashier Mobile money tab with totals per provider, pay-at-door by mobile money. e2e 42, unit 32.                                                                                                                                                                                        |
+| 2026-09-25 | Fix: on phones/tablets the admin menu hid every section except the current one (and Log out), so Settings could not be reached; it is now a scrollable tab row. Rider hint names Admin → Settings → Mobile money merchant codes.                                                                                                                                                                                                                           |
+| 2026-09-25 | Responsive pass: device classes (phone/tablet/laptop/monitor), admin ☰ drawer on phones and tablets, cashier bottom tab bar on phones, admin tables as cards on phones, 16px inputs on touch screens (no iOS zoom), no page wider than the screen at 360–1920px (audited every page/role), wider layouts on monitors, viewport-fit=cover.                                                                                                                 |
+| 2026-09-26 | Reporting: Payments ledger (renamed Cash ledger) lists every cash and mobile money transaction with date / rider / payment-type filters and totals; Orders and Commissions get server-side date and rider filters; rider Earnings becomes a weekly/monthly report with a chart; new admin Reports tab (revenue, MoM growth, item sales, riders, payment mix, busy hours). Charts use Plotly.js, loaded on demand. New `cloud/reports.js`; e2e 49, unit 49. |

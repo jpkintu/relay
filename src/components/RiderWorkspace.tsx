@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import Parse from '../parse';
 import { NewOrder } from './NewOrder';
+import { RiderEarnings } from './reports/RiderEarnings';
 import { OrderDetail } from './OrderDetail';
 import { ShiftPanel } from './ShiftPanel';
 import { useConfig, useMoney, useSession } from '../lib/session';
@@ -478,23 +479,26 @@ function RiderSubPage({
             )}
           </>
         )}
-        {screen === 'earnings' && (
-          <>
-            <div className="cash-balance earnings">
-              <p>Commission on recent deliveries</p>
-              <strong>{money(sum(earned, (o) => o.commissionAmount))}</strong>
-              <span>{earned.length} completed deliveries</span>
-            </div>
-            {earned.map((o) => (
-              <div className="cash-order" key={o.id}>
-                <span>
-                  {o.code} · {o.customer}
-                </span>
-                <b>{money(o.commissionAmount)}</b>
+        {screen === 'earnings' &&
+          (preview ? (
+            <>
+              <div className="cash-balance earnings">
+                <p>Commission on recent deliveries</p>
+                <strong>{money(sum(earned, (o) => o.commissionAmount))}</strong>
+                <span>{earned.length} completed deliveries</span>
               </div>
-            ))}
-          </>
-        )}
+              {earned.map((o) => (
+                <div className="cash-order" key={o.id}>
+                  <span>
+                    {o.code} · {o.customer}
+                  </span>
+                  <b>{money(o.commissionAmount)}</b>
+                </div>
+              ))}
+            </>
+          ) : (
+            <RiderEarnings />
+          ))}
         {screen === 'profile' && (
           <div className="profile-card">
             <div className="profile-avatar">{initials(profile?.name || 'Rider')}</div>
