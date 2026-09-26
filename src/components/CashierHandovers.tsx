@@ -38,7 +38,9 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
       q.include('rider');
       q.limit(100);
       const found = await q.find();
-      setRows(
+      // The list refreshes every 10 s; keep the order lines already loaded
+      // for a handover so an open count dialog does not lose them.
+      setRows((prev) =>
         found.map((h) => ({
           id: h.id!,
           code: h.get('handoverCode'),
@@ -46,7 +48,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
           amount: h.get('amount'),
           orderCount: h.get('orderCount'),
           createdAt: h.get('handedOverAt') || h.createdAt || new Date(),
-          orders: [],
+          orders: prev.find((row) => row.id === h.id)?.orders ?? [],
         })),
       );
       setError('');
