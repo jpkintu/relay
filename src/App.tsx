@@ -98,13 +98,9 @@ function PreviewApp() {
 
 function Splash() {
   return (
-    <main className="auth-shell">
-      <section className="auth-panel">
-        <div className="login-card">
-          <BrandMark className="mobile-brand" />
-          <p className="muted">Loading your workspace…</p>
-        </div>
-      </section>
+    <main className="splash" aria-busy="true">
+      <BrandMark className="brand-lg" />
+      <p className="muted">Loading your workspace…</p>
     </main>
   );
 }

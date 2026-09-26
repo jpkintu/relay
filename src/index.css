@@ -3482,40 +3482,41 @@ h3 {
   letter-spacing: -0.02em;
 }
 
-/* Brand mark: app icon, "Relay", and the developer credit under it. */
+/* Brand mark: the app mark and "Relay" on one line; the developer credit
+   under both, starting at the mark's left edge. */
 .brand-mark {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
   color: var(--on-dark);
 }
 .brand-mark.dark {
   color: var(--ink);
 }
-.brand-mark > svg {
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.brand-mark .relay-mark,
+.mobile-brand .relay-mark {
   flex: none;
+  display: block;
   width: 36px;
   height: 36px;
-  padding: 7px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: var(--on-dark);
-}
-.brand-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1;
-  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: none;
 }
 .brand-name {
-  font: 700 21px/1 var(--font-display);
+  font: 700 22px/1 var(--font-display);
   letter-spacing: -0.02em;
 }
 .brand-credit {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 5px;
   font: 500 9px/1 var(--font-body);
   letter-spacing: 0.02em;
   color: var(--muted);
@@ -3535,6 +3536,43 @@ h3 {
   padding: 2px 4px;
   border-radius: 4px;
   background: var(--on-dark);
+}
+/* Larger version for the loading screen. */
+.brand-mark.brand-lg {
+  gap: 8px;
+}
+.brand-lg .brand-row {
+  gap: 14px;
+}
+.brand-mark.brand-lg .relay-mark {
+  width: 64px;
+  height: 64px;
+}
+.brand-lg .brand-name {
+  font-size: 40px;
+}
+.brand-lg .brand-credit {
+  gap: 7px;
+  font-size: 12px;
+}
+.brand-lg .brand-credit img {
+  width: 66px;
+}
+.splash {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 24px;
+  background: var(--cream);
+  text-align: center;
+}
+.splash .muted {
+  margin: 0;
+  font-size: 15px;
 }
 .rider-header .brand-mark span,
 .ops-header .brand-mark span {
