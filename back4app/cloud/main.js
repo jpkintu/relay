@@ -763,6 +763,24 @@ var require_security = __commonJS({
           query.notEqualTo("commissionPaid", true);
         }
       );
+      updated.rejectedDoorPayments = await eachObject(
+        "Order",
+        async (order) => {
+          order.set({
+            paymentMethod: "cash",
+            amountCollected: Number(order.get("total") || 0),
+            cashStatus: "WITH_RIDER",
+            paidAtDoor: true
+          });
+          await order.save(null, MASTER);
+          return true;
+        },
+        (query) => {
+          query.equalTo("status", "DELIVERED");
+          query.equalTo("paymentMethod", "mobile_money");
+          query.equalTo("paymentStatus", "REJECTED");
+        }
+      );
       updated.TillPayout = await eachObject(
         "TillPayout",
         (row) => saveAcl(row, readAcl(row.get("rider") || null))

@@ -2216,3 +2216,42 @@ describe('mobile money taken at the door must be confirmed', () => {
     );
   });
 });
+
+test('Apply security rules puts door payments rejected before the rule on the rider', async () => {
+  const M = { useMasterKey: true };
+  const item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+    (i) => !i.accompanimentGroups.length,
+  );
+  const placed = await run(
+    'createOrder',
+    {
+      customerName: 'Old rejection',
+      deliveryAddress: 'Kansanga',
+      items: [{ id: item.id, quantity: 1 }],
+    },
+    s.pia,
+  );
+  for (const action of ['accept', 'ready'])
+    await run('transitionOrder', { orderId: placed.id, action }, s.dina);
+  await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.pia);
+  await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.pia);
+  // How such an order was left before the rule: still mobile money, rejected.
+  const order = await new Parse.Query('Order').get(placed.id, M);
+  order.set({
+    paymentMethod: 'mobile_money',
+    paymentProvider: 'airtel',
+    paymentReference: 'AT34678OLD',
+    paymentStatus: 'REJECTED',
+    cashStatus: 'NOT_APPLICABLE',
+    amountCollected: 0,
+  });
+  await order.save(null, M);
+  const result = await run('adminApplySecurity', {}, s.owner);
+  assert.ok(result.rejectedDoorPayments >= 1);
+  const fixed = await new Parse.Query('Order').get(placed.id, M);
+  assert.equal(fixed.get('paymentMethod'), 'cash');
+  assert.equal(fixed.get('cashStatus'), 'WITH_RIDER');
+  assert.equal(fixed.get('amountCollected'), placed.total);
+  // The rider can now hand it over like any other cash.
+  await run('createHandover', { orderIds: [placed.id] }, s.pia);
+});
