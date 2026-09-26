@@ -298,7 +298,6 @@ export function NewOrder({
           <ArrowLeft />
         </button>
         <div>
-          <p className="eyebrow">New ticket</p>
           <h2>Create order</h2>
         </div>
         {restored && hasContent && (

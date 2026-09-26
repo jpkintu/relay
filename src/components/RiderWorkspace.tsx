@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
-  Bike,
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
@@ -15,7 +14,7 @@ import { NewOrder } from './NewOrder';
 import { RiderEarnings } from './reports/RiderEarnings';
 import { OrderDetail } from './OrderDetail';
 import { ShiftPanel } from './ShiftPanel';
-import { PoweredBy } from './PoweredBy';
+import { BrandMark } from './BrandMark';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
 
@@ -141,11 +140,10 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
   return (
     <main className="rider-shell">
       <header className="rider-header">
-        <div className="brand-mark dark">
-          <Bike />
-          <span>Relay</span>
-        </div>
-        <div className="shift-live">{config.restaurantName}</div>
+        <BrandMark />
+        {config.restaurantNameSet !== false && (
+          <div className="shift-live">{config.restaurantName}</div>
+        )}
         <button
           className="avatar-button"
           aria-label="Profile"
@@ -222,7 +220,6 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
           {loadError && <p className="ops-error">{loadError}</p>}
           <div className="section-title">
             <div>
-              <p className="eyebrow">Now moving</p>
               <h2>Active orders</h2>
             </div>
             <button onClick={() => navigate('/rider/active')}>View all</button>
@@ -373,7 +370,6 @@ function RiderSubPage({
           <ChevronRight style={{ transform: 'rotate(180deg)' }} />
         </button>
         <div>
-          <p className="eyebrow">Rider workspace</p>
           <h2>{TITLES[screen]}</h2>
         </div>
       </header>
@@ -518,7 +514,6 @@ function RiderSubPage({
             <button onClick={() => void logout()}>
               <LogOut /> {preview ? 'Leave preview' : 'Log out'}
             </button>
-            <PoweredBy />
           </div>
         )}
       </div>

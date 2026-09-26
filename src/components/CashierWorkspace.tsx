@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Bike,
   Check,
   ChevronRight,
   ClipboardCheck,
@@ -21,6 +20,7 @@ import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
 import { formatDate } from '../lib/format';
 import { providerLabel } from './MobileMoney';
+import { BrandMark } from './BrandMark';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -147,10 +147,7 @@ export function CashierWorkspace() {
   return (
     <main className="ops-shell">
       <header className="ops-header">
-        <div className="brand-mark dark">
-          <Bike />
-          <span>Relay</span>
-        </div>
+        <BrandMark />
         <nav>
           <button className={tab === 'orders' ? 'active' : ''} onClick={() => navigate('/cashier')}>
             <UtensilsCrossed />
@@ -301,7 +298,6 @@ function KitchenBoard() {
       {error && <div className="ops-error">{error}</div>}
       <div className="ops-title">
         <div>
-          <p className="eyebrow">Live service</p>
           <h1>Kitchen board</h1>
         </div>
         <span>
@@ -543,7 +539,6 @@ function StockPanel() {
     <div className="ops-content">
       <div className="ops-title">
         <div>
-          <p className="eyebrow">Service</p>
           <h1>Stock</h1>
         </div>
         <span>Sold-out items disappear from riders’ menus straight away.</span>
@@ -652,7 +647,6 @@ function MobileMoneyLedger() {
     <div className="ops-content">
       <div className="ops-title">
         <div>
-          <p className="eyebrow">Reconciliation</p>
           <h1>Mobile money</h1>
         </div>
         <span>Check each transaction ID on the merchant account before confirming.</span>

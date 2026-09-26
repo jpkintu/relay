@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import Parse from '../../parse';
 import { useConfig, useMoney } from '../../lib/session';
 import { formatDate } from '../../lib/format';
@@ -194,7 +194,6 @@ export function PaymentsLedger() {
       <section className="admin-panel admin-section-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">Reconciliation</p>
             <h2>
               Transactions <small>({rows.length})</small>
             </h2>
@@ -204,36 +203,50 @@ export function PaymentsLedger() {
           Cash is listed by delivery time, mobile money by order time. Compare mobile money with the
           Airtel / MTN merchant statements by reference.
         </p>
-        <div className="admin-table-scroll">
-          <div className="table-row table-heading ledger-row">
-            <span>Order</span>
-            <span>When</span>
-            <span>Rider</span>
-            <span>Payment</span>
-            <span>Status</span>
-            <span>Amount</span>
+        {rows.length > 0 && (
+          <div className="table-scroll">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>When</th>
+                  <th>Rider</th>
+                  <th>Payment</th>
+                  <th>Status</th>
+                  <th className="num">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((t) => (
+                  <tr key={`${t.kind}-${t.id}`}>
+                    <td>
+                      <span className="code">{t.code}</span>
+                      <small>{t.customer}</small>
+                    </td>
+                    <td className="nowrap">{when(t.at)}</td>
+                    <td>{t.rider}</td>
+                    <td>
+                      <span className="pay-kind">{how(t)}</span>
+                      {t.kind === 'cash' && t.reference && (
+                        <small>
+                          Handover <span className="code">{t.reference}</span>
+                        </small>
+                      )}
+                      {t.note && t.kind === 'mobile_money' && <small>{t.note}</small>}
+                      {t.kind === 'cash' && t.note && <small>Short: {t.note}</small>}
+                    </td>
+                    <td>
+                      <span className={`status-pill ${STATUS_TONE[t.status] || ''}`}>
+                        {STATUS_LABEL[t.status] || t.status}
+                      </span>
+                    </td>
+                    <td className="num">{money(t.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          {rows.map((t) => (
-            <div className="table-row ledger-row" key={`${t.kind}-${t.id}`}>
-              <span>
-                {t.code}
-                <small>{t.customer}</small>
-              </span>
-              <span>{when(t.at)}</span>
-              <span>{t.rider}</span>
-              <span>
-                <span className={`pay-kind ${t.kind}`}>{how(t)}</span>
-                {t.kind === 'cash' && t.reference && <small>{t.reference}</small>}
-                {t.note && t.kind === 'mobile_money' && <small>{t.note}</small>}
-                {t.kind === 'cash' && t.note && <small>Short: {t.note}</small>}
-              </span>
-              <span className={`status-pill ${STATUS_TONE[t.status] || ''}`}>
-                {STATUS_LABEL[t.status] || t.status}
-              </span>
-              <strong>{money(t.amount)}</strong>
-            </div>
-          ))}
-        </div>
+        )}
         {data && !rows.length && <p className="empty-orders">No payments match these filters.</p>}
         {data?.truncated && (
           <p className="muted small">Showing the latest 2,000. Narrow the dates to see more.</p>
@@ -243,31 +256,53 @@ export function PaymentsLedger() {
         <section className="admin-panel admin-section-panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">Cash</p>
               <h2>
                 Handovers <small>({data?.handovers.length ?? 0})</small>
               </h2>
             </div>
           </div>
-          <div className="admin-table-scroll">
-            {(data?.handovers ?? []).map((h) => (
-              <div key={h.id}>
-                <div className="table-row">
-                  <span>
-                    {h.code}
-                    <small>{h.orderCount} orders</small>
-                  </span>
-                  <span>{h.rider}</span>
-                  <span className={`status-pill ${STATUS_TONE[h.status] || ''}`}>
-                    {STATUS_LABEL[h.status] || h.status}
-                  </span>
-                  <span>{money(h.amount)}</span>
-                  <span>{when(h.createdAt)}</span>
-                </div>
-                {h.status === 'disputed' && <DisputeResolution handover={h} onResolved={reload} />}
-              </div>
-            ))}
-          </div>
+          {(data?.handovers.length ?? 0) > 0 && (
+            <div className="table-scroll">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Handover</th>
+                    <th>Rider</th>
+                    <th>Handed over</th>
+                    <th>Status</th>
+                    <th className="num">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data?.handovers ?? []).map((h) => (
+                    <Fragment key={h.id}>
+                      <tr>
+                        <td>
+                          <span className="code">{h.code}</span>
+                          <small>{h.orderCount} orders</small>
+                        </td>
+                        <td>{h.rider}</td>
+                        <td className="nowrap">{when(h.createdAt)}</td>
+                        <td>
+                          <span className={`status-pill ${STATUS_TONE[h.status] || ''}`}>
+                            {STATUS_LABEL[h.status] || h.status}
+                          </span>
+                        </td>
+                        <td className="num">{money(h.amount)}</td>
+                      </tr>
+                      {h.status === 'disputed' && (
+                        <tr className="detail-row">
+                          <td colSpan={5}>
+                            <DisputeResolution handover={h} onResolved={reload} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {data && !data.handovers.length && (
             <p className="empty-orders">No handovers in these dates.</p>
           )}

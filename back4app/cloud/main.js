@@ -255,18 +255,51 @@ var require_core = __commonJS({
       const counter = await find();
       counter.increment("value");
       await counter.save(null, MASTER);
-      return counter.get("value");
+      const value = Number(counter.get("value"));
+      if (Number.isInteger(value) && value > 0) return value;
+      const stored = Number((await find()).get("value"));
+      if (Number.isInteger(stored) && stored > 0) return stored;
+      const reset = await find();
+      reset.set("value", 1);
+      await reset.save(null, MASTER);
+      return 1;
     }
-    async function nextDailyCode(prefix, digits, timezone) {
-      const day = dateKey(/* @__PURE__ */ new Date(), timezone);
-      const sequence = await nextSequence(`${prefix}:${day}`);
-      return `${prefix}-${day}-${String(sequence).padStart(digits, "0")}`;
+    async function uniqueCode(key, format, taken) {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const code = format(await nextSequence(key));
+        if (!await taken(code)) return code;
+      }
+      throw new Error(`Could not allocate a unique code for ${key}`);
+    }
+    var codeTakenIn = (className, field) => async (code) => {
+      const query = new Parse.Query(className);
+      query.equalTo(field, code);
+      try {
+        return !!await query.first(MASTER);
+      } catch (error) {
+        const detail = error?.message && typeof error.message === "object" ? error.message : error;
+        if (detail?.code === "42703" || /does not exist/.test(String(detail?.message))) return false;
+        throw error;
+      }
+    };
+    async function nextDailyCode(prefix, digits, timezone, { className, field, date } = {}) {
+      const day = dateKey(date || /* @__PURE__ */ new Date(), timezone);
+      const taken = className ? codeTakenIn(className, field) : async () => false;
+      return uniqueCode(
+        `${prefix}:${day}`,
+        (n) => `${prefix}-${day}-${String(n).padStart(digits, "0")}`,
+        taken
+      );
     }
     async function nextStaffCode(role) {
       const prefix = role === "rider" ? "R" : "C";
-      const sequence = await nextSequence(`staff:${prefix}`);
-      return `${prefix}-${String(sequence).padStart(3, "0")}`;
+      return uniqueCode(
+        `staff:${prefix}`,
+        (n) => `${prefix}-${String(n).padStart(3, "0")}`,
+        codeTakenIn(Parse.User, role === "rider" ? "riderCode" : "cashierCode")
+      );
     }
+    var isBrokenCode = (code) => typeof code === "string" && /object|undefined|NaN/.test(code);
     module2.exports = {
       MASTER,
       DEFAULT_CONFIG,
@@ -285,6 +318,7 @@ var require_core = __commonJS({
       loadConfig,
       countUsers,
       nextDailyCode,
+      isBrokenCode,
       nextStaffCode
     };
   }
@@ -303,7 +337,10 @@ var require_security = __commonJS({
       userAcl,
       adminOnly,
       audit,
-      nextStaffCode
+      loadConfig,
+      nextStaffCode,
+      nextDailyCode,
+      isBrokenCode
     } = require_core();
     var PROTECTED_CLASSES = [
       "Order",
@@ -571,7 +608,7 @@ var require_security = __commonJS({
         const role = await getRoleName(user2);
         let changed = false;
         const codeField = role === "rider" ? "riderCode" : role === "cashier" ? "cashierCode" : null;
-        if (codeField && !user2.get(codeField)) {
+        if (codeField && (!user2.get(codeField) || isBrokenCode(user2.get(codeField)))) {
           user2.set(codeField, await nextStaffCode(role));
           changed = true;
         }
@@ -583,7 +620,44 @@ var require_security = __commonJS({
         if (changed) await user2.save(null, MASTER);
         return changed;
       });
+      updated.repairedCodes = await repairCodes();
       return updated;
+    }
+    async function repairCodes() {
+      const { values: config } = await loadConfig();
+      let repaired = 0;
+      for (const [className, field, prefix, digits] of [
+        ["Order", "orderCode", "ORD", 4],
+        ["CashHandover", "handoverCode", "HO", 3]
+      ]) {
+        const broken = [];
+        await eachObject(className, async (object) => {
+          if (isBrokenCode(object.get(field))) broken.push(object);
+          return false;
+        });
+        broken.sort((a, b) => a.createdAt - b.createdAt);
+        for (const object of broken) {
+          const before = object.get(field);
+          object.set(
+            field,
+            await nextDailyCode(prefix, digits, config.timezone, {
+              className,
+              field,
+              date: object.createdAt
+            })
+          );
+          await object.save(null, MASTER);
+          await audit(
+            null,
+            "code.repaired",
+            object,
+            { [field]: before },
+            { [field]: object.get(field) }
+          );
+          repaired += 1;
+        }
+      }
+      return repaired;
     }
     Parse.Cloud.job("applySecurity", async () => {
       const updated = await applySecurity();
@@ -1095,7 +1169,10 @@ var require_orders = __commonJS({
         );
       const order = new Parse.Object("Order");
       order.set({
-        orderCode: await nextDailyCode("ORD", 4, config.timezone),
+        orderCode: await nextDailyCode("ORD", 4, config.timezone, {
+          className: "Order",
+          field: "orderCode"
+        }),
         clientId,
         channel,
         createdBy: rider,
@@ -1392,7 +1469,10 @@ var require_cash = __commonJS({
       const amount = sumBy(orders, (order) => order.get("amountCollected"));
       const row = new Parse.Object("CashHandover");
       row.set({
-        handoverCode: await nextDailyCode("HO", 3, config.timezone),
+        handoverCode: await nextDailyCode("HO", 3, config.timezone, {
+          className: "CashHandover",
+          field: "handoverCode"
+        }),
         rider,
         amount,
         orderCount: orders.length,
@@ -2635,7 +2715,14 @@ var require_reports2 = __commonJS({
 var require_profile = __commonJS({
   "cloud/profile.js"() {
     "use strict";
-    var { MASTER, requireUser, getRoleName, loadConfig, countUsers } = require_core();
+    var {
+      MASTER,
+      DEFAULT_CONFIG,
+      requireUser,
+      getRoleName,
+      loadConfig,
+      countUsers
+    } = require_core();
     var { canBootstrapOwner } = require_admin();
     var { previewEnabled } = require_preview();
     var { merchantAccounts } = require_mobileMoney();
@@ -2650,7 +2737,9 @@ var require_profile = __commonJS({
         allowBatching: values.allowBatching,
         commissionRounding: values.commissionRounding,
         requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
-        mobileMoney: merchantAccounts(values)
+        mobileMoney: merchantAccounts(values),
+        // False until the owner saves a restaurant name in Settings.
+        restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName
       };
     }
     Parse.Cloud.define("getAppInfo", async () => {

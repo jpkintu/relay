@@ -3,7 +3,6 @@ import { Clock3 } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
-import { PoweredBy } from './PoweredBy';
 
 type Shift = {
   id: string;
@@ -76,7 +75,6 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
       <div className="shift-panel-title">
         <Clock3 />
         <div>
-          <p className="eyebrow">Shift management</p>
           <h2>{shift ? 'Current shift' : 'Start your shift'}</h2>
         </div>
       </div>
@@ -157,7 +155,6 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
           </button>
         </>
       )}
-      {kind === 'cashier' && <PoweredBy className="in-panel" />}
     </section>
   );
 }

@@ -137,7 +137,6 @@ export function AdminSetup({
           <div className="admin-panel">
             <div className="panel-title">
               <div>
-                <p className="eyebrow">Access control</p>
                 <h2>Create rider or cashier</h2>
               </div>
             </div>
@@ -226,7 +225,6 @@ export function AdminSetup({
       {section === 'Menu' && (
         <>
           <div className="admin-panel">
-            <p className="eyebrow">Organize the catalog</p>
             <h2>Categories</h2>
             <form
               className="category-create"
@@ -257,7 +255,6 @@ export function AdminSetup({
             ))}
           </div>
           <div className="admin-panel">
-            <p className="eyebrow">Free sides</p>
             <h2>Accompaniments</h2>
             <p className="muted">
               Add matooke, rice, pumpkin and so on here, then choose which ones each dish offers.
@@ -290,7 +287,6 @@ export function AdminSetup({
             ))}
           </div>
           <div className="admin-panel">
-            <p className="eyebrow">Restaurant catalog</p>
             <h2>{editingItem ? 'Edit menu item' : 'Add menu item'}</h2>
             <form
               className="setup-form"
@@ -397,7 +393,6 @@ export function AdminSetup({
       )}
       {section === 'Settings' && (
         <div className="admin-panel">
-          <p className="eyebrow">Restaurant configuration</p>
           <h2>Operating settings</h2>
           <form
             className="setup-form"
@@ -488,7 +483,6 @@ export function AdminSetup({
       )}
       {section === 'Settings' && (
         <div className="admin-panel">
-          <p className="eyebrow">Security</p>
           <h2>Access rules</h2>
           <p className="muted">
             Re-applies database permissions and assigns missing rider and cashier codes. Run it once

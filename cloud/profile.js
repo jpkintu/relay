@@ -1,4 +1,11 @@
-const { MASTER, requireUser, getRoleName, loadConfig, countUsers } = require('./lib/core');
+const {
+  MASTER,
+  DEFAULT_CONFIG,
+  requireUser,
+  getRoleName,
+  loadConfig,
+  countUsers,
+} = require('./lib/core');
 const { canBootstrapOwner } = require('./admin');
 const { previewEnabled } = require('./preview');
 const { merchantAccounts } = require('./lib/mobileMoney');
@@ -17,6 +24,8 @@ function publicConfig(values) {
     commissionRounding: values.commissionRounding,
     requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
     mobileMoney: merchantAccounts(values),
+    // False until the owner saves a restaurant name in Settings.
+    restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName,
   };
 }
 

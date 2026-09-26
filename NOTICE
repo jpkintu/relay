@@ -3,8 +3,8 @@ Designed and developed by Embiro Concepts.
 
 Attribution
 -----------
-The "Powered by Embiro" credit (src/components/PoweredBy.tsx and
-src/assets/embiro-logo.webp) appears on the sign-in screen, the admin
-pages, the rider profile and the cashier Shift tab. The Embiro name and
+The "Powered by Embiro" credit (src/components/BrandMark.tsx and
+src/assets/embiro-logo.webp) appears under the Relay name wherever the app
+logo is shown. The Embiro name and
 logo are marks of Embiro Concepts. Please keep this notice and the credit
 in any copy or derivative of this software.

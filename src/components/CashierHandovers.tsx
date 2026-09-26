@@ -115,7 +115,6 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     <div className="ops-content">
       <div className="ops-title">
         <div>
-          <p className="eyebrow">Reconciliation</p>
           <h1>Cash handovers</h1>
         </div>
         <span>{rows.length} awaiting review</span>

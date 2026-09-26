@@ -19,7 +19,10 @@ const {
   userAcl,
   adminOnly,
   audit,
+  loadConfig,
   nextStaffCode,
+  nextDailyCode,
+  isBrokenCode,
 } = require('./lib/core');
 
 const PROTECTED_CLASSES = [
@@ -306,7 +309,7 @@ async function applySecurity() {
     const role = await getRoleName(user);
     let changed = false;
     const codeField = role === 'rider' ? 'riderCode' : role === 'cashier' ? 'cashierCode' : null;
-    if (codeField && !user.get(codeField)) {
+    if (codeField && (!user.get(codeField) || isBrokenCode(user.get(codeField)))) {
       user.set(codeField, await nextStaffCode(role));
       changed = true;
     }
@@ -318,7 +321,47 @@ async function applySecurity() {
     if (changed) await user.save(null, MASTER);
     return changed;
   });
+  updated.repairedCodes = await repairCodes();
   return updated;
+}
+
+// Gives new codes to orders and handovers saved with a broken code (see
+// nextSequence in lib/core.js), numbered on the day they were created.
+async function repairCodes() {
+  const { values: config } = await loadConfig();
+  let repaired = 0;
+  for (const [className, field, prefix, digits] of [
+    ['Order', 'orderCode', 'ORD', 4],
+    ['CashHandover', 'handoverCode', 'HO', 3],
+  ]) {
+    const broken = [];
+    await eachObject(className, async (object) => {
+      if (isBrokenCode(object.get(field))) broken.push(object);
+      return false;
+    });
+    broken.sort((a, b) => a.createdAt - b.createdAt);
+    for (const object of broken) {
+      const before = object.get(field);
+      object.set(
+        field,
+        await nextDailyCode(prefix, digits, config.timezone, {
+          className,
+          field,
+          date: object.createdAt,
+        }),
+      );
+      await object.save(null, MASTER);
+      await audit(
+        null,
+        'code.repaired',
+        object,
+        { [field]: before },
+        { [field]: object.get(field) },
+      );
+      repaired += 1;
+    }
+  }
+  return repaired;
 }
 
 Parse.Cloud.job('applySecurity', async () => {

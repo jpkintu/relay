@@ -152,7 +152,10 @@ Parse.Cloud.define('createOrder', async (request) => {
 
   const order = new Parse.Object('Order');
   order.set({
-    orderCode: await nextDailyCode('ORD', 4, config.timezone),
+    orderCode: await nextDailyCode('ORD', 4, config.timezone, {
+      className: 'Order',
+      field: 'orderCode',
+    }),
     clientId,
     channel,
     createdBy: rider,

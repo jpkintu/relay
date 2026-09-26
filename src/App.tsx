@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Bike, LogOut } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import Parse from './parse';
 import { AuthScreen } from './components/AuthScreen';
 import { RiderWorkspace } from './components/RiderWorkspace';
 import { CashierWorkspace } from './components/CashierWorkspace';
 import { AdminWorkspace } from './components/AdminWorkspace';
+import { BrandMark } from './components/BrandMark';
 import { SessionProvider, homePath, useSession } from './lib/session';
 import type { Role } from './lib/session';
 import { useDeviceAttribute } from './lib/device';
@@ -97,9 +98,7 @@ function Splash() {
     <main className="auth-shell">
       <section className="auth-panel">
         <div className="login-card">
-          <div className="mobile-brand">
-            <Bike /> Relay
-          </div>
+          <BrandMark className="mobile-brand" />
           <p className="muted">Loading your workspace…</p>
         </div>
       </section>
@@ -172,9 +171,7 @@ function CenteredCard({ title, children }: { title: string; children: ReactNode 
     <main className="auth-shell">
       <section className="auth-panel">
         <div className="login-card">
-          <div className="mobile-brand">
-            <Bike /> Relay
-          </div>
+          <BrandMark className="mobile-brand" />
           <p className="eyebrow">{config.restaurantName}</p>
           <h2>{title}</h2>
           {children}
