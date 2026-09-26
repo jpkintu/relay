@@ -27,6 +27,10 @@ const clean = (value, max) =>
 
 // The delivery-fee part of an order's rider pay.
 const feeOf = (order) => order.get('deliveryPay') ?? order.get('deliveryFee') ?? 0;
+// Still owed on an order: the delivery fee can be paid first (at the cash
+// handover), the commission later; `commissionPaid` means fully paid.
+const feeOwed = (order) => (order.get('deliveryFeePaid') ? 0 : feeOf(order));
+const payOwed = (order) => orderRiderPay(order) - (order.get('deliveryFeePaid') ? feeOf(order) : 0);
 
 // What the restaurant owes a rider right now.
 async function riderPayState(rider) {
@@ -44,10 +48,11 @@ async function riderPayState(rider) {
     orderQuery.find(MASTER),
     shortageQuery.find(MASTER),
   ]);
-  // Commission + delivery fee per order (see riderPay in lib/money.js).
-  const orders = delivered.filter((order) => orderRiderPay(order) > 0);
-  const earned = sumBy(orders, orderRiderPay);
-  const deliveryFees = sumBy(orders, feeOf);
+  // Commission + delivery fee per order (see riderPay in lib/money.js), less
+  // any delivery fee already paid at the cash handover.
+  const orders = delivered.filter((order) => payOwed(order) > 0);
+  const earned = sumBy(orders, payOwed);
+  const deliveryFees = sumBy(orders, feeOwed);
   const deductions = sumBy(shortages, (row) => row.get('shortage'));
   return { orders, shortages, earned, deliveryFees, deductions, owed: earned - deductions };
 }
@@ -69,6 +74,7 @@ function payoutJSON(row) {
     amount: Number(row.get('amount') || 0),
     earned: Number(row.get('earned') || 0),
     deliveryFees: Number(row.get('deliveryFees') || 0),
+    feesOnly: row.get('feesOnly') === true,
     deductions: Number(row.get('deductions') || 0),
     orderCount: (row.get('orders') || []).length,
     note: row.get('note') || '',
@@ -139,25 +145,27 @@ async function newPayout(fields, config) {
 
 // Cashier (from the till, during a shift) or owner pays a rider everything
 // they are owed. One payout per rider at a time.
-// Pays a rider from the till (cashier on shift) or directly (owner): their
-// rider pay (commission + delivery fee) for the given orders, or for every
-// unpaid delivery, less any cash shortage charged to them. One payout per
-// rider at a time. Used by payRider and when confirming a cash handover.
-async function payOut({ actor, role, rider, orderIds }) {
+// Pays a rider from the till (cashier on shift) or directly (owner): what they
+// are owed for every unpaid delivery, less any cash shortage charged to them.
+// With `feesOnly` (at the cash handover) it pays just the delivery fees of the
+// given orders; their commission is paid later. One payout per rider at a time.
+async function payOut({ actor, role, rider, orderIds, feesOnly = false }) {
   const round = Number(rider.get('payRound') || 0);
   if (!(await claimOnce(`pay-rider:${rider.id}:${round}`)))
     throw invalid('This rider is already being paid. Refresh in a moment');
   try {
     const state = await riderPayState(rider);
-    const orders = orderIds
-      ? state.orders.filter((order) => orderIds.includes(order.id))
-      : state.orders;
-    const earned = sumBy(orders, orderRiderPay);
-    const amount = earned - state.deductions;
+    const orders = (
+      orderIds ? state.orders.filter((order) => orderIds.includes(order.id)) : state.orders
+    ).filter((order) => !feesOnly || feeOwed(order) > 0);
+    const deliveryFees = sumBy(orders, feeOwed);
+    const earned = feesOnly ? deliveryFees : sumBy(orders, payOwed);
+    const deductions = feesOnly ? 0 : state.deductions;
+    const shortages = feesOnly ? [] : state.shortages;
+    const amount = earned - deductions;
     if (!orders.length) throw invalid('Nothing to pay');
     if (amount <= 0)
       throw invalid('Nothing to pay: the rider’s shortages are more than their earnings');
-    const deliveryFees = sumBy(orders, feeOf);
     const { values: config } = await loadConfig();
     const shift = role === 'cashier' ? await openCashierShift(actor) : null;
     const row = await newPayout(
@@ -167,34 +175,44 @@ async function payOut({ actor, role, rider, orderIds }) {
         amount,
         earned,
         deliveryFees,
-        deductions: state.deductions,
+        deductions,
         orders,
-        shortages: state.shortages,
+        shortages,
+        feesOnly,
+        note: feesOnly ? 'Delivery fees at cash handover' : '',
         paidBy: actor,
         ...(shift && { shift }),
       },
       config,
     );
     await row.save(null, MASTER);
-    orders.forEach((order) => order.set({ commissionPaid: true, commissionPayout: row }));
-    state.shortages.forEach((h) => h.set({ shortageStatus: 'deducted', shortagePayout: row }));
-    await Parse.Object.saveAll([...orders, ...state.shortages], MASTER);
-    await audit(actor, 'payout.rider', row, null, {
+    orders.forEach((order) =>
+      order.set(
+        feesOnly
+          ? { deliveryFeePaid: true, feePayout: row }
+          : { commissionPaid: true, deliveryFeePaid: true, commissionPayout: row },
+      ),
+    );
+    shortages.forEach((h) => h.set({ shortageStatus: 'deducted', shortagePayout: row }));
+    await Parse.Object.saveAll([...orders, ...shortages], MASTER);
+    await audit(actor, feesOnly ? 'payout.rider_fees' : 'payout.rider', row, null, {
       amount,
       earned,
       deliveryFees,
-      deductions: state.deductions,
+      deductions,
       orders: orders.length,
     });
     await notifyUser(rider, {
       kind: 'payout.rider',
       tone: 'update',
       title: `You were paid ${money(config, amount)}`,
-      body: `${orders.length} ${orders.length === 1 ? 'delivery' : 'deliveries'} (commission + ${money(
-        config,
-        deliveryFees,
-      )} delivery fees)${
-        state.deductions ? ` less ${money(config, state.deductions)} shortage` : ''
+      body: `${
+        feesOnly
+          ? `Delivery fees for ${orders.length} ${orders.length === 1 ? 'delivery' : 'deliveries'}; commission is paid later`
+          : `${orders.length} ${orders.length === 1 ? 'delivery' : 'deliveries'} (commission + ${money(
+              config,
+              deliveryFees,
+            )} delivery fees)${deductions ? ` less ${money(config, deductions)} shortage` : ''}`
       } · paid by ${personName(await actor.fetch(MASTER))}`,
       link: '/rider/earnings',
     });

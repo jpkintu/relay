@@ -157,6 +157,8 @@ const SCHEMAS = {
     deliveryPay: N,
     commissionPayout: ['Pointer', 'TillPayout'],
     paidAtDoor: B,
+    deliveryFeePaid: B,
+    feePayout: ['Pointer', 'TillPayout'],
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -204,6 +206,7 @@ const SCHEMAS = {
     amount: N,
     earned: N,
     deliveryFees: N,
+    feesOnly: B,
     deductions: N,
     orders: 'Array',
     shortages: 'Array',

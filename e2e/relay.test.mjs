@@ -2094,11 +2094,14 @@ describe('rider pay includes the delivery fee; pay at handover', () => {
     assert.equal(s1.net, s1.revenue - s1.commission);
   });
 
-  test('the cashier can pay the rider for the handed-over orders straight away', async () => {
+  test('at the handover the cashier can pay the delivery fees; commission comes later', async () => {
     // Settle what Pia is already owed so only the new order is unpaid.
     await run('payRider', { riderId: s.pia.id }, s.dina).catch(() => undefined);
     const id = await deliveredFor('Pay at handover');
-    const pay = (await new Parse.Query('Order').get(id, M)).get('commissionAmount');
+    const row = await new Parse.Query('Order').get(id, M);
+    const fee = row.get('deliveryPay');
+    const commission = row.get('commissionBase');
+    assert.ok(fee > 0 && commission > 0);
     const h = await run('createHandover', { orderIds: [id] }, s.pia);
     const before = (await run('getMyShift', {}, s.dina)).shift;
     await rejects(
@@ -2114,17 +2117,27 @@ describe('rider pay includes the delivery fee; pay at handover', () => {
       { handoverId: h.id, countedAmount: h.amount, payRider: true, pin: '2244' },
       s.dina,
     );
-    assert.equal(result.paid, pay);
+    assert.equal(result.paid, fee);
     assert.equal(result.payProblem, '');
     const after = (await run('getMyShift', {}, s.dina)).shift;
     assert.equal(after.cashIn - before.cashIn, h.amount);
-    assert.equal(after.paidOut - before.paidOut, pay);
-    const order = await new Parse.Query('Order').get(id, M);
-    assert.equal(order.get('commissionPaid'), true);
+    assert.equal(after.paidOut - before.paidOut, fee);
+    let order = await new Parse.Query('Order').get(id, M);
+    assert.equal(order.get('deliveryFeePaid'), true);
+    assert.notEqual(order.get('commissionPaid'), true);
     assert.equal(order.get('cashStatus'), 'RECONCILED');
-    const mine = await run('getMyPay', {}, s.pia);
-    assert.equal(mine.payouts[0].amount, pay);
-    assert.ok(mine.payouts[0].deliveryFees > 0);
+    let mine = await run('getMyPay', {}, s.pia);
+    assert.equal(mine.payouts[0].amount, fee);
+    assert.equal(mine.payouts[0].feesOnly, true);
+    // Only the commission is still owed for that order.
+    assert.equal(mine.owed, commission);
+    assert.equal(mine.deliveryFees, 0);
+    await run('payRider', { riderId: s.pia.id }, s.dina);
+    order = await new Parse.Query('Order').get(id, M);
+    assert.equal(order.get('commissionPaid'), true);
+    mine = await run('getMyPay', {}, s.pia);
+    assert.equal(mine.payouts[0].amount, commission);
+    assert.equal(mine.owed, 0);
   });
 });
 

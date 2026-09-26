@@ -11,6 +11,7 @@ type Payout = {
   kind: 'rider' | 'expense';
   amount: number;
   earned: number;
+  feesOnly: boolean;
   deductions: number;
   orderCount: number;
   note: string;
@@ -65,9 +66,10 @@ export function PayoutsPanel({ from, to }: { from: string; to: string }) {
                   <td>
                     {p.kind === 'rider' ? (
                       <>
-                        Pay: {p.rider}
+                        {p.feesOnly ? 'Delivery fees' : 'Pay'}: {p.rider}
                         <small>
-                          {p.orderCount} deliveries · {money(p.earned)}
+                          {p.orderCount} deliveries ·{' '}
+                          {p.feesOnly ? 'at the cash handover' : money(p.earned)}
                           {p.deductions ? ` − ${money(p.deductions)} shortage` : ''}
                         </small>
                       </>
