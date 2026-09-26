@@ -4061,3 +4061,262 @@ table.data.compact-table {
     flex: none;
   }
 }
+
+/* ---------- Phone notifications prompt ---------- */
+.push-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.push-prompt button {
+  border: 0;
+  background: var(--ink);
+  color: var(--on-dark);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.push-prompt.card {
+  position: relative;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 14px 44px 14px 16px;
+  border: 1px solid #c9d8fb;
+  border-radius: 14px;
+  background: #eef3fe;
+  color: var(--ink);
+  font-size: 14px;
+}
+.push-prompt.card > div {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.push-prompt.card > div span {
+  color: var(--muted);
+}
+.push-prompt-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  color: var(--blue);
+}
+.push-prompt.card > button:not(.push-dismiss) {
+  align-self: center;
+}
+.push-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0 !important;
+  background: none !important;
+  color: var(--muted) !important;
+}
+.push-dismiss svg {
+  width: 18px;
+  height: 18px;
+}
+.ops-shell > .push-prompt.card {
+  margin: 16px 34px 0;
+}
+.inline-icon {
+  display: inline;
+  width: 15px;
+  height: 15px;
+  vertical-align: -2px;
+}
+.push-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.push-state.on {
+  color: #2b6a1f;
+  font-weight: 600;
+}
+.push-state svg {
+  width: 16px;
+  height: 16px;
+}
+@media (max-width: 599px) {
+  .push-prompt.card {
+    flex-wrap: wrap;
+  }
+  .ops-shell > .push-prompt.card {
+    margin: 12px 16px 0;
+  }
+}
+
+/* ---------- Rider shift checklist ---------- */
+.shift-checklist {
+  list-style: none;
+  margin: 12px 0 4px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+.shift-checklist li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.shift-checklist li::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+}
+.shift-checklist li.done {
+  color: #2b6a1f;
+}
+.shift-checklist li.done::before {
+  background: currentColor;
+  box-shadow: inset 0 0 0 3px var(--surface);
+}
+.shift-checklist li.todo {
+  color: #8a2f1c;
+  font-weight: 600;
+}
+
+/* ---------- Cashier mobile money tables ---------- */
+.data td > b + .code {
+  display: block;
+  margin-top: 2px;
+}
+.data .actions-cell {
+  white-space: nowrap;
+}
+.data .payment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.data .payment-actions input {
+  min-width: 180px;
+}
+.panel-title .admin-filter.compact {
+  width: min(100%, 300px);
+  margin: 0;
+}
+.panel-title:has(.admin-filter) {
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+/* Tables whose rows carry buttons turn into stacked cards on phones, so the
+   buttons are never scrolled out of reach. */
+@media (max-width: 599px) {
+  .data.stack-on-phone {
+    min-width: 0;
+  }
+  .data.stack-on-phone thead {
+    display: none;
+  }
+  .data.stack-on-phone,
+  .data.stack-on-phone tbody,
+  .data.stack-on-phone tr,
+  .data.stack-on-phone td {
+    display: block;
+    width: 100%;
+  }
+  .data.stack-on-phone tr {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .data.stack-on-phone tr:last-child {
+    border-bottom: 0;
+  }
+  .data.stack-on-phone td {
+    position: static !important;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+    border: 0;
+    box-shadow: none !important;
+    background: none;
+    text-align: right;
+  }
+  .data.stack-on-phone td::before {
+    content: attr(data-label);
+    flex: none;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: left;
+  }
+  .data.stack-on-phone td > * {
+    min-width: 0;
+  }
+  .data.stack-on-phone .actions-cell {
+    display: block;
+    padding-top: 8px;
+  }
+  .data.stack-on-phone .actions-cell::before {
+    content: none;
+  }
+  .data.stack-on-phone .payment-actions {
+    justify-content: stretch;
+  }
+  .data.stack-on-phone .payment-actions > * {
+    flex: 1 1 auto;
+  }
+  .data.stack-on-phone .payment-actions input {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+}
+.payment-actions button:not(.reject) {
+  background: var(--ink);
+  color: var(--on-dark);
+}
+@media (max-width: 599px) {
+  .table-scroll:has(.stack-on-phone) {
+    max-height: none;
+    overflow: visible;
+  }
+  .data.stack-on-phone td:not(.actions-cell) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    column-gap: 12px;
+  }
+  .data.stack-on-phone td:not(.actions-cell)::before {
+    grid-row: 1 / span 3;
+  }
+  .data.stack-on-phone td:not(.actions-cell) > * {
+    grid-column: 2;
+    justify-self: end;
+    text-align: right;
+  }
+}
+@media (max-width: 599px) {
+  .data.stack-on-phone td {
+    padding: 2px 0;
+    line-height: 1.35;
+  }
+  .data.stack-on-phone td small,
+  .data.stack-on-phone td > b + .code {
+    margin-top: 0;
+  }
+}

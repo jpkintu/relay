@@ -1229,3 +1229,218 @@ describe('notifications, cash limits and reported problems', () => {
     await rejects(run('adminListIssues', {}, s.cashier), /admin role required/);
   });
 });
+
+describe('Web Push to phones (lock screen)', () => {
+  const crypto = require('node:crypto');
+  const ece = require('http_ece');
+  const PUSH_PORT = 1340;
+  const received = [];
+  let pushServer;
+  const b64url = (buffer) => Buffer.from(buffer).toString('base64url');
+  const device = () => {
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.generateKeys();
+    const authSecret = crypto.randomBytes(16);
+    return {
+      ecdh,
+      authSecret,
+      keys: { p256dh: b64url(ecdh.getPublicKey()), auth: b64url(authSecret) },
+    };
+  };
+  const waitFor = async (check) => {
+    for (let i = 0; i < 40; i += 1) {
+      const hit = check();
+      if (hit) return hit;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
+  };
+  const placeFor = async (rider) => {
+    const { items } = await run('getOperationalMenu', {}, rider);
+    const item = items.find((i) => !(i.accompanimentGroups || []).some((g) => g.min > 0));
+    const order = await run(
+      'createOrder',
+      {
+        customerName: 'Push Test',
+        deliveryAddress: 'Kololo',
+        items: [{ id: item.id, quantity: 1 }],
+      },
+      rider,
+    );
+    await run('transitionOrder', { orderId: order.id, action: 'cancel', reason: 'Test' }, rider);
+    return order;
+  };
+
+  before(async () => {
+    process.env.RELAY_PUSH_TEST_HOSTS = `localhost:${PUSH_PORT}`;
+    // web-push only speaks HTTPS: serve the fake push service with a throwaway
+    // self-signed certificate and trust it for the duration of these tests.
+    const { execSync } = require('node:child_process');
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-push-'));
+    execSync(
+      `openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -keyout ${dir}/key.pem -out ${dir}/cert.pem`,
+      { stdio: 'ignore' },
+    );
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    const app = express();
+    // Read the body by hand: body parsers reject the aes128gcm content encoding.
+    app.post('/push/:name', (req, res) => {
+      const chunks = [];
+      req.on('data', (chunk) => chunks.push(chunk));
+      req.on('end', () => {
+        received.push({ name: req.params.name, headers: req.headers, body: Buffer.concat(chunks) });
+        res.status(req.params.name === 'gone' ? 410 : 201).end();
+      });
+    });
+    pushServer = require('node:https')
+      .createServer(
+        { key: fs.readFileSync(`${dir}/key.pem`), cert: fs.readFileSync(`${dir}/cert.pem`) },
+        app,
+      )
+      .listen(PUSH_PORT);
+  });
+  after(() => {
+    pushServer?.close();
+    delete process.env.RELAY_PUSH_TEST_HOSTS;
+    delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  });
+
+  test('the app gets the public key; only real push services are accepted', async () => {
+    const { publicKey } = await run('getPushConfig', {}, s.cashier);
+    assert.match(publicKey, /^[A-Za-z0-9_-]{87}$/);
+    assert.equal((await run('getPushConfig', {}, s.nia)).publicKey, publicKey);
+    await rejects(
+      run(
+        'savePushSubscription',
+        { subscription: { endpoint: 'https://attacker.example.com/x', keys: device().keys } },
+        s.cashier,
+      ),
+      /Unsupported push service/,
+    );
+    await rejects(run('getPushConfig', {}), /Sign in required/);
+  });
+
+  test('a new order is pushed, encrypted, to the cashier’s phone', async () => {
+    const phone = device();
+    await run(
+      'savePushSubscription',
+      {
+        subscription: { endpoint: `https://localhost:${PUSH_PORT}/push/cashier`, keys: phone.keys },
+        userAgent: 'test-phone',
+      },
+      s.cashier,
+    );
+    const order = await placeFor(s.nia);
+    const hit = await waitFor(() =>
+      received.find((r) => r.name === 'cashier' && r.headers.urgency === 'high'),
+    );
+    assert.ok(hit, 'push delivered');
+    assert.equal(hit.headers['content-encoding'], 'aes128gcm');
+    assert.match(hit.headers.authorization, /^vapid t=.+, k=.+/);
+    const payload = JSON.parse(
+      ece
+        .decrypt(hit.body, {
+          version: 'aes128gcm',
+          privateKey: phone.ecdh,
+          authSecret: b64url(phone.authSecret),
+        })
+        .toString(),
+    );
+    assert.equal(payload.title, `New order ${order.orderCode}`);
+    assert.equal(payload.tone, 'new');
+    assert.equal(payload.link, '/cashier');
+  });
+
+  test('expired subscriptions are removed; devices can be unregistered', async () => {
+    const gone = device();
+    const endpoint = `https://localhost:${PUSH_PORT}/push/gone`;
+    await run('savePushSubscription', { subscription: { endpoint, keys: gone.keys } }, s.owner);
+    await placeFor(s.nia);
+    await waitFor(() => received.find((r) => r.name === 'gone'));
+    const left = await new Parse.Query('PushSubscription')
+      .equalTo('endpoint', endpoint)
+      .first({ useMasterKey: true });
+    assert.equal(left, undefined);
+
+    const cashierEndpoint = `https://localhost:${PUSH_PORT}/push/cashier`;
+    assert.equal(
+      (await run('removePushSubscription', { endpoint: cashierEndpoint }, s.nia)).ok,
+      false,
+    );
+    assert.equal(
+      (await run('removePushSubscription', { endpoint: cashierEndpoint }, s.cashier)).ok,
+      true,
+    );
+  });
+
+  test('subscriptions and keys are never readable by clients', async () => {
+    for (const className of ['PushSubscription', 'Secret'])
+      await rejects(new Parse.Query(className).find(as(s.owner)), /Permission denied/);
+  });
+});
+
+test('a rider cannot end their shift with open orders or unreconciled cash', async () => {
+  const M = { useMasterKey: true };
+  const outstanding = async () => (await run('getMyShift', {}, s.nia)).shift.outstanding;
+  // Start from a clean slate: cancel open orders, hand over and confirm cash.
+  const open = await new Parse.Query('Order')
+    .equalTo('createdBy', Parse.User.createWithoutData(s.nia.id))
+    .notContainedIn('status', ['DELIVERED', 'CANCELLED'])
+    .find(M);
+  for (const o of open)
+    await run(
+      'transitionOrder',
+      { orderId: o.id, action: 'cancel', reason: 'Clean up' },
+      s.cashier,
+    );
+  const settle = async () => {
+    const cash = await new Parse.Query('Order')
+      .equalTo('createdBy', Parse.User.createWithoutData(s.nia.id))
+      .equalTo('cashStatus', 'WITH_RIDER')
+      .find(M);
+    if (!cash.length) return null;
+    return run('createHandover', { orderIds: cash.map((o) => o.id) }, s.nia);
+  };
+  const confirm = async (h) =>
+    h && run('confirmHandover', { handoverId: h.id, countedAmount: h.amount }, s.cashier);
+  await confirm(await settle());
+
+  const { shift: existing } = await run('getMyShift', {}, s.nia);
+  if (!existing) await run('startShift', { kind: 'rider' }, s.nia);
+  const { shift } = await run('getMyShift', {}, s.nia);
+
+  const { items } = await run('getOperationalMenu', {}, s.nia);
+  const item = items.find((i) => !(i.accompanimentGroups || []).some((g) => g.min > 0));
+  const order = await run(
+    'createOrder',
+    {
+      customerName: 'Shift Check',
+      deliveryAddress: 'Bugolobi',
+      items: [{ id: item.id, quantity: 1 }],
+    },
+    s.nia,
+  );
+  assert.equal((await outstanding()).openOrders, 1);
+  await rejects(
+    run('endShift', { shiftId: shift.id }, s.nia),
+    /Finish or cancel your 1 open order/,
+  );
+
+  for (const action of ['accept', 'ready'])
+    await run('transitionOrder', { orderId: order.id, action }, s.cashier);
+  await run('transitionOrder', { orderId: order.id, action: 'pickup' }, s.nia);
+  await run('transitionOrder', { orderId: order.id, action: 'deliver' }, s.nia);
+  assert.equal((await outstanding()).cashWithRider, order.total);
+  await rejects(run('endShift', { shiftId: shift.id }, s.nia), /Hand over the cash/);
+
+  const handover = await settle();
+  assert.equal((await outstanding()).cashPending, order.total);
+  await rejects(run('endShift', { shiftId: shift.id }, s.nia), /Wait for the cashier to confirm/);
+
+  await confirm(handover);
+  assert.deepEqual(await outstanding(), { openOrders: 0, cashWithRider: 0, cashPending: 0 });
+  await run('endShift', { shiftId: shift.id }, s.nia);
+  assert.equal((await run('getMyShift', {}, s.nia)).shift, null);
+});

@@ -92,7 +92,8 @@
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.70.1",
     "vite": "^5.4.19",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "web-push": "^3.6.7"
   },
   "engines": {
     "node": "22.x"

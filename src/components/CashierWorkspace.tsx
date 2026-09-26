@@ -22,6 +22,8 @@ import { formatDate } from '../lib/format';
 import { providerLabel } from './MobileMoney';
 import { BrandMark } from './BrandMark';
 import { NotificationBell } from './NotificationBell';
+import { PushPrompt } from './PushPrompt';
+import { Stat } from './reports/common';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -197,6 +199,7 @@ export function CashierWorkspace() {
           <LogOut />
         </button>
       </header>
+      {!preview && <PushPrompt card />}
       <Routes>
         <Route index element={<KitchenBoard />} />
         <Route path="handovers" element={<CashierHandovers preview={preview} />} />
@@ -598,6 +601,7 @@ function MobileMoneyLedger() {
   const [busy, setBusy] = useState('');
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  const [search, setSearch] = useState('');
 
   const load = useCallback(async () => {
     if (preview) return;
@@ -628,22 +632,25 @@ function MobileMoneyLedger() {
     }
   };
 
-  const line = (row: PaymentRow, actions?: React.ReactNode) => (
-    <div className="payment-row" key={row.id}>
-      <div>
-        <b>
-          {providerLabel(row.provider)} · {row.reference}
-        </b>
-        <small>
-          {row.code} · {row.customer} · {row.rider} ·{' '}
-          {formatDate(row.checkedAt || row.createdAt, config.timezone, { timeStyle: 'short' })}
-          {row.rejectReason && ` · ${row.rejectReason}`}
-        </small>
-      </div>
-      <strong>{money(row.amount)}</strong>
-      {actions}
-    </div>
+  const time = (row: PaymentRow) =>
+    formatDate(row.checkedAt || row.createdAt, config.timezone, { timeStyle: 'short' });
+  const transaction = (row: PaymentRow) => (
+    <td data-label="Transaction">
+      <b>{providerLabel(row.provider)}</b>
+      <span className="code">{row.reference}</span>
+    </td>
   );
+  const orderCell = (row: PaymentRow) => (
+    <td data-label="Order">
+      <span className="code">{row.code}</span>
+      <small>{row.customer}</small>
+    </td>
+  );
+  const matches = (row: PaymentRow) =>
+    `${row.reference} ${row.code} ${row.customer} ${row.rider}`
+      .toLowerCase()
+      .includes(search.trim().toLowerCase());
+  const verified = (ledger?.verified ?? []).filter(matches);
 
   return (
     <div className="ops-content">
@@ -657,75 +664,209 @@ function MobileMoneyLedger() {
       {preview && <p className="setup-notice">Mobile money needs a signed-in cashier.</p>}
       {ledger && (
         <>
-          <div className="admin-metrics">
+          <div className="stat-grid">
+            <Stat
+              label="Waiting for a check"
+              value={money(ledger.pending.reduce((n, r) => n + r.amount, 0))}
+              note={`${ledger.pending.length} payment${ledger.pending.length === 1 ? '' : 's'}`}
+            />
             {ledger.totals.map((t) => (
-              <article key={t.provider}>
-                <span>
-                  {t.label} · {t.code}
-                </span>
-                <strong>{money(t.amount)}</strong>
-                <small>{t.count} confirmed today</small>
-              </article>
+              <Stat
+                key={t.provider}
+                label={`${t.label} · ${t.code}`}
+                value={money(t.amount)}
+                note={`${t.count} confirmed today`}
+              />
             ))}
             {!ledger.totals.length && (
-              <article>
-                <span>No merchant codes</span>
-                <small>The owner adds Airtel/MTN merchant codes in Settings.</small>
-              </article>
+              <Stat
+                label="No merchant codes"
+                value="—"
+                note="The owner adds Airtel/MTN merchant codes in Settings."
+              />
+            )}
+            {ledger.rejected.length > 0 && (
+              <Stat
+                label="Not received today"
+                value={ledger.rejected.length}
+                note={money(ledger.rejected.reduce((n, r) => n + r.amount, 0))}
+              />
             )}
           </div>
-          <section className="admin-panel">
-            <h2>Waiting for a check ({ledger.pending.length})</h2>
-            {ledger.pending.map((row) =>
-              line(
-                row,
-                rejecting === row.id ? (
-                  <div className="payment-actions">
-                    <input
-                      autoFocus
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                      placeholder="Why not? e.g. not on statement"
-                    />
-                    <button onClick={() => setRejecting(null)}>Back</button>
-                    <button
-                      className="reject"
-                      disabled={busy === row.id || reason.trim().length < 3}
-                      onClick={() => void check(row, false)}
-                    >
-                      Not received
-                    </button>
-                  </div>
-                ) : (
-                  <div className="payment-actions">
-                    <button
-                      className="reject"
-                      disabled={busy === row.id}
-                      onClick={() => {
-                        setRejecting(row.id);
-                        setReason('');
-                      }}
-                    >
-                      Not received
-                    </button>
-                    <button disabled={busy === row.id} onClick={() => void check(row, true)}>
-                      <Check /> Received
-                    </button>
-                  </div>
-                ),
-              ),
+
+          <section className="admin-panel admin-section-panel">
+            <div className="panel-title">
+              <h2>
+                Waiting for a check <small>({ledger.pending.length})</small>
+              </h2>
+            </div>
+            {ledger.pending.length > 0 ? (
+              <div className="table-scroll">
+                <table className="data stack-on-phone">
+                  <thead>
+                    <tr>
+                      <th>Transaction</th>
+                      <th>Order</th>
+                      <th>Rider</th>
+                      <th>Sent</th>
+                      <th className="num">Amount</th>
+                      <th>Check</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.pending.map((row) => (
+                      <tr key={row.id}>
+                        {transaction(row)}
+                        {orderCell(row)}
+                        <td data-label="Rider">{row.rider}</td>
+                        <td data-label="Sent" className="nowrap">
+                          {time(row)}
+                        </td>
+                        <td data-label="Amount" className="num strong">
+                          {money(row.amount)}
+                        </td>
+                        <td data-label="Check" className="actions-cell">
+                          {rejecting === row.id ? (
+                            <div className="payment-actions">
+                              <input
+                                autoFocus
+                                value={reason}
+                                onChange={(e) => setReason(e.target.value)}
+                                placeholder="Why not? e.g. not on statement"
+                              />
+                              <button onClick={() => setRejecting(null)}>Back</button>
+                              <button
+                                className="reject"
+                                disabled={busy === row.id || reason.trim().length < 3}
+                                onClick={() => void check(row, false)}
+                              >
+                                Not received
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="payment-actions">
+                              <button
+                                className="reject"
+                                disabled={busy === row.id}
+                                onClick={() => {
+                                  setRejecting(row.id);
+                                  setReason('');
+                                }}
+                              >
+                                Not received
+                              </button>
+                              <button
+                                disabled={busy === row.id}
+                                onClick={() => void check(row, true)}
+                              >
+                                <Check /> Received
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="empty-orders">Nothing waiting.</p>
             )}
-            {!ledger.pending.length && <p className="empty-orders">Nothing waiting.</p>}
           </section>
-          <section className="admin-panel">
-            <h2>Confirmed today ({ledger.verified.length})</h2>
-            {ledger.verified.map((row) => line(row, <span className="paid-badge">Paid</span>))}
-            {!ledger.verified.length && <p className="empty-orders">None yet today.</p>}
+
+          <section className="admin-panel admin-section-panel">
+            <div className="panel-title">
+              <h2>
+                Confirmed today <small>({ledger.verified.length})</small>
+              </h2>
+              <input
+                className="admin-filter compact"
+                placeholder="Search reference, order or rider"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Search confirmed payments"
+              />
+            </div>
+            {verified.length > 0 ? (
+              <div className="table-scroll">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Transaction</th>
+                      <th>Order</th>
+                      <th>Rider</th>
+                      <th>Confirmed</th>
+                      <th className="num">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {verified.map((row) => (
+                      <tr key={row.id}>
+                        {transaction(row)}
+                        {orderCell(row)}
+                        <td>{row.rider}</td>
+                        <td className="nowrap">
+                          {time(row)}
+                          {row.checkedBy && <small>{row.checkedBy}</small>}
+                        </td>
+                        <td className="num strong">{money(row.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={4}>
+                        {verified.length} payment{verified.length === 1 ? '' : 's'}
+                      </td>
+                      <td className="num">{money(verified.reduce((n, r) => n + r.amount, 0))}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            ) : (
+              <p className="empty-orders">
+                {ledger.verified.length ? 'No match.' : 'None yet today.'}
+              </p>
+            )}
           </section>
+
           {ledger.rejected.length > 0 && (
-            <section className="admin-panel">
-              <h2>Not received today ({ledger.rejected.length})</h2>
-              {ledger.rejected.map((row) => line(row))}
+            <section className="admin-panel admin-section-panel">
+              <div className="panel-title">
+                <h2>
+                  Not received today <small>({ledger.rejected.length})</small>
+                </h2>
+              </div>
+              <div className="table-scroll">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Transaction</th>
+                      <th>Order</th>
+                      <th>Rider</th>
+                      <th>Reason</th>
+                      <th className="num">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.rejected.map((row) => (
+                      <tr key={row.id}>
+                        {transaction(row)}
+                        {orderCell(row)}
+                        <td>{row.rider}</td>
+                        <td>
+                          {row.rejectReason}
+                          <small>
+                            {time(row)}
+                            {row.checkedBy && ` · ${row.checkedBy}`}
+                          </small>
+                        </td>
+                        <td className="num">{money(row.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
         </>

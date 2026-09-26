@@ -11,6 +11,7 @@ type Shift = {
   openingFloat: number;
   expectedTill: number | null;
   float: number | null;
+  outstanding: { openOrders: number; cashWithRider: number; cashPending: number } | null;
 };
 export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; preview: boolean }) {
   const money = useMoney();
@@ -18,7 +19,6 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
   const [shift, setShift] = useState<Shift | null>(null),
     [opening, setOpening] = useState('0'),
     [physical, setPhysical] = useState(''),
-    [acknowledge, setAcknowledge] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
@@ -55,7 +55,6 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
     try {
       const result = await Parse.Cloud.run('endShift', {
         shiftId: shift.id,
-        acknowledgeCash: acknowledge,
         physicalCount: Number(physical),
       });
       setShift(null);
@@ -63,13 +62,16 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
         kind === 'cashier' ? `Shift closed. Variance: ${money(result.variance)}.` : 'Shift closed.',
       );
       setPhysical('');
-      setAcknowledge(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not close shift');
     } finally {
       setBusy(false);
     }
   };
+  const outstanding = shift?.outstanding;
+  const riderBlocked =
+    !!outstanding &&
+    (outstanding.openOrders > 0 || outstanding.cashWithRider > 0 || outstanding.cashPending > 0);
   return (
     <section className="shift-panel">
       <div className="shift-panel-title">
@@ -108,28 +110,28 @@ export function ShiftPanel({ kind, preview }: { kind: 'rider' | 'cashier'; previ
               </label>
             </>
           ) : (
-            <>
-              <p>
-                Cash still accountable: <strong>{money(shift.float)}</strong>
-              </p>
-              {Number(shift.float) > 0 && (
-                <label className="setup-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={acknowledge}
-                    onChange={(e) => setAcknowledge(e.target.checked)}
-                  />{' '}
-                  I acknowledge that this cash is still with me and must be handed over.
-                </label>
+            <ul className="shift-checklist" aria-label="Before you end your shift">
+              <li className={outstanding?.openOrders ? 'todo' : 'done'}>
+                {outstanding?.openOrders
+                  ? `${outstanding.openOrders} open order${outstanding.openOrders === 1 ? '' : 's'} to deliver or cancel`
+                  : 'No open orders'}
+              </li>
+              <li className={outstanding?.cashWithRider ? 'todo' : 'done'}>
+                {outstanding?.cashWithRider
+                  ? `${money(outstanding.cashWithRider)} cash to hand over`
+                  : 'No cash in hand'}
+              </li>
+              {Boolean(outstanding?.cashPending) && (
+                <li className="todo">
+                  {money(outstanding!.cashPending)} handed over, waiting for the cashier to confirm
+                </li>
               )}
-            </>
+            </ul>
           )}
           <button
             className="shift-action"
             disabled={
-              busy ||
-              (kind === 'cashier' && physical === '') ||
-              (kind === 'rider' && Number(shift.float) > 0 && !acknowledge)
+              busy || (kind === 'cashier' && physical === '') || (kind === 'rider' && riderBlocked)
             }
             onClick={() => void end()}
           >

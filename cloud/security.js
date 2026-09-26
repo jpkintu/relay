@@ -39,9 +39,11 @@ const PROTECTED_CLASSES = [
   'Counter',
   'DemoOrder',
   'Notification',
+  'PushSubscription',
+  'Secret',
 ];
 // Classes clients never read directly either.
-const PRIVATE_CLASSES = ['Counter', 'DemoOrder', 'Configuration'];
+const PRIVATE_CLASSES = ['Counter', 'DemoOrder', 'Configuration', 'PushSubscription', 'Secret'];
 // Fields a signed-in user may change on their own _User record.
 const SELF_EDITABLE_USER_FIELDS = ['password', 'email'];
 
@@ -241,6 +243,15 @@ const SCHEMAS = {
     restaurantStatus: S,
     isDemo: B,
   },
+  PushSubscription: {
+    user,
+    endpoint: S,
+    p256dh: S,
+    auth: S,
+    userAgent: S,
+    lastSeenAt: D,
+  },
+  Secret: { key: S, value: 'Object' },
   Notification: {
     recipient: user,
     kind: S,
