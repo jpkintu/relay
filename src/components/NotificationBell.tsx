@@ -26,7 +26,8 @@ export function NotificationBell() {
   }, [open]);
 
   if (!notifications) return null;
-  const { items, unread, soundOn, setSoundOn } = notifications;
+  const { unread, soundOn, setSoundOn } = notifications;
+  const items = notifications.items.filter((n) => !n.read);
   const label = unread ? `Notifications, ${unread} unread` : 'Notifications';
 
   return (
@@ -72,7 +73,7 @@ export function NotificationBell() {
                 </button>
               </li>
             ))}
-            {!items.length && <li className="bell-empty">Nothing yet.</li>}
+            {!items.length && <li className="bell-empty">You’re all caught up.</li>}
           </ul>
           <footer>
             <button onClick={() => setSoundOn(!soundOn)} aria-pressed={soundOn}>

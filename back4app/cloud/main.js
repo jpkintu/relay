@@ -8389,6 +8389,7 @@ var require_notifications = __commonJS({
       }
       const listQuery = new Parse.Query("Notification");
       listQuery.equalTo("recipient", user);
+      listQuery.doesNotExist("readAt");
       listQuery.descending("createdAt");
       listQuery.limit(40);
       const unreadQuery = new Parse.Query("Notification");
