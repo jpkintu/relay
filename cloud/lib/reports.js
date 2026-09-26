@@ -6,6 +6,14 @@
 
 const round = (value) => Math.round(Number(value) || 0);
 const isDelivered = (fact) => fact.status === 'DELIVERED';
+// Money the restaurant actually has: cash counted in by a cashier, or mobile
+// money a cashier found on the merchant statement.
+const isConfirmed = (fact) =>
+  fact.method === 'cash'
+    ? fact.cashStatus === 'RECONCILED'
+    : fact.method === 'mobile_money'
+      ? fact.paymentStatus === 'VERIFIED'
+      : true;
 const OPEN = ['PLACED', 'ACCEPTED', 'PREPARING', 'READY', 'PICKED_UP'];
 
 // % change from previous to current; null when there is nothing to compare.
@@ -17,7 +25,11 @@ function growth(current, previous) {
 function summarize(facts) {
   const delivered = facts.filter(isDelivered);
   const revenue = delivered.reduce((n, f) => n + round(f.total), 0);
+  // `commission` is rider pay: commission + the delivery fee, which is passed
+  // on to the rider in full.
   const commission = delivered.reduce((n, f) => n + round(f.commission), 0);
+  const deliveryPay = delivered.reduce((n, f) => n + round(f.deliveryPay ?? f.deliveryFee), 0);
+  const confirmed = delivered.filter(isConfirmed);
   const perCustomer = new Map();
   for (const fact of delivered) {
     if (!fact.customerKey) continue;
@@ -36,11 +48,16 @@ function summarize(facts) {
     foodSales: delivered.reduce((n, f) => n + round(f.subtotal), 0),
     deliveryFees: delivered.reduce((n, f) => n + round(f.deliveryFee), 0),
     commission,
+    riderCommission: commission - deliveryPay,
     net: revenue - commission,
     avgOrder: delivered.length ? Math.round(revenue / delivered.length) : 0,
-    cashSales: delivered.filter((f) => f.method === 'cash').reduce((n, f) => n + round(f.total), 0),
-    mobileMoneySales: delivered
+    // Confirmed money only; the rest is still with riders or waiting for a check.
+    cashSales: confirmed.filter((f) => f.method === 'cash').reduce((n, f) => n + round(f.total), 0),
+    mobileMoneySales: confirmed
       .filter((f) => f.method === 'mobile_money')
+      .reduce((n, f) => n + round(f.total), 0),
+    unconfirmedSales: delivered
+      .filter((f) => !isConfirmed(f))
       .reduce((n, f) => n + round(f.total), 0),
     customers: perCustomer.size,
     repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
@@ -161,10 +178,12 @@ function timeOfDay(facts, clockOf) {
   return { hours, weekdays };
 }
 
-// Delivered revenue by how it was paid: cash, or mobile money per provider.
+// Confirmed money by how it was paid: cash counted in by a cashier, or
+// verified mobile money per provider. Cash still with riders and mobile money
+// waiting for a check are left out (see unconfirmedSales in summarize).
 function paymentMix(facts) {
   const byKey = new Map();
-  for (const fact of facts.filter(isDelivered)) {
+  for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
     const key = fact.method === 'mobile_money' ? fact.provider || 'mobile_money' : 'cash';
     const row = byKey.get(key) || { key, orders: 0, amount: 0 };
     row.orders += 1;
