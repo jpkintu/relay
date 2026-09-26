@@ -12,6 +12,7 @@ const {
   riderFloat,
   personName,
   requireCashierShift,
+  takeOrder,
 } = require('./lib/core');
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
@@ -130,12 +131,10 @@ Parse.Cloud.define('createOrder', async (request) => {
   const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
   const total = subtotal + fee;
   const isCash = paymentMethod === 'cash';
-  const amountToCollect = isCash ? Math.round(Number(p.amountToCollect ?? total)) : 0;
-  if (!Number.isFinite(amountToCollect) || amountToCollect < 0)
-    throw invalid('Enter the amount to collect');
-  const shortfallNote = clean(p.shortfallNote, 200);
-  if (isCash && amountToCollect < total && shortfallNote.length < 5)
-    throw invalid('The customer is paying less than the total. Add a note explaining why');
+  // Customers pay the full total: part payments are not accepted.
+  if (isCash && p.amountToCollect !== undefined && Number(p.amountToCollect) !== total)
+    throw invalid('The customer must pay the full total');
+  const amountToCollect = isCash ? total : 0;
 
   // Mobile money: the customer pays the restaurant's merchant code before
   // the order is sent; the cashier confirms it before the kitchen accepts.
@@ -162,7 +161,6 @@ Parse.Cloud.define('createOrder', async (request) => {
     total,
     paymentMethod,
     amountToCollect,
-    shortfallNote: isCash && amountToCollect < total ? shortfallNote : '',
     amountCollected: 0,
     status: 'PLACED',
     restaurantStatus: 'pending',
@@ -317,29 +315,36 @@ Parse.Cloud.define('transitionOrder', async (request) => {
       });
     }
     const isCash = method === 'cash';
-    const total = order.get('total');
-    const amount = isCash ? Number(p.amountCollected ?? order.get('amountToCollect') ?? total) : 0;
-    if (!Number.isFinite(amount) || amount < 0) throw invalid('Enter the amount collected');
-    const note = clean(p.shortfallNote, 200) || order.get('shortfallNote') || '';
-    if (isCash && amount < total && note.length < 5)
-      throw invalid('Collected amount is below the total. Add a note explaining why');
+    // The full amount is collected at the door; orders placed before part
+    // payments were stopped keep the amount agreed then.
+    const due = Number(order.get('amountToCollect') || order.get('total'));
+    const amount = isCash ? Number(p.amountCollected ?? due) : 0;
+    if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
     const rider = await order.get('createdBy').fetch(MASTER);
+    // The rider is paid their commission plus the delivery fee, from the till.
+    const commission = computeCommission({
+      type: rider.get('commissionType') || 'per_order',
+      perOrder: rider.get('commissionPerOrder'),
+      percent: rider.get('commissionPercent'),
+      subtotal: order.get('subtotal'),
+      rounding: config.commissionRounding,
+    });
+    const deliveryPay = Number(order.get('deliveryFee') || 0);
     order.set({
       paymentMethod: method,
       deliveredAt: now,
       amountCollected: Math.round(amount),
-      shortfallNote: isCash && amount < total ? note : '',
       paymentCollectedBy: actor,
-      commissionAmount: computeCommission({
-        type: rider.get('commissionType') || 'per_order',
-        perOrder: rider.get('commissionPerOrder'),
-        percent: rider.get('commissionPercent'),
-        subtotal: order.get('subtotal'),
-        rounding: config.commissionRounding,
-      }),
+      commissionBase: commission,
+      deliveryPay,
+      commissionAmount: commission + deliveryPay,
+      commissionPaid: false,
       cashStatus: isCash ? 'WITH_RIDER' : 'NOT_APPLICABLE',
     });
   }
+  // Taken last, once every check has passed, so a refused request never
+  // leaves the order half-claimed.
+  if (staff && !owner) await takeOrder(order, actor, role);
   await order.save(null, MASTER);
   await audit(actor, `order.${p.action}`, order, before, {
     status: rule.to,
@@ -486,4 +491,74 @@ Parse.Cloud.define('adminListIssues', async (request) => {
   };
 });
 
-module.exports = { riderFloat, servableAccompaniments };
+const KITCHEN_OPEN = ['PLACED', 'ACCEPTED', 'PREPARING', 'READY'];
+
+// Cashiers with an open shift: the colleagues an order can be passed to.
+async function onShiftCashiers() {
+  const query = new Parse.Query('Shift');
+  query.equalTo('kind', 'cashier');
+  query.equalTo('status', 'open');
+  query.include('operator');
+  query.limit(100);
+  const shifts = await query.find(MASTER);
+  const seen = new Set();
+  const people = [];
+  for (const shift of shifts) {
+    const person = shift.get('operator');
+    if (!person || seen.has(person.id) || person.get('active') === false) continue;
+    if ((await getRoleName(person)) !== 'cashier') continue;
+    seen.add(person.id);
+    people.push(person);
+  }
+  return people;
+}
+
+Parse.Cloud.define('getOnShiftCashiers', async (request) => {
+  const { user } = await requireRole(request, ['cashier', 'admin']);
+  return (await onShiftCashiers())
+    .filter((person) => person.id !== user.id)
+    .map((person) => ({ id: person.id, name: personName(person) }));
+});
+
+// Pass a kitchen order to a colleague on shift, or release it (toUserId
+// empty) so any cashier can take it. Only the cashier holding it, or the
+// owner, can do this.
+Parse.Cloud.define('transferOrder', async (request) => {
+  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(actor, role);
+  const order = await new Parse.Query('Order').get(request.params.orderId, MASTER);
+  if (!KITCHEN_OPEN.includes(order.get('status')))
+    throw invalid('Only orders still in the kitchen can be transferred');
+  const holder = order.get('cashier');
+  if (role === 'cashier' && holder && holder.id !== actor.id)
+    throw forbidden(`${order.get('cashierName')} is handling this order`);
+  const toId = String(request.params.toUserId || '');
+  let target = null;
+  if (toId) {
+    target = (await onShiftCashiers()).find((person) => person.id === toId);
+    if (!target) throw invalid('That colleague is not on shift');
+    if (holder?.id === target.id) throw invalid(`${personName(target)} already has this order`);
+  }
+  const before = { cashier: order.get('cashierName') || '' };
+  order.set('cashierRound', Number(order.get('cashierRound') || 0) + 1);
+  if (target)
+    order.set({ cashier: target, cashierName: personName(target), assignedAt: new Date() });
+  else order.set('cashierName', '');
+  if (!target && holder) order.unset('cashier');
+  await order.save(null, MASTER);
+  await audit(actor, 'order.transferred', order, before, { cashier: order.get('cashierName') });
+  const code = order.get('orderCode');
+  const from = personName(await actor.fetch(MASTER));
+  if (target)
+    await notifyUser(target, {
+      kind: 'order.transferred',
+      tone: 'new',
+      title: `${code} passed to you`,
+      body: `${from} transferred it · ${order.get('customerName')}`,
+      link: '/cashier',
+      order,
+    });
+  return { cashier: order.get('cashierName') || '' };
+});
+
+module.exports = { riderFloat, servableAccompaniments, KITCHEN_OPEN };

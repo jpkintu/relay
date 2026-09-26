@@ -10,20 +10,51 @@ const {
   adminOnly,
   loadConfig,
   personName,
+  verifyPin,
 } = require('./lib/core');
 const { money, notifyAdmins } = require('./notifications');
 const { resolveRange } = require('./lib/dates');
 const { sumBy } = require('./lib/money');
 
-// Opening float plus every handover this cashier confirmed since the shift began.
-async function expectedTill(cashier, shift) {
-  const query = new Parse.Query('CashHandover');
+// The till during a shift: the opening count, plus rider cash this cashier
+// took in (confirmed handovers, and the counted part of disputed ones), less
+// money paid out (rider pay, expenses).
+async function tillSummary(cashier, shift) {
+  const start = shift.get('startedAt');
+  const end = shift.get('endedAt') || new Date(Date.now() + 60000);
+  const counted = new Parse.Query('CashHandover');
+  counted.equalTo('cashier', cashier);
+  counted.greaterThanOrEqualTo('tillAt', start);
+  counted.lessThan('tillAt', end);
+  // Handovers confirmed before tillAt existed.
+  const legacy = new Parse.Query('CashHandover');
+  legacy.equalTo('cashier', cashier);
+  legacy.equalTo('status', 'confirmed');
+  legacy.doesNotExist('tillAt');
+  legacy.notEqualTo('receivedByOwner', true);
+  legacy.greaterThanOrEqualTo('confirmedAt', start);
+  legacy.lessThan('confirmedAt', end);
+  const handoverQuery = Parse.Query.or(counted, legacy);
+  handoverQuery.limit(1000);
+  const payoutQuery = new Parse.Query('TillPayout');
+  payoutQuery.equalTo('shift', shift);
+  payoutQuery.limit(1000);
+  const [handovers, payouts] = await Promise.all([
+    handoverQuery.find(MASTER),
+    payoutQuery.find(MASTER),
+  ]);
+  const openingFloat = Number(shift.get('openingFloat') || 0);
+  const cashIn = sumBy(handovers, (h) => h.get('countedAmount') ?? h.get('amount'));
+  const paidOut = sumBy(payouts, (row) => row.get('amount'));
+  return { openingFloat, cashIn, paidOut, expected: openingFloat + cashIn - paidOut };
+}
+
+// Kitchen orders this cashier still holds.
+function heldOrdersQuery(cashier) {
+  const query = new Parse.Query('Order');
   query.equalTo('cashier', cashier);
-  query.equalTo('status', 'confirmed');
-  query.greaterThanOrEqualTo('confirmedAt', shift.get('startedAt'));
-  query.limit(1000);
-  const handovers = await query.find(MASTER);
-  return Number(shift.get('openingFloat') || 0) + sumBy(handovers, (h) => h.get('amount'));
+  query.containedIn('status', ['PLACED', 'ACCEPTED', 'PREPARING', 'READY']);
+  return query;
 }
 
 // What stops a rider from ending their shift: orders not yet delivered or
@@ -72,13 +103,17 @@ Parse.Cloud.define('getMyShift', async (request) => {
   const shift = await openShiftQuery(user).first(MASTER);
   if (!shift) return { shift: null };
   const isCashier = shift.get('kind') === 'cashier';
+  const till = isCashier ? await tillSummary(user, shift) : null;
   return {
     shift: {
       id: shift.id,
       kind: shift.get('kind'),
       startedAt: shift.get('startedAt'),
       openingFloat: shift.get('openingFloat'),
-      expectedTill: isCashier ? await expectedTill(user, shift) : null,
+      expectedTill: till ? till.expected : null,
+      cashIn: till ? till.cashIn : null,
+      paidOut: till ? till.paidOut : null,
+      heldOrders: isCashier ? await heldOrdersQuery(user).count(MASTER) : null,
       float: isCashier ? null : await riderFloat(user),
       outstanding: isCashier ? null : await riderOutstanding(user),
     },
@@ -123,13 +158,23 @@ Parse.Cloud.define('endShift', async (request) => {
   if (!isCashier) {
     const problem = outstandingProblem(await riderOutstanding(user));
     if (problem) throw invalid(problem);
+  } else {
+    const held = await heldOrdersQuery(user).count(MASTER);
+    if (held)
+      throw invalid(
+        `You still hold ${held} kitchen order${held === 1 ? '' : 's'}. Finish or transfer ${
+          held === 1 ? 'it' : 'them'
+        } before ending your shift`,
+      );
   }
   const balance = 0;
   let expected = null;
   let counted = null;
   let variance = null;
+  let till = null;
   if (isCashier) {
-    expected = await expectedTill(user, row);
+    till = await tillSummary(user, row);
+    expected = till.expected;
     const rawCount = request.params.physicalCount;
     counted = Number(rawCount);
     if (rawCount === undefined || rawCount === '' || !Number.isFinite(counted) || counted < 0)
@@ -142,7 +187,9 @@ Parse.Cloud.define('endShift', async (request) => {
     .slice(0, 500);
   if (variance && varianceNote.length < 10)
     throw invalid('The till is off: explain the difference before ending your shift');
+  await verifyPin(user, request.params.pin);
   row.set({
+    ...(till && { cashIn: till.cashIn, paidOut: till.paidOut }),
     status: 'closed',
     endedAt: new Date(),
     closingFloat: balance,
@@ -191,6 +238,7 @@ Parse.Cloud.define('getShiftReport', async (request) => {
   const shifts = await Promise.all(
     rows.map(async (shift) => {
       const open = shift.get('status') === 'open';
+      const till = open ? await tillSummary(shift.get('operator'), shift) : null;
       return {
         id: shift.id,
         cashier: personName(shift.get('operator')),
@@ -198,9 +246,9 @@ Parse.Cloud.define('getShiftReport', async (request) => {
         startedAt: shift.get('startedAt'),
         endedAt: shift.get('endedAt') || null,
         openingFloat: Number(shift.get('openingFloat') || 0),
-        expectedTill: open
-          ? await expectedTill(shift.get('operator'), shift)
-          : (shift.get('expectedTill') ?? null),
+        cashIn: till ? till.cashIn : (shift.get('cashIn') ?? null),
+        paidOut: till ? till.paidOut : (shift.get('paidOut') ?? null),
+        expectedTill: till ? till.expected : (shift.get('expectedTill') ?? null),
         physicalCount: shift.get('physicalCount') ?? null,
         variance: shift.get('variance') ?? null,
         varianceNote: shift.get('varianceNote') || '',

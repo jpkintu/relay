@@ -136,11 +136,16 @@ function toJSON(row) {
 
 Parse.Cloud.define('getNotifications', async (request) => {
   const user = requireUser(request);
-  if ((await getRoleName(user)) === 'rider') {
+  const role = await getRoleName(user);
+  if (role === 'rider') {
     const { values: config } = await loadConfig();
     const float = await riderFloat(user);
     await cashLimitAlert(user, config, float);
     await handoverReminder(user, config, float);
+  } else if (role === 'cashier' || role === 'admin') {
+    // Loaded here: cash.js itself sends notifications.
+    const { staleHandoverAlerts } = require('./cash');
+    await staleHandoverAlerts((await loadConfig()).values);
   }
   // The bell lists unread notifications only; reading one clears it.
   const listQuery = new Parse.Query('Notification');

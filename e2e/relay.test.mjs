@@ -16,6 +16,9 @@ import { ParseServer } from 'parse-server';
 const require = createRequire(import.meta.url);
 const Parse = require('parse/node');
 
+// Check for stale handovers on every staff poll (the app throttles it).
+process.env.RELAY_STALE_CHECK_MS = '0';
+
 const PORT = 1338;
 const APP_ID = 'relay-e2e';
 const MASTER_KEY = 'relay-e2e-master';
@@ -68,7 +71,23 @@ after(async () => {
 });
 
 const as = (user) => ({ sessionToken: user.getSessionToken() });
-const run = (name, params, user) => Parse.Cloud.run(name, params, user ? as(user) : {});
+// Each person's PIN, so steps that ask for it again get it by default.
+const PINS = {
+  rita: '2468', // changed from 1234 in "a rider can still change their own password"
+  carl: '5678',
+  ron: '4321',
+  cora: '8642',
+  nia: '2468',
+  cleo: '9753',
+  owner: 'owner-pass',
+};
+const PIN_STEPS = ['createHandover', 'endShift', 'payRider', 'recordTillPayout'];
+const run = (name, params, user) => {
+  const pin = PINS[user?.get('username')];
+  const withPin =
+    PIN_STEPS.includes(name) && params && !('pin' in params) && pin ? { ...params, pin } : params;
+  return Parse.Cloud.run(name, withPin, user ? as(user) : {});
+};
 const login = (username, password) => Parse.User.logIn(username, password);
 
 async function rejects(promise, pattern) {
@@ -287,8 +306,10 @@ describe('order to cash', () => {
     const order = await new Parse.Query('Order').get(s.orderId, as(s.rider));
     assert.equal(order.get('status'), 'DELIVERED');
     assert.equal(order.get('cashStatus'), 'WITH_RIDER');
-    // hybrid: 1000 + 10% of 37000 subtotal
-    assert.equal(order.get('commissionAmount'), 4700);
+    // hybrid: 1000 + 10% of 37000 subtotal, plus the 3000 delivery fee
+    assert.equal(order.get('commissionBase'), 4700);
+    assert.equal(order.get('deliveryPay'), 3000);
+    assert.equal(order.get('commissionAmount'), 7700);
   });
 
   test('cash handover is created by the rider and confirmed by the cashier', async () => {
@@ -298,7 +319,7 @@ describe('order to cash', () => {
     assert.match(row.get('handoverCode'), /^HO-\d{8}-001$/);
     await rejects(
       run('confirmHandover', { handoverId: handover.id, countedAmount: 39000 }, s.cashier),
-      /must match the claim/,
+      /must match the ticked orders/,
     );
     await rejects(
       run('confirmHandover', { handoverId: handover.id, countedAmount: 40000 }, s.rider),
@@ -591,15 +612,15 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     assert.equal((await get(fourth.id)).get('restaurantStatus'), 'rejected');
   });
 
-  test('paying less than the total needs a note', async () => {
-    await rejects(order({ amountToCollect: 20000 }), /Add a note/);
-    const short = await order({
-      amountToCollect: 25000,
-      shortfallNote: 'Regular, pays balance tomorrow',
-    });
-    const row = await get(short.id);
-    assert.equal(row.get('amountToCollect'), 25000);
-    await run('transitionOrder', { orderId: short.id, action: 'cancel', reason: 'test' }, s.rider2);
+  test('customers pay the full total: part payments are refused', async () => {
+    await rejects(
+      order({ amountToCollect: 20000, shortfallNote: 'Pays the rest tomorrow' }),
+      /must pay the full total/,
+    );
+    const full = await order({});
+    const row = await get(full.id);
+    assert.equal(row.get('amountToCollect'), row.get('total'));
+    await run('transitionOrder', { orderId: full.id, action: 'cancel', reason: 'test' }, s.rider2);
   });
 
   test('cash limit: the order that crosses the limit goes ahead, the next one waits', async () => {
@@ -1562,5 +1583,438 @@ describe('cashier shifts and till reconciliation', () => {
     const { shift } = await run('getMyShift', {}, s.cleo);
     const result = await run('endShift', { shiftId: shift.id, physicalCount: 20000 }, s.cleo);
     assert.equal(result.variance, 0);
+  });
+});
+
+describe('cash integrity: PINs, one cashier per order, safe handovers, payouts', () => {
+  const M = { useMasterKey: true };
+  const shiftOf = async (user) => (await run('getMyShift', {}, user)).shift;
+  let item;
+  let orderSeq = 0;
+
+  // A cash order by Pia taken all the way to delivered, with `cashier` in
+  // the kitchen. Returns the order id and total.
+  async function deliveredOrder(cashier = s.dina) {
+    orderSeq += 1;
+    const placed = await run(
+      'createOrder',
+      {
+        customerName: `Integrity ${orderSeq}`,
+        deliveryAddress: 'Kololo',
+        items: [{ id: item.id, quantity: 1 }],
+      },
+      s.pia,
+    );
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: placed.id, action }, cashier);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.pia);
+    await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.pia);
+    return { id: placed.id, total: placed.total };
+  }
+
+  before(async () => {
+    const { settings: current } = await run('adminListSetup', {}, s.owner);
+    await run(
+      'adminSaveSettings',
+      { ...current, maxRiderFloat: 5000000, allowBatching: true, defaultDeliveryFee: 3000 },
+      s.owner,
+    );
+    const pia = await run(
+      'adminCreateTeamMember',
+      { name: 'Pia Pikipiki', username: 'pia', pin: '1357', role: 'rider' },
+      s.owner,
+    );
+    await run(
+      'adminUpdateMember',
+      { id: pia.id, commissionType: 'per_order', commissionPerOrder: 1000 },
+      s.owner,
+    );
+    for (const [name, username, pin] of [
+      ['Dina Desk', 'dina', '2244'],
+      ['Eli Desk', 'eli', '3355'],
+    ])
+      await run('adminCreateTeamMember', { name, username, pin, role: 'cashier' }, s.owner);
+    Object.assign(PINS, { pia: '1357', dina: '2244', eli: '3355' });
+    s.pia = await login('pia', '1357');
+    s.dina = await login('dina', '2244');
+    s.eli = await login('eli', '3355');
+    await run('startShift', { kind: 'cashier', openingFloat: 10000 }, s.dina);
+    await run('startShift', { kind: 'cashier', openingFloat: 0 }, s.eli);
+    await run('startShift', { kind: 'rider' }, s.pia);
+    const menu = (await run('getOperationalMenu', {}, s.pia)).items;
+    item = menu.find((i) => !i.accompanimentGroups.length);
+  });
+
+  test('sensitive steps ask for the PIN again; five wrong PINs lock them', async () => {
+    const { id } = await deliveredOrder();
+    await rejects(run('createHandover', { orderIds: [id], pin: '' }, s.pia), /Enter your PIN/);
+    await rejects(
+      run('createHandover', { orderIds: [id], pin: '0000' }, s.pia),
+      /Wrong PIN \(4 tries left\)/,
+    );
+    for (let i = 0; i < 3; i += 1)
+      await rejects(run('createHandover', { orderIds: [id], pin: '0000' }, s.pia), /Wrong PIN/);
+    await rejects(run('createHandover', { orderIds: [id], pin: '0000' }, s.pia), /Locked for 15/);
+    // Even the right PIN waits out the lock.
+    await rejects(run('createHandover', { orderIds: [id], pin: '1357' }, s.pia), /Try again in/);
+    const me = await new Parse.Query(Parse.User).get(s.pia.id, M);
+    me.set('pinLockedUntil', new Date(Date.now() - 1000));
+    await me.save(null, M);
+    const handover = await run('createHandover', { orderIds: [id] }, s.pia);
+    assert.ok(handover.id);
+    s.piaFirstHandover = handover.id;
+  });
+
+  test('the full total is collected at the door', async () => {
+    const placed = await run(
+      'createOrder',
+      {
+        customerName: 'Full Pay',
+        deliveryAddress: 'Ntinda',
+        items: [{ id: item.id, quantity: 1 }],
+      },
+      s.pia,
+    );
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: placed.id, action }, s.dina);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.pia);
+    await rejects(
+      run(
+        'transitionOrder',
+        { orderId: placed.id, action: 'deliver', amountCollected: placed.total - 1000 },
+        s.pia,
+      ),
+      /Collect the full/,
+    );
+    await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.pia);
+    const row = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(row.get('amountCollected'), placed.total);
+    // Rider pay: 1000 commission + the 3000 delivery fee.
+    assert.equal(row.get('commissionAmount'), 4000);
+  });
+
+  test('an order belongs to the cashier who took it; they can pass it on', async () => {
+    const placed = await run(
+      'createOrder',
+      {
+        customerName: 'Assigned',
+        deliveryAddress: 'Naguru',
+        items: [{ id: item.id, quantity: 1 }],
+      },
+      s.pia,
+    );
+    await run('transitionOrder', { orderId: placed.id, action: 'accept' }, s.dina);
+    let row = await new Parse.Query('Order').get(placed.id, as(s.eli));
+    assert.equal(row.get('cashier').id, s.dina.id);
+    assert.match(row.get('cashierName'), /Dina Desk/);
+    await rejects(
+      run('transitionOrder', { orderId: placed.id, action: 'ready' }, s.eli),
+      /Dina Desk is handling this order/,
+    );
+    await rejects(
+      run('transferOrder', { orderId: placed.id, toUserId: s.dina.id }, s.eli),
+      /is handling this order/,
+    );
+    // The owner can act on any order without taking it.
+    await run('transitionOrder', { orderId: placed.id, action: 'prepare' }, s.owner);
+
+    const colleagues = await run('getOnShiftCashiers', {}, s.dina);
+    assert.ok(colleagues.some((c) => c.id === s.eli.id));
+    assert.ok(!colleagues.some((c) => c.id === s.dina.id));
+    await rejects(
+      run('transferOrder', { orderId: placed.id, toUserId: s.pia.id }, s.dina),
+      /not on shift/,
+    );
+    await run('transferOrder', { orderId: placed.id, toUserId: s.eli.id }, s.dina);
+    const told = (await run('getNotifications', {}, s.eli)).items.find(
+      (n) => n.kind === 'order.transferred',
+    );
+    assert.match(told.title, /passed to you/);
+    await rejects(
+      run('transitionOrder', { orderId: placed.id, action: 'ready' }, s.dina),
+      /Eli Desk is handling this order/,
+    );
+    await run('transitionOrder', { orderId: placed.id, action: 'ready' }, s.eli);
+
+    // Released orders can be taken by anyone again.
+    await run('transferOrder', { orderId: placed.id, toUserId: '' }, s.eli);
+    row = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(row.get('cashier'), undefined);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.dina);
+  });
+
+  test('two cashiers accepting at the same moment: exactly one gets the order', async () => {
+    const placed = await run(
+      'createOrder',
+      { customerName: 'Race', deliveryAddress: 'Bukoto', items: [{ id: item.id, quantity: 1 }] },
+      s.pia,
+    );
+    const results = await Promise.allSettled([
+      run('transitionOrder', { orderId: placed.id, action: 'accept' }, s.dina),
+      run('transitionOrder', { orderId: placed.id, action: 'accept' }, s.eli),
+    ]);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+    const row = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(row.get('status'), 'ACCEPTED');
+    s.heldOrder = { id: placed.id, holder: row.get('cashier').id === s.dina.id ? s.dina : s.eli };
+  });
+
+  test('a cashier cannot end their shift while holding kitchen orders', async () => {
+    const { holder, id } = s.heldOrder;
+    const shift = await shiftOf(holder);
+    await rejects(
+      run('endShift', { shiftId: shift.id, physicalCount: 0 }, holder),
+      /still hold 1 kitchen order/,
+    );
+    await run('transitionOrder', { orderId: id, action: 'ready' }, holder);
+    await run('transitionOrder', { orderId: id, action: 'pickup' }, s.pia);
+    await run('transitionOrder', { orderId: id, action: 'deliver' }, s.pia);
+  });
+
+  test('a handover is created once, even when sent twice at the same moment', async () => {
+    const pending = await new Parse.Query('Order')
+      .equalTo('createdBy', s.pia)
+      .equalTo('cashStatus', 'WITH_RIDER')
+      .find(M);
+    const ids = pending.map((o) => o.id);
+    const results = await Promise.allSettled([
+      run('createHandover', { orderIds: ids }, s.pia),
+      run('createHandover', { orderIds: ids }, s.pia),
+    ]);
+    const made = results.filter((r) => r.status === 'fulfilled');
+    assert.equal(made.length, 1);
+    s.raceHandover = made[0].value.id;
+    // The same request retried (same requestId) returns the same handover.
+    const { id } = await deliveredOrder();
+    const first = await run('createHandover', { orderIds: [id], requestId: 'req-42' }, s.pia);
+    const again = await run('createHandover', { orderIds: [id], requestId: 'req-42' }, s.pia);
+    assert.equal(again.id, first.id);
+    assert.equal(again.duplicate, true);
+    s.singleHandover = first.id;
+  });
+
+  test('two cashiers counting the same handover: only one counts it', async () => {
+    const row = await new Parse.Query('CashHandover').get(s.singleHandover, M);
+    const amount = row.get('amount');
+    const results = await Promise.allSettled([
+      run('confirmHandover', { handoverId: row.id, countedAmount: amount }, s.dina),
+      run('confirmHandover', { handoverId: row.id, countedAmount: amount }, s.eli),
+    ]);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+    const confirmed = await new Parse.Query('CashHandover').get(row.id, M);
+    s.singleCounter = confirmed.get('cashier').id === s.dina.id ? s.dina : s.eli;
+  });
+
+  test('the cashier can accept part of a handover; the rest goes back to the rider', async () => {
+    const row = await new Parse.Query('CashHandover').get(s.raceHandover, M);
+    const orders = row.get('orders');
+    assert.ok(orders.length >= 2);
+    const keep = orders[0].id;
+    const keepRow = await new Parse.Query('Order').get(keep, M);
+    await rejects(
+      run(
+        'confirmHandover',
+        { handoverId: row.id, receivedOrderIds: [keep], countedAmount: row.get('amount') },
+        s.dina,
+      ),
+      /must match the ticked orders/,
+    );
+    const result = await run(
+      'confirmHandover',
+      {
+        handoverId: row.id,
+        receivedOrderIds: [keep],
+        countedAmount: keepRow.get('amountCollected'),
+      },
+      s.dina,
+    );
+    assert.equal(result.returned, orders.length - 1);
+    const back = await new Parse.Query('Order').get(orders[1].id, M);
+    assert.equal(back.get('cashStatus'), 'WITH_RIDER');
+    const note = (await run('getNotifications', {}, s.pia)).items.find(
+      (n) => n.kind === 'cash.handover_confirmed' && /back with you/.test(n.body),
+    );
+    assert.ok(note);
+    const mine = await run('getMyHandovers', {}, s.pia);
+    const listed = mine.find((h) => h.id === row.id);
+    assert.equal(listed.returnedCount, orders.length - 1);
+    // Returned orders can be handed over again.
+    const again = await run(
+      'createHandover',
+      { orderIds: orders.slice(1).map((o) => o.id) },
+      s.pia,
+    );
+    s.disputeHandover = again.id;
+  });
+
+  test('a short count is disputed; the owner can charge the rider, and pay nets it off', async () => {
+    const row = await new Parse.Query('CashHandover').get(s.disputeHandover, M);
+    const counted = row.get('amount') - 2000;
+    await rejects(
+      run(
+        'disputeHandover',
+        { handoverId: row.id, countedAmount: row.get('amount'), reason: 'All there' },
+        s.dina,
+      ),
+      /confirm the handover instead/,
+    );
+    await run(
+      'disputeHandover',
+      { handoverId: row.id, countedAmount: counted, reason: 'One note missing' },
+      s.dina,
+    );
+    await rejects(
+      run('adminResolveHandover', { handoverId: row.id, action: 'deduct', note: 'ok' }, s.owner),
+      /resolution note/,
+    );
+    await rejects(
+      run(
+        'adminResolveHandover',
+        { handoverId: row.id, action: 'deduct', note: 'Rider agreed' },
+        s.dina,
+      ),
+      /admin role required/,
+    );
+    const result = await run(
+      'adminResolveHandover',
+      { handoverId: row.id, action: 'deduct', note: 'Rider agreed to repay' },
+      s.owner,
+    );
+    assert.equal(result.shortage, 2000);
+    const pay = await run('getMyPay', {}, s.pia);
+    assert.equal(pay.deductions, 2000);
+    assert.equal(pay.owed, pay.earned - 2000);
+    s.piaOwed = pay.owed;
+    const staffView = (await run('getRiderPay', {}, s.dina)).find((r) => r.riderId === s.pia.id);
+    assert.equal(staffView.owed, pay.owed);
+  });
+
+  test('paying a rider comes out of the till, once, and marks the orders paid', async () => {
+    const before = await shiftOf(s.dina);
+    await rejects(run('payRider', { riderId: s.pia.id, pin: '9999' }, s.dina), /Wrong PIN/);
+    await rejects(run('payRider', { riderId: s.pia.id }, s.pia), /cashier or admin/);
+    const results = await Promise.allSettled([
+      run('payRider', { riderId: s.pia.id }, s.dina),
+      run('payRider', { riderId: s.pia.id }, s.dina),
+    ]);
+    const paid = results.filter((r) => r.status === 'fulfilled');
+    assert.equal(paid.length, 1);
+    assert.equal(paid[0].value.amount, s.piaOwed);
+    const after = await shiftOf(s.dina);
+    assert.equal(after.paidOut - before.paidOut, s.piaOwed);
+    assert.equal(after.expectedTill, before.expectedTill - s.piaOwed);
+    const pay = await run('getMyPay', {}, s.pia);
+    assert.equal(pay.owed, 0);
+    assert.equal(pay.payouts[0].amount, s.piaOwed);
+    assert.equal(pay.payouts[0].deductions, 2000);
+    await rejects(run('payRider', { riderId: s.pia.id }, s.dina), /Nothing to pay/);
+  });
+
+  test('other till payouts need a reason and the PIN, and lower the expected till', async () => {
+    const before = await shiftOf(s.dina);
+    await rejects(run('recordTillPayout', { amount: 5000, note: 'x' }, s.dina), /what the money/);
+    await rejects(
+      run('recordTillPayout', { amount: 5000, note: 'Charcoal' }, s.owner),
+      /cashier role/,
+    );
+    await run('recordTillPayout', { amount: 5000, note: 'Bought charcoal' }, s.dina);
+    const after = await shiftOf(s.dina);
+    assert.equal(after.expectedTill, before.expectedTill - 5000);
+    const told = (await run('getNotifications', {}, s.owner)).items.find(
+      (n) => n.kind === 'payout.expense',
+    );
+    assert.match(told.body, /Bought charcoal/);
+    const { payouts } = await run('getTillPayouts', {}, s.owner);
+    assert.ok(payouts.some((p) => p.kind === 'expense' && p.note === 'Bought charcoal'));
+    assert.ok(payouts.some((p) => p.kind === 'rider' && p.rider.includes('Pia')));
+  });
+
+  test('the owner can write off a shortage, reopen a count, or take cash in person', async () => {
+    const make = async () => {
+      const { id } = await deliveredOrder();
+      return run('createHandover', { orderIds: [id] }, s.pia);
+    };
+    const a = await make();
+    await run(
+      'disputeHandover',
+      { handoverId: a.id, countedAmount: a.amount - 500, reason: 'Coins missing' },
+      s.eli,
+    );
+    await run(
+      'adminResolveHandover',
+      { handoverId: a.id, action: 'write_off', note: 'Small amount, absorbed' },
+      s.owner,
+    );
+    const written = await new Parse.Query('CashHandover').get(a.id, M);
+    assert.equal(written.get('shortageStatus'), 'written_off');
+    assert.equal((await run('getMyPay', {}, s.pia)).deductions, 0);
+
+    const b = await make();
+    await run(
+      'disputeHandover',
+      { handoverId: b.id, countedAmount: 0, reason: 'Envelope was empty' },
+      s.eli,
+    );
+    await run(
+      'adminResolveHandover',
+      { handoverId: b.id, action: 'reopen', note: 'Recount with the rider present' },
+      s.owner,
+    );
+    await run('confirmHandover', { handoverId: b.id, countedAmount: b.amount }, s.eli);
+
+    const { id } = await deliveredOrder();
+    await rejects(
+      run('adminReceiveCash', { riderId: s.pia.id, note: 'x' }, s.owner),
+      /where the cash is/,
+    );
+    const taken = await run(
+      'adminReceiveCash',
+      { riderId: s.pia.id, orderIds: [id], note: 'Owner collected at the stage' },
+      s.owner,
+    );
+    const order = await new Parse.Query('Order').get(id, M);
+    assert.equal(order.get('cashStatus'), 'RECONCILED');
+    assert.ok(taken.amount > 0);
+  });
+
+  test('handovers waiting over 4 hours are flagged to cashiers and the owner', async () => {
+    const { id } = await deliveredOrder();
+    const h = await run('createHandover', { orderIds: [id] }, s.pia);
+    const row = await new Parse.Query('CashHandover').get(h.id, M);
+    row.set('handedOverAt', new Date(Date.now() - 5 * 3600 * 1000));
+    await row.save(null, M);
+    const stale = (await run('getNotifications', {}, s.eli)).items.find(
+      (n) => n.kind === 'cash.handover_stale',
+    );
+    assert.match(stale.title, /waiting 5 h/);
+    assert.ok(
+      (await run('getNotifications', {}, s.owner)).items.some(
+        (n) => n.kind === 'cash.handover_stale',
+      ),
+    );
+    await run('confirmHandover', { handoverId: h.id, countedAmount: h.amount }, s.eli);
+  });
+
+  test('the cash check finds records that disagree', async () => {
+    const clean = await run('adminRunCashCheck', {}, s.owner);
+    assert.deepEqual(
+      clean.problems.filter((p) => p.kind !== 'shift_open'),
+      [],
+      JSON.stringify(clean.problems),
+    );
+    const { id } = await deliveredOrder();
+    const order = await new Parse.Query('Order').get(id, M);
+    order.set('cashStatus', 'HANDOVER_PENDING');
+    await order.save(null, M);
+    const found = await run('adminRunCashCheck', {}, s.owner);
+    assert.equal(found.ok, false);
+    assert.ok(found.problems.some((p) => p.kind === 'order_handover'));
+    const alert = (await run('getNotifications', {}, s.owner)).items.find(
+      (n) => n.kind === 'cash.check',
+    );
+    assert.match(alert.title, /Cash check/);
+    await rejects(run('adminRunCashCheck', {}, s.dina), /admin role required/);
+    order.set('cashStatus', 'WITH_RIDER');
+    await order.save(null, M);
   });
 });

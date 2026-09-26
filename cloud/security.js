@@ -29,6 +29,7 @@ const PROTECTED_CLASSES = [
   'Order',
   'OrderItem',
   'CashHandover',
+  'TillPayout',
   'Shift',
   'AuditLog',
   'Configuration',
@@ -147,6 +148,14 @@ const SCHEMAS = {
     paymentRejectReason: S,
     disputeResolvedBy: user,
     disputeResolvedAt: D,
+    cashier: user,
+    cashierName: S,
+    assignedAt: D,
+    cashierRound: N,
+    handoverRound: N,
+    commissionBase: N,
+    deliveryPay: N,
+    commissionPayout: ['Pointer', 'TillPayout'],
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -176,6 +185,30 @@ const SCHEMAS = {
     resolutionNote: S,
     resolvedBy: user,
     resolvedAt: D,
+    requestId: S,
+    reviewRound: N,
+    tillAt: D,
+    returnedOrders: 'Array',
+    returnedAmount: N,
+    resolution: S,
+    shortage: N,
+    shortageStatus: S,
+    shortagePayout: ['Pointer', 'TillPayout'],
+    receivedByOwner: B,
+  },
+  TillPayout: {
+    payoutCode: S,
+    kind: S,
+    rider: user,
+    amount: N,
+    earned: N,
+    deductions: N,
+    orders: 'Array',
+    shortages: 'Array',
+    note: S,
+    paidBy: user,
+    shift: ['Pointer', 'Shift'],
+    paidAt: D,
   },
   Shift: {
     operator: user,
@@ -190,6 +223,8 @@ const SCHEMAS = {
     physicalCount: N,
     variance: N,
     varianceNote: S,
+    cashIn: N,
+    paidOut: N,
   },
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
@@ -266,6 +301,9 @@ const SCHEMAS = {
   },
 };
 
+// PIN re-entry lockout and the rider payout round (see lib/core.js, payouts.js).
+const USER_FIELDS = { pinFailures: N, pinLockedUntil: D, payRound: N };
+
 // Creates missing classes with their fields, adds any missing fields to
 // existing ones, and (re)applies class-level permissions to all of them.
 async function applySchemas() {
@@ -286,6 +324,14 @@ async function applySchemas() {
       await schema.save();
       created.push(className);
     }
+  }
+  // Fields Cloud Code keeps on team members (Postgres needs the columns).
+  const userFields = Object.keys(existing.get('_User')?.fields || {});
+  const missing = Object.entries(USER_FIELDS).filter(([field]) => !userFields.includes(field));
+  if (missing.length) {
+    const schema = new Parse.Schema('_User');
+    for (const [field, type] of missing) schema.addField(field, type);
+    await schema.update();
   }
   return created;
 }
@@ -320,6 +366,9 @@ async function applySecurity() {
   );
   updated.CashHandover = await eachObject('CashHandover', (h) =>
     saveAcl(h, readAcl(h.get('rider'))),
+  );
+  updated.TillPayout = await eachObject('TillPayout', (row) =>
+    saveAcl(row, readAcl(row.get('rider') || null)),
   );
   updated.Shift = await eachObject('Shift', (s) =>
     saveAcl(s, readAcl(s.get('operator'), ['admin'])),

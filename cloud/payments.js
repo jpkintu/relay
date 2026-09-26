@@ -16,6 +16,7 @@ const {
   audit,
   loadConfig,
   requireCashierShift,
+  takeOrder,
 } = require('./lib/core');
 const { merchantAccounts, cleanReference, referenceProblem } = require('./lib/mobileMoney');
 const { dateKey } = require('./lib/dates');
@@ -58,6 +59,7 @@ Parse.Cloud.define('verifyPayment', async (request) => {
     .trim()
     .slice(0, 200);
   if (!received && reason.length < 3) throw invalid('Say why the payment was not accepted');
+  await takeOrder(order, actor, role);
   order.set({
     paymentStatus: received ? 'VERIFIED' : 'REJECTED',
     paymentCheckedBy: actor,
