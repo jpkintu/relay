@@ -49,3 +49,5 @@ jobs:
           PARSE_TEST_DATABASE_URI: mongodb://localhost:27017/
           # Test the single-file bundle that is uploaded to Back4App.
           RELAY_CLOUD_MAIN: ../back4app/cloud/main.js
+          # Back4App runs Cloud Code with direct access; test the same way.
+          RELAY_DIRECT_ACCESS: 'true'

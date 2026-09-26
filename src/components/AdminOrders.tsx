@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { providerLabel } from './MobileMoney';
+import { statusLabel, statusTone } from '../lib/labels';
 import {
   FilterBar,
   Stat,
@@ -150,7 +151,6 @@ export function AdminOrders() {
       <section className="admin-panel recent-table admin-section-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">Accounting ledger</p>
             <h2>
               Orders <small>({rows.length})</small>
             </h2>
@@ -163,29 +163,47 @@ export function AdminOrders() {
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search orders"
         />
-        <div className="admin-table-scroll">
-          <div className="table-row table-heading ledger-row">
-            <span>Order</span>
-            <span>Created</span>
-            <span>Rider</span>
-            <span>Payment</span>
-            <span>Status</span>
-            <span>Total</span>
+        {rows.length > 0 && (
+          <div className="table-scroll">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>Created</th>
+                  <th>Rider</th>
+                  <th>Payment</th>
+                  <th>Status</th>
+                  <th className="num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((o) => (
+                  <tr key={o.id}>
+                    <td>
+                      <span className="code">{o.code}</span>
+                      <small>{o.customer}</small>
+                    </td>
+                    <td className="nowrap">{when(o.createdAt)}</td>
+                    <td>{o.rider}</td>
+                    <td>{payment(o)}</td>
+                    <td>
+                      <span className={`status-pill ${statusTone(o.status)}`}>
+                        {statusLabel(o.status)}
+                      </span>
+                    </td>
+                    <td className="num">{money(o.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={5}>{rows.length} orders</td>
+                  <td className="num">{money(rows.reduce((n, o) => n + o.total, 0))}</td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
-          {rows.map((o) => (
-            <div className="table-row ledger-row" key={o.id}>
-              <span>
-                {o.code}
-                <small>{o.customer}</small>
-              </span>
-              <span>{when(o.createdAt)}</span>
-              <span>{o.rider}</span>
-              <span>{payment(o)}</span>
-              <span className="status-pill">{o.status}</span>
-              <strong>{money(o.total)}</strong>
-            </div>
-          ))}
-        </div>
+        )}
         {data && !rows.length && <p className="empty-orders">No matching orders.</p>}
         {data?.truncated && (
           <p className="muted small">Showing the latest 2,000. Narrow the dates to see more.</p>

@@ -50,6 +50,9 @@ before(async () => {
     masterKeyIps: ['0.0.0.0/0', '::/0'],
     silent: true,
     logsFolder: null,
+    // Back4App runs Cloud Code with direct access (no HTTP round trip), which
+    // changes what save() returns. RELAY_DIRECT_ACCESS=true reproduces it.
+    directAccess: process.env.RELAY_DIRECT_ACCESS === 'true',
   });
   await parseServer.start();
   const app = express();
@@ -901,4 +904,83 @@ describe('ledgers, earnings and reports', () => {
       /at most 366 days/,
     );
   });
+});
+
+describe('broken codes from the Back4App counter bug', () => {
+  const M = { useMasterKey: true };
+  const first = (className, build) => {
+    const query = new Parse.Query(className);
+    build?.(query);
+    return query.first(M);
+  };
+
+  test('new codes stay valid and unique even when the counter value is unusable', async () => {
+    const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '');
+    const counter = await first('Counter', (q) => q.equalTo('key', `ORD:${today}`));
+    counter.set('value', { __op: 'Increment', amount: 1 });
+    await counter.save(null, M);
+    await run(
+      'adminCreateTeamMember',
+      { name: 'Cora Counter', username: 'cora', pin: '8642', role: 'rider' },
+      s.owner,
+    );
+    const cora = await login('cora', '8642');
+    const codes = new Set();
+    for (let i = 0; i < 2; i += 1) {
+      const { id, orderCode } = await run(
+        'createOrder',
+        {
+          customerName: 'Counter Check',
+          deliveryAddress: 'Plot 9',
+          items: [{ id: (await first('MenuItem')).id, quantity: 1 }],
+        },
+        cora,
+      );
+      assert.match(orderCode, /^ORD-\d{8}-\d{4}$/);
+      codes.add(orderCode);
+      await run(
+        'transitionOrder',
+        { orderId: id, action: 'cancel', reason: 'Test order' },
+        s.owner,
+      );
+    }
+    assert.equal(codes.size, 2);
+    const all = await new Parse.Query('Order').limit(1000).find(M);
+    assert.equal(new Set(all.map((o) => o.get('orderCode'))).size, all.length);
+  });
+
+  test('Apply security rules repairs broken order, handover and staff codes', async () => {
+    const order = await first('Order', (q) => q.ascending('createdAt'));
+    order.set('orderCode', 'ORD-20260925-[object Object]');
+    await order.save(null, M);
+    const handover = await first('CashHandover');
+    handover.set('handoverCode', 'HO-20260925-[object Object]');
+    await handover.save(null, M);
+    const rita = await first(Parse.User, (q) => q.equalTo('username', 'rita'));
+    rita.set('riderCode', 'R-[object Object]');
+    await rita.save(null, M);
+
+    const result = await run('adminApplySecurity', {}, s.owner);
+    assert.equal(result.repairedCodes, 2);
+    await order.fetch(M);
+    await handover.fetch(M);
+    await rita.fetch(M);
+    assert.match(order.get('orderCode'), /^ORD-\d{8}-\d{4}$/);
+    assert.match(handover.get('handoverCode'), /^HO-\d{8}-\d{3}$/);
+    assert.match(rita.get('riderCode'), /^R-\d{3}$/);
+    const riders = await new Parse.Query(Parse.User).exists('riderCode').find(M);
+    assert.equal(new Set(riders.map((u) => u.get('riderCode'))).size, riders.length);
+    const orders = await new Parse.Query('Order').limit(1000).find(M);
+    assert.equal(new Set(orders.map((o) => o.get('orderCode'))).size, orders.length);
+  });
+});
+
+test('the profile says whether the restaurant name has been set', async () => {
+  const before = await run('getMyProfile', {}, s.owner);
+  assert.equal(before.config.restaurantNameSet, false);
+  const { settings } = await run('adminListSetup', {}, s.owner);
+  await run('adminSaveSettings', { ...settings, restaurantName: 'Mama Rose Kitchen' }, s.owner);
+  const after = await run('getMyProfile', {}, s.rider);
+  assert.equal(after.config.restaurantName, 'Mama Rose Kitchen');
+  assert.equal(after.config.restaurantNameSet, true);
 });

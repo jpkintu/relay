@@ -26,7 +26,10 @@ Parse.Cloud.define('createHandover', async (request) => {
   const amount = sumBy(orders, (order) => order.get('amountCollected'));
   const row = new Parse.Object('CashHandover');
   row.set({
-    handoverCode: await nextDailyCode('HO', 3, config.timezone),
+    handoverCode: await nextDailyCode('HO', 3, config.timezone, {
+      className: 'CashHandover',
+      field: 'handoverCode',
+    }),
     rider,
     amount,
     orderCount: orders.length,

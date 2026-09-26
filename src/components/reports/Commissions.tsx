@@ -80,21 +80,35 @@ export function Commissions() {
           <div className="panel-title">
             <h2>By rider</h2>
           </div>
-          <div className="admin-table-scroll">
-            <div className="table-row table-heading summary-row">
-              <span>Rider</span>
-              <span>Deliveries</span>
-              <span>Sales</span>
-              <span>Commission</span>
-            </div>
-            {data.riders.map((r) => (
-              <div className="table-row summary-row" key={r.riderId}>
-                <span>{r.rider}</span>
-                <span>{r.deliveries} deliveries</span>
-                <span>{money(r.sales)}</span>
-                <strong>{money(r.commission)}</strong>
-              </div>
-            ))}
+          <div className="table-scroll">
+            <table className="data compact-table">
+              <thead>
+                <tr>
+                  <th>Rider</th>
+                  <th className="num">Deliveries</th>
+                  <th className="num">Sales</th>
+                  <th className="num">Commission</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.riders.map((r) => (
+                  <tr key={r.riderId}>
+                    <td>{r.rider}</td>
+                    <td className="num">{r.deliveries}</td>
+                    <td className="num">{money(r.sales)}</td>
+                    <td className="num strong">{money(r.commission)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td>Total</td>
+                  <td className="num">{data.deliveries}</td>
+                  <td className="num">{money(data.riders.reduce((n, r) => n + r.sales, 0))}</td>
+                  <td className="num">{money(data.total)}</td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
         </section>
       )}
@@ -104,27 +118,35 @@ export function Commissions() {
             Commission ledger <small>({rows.length})</small>
           </h2>
         </div>
-        <div className="admin-table-scroll">
-          <div className="table-row table-heading">
-            <span>Order</span>
-            <span>Delivered</span>
-            <span>Rider</span>
-            <span>Order total</span>
-            <span>Commission</span>
+        {rows.length > 0 && (
+          <div className="table-scroll">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>Delivered</th>
+                  <th>Rider</th>
+                  <th className="num">Order total</th>
+                  <th className="num">Commission</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id}>
+                    <td>
+                      <span className="code">{r.code}</span>
+                      <small>{r.customer}</small>
+                    </td>
+                    <td className="nowrap">{when(r.deliveredAt)}</td>
+                    <td>{r.rider}</td>
+                    <td className="num">{money(r.total)}</td>
+                    <td className="num strong">{money(r.commission)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          {rows.map((r) => (
-            <div className="table-row" key={r.id}>
-              <span>
-                {r.code}
-                <small>{r.customer}</small>
-              </span>
-              <span>{when(r.deliveredAt)}</span>
-              <span>{r.rider}</span>
-              <span>{money(r.total)}</span>
-              <strong>{money(r.commission)}</strong>
-            </div>
-          ))}
-        </div>
+        )}
         {data && !rows.length && <p className="empty-orders">No deliveries in these dates.</p>}
       </section>
     </div>

@@ -140,22 +140,69 @@ async function nextSequence(key) {
   const counter = await find();
   counter.increment('value');
   await counter.save(null, MASTER);
-  return counter.get('value');
+  const value = Number(counter.get('value'));
+  if (Number.isInteger(value) && value > 0) return value;
+  // Some hosts (Back4App) do not return the incremented value from save(),
+  // which produced codes like "ORD-20260925-[object Object]". Read it back;
+  // callers also check the code is unused.
+  const stored = Number((await find()).get('value'));
+  if (Number.isInteger(stored) && stored > 0) return stored;
+  // The stored value itself is unusable: restart it and let the callers skip
+  // codes that are already taken.
+  const reset = await find();
+  reset.set('value', 1);
+  await reset.save(null, MASTER);
+  return 1;
 }
 
+// Keeps drawing from the sequence until the code is not already used.
+async function uniqueCode(key, format, taken) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const code = format(await nextSequence(key));
+    if (!(await taken(code))) return code;
+  }
+  throw new Error(`Could not allocate a unique code for ${key}`);
+}
+
+const codeTakenIn = (className, field) => async (code) => {
+  const query = new Parse.Query(className);
+  query.equalTo(field, code);
+  try {
+    return !!(await query.first(MASTER));
+  } catch (error) {
+    // Postgres: the column does not exist until the first code is saved.
+    const detail = error?.message && typeof error.message === 'object' ? error.message : error;
+    if (detail?.code === '42703' || /does not exist/.test(String(detail?.message))) return false;
+    throw error;
+  }
+};
+
 // e.g. ORD-20260925-0001, restarting each day in the restaurant timezone.
-async function nextDailyCode(prefix, digits, timezone) {
-  const day = dateKey(new Date(), timezone);
-  const sequence = await nextSequence(`${prefix}:${day}`);
-  return `${prefix}-${day}-${String(sequence).padStart(digits, '0')}`;
+// `className`/`field` name where the code is stored, to guarantee it is unused;
+// `date` picks the day (defaults to now).
+async function nextDailyCode(prefix, digits, timezone, { className, field, date } = {}) {
+  const day = dateKey(date || new Date(), timezone);
+  const taken = className ? codeTakenIn(className, field) : async () => false;
+  return uniqueCode(
+    `${prefix}:${day}`,
+    (n) => `${prefix}-${day}-${String(n).padStart(digits, '0')}`,
+    taken,
+  );
 }
 
 // e.g. R-001 for riders, C-001 for cashiers.
 async function nextStaffCode(role) {
   const prefix = role === 'rider' ? 'R' : 'C';
-  const sequence = await nextSequence(`staff:${prefix}`);
-  return `${prefix}-${String(sequence).padStart(3, '0')}`;
+  return uniqueCode(
+    `staff:${prefix}`,
+    (n) => `${prefix}-${String(n).padStart(3, '0')}`,
+    codeTakenIn(Parse.User, role === 'rider' ? 'riderCode' : 'cashierCode'),
+  );
 }
+
+// A code produced by the old bug ("…[object Object]") or otherwise not in the
+// expected shape.
+const isBrokenCode = (code) => typeof code === 'string' && /object|undefined|NaN/.test(code);
 
 module.exports = {
   MASTER,
@@ -175,5 +222,6 @@ module.exports = {
   loadConfig,
   countUsers,
   nextDailyCode,
+  isBrokenCode,
   nextStaffCode,
 };

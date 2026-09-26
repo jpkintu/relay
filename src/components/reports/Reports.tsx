@@ -416,31 +416,37 @@ export function Reports() {
                   Choose dates covering at least two months (e.g. Last 6 months) to compare months.
                 </p>
               )}
-              <div className="admin-table-scroll">
-                <div className="table-row table-heading month-row">
-                  <span>Month</span>
-                  <span>Revenue</span>
-                  <span>Change</span>
-                  <span>Orders</span>
-                  <span>Avg order</span>
-                  <span>Commission</span>
-                </div>
-                {data.monthly.map((row) => (
-                  <div className="table-row month-row" key={row.key}>
-                    <span>{bucketLabel(row.key, 'month')}</span>
-                    <strong>{money(row.revenue)}</strong>
-                    <span
-                      className={
-                        row.revenueChange === null ? '' : row.revenueChange < 0 ? 'down' : 'up'
-                      }
-                    >
-                      {formatChange(row.revenueChange) || '—'}
-                    </span>
-                    <span>{row.orders} orders</span>
-                    <span>{money(row.avgOrder)}</span>
-                    <span>{money(row.commission)}</span>
-                  </div>
-                ))}
+              <div className="table-scroll">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th className="num">Revenue</th>
+                      <th className="num">Change</th>
+                      <th className="num">Orders</th>
+                      <th className="num">Avg order</th>
+                      <th className="num">Commission</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.monthly.map((row) => (
+                      <tr key={row.key}>
+                        <td>{bucketLabel(row.key, 'month')}</td>
+                        <td className="num strong">{money(row.revenue)}</td>
+                        <td
+                          className={`num ${
+                            row.revenueChange === null ? '' : row.revenueChange < 0 ? 'down' : 'up'
+                          }`}
+                        >
+                          {formatChange(row.revenueChange) || '—'}
+                        </td>
+                        <td className="num">{row.orders}</td>
+                        <td className="num">{money(row.avgOrder)}</td>
+                        <td className="num">{money(row.commission)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </ReportPanel>
 
@@ -495,23 +501,29 @@ export function Reports() {
                     Export CSV
                   </button>
                 </summary>
-                <div className="admin-table-scroll">
-                  <div className="table-row table-heading item-row">
-                    <span>Item</span>
-                    <span>Sold</span>
-                    <span>Revenue</span>
-                    <span>Share</span>
-                    <span>Avg price</span>
-                  </div>
-                  {data.items.map((item) => (
-                    <div className="table-row item-row" key={item.name}>
-                      <span>{item.name}</span>
-                      <span>{item.qty} sold</span>
-                      <strong>{money(item.revenue)}</strong>
-                      <span>{item.share}%</span>
-                      <span>{money(item.avgPrice)}</span>
-                    </div>
-                  ))}
+                <div className="table-scroll">
+                  <table className="data">
+                    <thead>
+                      <tr>
+                        <th>Item</th>
+                        <th className="num">Sold</th>
+                        <th className="num">Revenue</th>
+                        <th className="num">Share</th>
+                        <th className="num">Avg price</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.items.map((item) => (
+                        <tr key={item.name}>
+                          <td>{item.name}</td>
+                          <td className="num">{item.qty}</td>
+                          <td className="num strong">{money(item.revenue)}</td>
+                          <td className="num">{item.share}%</td>
+                          <td className="num">{money(item.avgPrice)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </details>
             </ReportPanel>
@@ -584,30 +596,38 @@ export function Reports() {
             </ReportPanel>
 
             <ReportPanel title="Riders" eyebrow="Performance in these dates" wide>
-              <div className="admin-table-scroll">
-                <div className="table-row table-heading rider-row">
-                  <span>Rider</span>
-                  <span>Delivered</span>
-                  <span>Sales</span>
-                  <span>Commission</span>
-                  <span>Order to door</span>
-                  <span>Cancelled</span>
+              {data.riders.length > 0 && (
+                <div className="table-scroll">
+                  <table className="data">
+                    <thead>
+                      <tr>
+                        <th>Rider</th>
+                        <th className="num">Delivered</th>
+                        <th className="num">Sales</th>
+                        <th className="num">Commission</th>
+                        <th className="num">Order to door</th>
+                        <th className="num">Cancelled</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.riders.map((r) => (
+                        <tr key={r.riderId}>
+                          <td>{r.rider}</td>
+                          <td className="num">
+                            {r.delivered} of {r.orders}
+                          </td>
+                          <td className="num strong">{money(r.revenue)}</td>
+                          <td className="num">{money(r.commission)}</td>
+                          <td className="num">
+                            {r.avgDeliveryMinutes === null ? '—' : `${r.avgDeliveryMinutes} min`}
+                          </td>
+                          <td className="num">{r.cancelled}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-                {data.riders.map((r) => (
-                  <div className="table-row rider-row" key={r.riderId}>
-                    <span>{r.rider}</span>
-                    <span>
-                      {r.delivered} of {r.orders}
-                    </span>
-                    <strong>{money(r.revenue)}</strong>
-                    <span>{money(r.commission)}</span>
-                    <span>
-                      {r.avgDeliveryMinutes === null ? '—' : `${r.avgDeliveryMinutes} min`}
-                    </span>
-                    <span>{r.cancelled} cancelled</span>
-                  </div>
-                ))}
-              </div>
+              )}
               {!data.riders.length && <p className="empty-orders">No orders in these dates.</p>}
             </ReportPanel>
           </div>
@@ -634,8 +654,8 @@ function ReportPanel({
     <section className={wide ? 'admin-panel report-panel wide' : 'admin-panel report-panel'}>
       <div className="panel-title">
         <div>
-          <p className="eyebrow">{eyebrow}</p>
           <h2>{title}</h2>
+          <p className="panel-sub">{eyebrow}</p>
         </div>
         {action}
       </div>

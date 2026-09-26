@@ -17,6 +17,7 @@ export type AppConfig = {
   commissionRounding?: string;
   requireCashierConfirmForPickup?: boolean;
   mobileMoney?: MerchantAccount[];
+  restaurantNameSet?: boolean;
 };
 
 export type MerchantAccount = { provider: string; label: string; code: string; name: string };

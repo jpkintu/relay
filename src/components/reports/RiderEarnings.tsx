@@ -158,9 +158,6 @@ export function RiderEarnings({ riderId }: { riderId?: string }) {
           <section className="admin-panel report-panel">
             <div className="panel-title">
               <div>
-                <p className="eyebrow">
-                  {periodName} on {periodName.toLowerCase()}
-                </p>
                 <h2>Earnings by {view}</h2>
               </div>
             </div>
@@ -172,37 +169,62 @@ export function RiderEarnings({ riderId }: { riderId?: string }) {
               label={`Earnings by ${view}`}
               busy={loading}
             />
-            <div className="earnings-table">
-              <div className="earnings-row heading">
-                <span>{periodName}</span>
-                <span>Deliveries</span>
-                <span>Earnings</span>
-                <span>Change</span>
-              </div>
-              {[...data.series].reverse().map((row) => (
-                <div className="earnings-row" key={row.key}>
-                  <span>{bucketLabel(row.key, data.period)}</span>
-                  <span>{row.deliveries}</span>
-                  <strong>{money(row.earnings)}</strong>
-                  <span className={row.change === null ? '' : row.change < 0 ? 'down' : 'up'}>
-                    {formatChange(row.change) || '—'}
-                  </span>
-                </div>
-              ))}
+            <div className="table-scroll">
+              <table className="data compact-table">
+                <thead>
+                  <tr>
+                    <th>{periodName}</th>
+                    <th className="num">Deliveries</th>
+                    <th className="num">Earnings</th>
+                    <th className="num">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...data.series].reverse().map((row) => (
+                    <tr key={row.key}>
+                      <td className="nowrap">{bucketLabel(row.key, data.period, narrow)}</td>
+                      <td className="num">{row.deliveries}</td>
+                      <td className="num strong">{money(row.earnings)}</td>
+                      <td
+                        className={`num ${row.change === null ? '' : row.change < 0 ? 'down' : 'up'}`}
+                      >
+                        {formatChange(row.change) || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
           <h3 className="section-label">Deliveries</h3>
-          {data.deliveries.map((o) => (
-            <div className="cash-order" key={o.id}>
-              <span>
-                {o.code} · {o.customer}
-                <small>
-                  {formatDate(o.deliveredAt, timezone, { dateStyle: 'medium', timeStyle: 'short' })}
-                </small>
-              </span>
-              <b>{money(o.commission)}</b>
+          {data.deliveries.length > 0 && (
+            <div className="table-scroll">
+              <table className="data compact-table">
+                <thead>
+                  <tr>
+                    <th>Order</th>
+                    <th className="num">Earned</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.deliveries.map((o) => (
+                    <tr key={o.id}>
+                      <td>
+                        <span className="code">{o.code}</span> · {o.customer}
+                        <small>
+                          {formatDate(o.deliveredAt, timezone, {
+                            dateStyle: 'medium',
+                            timeStyle: 'short',
+                          })}
+                        </small>
+                      </td>
+                      <td className="num strong">{money(o.commission)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
           {!data.deliveries.length && (
             <p className="empty-orders">No deliveries in these dates yet.</p>
           )}

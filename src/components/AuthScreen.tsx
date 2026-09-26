@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { ArrowRight, Bike, Eye, LockKeyhole } from 'lucide-react';
+import { ArrowRight, Eye, LockKeyhole } from 'lucide-react';
 import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
 import { useSession } from '../lib/session';
-import { PoweredBy } from './PoweredBy';
+import { BrandMark } from './BrandMark';
 
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
@@ -62,12 +62,8 @@ export function AuthScreen() {
   return (
     <main className="auth-shell">
       <section className="auth-story">
-        <div className="brand-mark">
-          <Bike size={25} />
-          <span>Relay</span>
-        </div>
+        <BrandMark onDark />
         <div className="story-copy">
-          <p className="eyebrow">Restaurant delivery operations</p>
           <h1>
             From kitchen
             <br />
@@ -77,20 +73,10 @@ export function AuthScreen() {
           </h1>
           <p>Orders, riders and every handover — connected in one fast operating system.</p>
         </div>
-        <div className="story-metric">
-          <strong>01</strong>
-          <span>
-            One clean chain of custody
-            <br />
-            for every cash order.
-          </span>
-        </div>
       </section>
       <section className="auth-panel">
         <div className="login-card">
-          <div className="mobile-brand">
-            <Bike /> Relay
-          </div>
+          <BrandMark className="mobile-brand" />
           <p className="eyebrow">
             {creating ? 'Restaurant setup' : appInfo.restaurantName || 'Shift access'}
           </p>
@@ -172,7 +158,6 @@ export function AuthScreen() {
             </button>
           )}
           <p className="support-copy">Need access? Ask your restaurant administrator.</p>
-          <PoweredBy />
         </div>
       </section>
     </main>

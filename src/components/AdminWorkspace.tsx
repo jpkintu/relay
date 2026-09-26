@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Bike,
   UtensilsCrossed,
   Menu,
   X,
@@ -20,7 +19,8 @@ import { PaymentsLedger } from './reports/PaymentsLedger';
 import { Commissions } from './reports/Commissions';
 import { Reports } from './reports/Reports';
 import { AdminSetup } from './AdminSetup';
-import { PoweredBy } from './PoweredBy';
+import { BrandMark } from './BrandMark';
+import { statusLabel, statusTone } from '../lib/labels';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, isToday } from '../lib/format';
 import { personLabel } from '../lib/people';
@@ -53,7 +53,7 @@ type Section = (typeof NAV)[number][1];
 
 export function AdminWorkspace() {
   const { preview, logout } = useSession();
-  const { timezone } = useConfig();
+  const { timezone, restaurantNameSet } = useConfig();
   const money = useMoney();
   const navigate = useNavigate();
   const device = useDevice();
@@ -134,10 +134,7 @@ export function AdminWorkspace() {
   return (
     <main className="admin-shell">
       <aside className={menuOpen && compact ? 'admin-side menu-open' : 'admin-side'}>
-        <div className="brand-mark">
-          <Bike />
-          <span>Relay</span>
-        </div>
+        <BrandMark onDark />
         <p>Restaurant operations</p>
         {compact && (
           <button
@@ -199,6 +196,15 @@ export function AdminWorkspace() {
         {error && <p className="ops-error">{error}</p>}
         {section === 'Overview' && (
           <>
+            {restaurantNameSet === false && !preview && (
+              <div className="setup-notice">
+                <span>
+                  Your restaurant name is not set, so riders and the sign-in screen show
+                  “Restaurant”.
+                </span>
+                <button onClick={() => setSection('Settings')}>Set the name</button>
+              </div>
+            )}
             <div className="admin-metrics">
               <article>
                 <span>Gross sales today</span>
@@ -230,21 +236,42 @@ export function AdminWorkspace() {
             </div>
             <section className="admin-panel recent-table">
               <div className="panel-title">
-                <div>
-                  <p className="eyebrow">Live feed</p>
-                  <h2>Recent orders</h2>
-                </div>
-                <button onClick={() => setSection('Orders')}>View all orders</button>
+                <h2>Recent orders</h2>
+                <button className="link-button" onClick={() => setSection('Orders')}>
+                  View all orders
+                </button>
               </div>
-              {orders.slice(0, 20).map((o) => (
-                <div className="table-row" key={o.id}>
-                  <span>{o.code}</span>
-                  <span>{o.rider}</span>
-                  <span>{o.customer}</span>
-                  <span className="status-pill">{o.status}</span>
-                  <span>{money(o.total)}</span>
+              {orders.length > 0 && (
+                <div className="table-scroll">
+                  <table className="data">
+                    <thead>
+                      <tr>
+                        <th>Order</th>
+                        <th>Rider</th>
+                        <th>Status</th>
+                        <th className="num">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders.slice(0, 20).map((o) => (
+                        <tr key={o.id}>
+                          <td>
+                            <span className="code">{o.code}</span>
+                            <small>{o.customer}</small>
+                          </td>
+                          <td>{o.rider}</td>
+                          <td>
+                            <span className={`status-pill ${statusTone(o.status)}`}>
+                              {statusLabel(o.status)}
+                            </span>
+                          </td>
+                          <td className="num">{money(o.total)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              )}
               {!orders.length && (
                 <p className="empty-orders">No orders yet. New tickets will appear here.</p>
               )}
@@ -264,9 +291,6 @@ export function AdminWorkspace() {
         {['Team', 'Menu', 'Settings'].includes(section) && (
           <AdminSetup section={section as 'Team' | 'Menu' | 'Settings'} preview={preview} />
         )}
-        <footer className="app-credit">
-          <PoweredBy />
-        </footer>
       </section>
     </main>
   );
