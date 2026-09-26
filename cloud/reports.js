@@ -9,6 +9,7 @@ const { MASTER, invalid, requireRole, loadConfig } = require('./lib/core');
 const { merchantAccounts } = require('./lib/mobileMoney');
 const { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require('./lib/dates');
 const R = require('./lib/reports');
+const { orderRiderPay } = require('./lib/money');
 
 const MAX_ROWS = 2000;
 const PERIODS = ['day', 'week', 'month'];
@@ -81,7 +82,8 @@ function factOf(order) {
     total: Number(order.get('total') || 0),
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
-    commission: Number(order.get('commissionAmount') || 0),
+    // Rider pay: commission + delivery fee, taken off revenue like commission.
+    commission: order.get('status') === 'DELIVERED' ? orderRiderPay(order) : 0,
     method: order.get('paymentMethod'),
     provider: order.get('paymentProvider') || '',
     reference: order.get('paymentReference') || '',

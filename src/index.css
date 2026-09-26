@@ -4638,3 +4638,45 @@ table.data.compact-table {
   gap: 4px;
   max-width: 420px;
 }
+.pay-now {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  align-items: start;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2, #f1f4fa);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.pay-now input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+}
+/* Stacked tables on phones: the totals row becomes one "Total … amount" line. */
+@media (max-width: 599px) {
+  .data.stack-on-phone tfoot {
+    display: block;
+  }
+  .data.stack-on-phone tfoot tr {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  .data.stack-on-phone tfoot td:not(.actions-cell) {
+    display: none;
+    width: auto;
+    padding: 0;
+  }
+  .data.stack-on-phone tfoot td:not(.actions-cell):first-child,
+  .data.stack-on-phone tfoot td.strong:not(.actions-cell) {
+    display: block;
+  }
+  .data.stack-on-phone tfoot td:not(.actions-cell)::before {
+    content: none;
+  }
+}

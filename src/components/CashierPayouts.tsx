@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { Banknote } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { usePin } from '../lib/pin';
-import { useCloud } from './reports/common';
+import { Stat, useCloud } from './reports/common';
 
 type RiderPay = {
   riderId: string;
@@ -11,6 +12,8 @@ type RiderPay = {
   active: boolean;
   deliveries: number;
   earned: number;
+  commission: number;
+  deliveryFees: number;
   deductions: number;
   owed: number;
 };
@@ -20,6 +23,10 @@ type Payout = {
   code: string;
   kind: 'rider' | 'expense';
   amount: number;
+  earned: number;
+  deliveryFees: number;
+  deductions: number;
+  orderCount: number;
   note: string;
   rider: string;
   paidBy: string;
@@ -46,15 +53,17 @@ export function CashierPayouts() {
     shiftPayouts.reload();
   };
 
+  const firstName = (label: string) => label.split(' · ').pop() || label;
+
   const pay = async (row: RiderPay) => {
     setNotice('');
     const done = await withPin(
-      `Pay ${row.rider.split(' · ').pop()} ${money(row.owed)}`,
+      `Pay ${firstName(row.rider)} ${money(row.owed)}`,
       (pin) => Parse.Cloud.run('payRider', { riderId: row.riderId, pin }),
       'Count the cash out of the till and hand it to the rider, then enter your PIN.',
     );
     if (!done) return;
-    setNotice(`Paid ${row.rider} ${money(row.owed)}.`);
+    setNotice(`Paid ${row.rider} ${money(row.owed)} from the till.`);
     reload();
   };
 
@@ -72,6 +81,9 @@ export function CashierPayouts() {
   };
 
   const toPay = (owed.data || []).filter((row) => row.owed > 0);
+  const owedTotal = toPay.reduce((n, row) => n + row.owed, 0);
+  const paid = shiftPayouts.data?.payouts ?? [];
+  const riderPaid = paid.filter((p) => p.kind === 'rider').reduce((n, p) => n + p.amount, 0);
   const amountValue = Number(amount);
   const canRecord = amount !== '' && amountValue > 0 && note.trim().length >= 5;
 
@@ -81,16 +93,38 @@ export function CashierPayouts() {
         <div>
           <h1>Payouts</h1>
         </div>
-        <span>Money paid out comes off your expected till.</span>
+        <span>Money paid out of the till comes off your expected till.</span>
       </div>
       {notice && <p className="setup-notice">{notice}</p>}
       {owed.error && <p className="ops-error">{owed.error}</p>}
 
-      <section className="admin-panel">
+      <div className="stat-grid">
+        <Stat
+          label="Owed to riders"
+          value={money(owedTotal)}
+          note={`${toPay.length} rider${toPay.length === 1 ? '' : 's'} · commission + delivery fees`}
+        />
+        {isCashier && (
+          <Stat
+            label="Paid out this shift"
+            value={money(shiftPayouts.data?.total ?? 0)}
+            note={`${money(riderPaid)} rider pay · ${money(
+              (shiftPayouts.data?.total ?? 0) - riderPaid,
+            )} other`}
+          />
+        )}
+      </div>
+
+      <section className="admin-panel admin-section-panel">
         <div className="panel-title">
-          <h2>Riders to pay</h2>
+          <h2>
+            Riders to pay <small>({toPay.length})</small>
+          </h2>
         </div>
-        <p className="muted">Commission plus delivery fees, less any cash shortage.</p>
+        <p className="muted small">
+          Commission plus delivery fees for every unpaid delivery, less any cash shortage the owner
+          charged to the rider. You can also pay a rider when you confirm their cash handover.
+        </p>
         {toPay.length ? (
           <div className="table-scroll">
             <table className="data stack-on-phone">
@@ -98,36 +132,55 @@ export function CashierPayouts() {
                 <tr>
                   <th>Rider</th>
                   <th className="num">Deliveries</th>
-                  <th className="num">Earned</th>
+                  <th className="num">Commission</th>
+                  <th className="num">Delivery fees</th>
                   <th className="num">Shortages</th>
                   <th className="num">To pay</th>
-                  <th />
+                  <th>Pay</th>
                 </tr>
               </thead>
               <tbody>
                 {toPay.map((row) => (
                   <tr key={row.riderId}>
-                    <td data-label="Rider">{row.rider}</td>
+                    <td data-label="Rider">
+                      <b>{row.rider}</b>
+                    </td>
                     <td data-label="Deliveries" className="num">
                       {row.deliveries}
                     </td>
-                    <td data-label="Earned" className="num">
-                      {money(row.earned)}
+                    <td data-label="Commission" className="num">
+                      {money(row.commission)}
                     </td>
-                    <td data-label="Shortages" className="num">
+                    <td data-label="Delivery fees" className="num">
+                      {money(row.deliveryFees)}
+                    </td>
+                    <td data-label="Shortages" className={`num ${row.deductions ? 'down' : ''}`}>
                       {row.deductions ? `− ${money(row.deductions)}` : '—'}
                     </td>
                     <td data-label="To pay" className="num strong">
                       {money(row.owed)}
                     </td>
-                    <td className="actions-cell">
-                      <button className="primary-button" onClick={() => void pay(row)}>
-                        Pay
-                      </button>
+                    <td data-label="Pay" className="actions-cell">
+                      <div className="payment-actions">
+                        <button onClick={() => void pay(row)}>
+                          <Banknote /> Pay {money(row.owed)}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                <tr>
+                  <td>Total</td>
+                  <td className="num">{toPay.reduce((n, r) => n + r.deliveries, 0)}</td>
+                  <td className="num">{money(toPay.reduce((n, r) => n + r.commission, 0))}</td>
+                  <td className="num">{money(toPay.reduce((n, r) => n + r.deliveryFees, 0))}</td>
+                  <td className="num">{money(toPay.reduce((n, r) => n + r.deductions, 0))}</td>
+                  <td className="num strong">{money(owedTotal)}</td>
+                  <td />
+                </tr>
+              </tfoot>
             </table>
           </div>
         ) : (
@@ -136,7 +189,7 @@ export function CashierPayouts() {
       </section>
 
       {isCashier && (
-        <section className="admin-panel">
+        <section className="admin-panel admin-section-panel">
           <div className="panel-title">
             <h2>Other cash out of the till</h2>
           </div>
@@ -161,20 +214,23 @@ export function CashierPayouts() {
                 placeholder="e.g. Bought charcoal"
               />
             </label>
-            <button className="primary-button" disabled={!canRecord} onClick={() => void expense()}>
-              Record payout
-            </button>
+            <div className="payment-actions">
+              <button disabled={!canRecord} onClick={() => void expense()}>
+                Record payout
+              </button>
+            </div>
           </div>
         </section>
       )}
 
       {isCashier && (
-        <section className="admin-panel">
+        <section className="admin-panel admin-section-panel">
           <div className="panel-title">
-            <h2>Paid out this shift</h2>
-            <strong>{money(shiftPayouts.data?.total ?? 0)}</strong>
+            <h2>
+              Paid out this shift <small>({paid.length})</small>
+            </h2>
           </div>
-          {shiftPayouts.data?.payouts.length ? (
+          {paid.length ? (
             <div className="table-scroll">
               <table className="data stack-on-phone">
                 <thead>
@@ -186,21 +242,41 @@ export function CashierPayouts() {
                   </tr>
                 </thead>
                 <tbody>
-                  {shiftPayouts.data.payouts.map((p) => (
+                  {paid.map((p) => (
                     <tr key={p.id}>
-                      <td data-label="Payout" className="mono">
-                        {p.code}
+                      <td data-label="Payout">
+                        <span className="code">{p.code}</span>
                       </td>
                       <td data-label="Time" className="nowrap">
                         {formatDate(p.paidAt, timezone, { timeStyle: 'short' })}
                       </td>
-                      <td data-label="For">{p.kind === 'rider' ? `Pay: ${p.rider}` : p.note}</td>
+                      <td data-label="For">
+                        {p.kind === 'rider' ? (
+                          <>
+                            <b>Rider pay · {p.rider}</b>
+                            <small>
+                              {p.orderCount} {p.orderCount === 1 ? 'delivery' : 'deliveries'} ·{' '}
+                              {money(p.earned - p.deliveryFees)} commission +{' '}
+                              {money(p.deliveryFees)} delivery fees
+                              {p.deductions ? ` − ${money(p.deductions)} shortage` : ''}
+                            </small>
+                          </>
+                        ) : (
+                          p.note
+                        )}
+                      </td>
                       <td data-label="Amount" className="num strong">
                         {money(p.amount)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={3}>Total paid out</td>
+                    <td className="num strong">{money(shiftPayouts.data?.total ?? 0)}</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           ) : (

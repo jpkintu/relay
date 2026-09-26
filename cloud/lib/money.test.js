@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { computeCommission, roundCommission, sumBy } from './money.js';
+import { computeCommission, riderPay, roundCommission, sumBy } from './money.js';
 
 describe('computeCommission', () => {
   test('per_order pays the flat fee regardless of subtotal', () => {
@@ -47,4 +47,15 @@ describe('roundCommission', () => {
 
 test('sumBy ignores missing values', () => {
   expect(sumBy([{ a: 1 }, { a: '2' }, {}], (row) => row.a)).toBe(3);
+});
+
+describe('riderPay', () => {
+  test('is the stored amount when it already includes the delivery fee', () => {
+    expect(riderPay({ commissionAmount: 4000, deliveryPay: 3000, deliveryFee: 3000 })).toBe(4000);
+  });
+
+  test('adds the delivery fee for orders stored with commission only', () => {
+    expect(riderPay({ commissionAmount: 3000, deliveryFee: 3000 })).toBe(6000);
+    expect(riderPay({ commissionAmount: 0, deliveryFee: 2000 })).toBe(2000);
+  });
 });
