@@ -124,7 +124,8 @@ export function CashierPayouts() {
         </div>
         <p className="muted small">
           Commission plus delivery fees for every unpaid delivery, less any cash shortage the owner
-          charged to the rider. You can also pay a rider when you confirm their cash handover.
+          charged to the rider. You can also pay a rider&apos;s delivery fees when you confirm their
+          cash handover.
         </p>
         {toPay.length ? (
           <div className="table-scroll">

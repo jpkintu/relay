@@ -308,7 +308,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                 disabled={busy || !received.length || countedValue !== tickedTotal}
                 onClick={() => void submit('confirmHandover')}
               >
-                <Check /> {payNow ? 'Confirm and pay rider' : 'Confirm received'}
+                <Check /> {payNow ? 'Confirm and pay fees' : 'Confirm received'}
               </button>
               <button
                 disabled={
