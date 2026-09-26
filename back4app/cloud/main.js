@@ -8447,10 +8447,15 @@ var require_cash = __commonJS({
       return row;
     }
     async function claimOrders(orders) {
-      const results = await Promise.all(orders.map((order) => claimOnce(handoverKey(order))));
-      if (results.every(Boolean)) return;
-      await releaseOrders(orders.filter((_, i) => results[i]));
-      throw invalid("Some of these orders are already being handed over. Refresh and try again");
+      const sorted = [...orders].sort((a, b) => a.id < b.id ? -1 : 1);
+      const claimed = [];
+      for (const order of sorted) {
+        if (!await claimOnce(handoverKey(order))) {
+          await releaseOrders(claimed);
+          throw invalid("Some of these orders are already being handed over. Refresh and try again");
+        }
+        claimed.push(order);
+      }
     }
     Parse.Cloud.define("createHandover", async (request) => {
       const { user: rider } = await requireRole(request, ["rider"]);

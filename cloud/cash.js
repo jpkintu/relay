@@ -64,12 +64,20 @@ async function newHandover({ rider, orders, config, notes, requestId, cashier })
   return row;
 }
 
-// Claims every order for this handover or none of them.
+// Claims every order for this handover or none of them. Orders are claimed
+// one at a time in a fixed order, so when two requests race for the same
+// orders the one that loses the first order stops there and the other gets
+// them all (claiming in parallel could leave each with half and both fail).
 async function claimOrders(orders) {
-  const results = await Promise.all(orders.map((order) => claimOnce(handoverKey(order))));
-  if (results.every(Boolean)) return;
-  await releaseOrders(orders.filter((_, i) => results[i]));
-  throw invalid('Some of these orders are already being handed over. Refresh and try again');
+  const sorted = [...orders].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const claimed = [];
+  for (const order of sorted) {
+    if (!(await claimOnce(handoverKey(order)))) {
+      await releaseOrders(claimed);
+      throw invalid('Some of these orders are already being handed over. Refresh and try again');
+    }
+    claimed.push(order);
+  }
 }
 
 Parse.Cloud.define('createHandover', async (request) => {
