@@ -12,19 +12,37 @@ import {
   Settings,
   Users,
   CircleDollarSign,
+  BarChart3,
 } from 'lucide-react';
 import Parse from '../parse';
-import { AdminOrders, type AdminOrder } from './AdminOrders';
+import { AdminOrders } from './AdminOrders';
+import { PaymentsLedger } from './reports/PaymentsLedger';
+import { Commissions } from './reports/Commissions';
+import { Reports } from './reports/Reports';
 import { AdminSetup } from './AdminSetup';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, isToday } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { useDevice } from '../lib/device';
 
+type AdminOrder = {
+  id: string;
+  code: string;
+  rider: string;
+  customer: string;
+  status: string;
+  total: number;
+  amountCollected: number;
+  cashStatus: string;
+  commission: number;
+  createdAt: Date;
+};
+
 const NAV = [
   [LayoutDashboard, 'Overview', ''],
+  [BarChart3, 'Reports', 'reports'],
   [ClipboardList, 'Orders', 'orders'],
-  [HandCoins, 'Cash ledger', 'cash'],
+  [HandCoins, 'Payments ledger', 'payments'],
   [CircleDollarSign, 'Commissions', 'commissions'],
   [Users, 'Team', 'team'],
   [ClipboardList, 'Menu', 'menu'],
@@ -52,18 +70,6 @@ export function AdminWorkspace() {
   const setSection = (label: Section) =>
     navigate(`/admin/${NAV.find((entry) => entry[1] === label)?.[2] ?? ''}`);
   const [orders, setOrders] = useState<AdminOrder[]>([]);
-  const [handovers, setHandovers] = useState<
-    {
-      id: string;
-      code: string;
-      amount: number;
-      status: string;
-      rider: string;
-      reason: string;
-      countedAmount: number | null;
-      createdAt: Date;
-    }[]
-  >([]);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     try {
@@ -85,17 +91,12 @@ export function AdminWorkspace() {
             createdAt: new Date(),
           })),
         );
-        setHandovers([]);
       } else {
         const orderQ = new Parse.Query('Order');
         orderQ.include('createdBy');
         orderQ.descending('createdAt');
         orderQ.limit(100);
-        const handoverQ = new Parse.Query('CashHandover');
-        handoverQ.include('rider');
-        handoverQ.descending('createdAt');
-        handoverQ.limit(100);
-        const [orderRows, cashRows] = await Promise.all([orderQ.find(), handoverQ.find()]);
+        const orderRows = await orderQ.find();
         setOrders(
           orderRows.map((o) => ({
             id: o.id!,
@@ -110,18 +111,6 @@ export function AdminWorkspace() {
             createdAt: o.createdAt || new Date(),
           })),
         );
-        setHandovers(
-          cashRows.map((h) => ({
-            id: h.id!,
-            code: h.get('handoverCode'),
-            amount: h.get('amount'),
-            status: h.get('status'),
-            rider: personLabel(h.get('rider')),
-            reason: h.get('disputeReason') || '',
-            countedAmount: h.get('countedAmount') ?? null,
-            createdAt: h.createdAt || new Date(),
-          })),
-        );
       }
       setError('');
     } catch (e) {
@@ -133,6 +122,7 @@ export function AdminWorkspace() {
     const timer = window.setInterval(() => void load(), 10000);
     return () => window.clearInterval(timer);
   }, [load]);
+  if (slug === 'cash') return <Navigate to="/admin/payments" replace />;
   if (!current) return <Navigate to="/admin" replace />;
   const today = orders.filter((o) => isToday(o.createdAt, timezone));
   const cashWithRiders = orders
@@ -199,9 +189,11 @@ export function AdminWorkspace() {
             </p>
             <h1>{section === 'Overview' ? 'Restaurant overview' : section}</h1>
           </div>
-          <button className="refresh-button" onClick={() => void load()}>
-            Refresh data
-          </button>
+          {section === 'Overview' && (
+            <button className="refresh-button" onClick={() => void load()}>
+              Refresh data
+            </button>
+          )}
         </header>
         {error && <p className="ops-error">{error}</p>}
         {section === 'Overview' && (
@@ -258,106 +250,20 @@ export function AdminWorkspace() {
             </section>
           </>
         )}
-        {section === 'Orders' && <AdminOrders orders={orders} />}
-        {section === 'Cash ledger' && (
-          <section className="admin-panel admin-section-panel">
-            <div className="panel-title">
-              <h2>Cash handovers</h2>
-              <strong>
-                {money(
-                  handovers
-                    .filter((h) => h.status === 'confirmed')
-                    .reduce((n, h) => n + h.amount, 0),
-                )}{' '}
-                confirmed
-              </strong>
-            </div>
-            {handovers.map((h) => (
-              <div key={h.id}>
-                <div className="table-row">
-                  <span>{h.code}</span>
-                  <span>{h.rider}</span>
-                  <span className="status-pill">{h.status}</span>
-                  <span>{money(h.amount)}</span>
-                  <span>{formatDate(h.createdAt, timezone, { dateStyle: 'medium' })}</span>
-                </div>
-                {h.status === 'disputed' && (
-                  <DisputeResolution handover={h} onResolved={() => void load()} />
-                )}
-              </div>
-            ))}
-            {!handovers.length && <p className="empty-orders">No handovers recorded yet.</p>}
-          </section>
-        )}
-        {section === 'Commissions' && (
-          <section className="admin-panel admin-section-panel">
-            <h2>Commission ledger</h2>
-            {orders
-              .filter((o) => o.commission > 0)
-              .map((o) => (
-                <div className="table-row" key={o.id}>
-                  <span>{o.code}</span>
-                  <span>{o.rider}</span>
-                  <span>{o.customer}</span>
-                  <span>{o.status}</span>
-                  <strong>{money(o.commission)}</strong>
-                </div>
-              ))}
-            {!orders.some((o) => o.commission > 0) && (
-              <p className="empty-orders">Commissions appear when orders are delivered.</p>
-            )}
-          </section>
+        {preview && ['Reports', 'Orders', 'Payments ledger', 'Commissions'].includes(section) ? (
+          <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
+        ) : (
+          <>
+            {section === 'Reports' && <Reports />}
+            {section === 'Orders' && <AdminOrders />}
+            {section === 'Payments ledger' && <PaymentsLedger />}
+            {section === 'Commissions' && <Commissions />}
+          </>
         )}
         {['Team', 'Menu', 'Settings'].includes(section) && (
           <AdminSetup section={section as 'Team' | 'Menu' | 'Settings'} preview={preview} />
         )}
       </section>
     </main>
-  );
-}
-
-function DisputeResolution({
-  handover,
-  onResolved,
-}: {
-  handover: { id: string; reason: string; amount: number; countedAmount: number | null };
-  onResolved: () => void;
-}) {
-  const money = useMoney();
-  const [note, setNote] = useState(''),
-    [error, setError] = useState(''),
-    [busy, setBusy] = useState(false);
-  const reopen = async () => {
-    if (note.trim().length < 5) return;
-    setBusy(true);
-    setError('');
-    try {
-      await Parse.Cloud.run('reopenHandover', { handoverId: handover.id, note });
-      onResolved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not reopen dispute');
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="dispute-panel">
-      <strong>
-        Disputed cash count: {money(handover.countedAmount || 0)} / claimed {money(handover.amount)}
-      </strong>
-      <p>{handover.reason}</p>
-      <label>
-        Resolution note
-        <input
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Record how this was resolved"
-        />
-      </label>
-      <button disabled={busy || note.trim().length < 5} onClick={() => void reopen()}>
-        Return to cashier for recount
-      </button>
-      {error && <p className="ops-error">{error}</p>}
-    </div>
   );
 }

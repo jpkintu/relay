@@ -10,6 +10,7 @@
 //   cash.js      cash handovers and disputes
 //   shifts.js    rider and cashier shifts
 //   admin.js     owner setup, team, menu, settings
+//   reports.js   payments ledger, order/commission ledgers, earnings, reports
 //   preview.js   optional demo mode (RELAY_ENABLE_PREVIEW=true)
 
 require('./security');
@@ -21,4 +22,5 @@ require('./cash');
 require('./shifts');
 require('./admin');
 require('./preview');
+require('./reports');
 require('./profile');

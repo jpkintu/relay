@@ -740,3 +740,165 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     await settings({ allowBatching: false });
   });
 });
+
+describe('ledgers, earnings and reports', () => {
+  // Everything in this database was created during this run, so a range from
+  // yesterday to tomorrow (restaurant time) covers it all.
+  const kampalaDay = (offset) =>
+    new Date(Date.now() + 3 * 3600e3 + offset * 864e5).toISOString().slice(0, 10);
+  const range = { from: kampalaDay(-1), to: kampalaDay(1) };
+  const all = async (build) => {
+    const query = new Parse.Query('Order');
+    build?.(query);
+    query.limit(1000);
+    return query.find({ useMasterKey: true });
+  };
+  const sum = (rows, field) => rows.reduce((n, row) => n + (row.get(field) || 0), 0);
+
+  test('getReportOptions lists riders for staff only', async () => {
+    const { riders } = await run('getReportOptions', {}, s.owner);
+    const labels = riders.map((r) => r.label);
+    assert.ok(labels.includes('R-001 · Rita Rider'));
+    assert.ok(labels.includes('R-002 · Ron Rider'));
+    s.ritaId = riders.find((r) => r.label.includes('Rita')).id;
+    s.ronId = riders.find((r) => r.label.includes('Ron')).id;
+    await rejects(run('getReportOptions', {}, s.rider), /cashier or admin role required/);
+  });
+
+  test('the payments ledger lists every cash and mobile money transaction', async () => {
+    const ledger = await run('getPaymentsLedger', range, s.owner);
+    const cash = await all((q) => {
+      q.equalTo('paymentMethod', 'cash');
+      q.equalTo('status', 'DELIVERED');
+    });
+    const momo = await all((q) => q.equalTo('paymentMethod', 'mobile_money'));
+    assert.ok(cash.length > 0 && momo.length > 0);
+    assert.equal(ledger.transactions.filter((t) => t.kind === 'cash').length, cash.length);
+    assert.equal(ledger.transactions.filter((t) => t.kind === 'mobile_money').length, momo.length);
+    assert.equal(ledger.summary.cash.collected, sum(cash, 'amountCollected'));
+    const verified = momo.filter((o) => o.get('paymentStatus') === 'VERIFIED');
+    assert.equal(ledger.summary.mobileMoney.verified, sum(verified, 'total'));
+    assert.equal(
+      ledger.summary.mobileMoney.byProvider.reduce((n, p) => n + p.amount, 0),
+      sum(verified, 'total'),
+    );
+    const door = ledger.transactions.find((t) => t.reference === 'AT-DOOR-77');
+    assert.equal(door.status, 'PENDING_VERIFICATION');
+    // Cash confirmed through a handover carries the handover code.
+    const reconciled = ledger.transactions.find((t) => t.status === 'RECONCILED');
+    assert.match(reconciled.reference, /^HO-\d{8}-\d{3}$/);
+    assert.ok(ledger.handovers.some((h) => h.status === 'confirmed'));
+  });
+
+  test('the payments ledger filters by payment type and rider', async () => {
+    const momoOnly = await run('getPaymentsLedger', { ...range, method: 'mobile_money' }, s.owner);
+    assert.ok(momoOnly.transactions.every((t) => t.kind === 'mobile_money'));
+    assert.equal(momoOnly.handovers.length, 0);
+    const rita = await run('getPaymentsLedger', { ...range, riderId: s.ritaId }, s.cashier);
+    assert.ok(rita.transactions.length > 0);
+    assert.ok(rita.transactions.every((t) => t.riderId === s.ritaId));
+    assert.ok(rita.handovers.every((h) => h.riderId === s.ritaId));
+    const empty = await run('getPaymentsLedger', { from: '2020-01-01', to: '2020-01-31' }, s.owner);
+    assert.equal(empty.transactions.length, 0);
+    await rejects(run('getPaymentsLedger', range, s.rider), /cashier or admin role required/);
+    await rejects(
+      run('getPaymentsLedger', { from: '2026-02-30', to: '2026-03-01' }, s.owner),
+      /Dates must look like/,
+    );
+    await rejects(run('getPaymentsLedger', { ...range, method: 'card' }, s.owner), /Payment type/);
+  });
+
+  test('admin order search filters by date, rider and status', async () => {
+    const everything = await all();
+    const result = await run('adminSearchOrders', range, s.owner);
+    assert.equal(result.rows.length, everything.length);
+    assert.equal(result.summary.orders, everything.length);
+    const delivered = everything.filter((o) => o.get('status') === 'DELIVERED');
+    assert.equal(result.summary.revenue, sum(delivered, 'total'));
+    const ron = await run('adminSearchOrders', { ...range, riderId: s.ronId }, s.owner);
+    assert.ok(ron.rows.length > 0 && ron.rows.every((r) => r.riderId === s.ronId));
+    const done = await run('adminSearchOrders', { ...range, status: 'DELIVERED' }, s.owner);
+    assert.equal(done.rows.length, delivered.length);
+    const past = await run('adminSearchOrders', { from: '2020-01-01', to: '2020-01-02' }, s.owner);
+    assert.equal(past.rows.length, 0);
+    await rejects(run('adminSearchOrders', range, s.cashier), /admin role required/);
+  });
+
+  test('the commission ledger totals per rider', async () => {
+    const delivered = await all((q) => q.equalTo('status', 'DELIVERED'));
+    const ledger = await run('getCommissionLedger', range, s.owner);
+    assert.equal(ledger.total, sum(delivered, 'commissionAmount'));
+    assert.equal(
+      ledger.riders.reduce((n, r) => n + r.commission, 0),
+      ledger.total,
+    );
+    const rita = await run('getCommissionLedger', { ...range, riderId: s.ritaId }, s.owner);
+    assert.ok(rita.rows.every((r) => r.riderId === s.ritaId));
+    assert.deepEqual(
+      rita.riders.map((r) => r.riderId),
+      [s.ritaId],
+    );
+    await rejects(run('getCommissionLedger', range, s.rider), /admin role required/);
+  });
+
+  test('riders see only their own earnings, by week or month', async () => {
+    const mine = await all((q) => {
+      q.equalTo('status', 'DELIVERED');
+      q.equalTo('createdBy', Parse.User.createWithoutData(s.ronId));
+    });
+    // Asking for someone else's earnings still returns your own.
+    const weekly = await run(
+      'getRiderEarnings',
+      { ...range, period: 'week', riderId: s.ritaId },
+      s.rider2,
+    );
+    assert.equal(weekly.summary.deliveries, mine.length);
+    assert.equal(weekly.summary.earnings, sum(mine, 'commissionAmount'));
+    assert.equal(
+      weekly.series.reduce((n, row) => n + row.earnings, 0),
+      weekly.summary.earnings,
+    );
+    assert.ok(weekly.series.every((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.key)));
+    assert.equal(weekly.previous.deliveries, 0);
+    const monthly = await run('getRiderEarnings', { ...range, period: 'month' }, s.rider2);
+    assert.ok(monthly.series.every((row) => /^\d{4}-\d{2}$/.test(row.key)));
+    // The owner can look at any rider.
+    const rita = await run('getRiderEarnings', { ...range, riderId: s.ritaId }, s.owner);
+    assert.ok(rita.deliveries.length > 0);
+    await rejects(run('getRiderEarnings', range, s.cashier), /rider or admin role required/);
+  });
+
+  test('the operations report covers revenue, growth and menu item sales', async () => {
+    const everything = await all();
+    const delivered = everything.filter((o) => o.get('status') === 'DELIVERED');
+    const report = await run('getOperationsReport', { ...range, period: 'day' }, s.owner);
+    assert.equal(report.summary.orders, everything.length);
+    assert.equal(report.summary.revenue, sum(delivered, 'total'));
+    assert.equal(report.series.length, 3);
+    assert.equal(
+      report.series.reduce((n, row) => n + row.revenue, 0),
+      report.summary.revenue,
+    );
+    assert.ok(report.monthly.length >= 1);
+    assert.equal(report.change.revenue, null); // nothing the period before
+    const stew = report.items.find((item) => /stew/i.test(item.name));
+    assert.ok(stew && stew.qty > 0 && stew.revenue > 0);
+    assert.equal(
+      report.items.reduce((n, item) => n + item.revenue, 0),
+      sum(delivered, 'subtotal'),
+    );
+    assert.ok(report.accompaniments.some((a) => a.name === 'Matooke'));
+    assert.equal(report.hours.length, 24);
+    assert.equal(report.weekdays.length, 7);
+    assert.equal(
+      report.payments.reduce((n, p) => n + p.amount, 0),
+      report.summary.revenue,
+    );
+    assert.ok(report.riders.length >= 2);
+    await rejects(run('getOperationsReport', range, s.cashier), /admin role required/);
+    await rejects(
+      run('getOperationsReport', { from: '2025-01-01', to: '2026-06-30' }, s.owner),
+      /at most 366 days/,
+    );
+  });
+});

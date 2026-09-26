@@ -57,6 +57,7 @@
     "lucide-react": "^0.462.0",
     "next-themes": "^0.4.4",
     "parse": "7.1.2",
+    "plotly.js-basic-dist-min": "^3.7.0",
     "react": "^18.3.1",
     "react-day-picker": "^10.0.1",
     "react-dom": "^18.3.1",
@@ -73,6 +74,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.9.0",
+    "@types/plotly.js-basic-dist-min": "^2.12.4",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
