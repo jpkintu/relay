@@ -82,6 +82,9 @@ export default defineConfig({
   },
   // Credit comment kept at the top of every built JavaScript file.
   build: {
+    // Embed the small Embiro logo in the JS so the credit shows at once,
+    // even on the first loading screen; other assets use the default rule.
+    assetsInlineLimit: (file) => (file.endsWith('embiro-logo-small.webp') ? true : undefined),
     rollupOptions: {
       output: { banner: '/*! Relay, designed and developed by Embiro Concepts. See NOTICE. */' },
     },

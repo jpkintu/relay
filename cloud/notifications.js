@@ -142,8 +142,10 @@ Parse.Cloud.define('getNotifications', async (request) => {
     await cashLimitAlert(user, config, float);
     await handoverReminder(user, config, float);
   }
+  // The bell lists unread notifications only; reading one clears it.
   const listQuery = new Parse.Query('Notification');
   listQuery.equalTo('recipient', user);
+  listQuery.doesNotExist('readAt');
   listQuery.descending('createdAt');
   listQuery.limit(40);
   const unreadQuery = new Parse.Query('Notification');

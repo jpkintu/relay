@@ -1091,9 +1091,15 @@ describe('notifications, cash limits and reported problems', () => {
     const { unread } = await run('getNotifications', {}, s.nia);
     assert.ok(unread >= 2);
     await run('markNotificationsRead', { ids: [ready.id] }, s.nia);
-    assert.equal((await run('getNotifications', {}, s.nia)).unread, unread - 1);
+    const after = await run('getNotifications', {}, s.nia);
+    assert.equal(after.unread, unread - 1);
+    // The list holds unread notifications only: the one just read is gone.
+    assert.ok(!after.items.some((n) => n.id === ready.id));
+    assert.ok(after.items.every((n) => !n.read));
     await run('markNotificationsRead', { all: true }, s.nia);
-    assert.equal((await run('getNotifications', {}, s.nia)).unread, 0);
+    const cleared = await run('getNotifications', {}, s.nia);
+    assert.equal(cleared.unread, 0);
+    assert.equal(cleared.items.length, 0);
   });
 
   test('notifications are private to their recipient', async () => {

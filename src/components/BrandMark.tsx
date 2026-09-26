@@ -1,8 +1,10 @@
-import { Bike } from 'lucide-react';
-import embiroLogo from '../assets/embiro-logo.webp';
+import embiroLogo from '../assets/embiro-logo-small.webp';
+import { RelayMark } from './RelayMark';
 
-// App logo with the developer credit set directly under the word "Relay".
-// `onDark` for the navy sidebar / sign-in story panel.
+// App logo: the mark and "Relay" on one line, the developer credit under
+// them starting at the mark's left edge. `onDark` for the navy sidebar and
+// sign-in story panel. The Embiro logo is inlined so it shows immediately,
+// even on the loading screen.
 export function BrandMark({
   onDark = false,
   className = '',
@@ -12,13 +14,13 @@ export function BrandMark({
 }) {
   return (
     <div className={['brand-mark', onDark ? '' : 'dark', className].filter(Boolean).join(' ')}>
-      <Bike aria-hidden />
-      <div className="brand-text">
+      <div className="brand-row">
+        <RelayMark />
         <span className="brand-name">Relay</span>
-        <span className="brand-credit">
-          Powered by <img src={embiroLogo} alt="Embiro" width={52} height={17} />
-        </span>
       </div>
+      <span className="brand-credit">
+        Powered by <img src={embiroLogo} alt="Embiro" width={52} height={17} />
+      </span>
     </div>
   );
 }

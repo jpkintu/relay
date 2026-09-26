@@ -4,7 +4,7 @@ Designed and developed by Embiro Concepts.
 Attribution
 -----------
 The "Powered by Embiro" credit (src/components/BrandMark.tsx and
-src/assets/embiro-logo.webp) appears under the Relay name wherever the app
+src/assets/embiro-logo-small.webp) appears under the Relay name wherever the app
 logo is shown. The Embiro name and
 logo are marks of Embiro Concepts. Please keep this notice and the credit
 in any copy or derivative of this software.
