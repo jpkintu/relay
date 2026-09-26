@@ -122,7 +122,9 @@ export function NewOrder({
   cashBlocked = '',
 }: {
   onBack: () => void;
-  onPlaced: (payload: OrderPayload) => Promise<{ id?: string; orderCode?: string } | void>;
+  onPlaced: (
+    payload: OrderPayload,
+  ) => Promise<{ id?: string; orderCode?: string; cashLimitReached?: boolean } | void>;
   onGoToCash: () => void;
   // Set when the rider is at the cash limit: explains why ordering is blocked.
   cashBlocked?: string;
@@ -145,7 +147,11 @@ export function NewOrder({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [placed, setPlaced] = useState<{ id?: string; orderCode?: string } | null>(null);
+  const [placed, setPlaced] = useState<{
+    id?: string;
+    orderCode?: string;
+    cashLimitReached?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (preview) return;
@@ -283,6 +289,12 @@ export function NewOrder({
         <p className="eyebrow">Ticket sent{placed.orderCode ? ` · ${placed.orderCode}` : ''}</p>
         <h2>Order placed.</h2>
         <p>The kitchen has received your order.</p>
+        {placed.cashLimitReached && (
+          <p className="limit-banner" role="status">
+            This order takes you to your cash limit. Deliver it and hand over the cash before taking
+            another order.
+          </p>
+        )}
         {placed.id && !preview && (
           <button className="setup-secondary" onClick={() => onOpenOrder(placed.id!)}>
             View order

@@ -1367,18 +1367,18 @@ var require_orders = __commonJS({
       const activeQuery = new Parse.Query("Order");
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
-      const [lines, { values: config }, activeCount, float] = await Promise.all([
+      activeQuery.limit(200);
+      const [lines, { values: config }, active, float] = await Promise.all([
         priceLines(p.items),
         loadConfig(),
-        activeQuery.count(MASTER),
+        activeQuery.find(MASTER),
         riderFloat(rider)
       ]);
-      if (!config.allowBatching && activeCount)
+      if (!config.allowBatching && active.length)
         throw invalid("Finish your current order before creating another");
-      if (config.maxRiderFloat > 0 && float >= config.maxRiderFloat)
-        throw invalid(
-          `Cash limit reached: you hold ${money(config, float)} (limit ${money(config, config.maxRiderFloat)}). Hand over cash before taking new orders`
-        );
+      const toCollect = cashToCollect(active);
+      if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
+        throw invalid(cashLimitMessage(config, float, toCollect));
       const subtotal = sumBy(lines, (line) => line.price * line.qty);
       const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
       const total = subtotal + fee;
@@ -1390,11 +1390,6 @@ var require_orders = __commonJS({
       if (isCash && amountToCollect < total && shortfallNote.length < 5)
         throw invalid("The customer is paying less than the total. Add a note explaining why");
       const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
-      const projected = float + (isCash ? amountToCollect : 0);
-      if (config.maxRiderFloat > 0 && projected > config.maxRiderFloat)
-        throw invalid(
-          `Hand over cash first: this order would put ${money(config, projected)} with you (limit ${money(config, config.maxRiderFloat)})`
-        );
       const order = new Parse.Object("Order");
       order.set({
         orderCode: await nextDailyCode("ORD", 4, config.timezone, {
@@ -1465,8 +1460,26 @@ var require_orders = __commonJS({
         link: "/cashier",
         order
       });
-      return { id: order.id, orderCode: order.get("orderCode"), total };
+      const exposure = float + toCollect + (isCash ? amountToCollect : 0);
+      return {
+        id: order.id,
+        orderCode: order.get("orderCode"),
+        total,
+        // This order takes the rider to or over the limit: it goes ahead, but the
+        // next one is blocked until the cash is handed over.
+        cashLimitReached: config.maxRiderFloat > 0 && exposure >= config.maxRiderFloat
+      };
     });
+    var cashToCollect = (orders) => sumBy(
+      orders.filter((order) => order.get("paymentMethod") === "cash"),
+      (order) => order.get("amountToCollect") ?? order.get("total")
+    );
+    function cashLimitMessage(config, held, toCollect) {
+      const parts = [];
+      if (held > 0) parts.push(`you hold ${money(config, held)}`);
+      if (toCollect > 0) parts.push(`${money(config, toCollect)} is still to collect on open orders`);
+      return `Cash limit reached: ${parts.join(" and ") || "no cash room left"} (limit ${money(config, config.maxRiderFloat)}). ${toCollect > 0 ? "Deliver and hand over" : "Hand over"} cash before taking new orders`;
+    }
     var TRANSITIONS = {
       accept: { from: ["PLACED"], to: "ACCEPTED", kitchen: "accepted", who: "staff" },
       prepare: { from: ["ACCEPTED"], to: "PREPARING", kitchen: "preparing", who: "staff" },

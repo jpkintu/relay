@@ -29,6 +29,8 @@ type LiveOrder = {
   amountCollected?: number;
   commissionAmount?: number;
   deliveredAt?: Date;
+  paymentMethod?: string;
+  amountToCollect?: number;
 };
 
 type SubScreen = 'active' | 'cash' | 'earnings' | 'profile';
@@ -67,6 +69,8 @@ export function RiderWorkspace() {
           amountCollected: row.get('amountCollected'),
           commissionAmount: row.get('commissionAmount'),
           deliveredAt: row.get('deliveredAt'),
+          paymentMethod: row.get('paymentMethod'),
+          amountToCollect: row.get('amountToCollect') ?? row.get('total'),
         })),
       );
       setLoadError('');
@@ -94,9 +98,17 @@ export function RiderWorkspace() {
             preview={preview}
             cashBlocked={
               !preview &&
-              cashLevel(cashHeld(orders), config.maxRiderFloat, config.floatWarningPercent) ===
-                'reached'
-                ? `Cash limit reached: you hold ${money(cashHeld(orders))} of ${money(config.maxRiderFloat)}. Hand over cash before taking new orders.`
+              cashLevel(
+                cashHeld(orders) + cashToCollect(orders),
+                config.maxRiderFloat,
+                config.floatWarningPercent,
+              ) === 'reached'
+                ? cashLimitMessage(
+                    cashHeld(orders),
+                    cashToCollect(orders),
+                    config.maxRiderFloat,
+                    money,
+                  )
                 : ''
             }
             onBack={() => navigate('/rider')}
@@ -133,7 +145,31 @@ const cashHeld = (orders: LiveOrder[]) =>
     (o) => o.amountCollected,
   );
 
-// Same rule as the server: 'reached' blocks new orders, 'near' warns.
+// Cash still to collect on open (not yet delivered) cash orders.
+const cashToCollect = (orders: LiveOrder[]) =>
+  sum(
+    orders.filter((o) => IN_FLIGHT(o) && o.paymentMethod === 'cash'),
+    (o) => o.amountToCollect,
+  );
+
+// Same rule as the server: an order may take the rider over the limit, but
+// once held + to-collect cash reaches it, no new orders until it is cleared.
+function cashLimitMessage(
+  held: number,
+  toCollect: number,
+  limit: number,
+  money: (n: number) => string,
+) {
+  const parts = [
+    held > 0 ? `you hold ${money(held)}` : '',
+    toCollect > 0 ? `${money(toCollect)} is still to collect` : '',
+  ].filter(Boolean);
+  return `Cash limit reached: ${parts.join(' and ')} (limit ${money(limit)}). ${
+    toCollect > 0 ? 'Deliver and hand over' : 'Hand over'
+  } cash before taking new orders.`;
+}
+
+// 'reached' blocks new orders, 'near' warns.
 function cashLevel(cash: number, limit: number, warnPercent = 80): 'reached' | 'near' | null {
   if (!(limit > 0)) return null;
   if (cash >= limit) return 'reached';
@@ -148,7 +184,8 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
   const inFlight = orders.filter(IN_FLIGHT);
   const cashOnMe = preview ? 0 : cashHeld(orders);
   const limit = config.maxRiderFloat;
-  const level = cashLevel(cashOnMe, limit, config.floatWarningPercent);
+  const toCollect = preview ? 0 : cashToCollect(orders);
+  const level = cashLevel(cashOnMe + toCollect, limit, config.floatWarningPercent);
   const limitShare = limit > 0 ? Math.min(100, Math.round((cashOnMe / limit) * 100)) : 0;
   const deliveredToday = orders.filter(
     (o) => o.status === 'DELIVERED' && isToday(o.deliveredAt, config.timezone),
@@ -187,11 +224,12 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
           </div>
           {level === 'reached' ? (
             <div className="limit-banner" role="alert">
-              <span>
-                <b>Cash limit reached.</b> You hold {money(cashOnMe)} of {money(limit)}. Hand over
-                cash to take new orders.
-              </span>
-              <button onClick={() => navigate('/rider/cash')}>Hand over cash</button>
+              <span>{cashLimitMessage(cashOnMe, toCollect, limit, money)}</span>
+              {cashOnMe > 0 ? (
+                <button onClick={() => navigate('/rider/cash')}>Hand over cash</button>
+              ) : (
+                <button onClick={() => navigate('/rider/active')}>Open active orders</button>
+              )}
             </div>
           ) : (
             <>

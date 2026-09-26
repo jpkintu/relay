@@ -600,16 +600,55 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     await run('transitionOrder', { orderId: short.id, action: 'cancel', reason: 'test' }, s.rider2);
   });
 
-  test('B2: an order that would take the rider over the cash limit is blocked', async () => {
-    await settings({ maxRiderFloat: 20000 });
+  test('cash limit: the order that crosses the limit goes ahead, the next one waits', async () => {
+    // What the rider already has: cash held plus cash still to collect.
+    const M = { useMasterKey: true };
+    const mine = await new Parse.Query('Order').equalTo('createdBy', s.rider2).limit(1000).find(M);
+    const held = mine
+      .filter(
+        (o) =>
+          o.get('status') === 'DELIVERED' &&
+          ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.get('cashStatus')),
+      )
+      .reduce((n, o) => n + o.get('amountCollected'), 0);
+    const toCollect = mine
+      .filter(
+        (o) =>
+          !['DELIVERED', 'CANCELLED'].includes(o.get('status')) &&
+          o.get('paymentMethod') === 'cash',
+      )
+      .reduce((n, o) => n + (o.get('amountToCollect') ?? o.get('total')), 0);
+    // Just under the limit (e.g. limit 50,000 with 0 held) …
+    await settings({ maxRiderFloat: held + toCollect + 1000 });
     try {
-      await rejects(order(), /Hand over cash first/);
-      const mm = await order({
+      // … an order far bigger than the room left is still allowed …
+      const big = await order({
+        items: [{ id: ids.stew, quantity: 4, accompaniments: [ids.matooke] }],
+      });
+      assert.equal(big.cashLimitReached, true);
+      // … but nothing else until the cash is cleared, whatever the payment type.
+      await rejects(order(), /Cash limit reached.*Deliver and hand over cash/);
+      await rejects(
+        order({
+          paymentMethod: 'mobile_money',
+          paymentProvider: 'mtn',
+          paymentReference: 'B2TEST001',
+        }),
+        /Cash limit reached/,
+      );
+      // Clearing it (here: cancelling the big order) lets the rider order again.
+      await run('transitionOrder', { orderId: big.id, action: 'cancel', reason: 'test' }, s.rider2);
+      const next = await order({
         paymentMethod: 'mobile_money',
         paymentProvider: 'mtn',
-        paymentReference: 'B2TEST001',
+        paymentReference: 'B2TEST002',
       });
-      await run('transitionOrder', { orderId: mm.id, action: 'cancel', reason: 'test' }, s.rider2);
+      assert.equal(next.cashLimitReached, false);
+      await run(
+        'transitionOrder',
+        { orderId: next.id, action: 'cancel', reason: 'test' },
+        s.rider2,
+      );
     } finally {
       await settings({ maxRiderFloat: 1000000 });
     }
@@ -1128,6 +1167,37 @@ describe('notifications, cash limits and reported problems', () => {
     assert.equal((await kinds(s.nia)).filter((k) => k === 'cash.handover_reminder').length, 1);
     await rejects(saveSettings({ cashReminderHour: 24 }), /0-23/);
     await saveSettings({ cashReminderHour: 20 });
+  });
+
+  test('limit 50,000 with nothing held: a 100,000 order goes ahead, then deposit first', async () => {
+    const handOver = async () => {
+      const cash = await new Parse.Query('Order')
+        .equalTo('createdBy', Parse.User.createWithoutData(s.nia.id))
+        .equalTo('cashStatus', 'WITH_RIDER')
+        .find(M);
+      if (!cash.length) return;
+      const h = await run('createHandover', { orderIds: cash.map((o) => o.id) }, s.nia);
+      await run('confirmHandover', { handoverId: h.id, countedAmount: h.amount }, s.cashier);
+    };
+    await handOver();
+    await saveSettings({ maxRiderFloat: 50000 });
+    try {
+      const { items } = await run('getOperationalMenu', {}, s.nia);
+      const item = items.find((i) => !(i.accompanimentGroups || []).some((g) => g.min > 0));
+      const quantity = Math.ceil(100000 / item.price);
+      const big = await place({ items: [{ id: item.id, quantity }] });
+      assert.ok(big.total >= 100000);
+      assert.equal(big.cashLimitReached, true);
+      await rejects(place(), /Cash limit reached/);
+      await deliver(big.id);
+      await rejects(place(), /Cash limit reached: you hold/);
+      await handOver();
+      const next = await place();
+      assert.equal(next.cashLimitReached, false);
+      await run('transitionOrder', { orderId: next.id, action: 'cancel', reason: 'Test' }, s.nia);
+    } finally {
+      await saveSettings({ maxRiderFloat: 1000000 });
+    }
   });
 
   test('the owner sees reported problems and resolves them', async () => {

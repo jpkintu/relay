@@ -470,6 +470,11 @@ Priority: **P0** = release blocker, **P1** = before first paying client, **P2** 
 - [x] **B2 P1 — Float limit checks the current float, not the float after the
       order.** It should block when `currentFloat + (cash order total) > maxRiderFloat`
       (brief §5.1), with a per-rider override.
+      _Rule since 2026-09-26 (owner's decision): a rider whose cash — held plus still
+      to collect on open cash orders — is below `maxRiderFloat` may place an order even
+      if it takes them over the limit; once at or over it, every new order (any payment
+      type) is refused until the cash is delivered and handed over. `createOrder`
+      returns `cashLimitReached` so the app can tell the rider straight away._
 - [x] **B3 P1 — Order and handover codes can collide.** _Fixed: `Counter`-based `ORD-YYYYMMDD-0001`, `HO-YYYYMMDD-001`, `R-001`, `C-001` (daily codes use the restaurant timezone)._ `Date.now().slice(-4 / -6)`
       is not unique or sequential. Use a `Counter` class with an atomic `increment`
       per day → `ORD-YYYYMMDD-0001`, `HO-YYYYMMDD-001`, and rider codes `R-001`.
@@ -719,3 +724,4 @@ starts.
 | 2026-09-26 | Fix `[object Object]` codes: on Back4App the counter's save() did not return the new value, so order, handover and staff codes broke. Codes are now read back and checked for uniqueness; Settings → Apply security rules repairs existing broken codes. CI e2e now runs with direct access like Back4App.                                                                                                                                                 |
 | 2026-09-26 | Design pass guided by Hallmark (github.com/Nutlope/hallmark): self-hosted Space Grotesk / Geist / Geist Mono, roman headings, decorative eyebrows and icon tiles removed, tinted surfaces, ink primary buttons with blue for focus/active, real tables (sticky header, scroll, tabular numbers, totals). "Powered by Embiro" moved under the Relay name. Rider header hides the restaurant pill until a name is set; the owner is prompted on Overview.    |
 | 2026-09-26 | Notifications: bell with sound on every workspace (new orders, handovers and mobile money for cashiers/admins; order status, payments, handovers and problems for riders), rider cash warnings, limit-reached block on all new orders, end-of-day handover reminder; admin Problems page. New settings: cash reminder hour, warning %. e2e 58, unit 53.                                                                                                    |
+| 2026-09-26 | Cash limit rule: the order that crosses the limit is allowed; after that no new orders until the cash (held + still to collect) is handed over. Rider home, New order and the order-placed screen explain it. e2e 59.                                                                                                                                                                                                                                      |
