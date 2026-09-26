@@ -150,6 +150,8 @@ describe('team and roles (B1)', () => {
     s.rider = await login('rita', '1234');
     s.rider2 = await login('ron', '4321');
     s.cashier = await login('carl', '5678');
+    // Cashiers work the board only inside a shift with a counted till.
+    await run('startShift', { kind: 'cashier', openingFloat: 50000 }, s.cashier);
   });
 
   test('riders and cashiers learn their own role from getMyProfile', async () => {
@@ -1443,4 +1445,116 @@ test('a rider cannot end their shift with open orders or unreconciled cash', asy
   assert.deepEqual(await outstanding(), { openOrders: 0, cashWithRider: 0, cashPending: 0 });
   await run('endShift', { shiftId: shift.id }, s.nia);
   assert.equal((await run('getMyShift', {}, s.nia)).shift, null);
+});
+
+describe('cashier shifts and till reconciliation', () => {
+  before(async () => {
+    await run(
+      'adminCreateTeamMember',
+      { name: 'Cleo Cashier', username: 'cleo', pin: '9753', role: 'cashier' },
+      s.owner,
+    );
+    s.cleo = await login('cleo', '9753');
+  });
+
+  test('a cashier cannot work the board before starting a shift', async () => {
+    const pending = await new Parse.Query('Order')
+      .equalTo('status', 'PLACED')
+      .first({ useMasterKey: true });
+    const blocked = /Start your shift and count the cash in the till first/;
+    if (pending)
+      await rejects(
+        run('transitionOrder', { orderId: pending.id, action: 'accept' }, s.cleo),
+        blocked,
+      );
+    await rejects(run('verifyPayment', { orderId: 'x', received: true }, s.cleo), blocked);
+    await rejects(run('confirmHandover', { handoverId: 'x', countedAmount: 1 }, s.cleo), blocked);
+    await rejects(
+      run('disputeHandover', { handoverId: 'x', countedAmount: 1, reason: 'short' }, s.cleo),
+      blocked,
+    );
+    await rejects(
+      run('setAvailability', { type: 'menuItem', id: 'x', available: false }, s.cleo),
+      blocked,
+    );
+    // Admins are not till operators and may act without a shift.
+    assert.equal((await run('getMyShift', {}, s.owner)).shift, null);
+  });
+
+  test('the opening till count is required, even when it is zero', async () => {
+    await rejects(run('startShift', { kind: 'cashier' }, s.cleo), /Count the cash in the till/);
+    await run('startShift', { kind: 'cashier', openingFloat: 0 }, s.cleo);
+    const { shift } = await run('getMyShift', {}, s.cleo);
+    assert.equal(shift.openingFloat, 0);
+    assert.equal(shift.expectedTill, 0);
+  });
+
+  test('a till difference must be explained; the owner is told and sees it in the report', async () => {
+    // Cleo confirms a handover so the till should hold its amount.
+    const { items } = await run('getOperationalMenu', {}, s.nia);
+    const item = items.find((i) => !(i.accompanimentGroups || []).some((g) => g.min > 0));
+    const order = await run(
+      'createOrder',
+      {
+        customerName: 'Till Check',
+        deliveryAddress: 'Naguru',
+        items: [{ id: item.id, quantity: 1 }],
+      },
+      s.nia,
+    );
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: order.id, action }, s.cleo);
+    await run('transitionOrder', { orderId: order.id, action: 'pickup' }, s.nia);
+    await run('transitionOrder', { orderId: order.id, action: 'deliver' }, s.nia);
+    const handover = await run('createHandover', { orderIds: [order.id] }, s.nia);
+    await run(
+      'confirmHandover',
+      { handoverId: handover.id, countedAmount: handover.amount },
+      s.cleo,
+    );
+    const { shift } = await run('getMyShift', {}, s.cleo);
+    assert.equal(shift.expectedTill, handover.amount);
+
+    await run('markNotificationsRead', { all: true }, s.owner);
+    const short = handover.amount - 1000;
+    await rejects(
+      run('endShift', { shiftId: shift.id, physicalCount: short }, s.cleo),
+      /explain the difference/,
+    );
+    await rejects(
+      run('endShift', { shiftId: shift.id, physicalCount: short, varianceNote: 'short' }, s.cleo),
+      /explain the difference/,
+    );
+    const result = await run(
+      'endShift',
+      {
+        shiftId: shift.id,
+        physicalCount: short,
+        varianceNote: 'Gave change twice to one customer',
+      },
+      s.cleo,
+    );
+    assert.equal(result.variance, -1000);
+
+    const alert = (await run('getNotifications', {}, s.owner)).items.find(
+      (n) => n.kind === 'shift.variance',
+    );
+    assert.match(alert.title, /Till short by/);
+    assert.match(alert.body, /Gave change twice/);
+
+    const report = await run('getShiftReport', {}, s.owner);
+    const row = report.shifts.find((r) => r.id === shift.id);
+    assert.equal(row.variance, -1000);
+    assert.equal(row.varianceNote, 'Gave change twice to one customer');
+    assert.equal(row.status, 'closed');
+    assert.ok(report.shifts.some((r) => r.status === 'open')); // carl is still on shift
+    await rejects(run('getShiftReport', {}, s.cleo), /admin role required/);
+  });
+
+  test('a till that matches closes without an explanation', async () => {
+    await run('startShift', { kind: 'cashier', openingFloat: 20000 }, s.cleo);
+    const { shift } = await run('getMyShift', {}, s.cleo);
+    const result = await run('endShift', { shiftId: shift.id, physicalCount: 20000 }, s.cleo);
+    assert.equal(result.variance, 0);
+  });
 });

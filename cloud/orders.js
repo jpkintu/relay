@@ -11,6 +11,7 @@ const {
   nextDailyCode,
   riderFloat,
   personName,
+  requireCashierShift,
 } = require('./lib/core');
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
@@ -270,6 +271,7 @@ Parse.Cloud.define('transitionOrder', async (request) => {
   const owner = order.get('createdBy')?.id === actor.id;
   if (rule.who === 'staff' && !staff) throw forbidden('Staff access required');
   if (rule.who === 'owner' && !owner && !staff) throw forbidden('Not allowed');
+  if (staff && !owner) await requireCashierShift(actor, role);
   const { values: config } = await loadConfig();
   if (p.action === 'pickup' && !staff && config.requireCashierConfirmForPickup)
     throw forbidden('The cashier confirms pickup when handing over the bag');

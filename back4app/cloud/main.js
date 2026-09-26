@@ -252,6 +252,15 @@ var require_core = __commonJS({
       const orders = await query.find(MASTER);
       return orders.reduce((sum, order) => sum + (Number(order.get("amountCollected")) || 0), 0);
     }
+    async function requireCashierShift(user, role) {
+      if (role !== "cashier") return;
+      const query = new Parse.Query("Shift");
+      query.equalTo("operator", user);
+      query.equalTo("kind", "cashier");
+      query.equalTo("status", "open");
+      if (!await query.first(MASTER))
+        throw invalid("Start your shift and count the cash in the till first");
+    }
     var personName = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
     async function nextSequence(key) {
       const find = () => {
@@ -334,6 +343,7 @@ var require_core = __commonJS({
       nextDailyCode,
       riderFloat,
       personName,
+      requireCashierShift,
       isBrokenCode,
       nextStaffCode
     };
@@ -507,7 +517,8 @@ var require_security = __commonJS({
         acknowledgedCash: B,
         expectedTill: N,
         physicalCount: N,
-        variance: N
+        variance: N,
+        varianceNote: S
       },
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
@@ -8549,7 +8560,8 @@ var require_payments = __commonJS({
       getRoleName,
       requireUser,
       audit,
-      loadConfig
+      loadConfig,
+      requireCashierShift
     } = require_core();
     var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
     var { dateKey } = require_dates();
@@ -8576,7 +8588,8 @@ var require_payments = __commonJS({
       return { provider, reference };
     }
     Parse.Cloud.define("verifyPayment", async (request) => {
-      const { user: actor } = await requireRole(request, ["cashier", "admin"]);
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
       const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
       if (order.get("paymentStatus") !== PENDING)
         throw invalid("This payment is not waiting for a check");
@@ -8815,7 +8828,8 @@ var require_orders = __commonJS({
       loadConfig,
       nextDailyCode,
       riderFloat,
-      personName
+      personName,
+      requireCashierShift
     } = require_core();
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
@@ -9037,6 +9051,7 @@ var require_orders = __commonJS({
       const owner = order.get("createdBy")?.id === actor.id;
       if (rule.who === "staff" && !staff) throw forbidden("Staff access required");
       if (rule.who === "owner" && !owner && !staff) throw forbidden("Not allowed");
+      if (staff && !owner) await requireCashierShift(actor, role);
       const { values: config } = await loadConfig();
       if (p.action === "pickup" && !staff && config.requireCashierConfirmForPickup)
         throw forbidden("The cashier confirms pickup when handing over the bag");
@@ -9246,7 +9261,14 @@ var require_orders = __commonJS({
 var require_menu = __commonJS({
   "cloud/menu.js"() {
     "use strict";
-    var { MASTER, invalid, requireRole, audit, loadConfig } = require_core();
+    var {
+      MASTER,
+      invalid,
+      requireRole,
+      audit,
+      loadConfig,
+      requireCashierShift
+    } = require_core();
     var { availableGroups } = require_accompaniments();
     var { servableAccompaniments } = require_orders();
     Parse.Cloud.define("getOperationalMenu", async (request) => {
@@ -9305,7 +9327,8 @@ var require_menu = __commonJS({
       };
     });
     Parse.Cloud.define("setAvailability", async (request) => {
-      const { user: actor } = await requireRole(request, ["cashier", "admin"]);
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
       const { type, id } = request.params;
       const available = request.params.available === true;
       const className = { menuItem: "MenuItem", accompaniment: "Accompaniment" }[type];
@@ -9335,7 +9358,8 @@ var require_cash = __commonJS({
       readAcl,
       audit,
       loadConfig,
-      nextDailyCode
+      nextDailyCode,
+      requireCashierShift
     } = require_core();
     var { sumBy } = require_money();
     var { money, notifyUser, notifyStaff, notifyAdmins, personName } = require_notifications();
@@ -9381,7 +9405,8 @@ var require_cash = __commonJS({
       return { id: row.id, amount };
     });
     Parse.Cloud.define("confirmHandover", async (request) => {
-      const { user: cashier } = await requireRole(request, ["cashier", "admin"]);
+      const { user: cashier, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(cashier, role);
       const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
       if (row.get("status") !== "pending") throw invalid("Already resolved");
       const counted = Number(request.params.countedAmount);
@@ -9412,7 +9437,8 @@ var require_cash = __commonJS({
       return { status: "confirmed" };
     });
     Parse.Cloud.define("disputeHandover", async (request) => {
-      const { user: cashier } = await requireRole(request, ["cashier", "admin"]);
+      const { user: cashier, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(cashier, role);
       const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
       if (row.get("status") !== "pending") throw invalid("Only pending handovers can be disputed");
       const reason = String(request.params.reason || "").trim();
@@ -9477,8 +9503,13 @@ var require_shifts = __commonJS({
       getRoleName,
       readAcl,
       audit,
-      riderFloat
+      riderFloat,
+      adminOnly,
+      loadConfig,
+      personName
     } = require_core();
+    var { money, notifyAdmins } = require_notifications();
+    var { resolveRange } = require_dates();
     var { sumBy } = require_money();
     async function expectedTill(cashier, shift) {
       const query = new Parse.Query("CashHandover");
@@ -9547,7 +9578,10 @@ var require_shifts = __commonJS({
       const allowed = kind === "rider" && role === "rider" || kind === "cashier" && ["cashier", "admin"].includes(role);
       if (!allowed) throw forbidden("Not allowed to start this shift");
       if (await openShiftQuery(user).first(MASTER)) throw invalid("Close the current shift first");
-      const opening = Number(request.params.openingFloat || 0);
+      const raw = request.params.openingFloat;
+      if (kind === "cashier" && (raw === void 0 || raw === null || raw === ""))
+        throw invalid("Count the cash in the till and enter it to start your shift");
+      const opening = Number(raw || 0);
       if (!Number.isFinite(opening) || opening < 0) throw invalid("Invalid opening cash");
       const row = new Parse.Object("Shift");
       row.set({
@@ -9578,10 +9612,15 @@ var require_shifts = __commonJS({
       let variance = null;
       if (isCashier) {
         expected = await expectedTill(user, row);
-        counted = Number(request.params.physicalCount);
-        if (!Number.isFinite(counted) || counted < 0) throw invalid("Enter physical till count");
+        const rawCount = request.params.physicalCount;
+        counted = Number(rawCount);
+        if (rawCount === void 0 || rawCount === "" || !Number.isFinite(counted) || counted < 0)
+          throw invalid("Enter physical till count");
         variance = counted - expected;
       }
+      const varianceNote = String(request.params.varianceNote || "").trim().slice(0, 500);
+      if (variance && varianceNote.length < 10)
+        throw invalid("The till is off: explain the difference before ending your shift");
       row.set({
         status: "closed",
         endedAt: /* @__PURE__ */ new Date(),
@@ -9589,7 +9628,8 @@ var require_shifts = __commonJS({
         acknowledgedCash: balance > 0,
         expectedTill: expected,
         physicalCount: counted,
-        variance
+        variance,
+        varianceNote: variance ? varianceNote : ""
       });
       await row.save(null, MASTER);
       await audit(
@@ -9597,9 +9637,56 @@ var require_shifts = __commonJS({
         "shift.closed",
         row,
         { status: "open" },
-        { balance, expectedTill: expected, physicalCount: counted, variance }
+        { balance, expectedTill: expected, physicalCount: counted, variance, varianceNote }
       );
+      if (variance) {
+        const { values: config } = await loadConfig();
+        await notifyAdmins({
+          kind: "shift.variance",
+          tone: "alert",
+          title: `Till ${variance > 0 ? "over" : "short"} by ${money(config, Math.abs(variance))}`,
+          body: `${personName(await user.fetch(MASTER))}: counted ${money(config, counted)}, expected ${money(config, expected)}. "${varianceNote}"`,
+          link: "/admin/payments",
+          except: user
+        });
+      }
       return { balance, expectedTill: expected, variance };
+    });
+    Parse.Cloud.define("getShiftReport", async (request) => {
+      await adminOnly(request);
+      const { values: config } = await loadConfig();
+      const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
+      if (range.error) throw invalid(range.error);
+      const query = new Parse.Query("Shift");
+      query.equalTo("kind", "cashier");
+      query.greaterThanOrEqualTo("startedAt", range.start);
+      query.lessThan("startedAt", range.end);
+      query.include("operator");
+      query.descending("startedAt");
+      query.limit(500);
+      const rows = await query.find(MASTER);
+      const shifts = await Promise.all(
+        rows.map(async (shift) => {
+          const open = shift.get("status") === "open";
+          return {
+            id: shift.id,
+            cashier: personName(shift.get("operator")),
+            status: shift.get("status"),
+            startedAt: shift.get("startedAt"),
+            endedAt: shift.get("endedAt") || null,
+            openingFloat: Number(shift.get("openingFloat") || 0),
+            expectedTill: open ? await expectedTill(shift.get("operator"), shift) : shift.get("expectedTill") ?? null,
+            physicalCount: shift.get("physicalCount") ?? null,
+            variance: shift.get("variance") ?? null,
+            varianceNote: shift.get("varianceNote") || ""
+          };
+        })
+      );
+      return {
+        range: { from: range.from, to: range.to },
+        shifts,
+        totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0)
+      };
     });
   }
 });

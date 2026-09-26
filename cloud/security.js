@@ -189,6 +189,7 @@ const SCHEMAS = {
     expectedTill: N,
     physicalCount: N,
     variance: N,
+    varianceNote: S,
   },
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {

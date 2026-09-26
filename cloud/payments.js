@@ -15,6 +15,7 @@ const {
   requireUser,
   audit,
   loadConfig,
+  requireCashierShift,
 } = require('./lib/core');
 const { merchantAccounts, cleanReference, referenceProblem } = require('./lib/mobileMoney');
 const { dateKey } = require('./lib/dates');
@@ -47,7 +48,8 @@ async function checkMobileMoney(config, providerParam, referenceParam, excludeOr
 
 // Cashier/admin: the money is (or is not) in the merchant account.
 Parse.Cloud.define('verifyPayment', async (request) => {
-  const { user: actor } = await requireRole(request, ['cashier', 'admin']);
+  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(actor, role);
   const order = await new Parse.Query('Order').get(request.params.orderId, MASTER);
   if (order.get('paymentStatus') !== PENDING)
     throw invalid('This payment is not waiting for a check');
