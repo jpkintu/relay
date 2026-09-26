@@ -5,7 +5,6 @@ import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { usePin } from '../lib/pin';
-import { riderPayOf } from '../lib/pay';
 
 type Handover = {
   id: string;
@@ -14,8 +13,8 @@ type Handover = {
   amount: number;
   orderCount: number;
   createdAt: Date;
-  // `pay`: what the rider is still owed for the order (commission +
-  // delivery fee), 0 once paid.
+  // `pay`: the delivery fee still owed to the rider for the order (paid at
+  // the handover if the cashier chooses; commission is paid later).
   orders: { id: string; code: string; amount: number; pay: number }[];
 };
 
@@ -90,7 +89,10 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                   id: o.id!,
                   code: o.get('orderCode'),
                   amount: o.get('amountCollected'),
-                  pay: o.get('commissionPaid') ? 0 : riderPayOf(o),
+                  pay:
+                    o.get('commissionPaid') || o.get('deliveryFeePaid')
+                      ? 0
+                      : Number(o.get('deliveryPay') ?? o.get('deliveryFee') ?? 0),
                 })),
               }
             : h,
@@ -125,11 +127,11 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
       if (action === 'confirmHandover' && payNow) {
         // Paying out of the till needs the PIN.
         const done = await withPin(
-          `Confirm and pay ${money(payTotal)}`,
+          `Confirm and pay ${money(payTotal)} delivery fees`,
           async (pin) => {
             result = await Parse.Cloud.run(action, { ...params, payRider: true, pin });
           },
-          'After counting the cash, take the rider’s pay out of the till and hand it over, then enter your PIN.',
+          'After counting the cash, take the delivery fees out of the till and hand them to the rider, then enter your PIN.',
         );
         if (!done) return;
       } else {
@@ -147,7 +149,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                     r.returned === 1 ? 'order went' : 'orders went'
                   } back to the rider to hand over again.`
                 : '',
-              r?.paid ? `Paid the rider ${money(r.paid)} from the till.` : '',
+              r?.paid ? `Paid the rider ${money(r.paid)} in delivery fees from the till.` : '',
               r?.payProblem ? `Rider not paid: ${r.payProblem}.` : '',
             ]
               .filter(Boolean)
@@ -287,8 +289,8 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
                   onChange={(e) => setPayNow(e.target.checked)}
                 />
                 <span>
-                  Pay the rider now: <b>{money(payTotal)}</b> for these orders (commission +
-                  delivery fees, less any shortage they owe). It is recorded as a payout from your
+                  Pay the rider&apos;s delivery fees now: <b>{money(payTotal)}</b> for these orders.
+                  Their commission is paid later from Payouts. It is recorded as a payout from your
                   till.
                 </span>
               </label>

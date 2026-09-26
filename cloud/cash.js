@@ -211,8 +211,16 @@ Parse.Cloud.define('confirmHandover', async (request) => {
   if (payNow) {
     try {
       const rider = await new Parse.Query(Parse.User).get(row.get('rider').id, MASTER);
-      paid = (await payOut({ actor: cashier, role, rider, orderIds: received.map((o) => o.id) }))
-        .amount;
+      // Only the delivery fees are paid at the handover; commission comes later.
+      paid = (
+        await payOut({
+          actor: cashier,
+          role,
+          rider,
+          orderIds: received.map((o) => o.id),
+          feesOnly: true,
+        })
+      ).amount;
     } catch (error) {
       // The cash is confirmed either way; the pay can be made from Payouts.
       payProblem = error.message;

@@ -25,6 +25,7 @@ type Payout = {
   amount: number;
   earned: number;
   deliveryFees: number;
+  feesOnly: boolean;
   deductions: number;
   orderCount: number;
   note: string;
@@ -253,12 +254,18 @@ export function CashierPayouts() {
                       <td data-label="For">
                         {p.kind === 'rider' ? (
                           <>
-                            <b>Rider pay · {p.rider}</b>
+                            <b>
+                              {p.feesOnly ? 'Delivery fees' : 'Rider pay'} · {p.rider}
+                            </b>
                             <small>
                               {p.orderCount} {p.orderCount === 1 ? 'delivery' : 'deliveries'} ·{' '}
-                              {money(p.earned - p.deliveryFees)} commission +{' '}
-                              {money(p.deliveryFees)} delivery fees
-                              {p.deductions ? ` − ${money(p.deductions)} shortage` : ''}
+                              {p.feesOnly
+                                ? 'paid at the cash handover'
+                                : `${money(p.earned - p.deliveryFees)} commission + ${money(
+                                    p.deliveryFees,
+                                  )} delivery fees${
+                                    p.deductions ? ` − ${money(p.deductions)} shortage` : ''
+                                  }`}
                             </small>
                           </>
                         ) : (
