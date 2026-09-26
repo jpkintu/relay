@@ -30,6 +30,8 @@ type Summary = {
   avgOrder: number;
   cashSales: number;
   mobileMoneySales: number;
+  unconfirmedSales: number;
+  riderCommission: number;
   customers: number;
   repeatCustomers: number;
   avgDeliveryMinutes: number | null;
@@ -324,10 +326,10 @@ export function Reports() {
         <>
           <div className="report-hero">
             <div>
-              <span>Revenue after rider pay · {rangeLabel(data.range)}</span>
+              <span>Kept by the restaurant · {rangeLabel(data.range)}</span>
               <strong>{money(s.net)}</strong>
               <small>
-                Gross {money(s.revenue)}
+                Customers paid {money(s.revenue)}
                 {data.change.revenue !== null
                   ? ` · ${formatChange(data.change.revenue)} vs ${rangeLabel(data.previousRange)} (${money(data.previous.revenue)})`
                   : ` · no sales in ${rangeLabel(data.previousRange)} to compare with`}
@@ -339,12 +341,15 @@ export function Reports() {
                 <dd>{money(s.foodSales)}</dd>
               </div>
               <div>
-                <dt>Delivery fees</dt>
-                <dd>{money(s.deliveryFees)}</dd>
+                <dt>Rider commission</dt>
+                <dd>−{money(s.riderCommission)}</dd>
               </div>
               <div>
-                <dt>Rider pay</dt>
-                <dd>−{money(s.commission)}</dd>
+                <dt>Delivery fees</dt>
+                <dd>
+                  {money(s.deliveryFees)}
+                  <small>All paid to riders</small>
+                </dd>
               </div>
               <div>
                 <dt>Kept by the restaurant</dt>
@@ -379,7 +384,9 @@ export function Reports() {
             <Stat
               label="Cash / mobile money"
               value={`${pct(s.cashSales, s.revenue)}% / ${pct(s.mobileMoneySales, s.revenue)}%`}
-              note={`${money(s.cashSales)} cash · ${money(s.mobileMoneySales)} mobile money`}
+              note={`Confirmed: ${money(s.cashSales)} cash · ${money(s.mobileMoneySales)} mobile money${
+                s.unconfirmedSales ? ` · ${money(s.unconfirmedSales)} not yet confirmed` : ''
+              }`}
             />
           </div>
 
@@ -545,7 +552,10 @@ export function Reports() {
               )}
             </ReportPanel>
 
-            <ReportPanel title="Payment mix" eyebrow="Delivered sales by payment">
+            <ReportPanel
+              title="Payment mix"
+              eyebrow="Confirmed money: cash counted in, mobile money verified"
+            >
               {data.payments.length > 0 ? (
                 <Chart
                   data={charts.payments}
@@ -557,8 +567,15 @@ export function Reports() {
                   busy={loading}
                 />
               ) : (
-                <p className="empty-orders">No delivered orders in these dates.</p>
+                <p className="empty-orders">No confirmed payments in these dates.</p>
               )}
+              {s.unconfirmedSales > 0 && (
+                <p className="muted small">
+                  {money(s.unconfirmedSales)} not yet confirmed: cash still with riders or waiting
+                  for a cashier, and mobile money waiting for a check.
+                </p>
+              )}
+              <p className="mini-table-title">Orders by channel</p>
               <div className="mini-table">
                 {data.channels.map((c) => (
                   <div key={c.key}>

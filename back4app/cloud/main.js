@@ -11040,6 +11040,7 @@ var require_reports = __commonJS({
     "use strict";
     var round = (value) => Math.round(Number(value) || 0);
     var isDelivered = (fact) => fact.status === "DELIVERED";
+    var isConfirmed = (fact) => fact.method === "cash" ? fact.cashStatus === "RECONCILED" : fact.method === "mobile_money" ? fact.paymentStatus === "VERIFIED" : true;
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
     function growth(current, previous) {
       if (!previous) return null;
@@ -11049,6 +11050,8 @@ var require_reports = __commonJS({
       const delivered = facts.filter(isDelivered);
       const revenue = delivered.reduce((n, f) => n + round(f.total), 0);
       const commission = delivered.reduce((n, f) => n + round(f.commission), 0);
+      const deliveryPay = delivered.reduce((n, f) => n + round(f.deliveryPay ?? f.deliveryFee), 0);
+      const confirmed = delivered.filter(isConfirmed);
       const perCustomer = /* @__PURE__ */ new Map();
       for (const fact of delivered) {
         if (!fact.customerKey) continue;
@@ -11065,10 +11068,13 @@ var require_reports = __commonJS({
         foodSales: delivered.reduce((n, f) => n + round(f.subtotal), 0),
         deliveryFees: delivered.reduce((n, f) => n + round(f.deliveryFee), 0),
         commission,
+        riderCommission: commission - deliveryPay,
         net: revenue - commission,
         avgOrder: delivered.length ? Math.round(revenue / delivered.length) : 0,
-        cashSales: delivered.filter((f) => f.method === "cash").reduce((n, f) => n + round(f.total), 0),
-        mobileMoneySales: delivered.filter((f) => f.method === "mobile_money").reduce((n, f) => n + round(f.total), 0),
+        // Confirmed money only; the rest is still with riders or waiting for a check.
+        cashSales: confirmed.filter((f) => f.method === "cash").reduce((n, f) => n + round(f.total), 0),
+        mobileMoneySales: confirmed.filter((f) => f.method === "mobile_money").reduce((n, f) => n + round(f.total), 0),
+        unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + round(f.total), 0),
         customers: perCustomer.size,
         repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
         avgDeliveryMinutes: minutes.length ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length) : null
@@ -11168,7 +11174,7 @@ var require_reports = __commonJS({
     }
     function paymentMix(facts) {
       const byKey = /* @__PURE__ */ new Map();
-      for (const fact of facts.filter(isDelivered)) {
+      for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
         const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : "cash";
         const row = byKey.get(key) || { key, orders: 0, amount: 0 };
         row.orders += 1;
@@ -11268,6 +11274,7 @@ var require_reports2 = __commonJS({
         total: Number(order.get("total") || 0),
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
+        deliveryPay: Number(order.get("deliveryPay") ?? order.get("deliveryFee") ?? 0),
         // Rider pay: commission + delivery fee, taken off revenue like commission.
         commission: order.get("status") === "DELIVERED" ? orderRiderPay(order) : 0,
         method: order.get("paymentMethod"),

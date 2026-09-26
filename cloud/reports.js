@@ -82,6 +82,7 @@ function factOf(order) {
     total: Number(order.get('total') || 0),
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
+    deliveryPay: Number(order.get('deliveryPay') ?? order.get('deliveryFee') ?? 0),
     // Rider pay: commission + delivery fee, taken off revenue like commission.
     commission: order.get('status') === 'DELIVERED' ? orderRiderPay(order) : 0,
     method: order.get('paymentMethod'),

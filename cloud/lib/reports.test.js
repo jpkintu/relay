@@ -19,6 +19,7 @@ const fact = (overrides) => ({
   deliveryFee: 3000,
   commission: 2000,
   method: 'cash',
+  cashStatus: 'RECONCILED',
   riderId: 'r1',
   rider: 'R-001 · Rita',
   customerKey: 'tel:0700',
@@ -43,7 +44,12 @@ describe('summarize', () => {
   test('counts revenue from delivered orders only', () => {
     const summary = summarize([
       fact({}),
-      fact({ method: 'mobile_money', provider: 'mtn', customerKey: 'tel:0711' }),
+      fact({
+        method: 'mobile_money',
+        provider: 'mtn',
+        paymentStatus: 'VERIFIED',
+        customerKey: 'tel:0711',
+      }),
       fact({ status: 'CANCELLED', commission: 0 }),
       fact({ status: 'PLACED', restaurantStatus: 'new' }),
       fact({ status: 'CANCELLED', restaurantStatus: 'rejected', customerKey: '' }),
@@ -58,10 +64,12 @@ describe('summarize', () => {
       foodSales: 50000,
       deliveryFees: 6000,
       commission: 4000,
+      riderCommission: -2000,
       net: 52000,
       avgOrder: 28000,
       cashSales: 28000,
       mobileMoneySales: 28000,
+      unconfirmedSales: 0,
       customers: 2,
       repeatCustomers: 0,
       avgDeliveryMinutes: 40,
@@ -125,7 +133,12 @@ test('rider stats', () => {
 test('time of day, payment and channel mix', () => {
   const facts = [
     fact({ clock: { hour: 13, weekday: 4 } }),
-    fact({ clock: { hour: 13, weekday: 5 }, method: 'mobile_money', provider: 'airtel' }),
+    fact({
+      clock: { hour: 13, weekday: 5 },
+      method: 'mobile_money',
+      provider: 'airtel',
+      paymentStatus: 'VERIFIED',
+    }),
     fact({ clock: { hour: 19, weekday: 5 }, status: 'CANCELLED', channel: 'walkin' }),
   ];
   const { hours, weekdays } = timeOfDay(facts, (f) => f.clock);
@@ -137,4 +150,31 @@ test('time of day, payment and channel mix', () => {
     { key: 'airtel', orders: 1, amount: 28000 },
   ]);
   expect(channelMix(facts)).toEqual([{ key: 'phone', orders: 2, amount: 56000 }]);
+});
+
+test('only confirmed money counts in the payment mix', () => {
+  const facts = [
+    fact({}),
+    fact({ cashStatus: 'WITH_RIDER' }),
+    fact({ cashStatus: 'HANDOVER_PENDING' }),
+    fact({ method: 'mobile_money', provider: 'mtn', paymentStatus: 'VERIFIED' }),
+    fact({ method: 'mobile_money', provider: 'airtel', paymentStatus: 'PENDING_VERIFICATION' }),
+  ];
+  expect(paymentMix(facts)).toEqual([
+    { key: 'cash', orders: 1, amount: 28000 },
+    { key: 'mtn', orders: 1, amount: 28000 },
+  ]);
+  const summary = summarize(facts);
+  expect(summary.cashSales).toBe(28000);
+  expect(summary.mobileMoneySales).toBe(28000);
+  expect(summary.unconfirmedSales).toBe(3 * 28000);
+});
+
+test('rider pay splits into commission and the delivery fee passed on', () => {
+  // 25,000 food + 3,000 fee; rider pay 3,925 = 925 commission + 3,000 fee.
+  const summary = summarize([fact({ commission: 3925, deliveryPay: 3000 })]);
+  expect(summary.revenue).toBe(28000);
+  expect(summary.foodSales).toBe(25000);
+  expect(summary.riderCommission).toBe(925);
+  expect(summary.net).toBe(25000 - 925);
 });

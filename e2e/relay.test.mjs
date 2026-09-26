@@ -955,9 +955,20 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(report.accompaniments.some((a) => a.name === 'Matooke'));
     assert.equal(report.hours.length, 24);
     assert.equal(report.weekdays.length, 7);
+    // The payment mix counts confirmed money only; the rest is reported apart.
+    const confirmed = delivered.filter((o) =>
+      o.get('paymentMethod') === 'cash'
+        ? o.get('cashStatus') === 'RECONCILED'
+        : o.get('paymentStatus') === 'VERIFIED',
+    );
     assert.equal(
       report.payments.reduce((n, p) => n + p.amount, 0),
-      report.summary.revenue,
+      sum(confirmed, 'total'),
+    );
+    assert.equal(report.summary.unconfirmedSales, report.summary.revenue - sum(confirmed, 'total'));
+    assert.equal(
+      report.summary.riderCommission,
+      report.summary.commission - report.summary.deliveryFees,
     );
     assert.ok(report.riders.length >= 2);
     await rejects(run('getOperationsReport', range, s.cashier), /admin role required/);
