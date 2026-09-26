@@ -322,6 +322,56 @@ var require_core = __commonJS({
         codeTakenIn(Parse.User, role === "rider" ? "riderCode" : "cashierCode")
       );
     }
+    async function claimOnce(key) {
+      return await nextSequence(key) === 1;
+    }
+    var PIN_ATTEMPTS = 5;
+    var PIN_LOCK_MINUTES = 15;
+    async function verifyPin(user, pin) {
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+      const lockedUntil = fresh.get("pinLockedUntil");
+      if (lockedUntil && lockedUntil > /* @__PURE__ */ new Date()) {
+        const minutes = Math.ceil((lockedUntil - /* @__PURE__ */ new Date()) / 6e4);
+        throw invalid(`Too many wrong PINs. Try again in ${minutes} min`);
+      }
+      const value = String(pin ?? "");
+      if (!value) throw invalid("Enter your PIN to continue");
+      try {
+        await Parse.User.verifyPassword(fresh.get("username"), value);
+      } catch {
+        const failures = Number(fresh.get("pinFailures") || 0) + 1;
+        const locked = failures >= PIN_ATTEMPTS;
+        fresh.set("pinFailures", locked ? 0 : failures);
+        if (locked) fresh.set("pinLockedUntil", new Date(Date.now() + PIN_LOCK_MINUTES * 6e4));
+        await fresh.save(null, MASTER);
+        throw invalid(
+          locked ? `Wrong PIN. Locked for ${PIN_LOCK_MINUTES} min` : `Wrong PIN (${PIN_ATTEMPTS - failures} tries left)`
+        );
+      }
+      if (fresh.get("pinFailures")) {
+        fresh.set("pinFailures", 0);
+        await fresh.save(null, MASTER);
+      }
+    }
+    async function takeOrder(order, actor, role) {
+      if (role !== "cashier") return;
+      const holder = order.get("cashier");
+      if (holder) {
+        if (holder.id === actor.id) return;
+        throw forbidden(
+          `${order.get("cashierName") || "Another cashier"} is handling this order. Ask them to transfer it to you`
+        );
+      }
+      if (!await claimOnce(`order-cashier:${order.id}:${order.get("cashierRound") || 0}`)) {
+        const latest = await new Parse.Query("Order").get(order.id, MASTER);
+        const name = latest.get("cashierName");
+        throw forbidden(
+          name ? `${name} just took this order. Ask them to transfer it to you` : "Another cashier is taking this order. Refresh and try again"
+        );
+      }
+      const me = await actor.fetch(MASTER);
+      order.set({ cashier: me, cashierName: personName(me), assignedAt: /* @__PURE__ */ new Date() });
+    }
     var isBrokenCode = (code) => typeof code === "string" && /object|undefined|NaN/.test(code);
     module2.exports = {
       MASTER,
@@ -345,7 +395,11 @@ var require_core = __commonJS({
       personName,
       requireCashierShift,
       isBrokenCode,
-      nextStaffCode
+      nextStaffCode,
+      nextSequence,
+      claimOnce,
+      verifyPin,
+      takeOrder
     };
   }
 });
@@ -372,6 +426,7 @@ var require_security = __commonJS({
       "Order",
       "OrderItem",
       "CashHandover",
+      "TillPayout",
       "Shift",
       "AuditLog",
       "Configuration",
@@ -475,7 +530,15 @@ var require_security = __commonJS({
         paymentCheckedAt: D,
         paymentRejectReason: S,
         disputeResolvedBy: user,
-        disputeResolvedAt: D
+        disputeResolvedAt: D,
+        cashier: user,
+        cashierName: S,
+        assignedAt: D,
+        cashierRound: N,
+        handoverRound: N,
+        commissionBase: N,
+        deliveryPay: N,
+        commissionPayout: ["Pointer", "TillPayout"]
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -504,7 +567,31 @@ var require_security = __commonJS({
         notes: S,
         resolutionNote: S,
         resolvedBy: user,
-        resolvedAt: D
+        resolvedAt: D,
+        requestId: S,
+        reviewRound: N,
+        tillAt: D,
+        returnedOrders: "Array",
+        returnedAmount: N,
+        resolution: S,
+        shortage: N,
+        shortageStatus: S,
+        shortagePayout: ["Pointer", "TillPayout"],
+        receivedByOwner: B
+      },
+      TillPayout: {
+        payoutCode: S,
+        kind: S,
+        rider: user,
+        amount: N,
+        earned: N,
+        deductions: N,
+        orders: "Array",
+        shortages: "Array",
+        note: S,
+        paidBy: user,
+        shift: ["Pointer", "Shift"],
+        paidAt: D
       },
       Shift: {
         operator: user,
@@ -518,7 +605,9 @@ var require_security = __commonJS({
         expectedTill: N,
         physicalCount: N,
         variance: N,
-        varianceNote: S
+        varianceNote: S,
+        cashIn: N,
+        paidOut: N
       },
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
@@ -594,6 +683,7 @@ var require_security = __commonJS({
         readAt: D
       }
     };
+    var USER_FIELDS = { pinFailures: N, pinLockedUntil: D, payRound: N };
     async function applySchemas() {
       const existing = new Map((await Parse.Schema.all()).map((schema) => [schema.className, schema]));
       const created = [];
@@ -612,6 +702,13 @@ var require_security = __commonJS({
           await schema.save();
           created.push(className);
         }
+      }
+      const userFields = Object.keys(existing.get("_User")?.fields || {});
+      const missing = Object.entries(USER_FIELDS).filter(([field]) => !userFields.includes(field));
+      if (missing.length) {
+        const schema = new Parse.Schema("_User");
+        for (const [field, type] of missing) schema.addField(field, type);
+        await schema.update();
       }
       return created;
     }
@@ -644,6 +741,10 @@ var require_security = __commonJS({
       updated.CashHandover = await eachObject(
         "CashHandover",
         (h) => saveAcl(h, readAcl(h.get("rider")))
+      );
+      updated.TillPayout = await eachObject(
+        "TillPayout",
+        (row) => saveAcl(row, readAcl(row.get("rider") || null))
       );
       updated.Shift = await eachObject(
         "Shift",
@@ -8266,6 +8367,414 @@ var require_alerts = __commonJS({
   }
 });
 
+// cloud/lib/money.js
+var require_money = __commonJS({
+  "cloud/lib/money.js"(exports2, module2) {
+    "use strict";
+    var COMMISSION_TYPES = ["per_order", "percent", "hybrid"];
+    var ROUNDING_STEPS = { none: 0, up_100: 100, up_500: 500, up_1000: 1e3 };
+    function roundCommission(amount, rounding = "none") {
+      const whole = Math.round(Number(amount) || 0);
+      const step = ROUNDING_STEPS[rounding] || 0;
+      return step ? Math.ceil(whole / step) * step : whole;
+    }
+    function computeCommission({ type, perOrder, percent, subtotal, rounding }) {
+      const flat = Number(perOrder) || 0;
+      const share = (Number(subtotal) || 0) * (Number(percent) || 0) / 100;
+      const raw = type === "percent" ? share : type === "hybrid" ? flat + share : flat;
+      return roundCommission(raw, rounding);
+    }
+    function sumBy(rows, pick) {
+      return rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0);
+    }
+    module2.exports = { COMMISSION_TYPES, ROUNDING_STEPS, roundCommission, computeCommission, sumBy };
+  }
+});
+
+// cloud/cash.js
+var require_cash = __commonJS({
+  "cloud/cash.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      requireRole,
+      adminOnly,
+      readAcl,
+      audit,
+      loadConfig,
+      nextDailyCode,
+      requireCashierShift,
+      claimOnce,
+      verifyPin,
+      personName
+    } = require_core();
+    var { sumBy } = require_money();
+    var { money, notifyUser, notifyStaff, notifyAdmins } = require_notifications();
+    var STALE_HOURS = 4;
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var handoverKey = (order) => `handover-order:${order.id}:${order.get("handoverRound") || 0}`;
+    var reviewKey = (row) => `handover-review:${row.id}:${row.get("reviewRound") || 0}`;
+    async function releaseOrders(orders) {
+      await Promise.all(
+        orders.map((order) => {
+          const ref = new Parse.Object("Order");
+          ref.id = order.id;
+          ref.increment("handoverRound");
+          return ref.save(null, MASTER);
+        })
+      );
+    }
+    async function newHandover({ rider, orders, config, notes, requestId, cashier }) {
+      const row = new Parse.Object("CashHandover");
+      row.set({
+        handoverCode: await nextDailyCode("HO", 3, config.timezone, {
+          className: "CashHandover",
+          field: "handoverCode"
+        }),
+        rider,
+        amount: sumBy(orders, (order) => order.get("amountCollected")),
+        orderCount: orders.length,
+        orders,
+        status: "pending",
+        handedOverAt: /* @__PURE__ */ new Date(),
+        notes: clean(notes, 200),
+        requestId: requestId || "",
+        reviewRound: 0,
+        ...cashier && { cashier }
+      });
+      row.setACL(readAcl(rider));
+      return row;
+    }
+    async function claimOrders(orders) {
+      const sorted = [...orders].sort((a, b) => a.id < b.id ? -1 : 1);
+      const claimed = [];
+      for (const order of sorted) {
+        if (!await claimOnce(handoverKey(order))) {
+          await releaseOrders(claimed);
+          throw invalid("Some of these orders are already being handed over. Refresh and try again");
+        }
+        claimed.push(order);
+      }
+    }
+    Parse.Cloud.define("createHandover", async (request) => {
+      const { user: rider } = await requireRole(request, ["rider"]);
+      const p = request.params;
+      const ids = p.orderIds;
+      if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length)
+        throw invalid("Select unique orders");
+      const requestId = clean(p.requestId, 64);
+      if (requestId) {
+        const existing = await new Parse.Query("CashHandover").equalTo("rider", rider).equalTo("requestId", requestId).first(MASTER);
+        if (existing) return { id: existing.id, amount: existing.get("amount"), duplicate: true };
+      }
+      await verifyPin(rider, p.pin);
+      const query = new Parse.Query("Order");
+      query.containedIn("objectId", ids);
+      query.equalTo("createdBy", rider);
+      query.equalTo("status", "DELIVERED");
+      query.equalTo("cashStatus", "WITH_RIDER");
+      const [orders, { values: config }] = await Promise.all([query.find(MASTER), loadConfig()]);
+      if (orders.length !== ids.length) throw invalid("Invalid handover orders");
+      await claimOrders(orders);
+      const row = await newHandover({ rider, orders, config, notes: p.notes, requestId });
+      await row.save(null, MASTER);
+      orders.forEach((order) => order.set("cashStatus", "HANDOVER_PENDING"));
+      await Parse.Object.saveAll(orders, MASTER);
+      const amount = row.get("amount");
+      await audit(rider, "cash.handover_created", row, null, { amount });
+      await notifyStaff({
+        kind: "cash.handover",
+        tone: "new",
+        title: `Cash handover ${row.get("handoverCode")}`,
+        body: `${personName(rider)} \xB7 ${money(config, amount)} \xB7 ${orders.length} ${orders.length === 1 ? "order" : "orders"}`,
+        link: "/cashier/handovers"
+      });
+      return { id: row.id, amount };
+    });
+    async function startReview(row) {
+      if (row.get("status") !== "pending") throw invalid("This handover was already dealt with");
+      if (!await claimOnce(reviewKey(row)))
+        throw invalid("Another cashier is already counting this handover");
+    }
+    async function loadOrders(row) {
+      return Promise.all((row.get("orders") || []).map((ptr) => ptr.fetch(MASTER)));
+    }
+    Parse.Cloud.define("confirmHandover", async (request) => {
+      const { user: cashier, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(cashier, role);
+      const p = request.params;
+      const row = await new Parse.Query("CashHandover").get(p.handoverId, MASTER);
+      const orders = await loadOrders(row);
+      const receivedIds = Array.isArray(p.receivedOrderIds) ? p.receivedOrderIds.map(String) : orders.map((order) => order.id);
+      const received = orders.filter((order) => receivedIds.includes(order.id));
+      const returned = orders.filter((order) => !receivedIds.includes(order.id));
+      if (!received.length) throw invalid("Tick at least one order you received cash for");
+      if (received.length !== new Set(receivedIds).size)
+        throw invalid("Those orders are not in this handover");
+      const due = sumBy(received, (order) => order.get("amountCollected"));
+      const counted = Number(p.countedAmount);
+      if (!Number.isFinite(counted) || counted !== due)
+        throw invalid("Counted cash must match the ticked orders; dispute any missing cash");
+      if (orders.some((order) => order.get("cashStatus") !== "HANDOVER_PENDING"))
+        throw invalid("Orders are no longer pending this handover");
+      await startReview(row);
+      const now = /* @__PURE__ */ new Date();
+      received.forEach((order) => order.set({ cashStatus: "RECONCILED", settledAt: now }));
+      returned.forEach(
+        (order) => order.set({
+          cashStatus: "WITH_RIDER",
+          handoverRound: Number(order.get("handoverRound") || 0) + 1
+        })
+      );
+      await Parse.Object.saveAll(orders, MASTER);
+      row.set({
+        status: "confirmed",
+        cashier,
+        confirmedAt: now,
+        tillAt: now,
+        countedAmount: counted,
+        returnedOrders: returned,
+        returnedAmount: sumBy(returned, (order) => order.get("amountCollected"))
+      });
+      await row.save(null, MASTER);
+      await audit(
+        cashier,
+        "cash.handover_confirmed",
+        row,
+        { status: "pending", amount: row.get("amount") },
+        { status: "confirmed", countedAmount: counted, returned: returned.map((o) => o.id) }
+      );
+      const { values: config } = await loadConfig();
+      const by = personName(await cashier.fetch(MASTER));
+      await notifyUser(row.get("rider"), {
+        kind: "cash.handover_confirmed",
+        tone: returned.length ? "alert" : "update",
+        title: `Handover ${row.get("handoverCode")} confirmed`,
+        body: returned.length ? `${money(config, counted)} received by ${by}. ${returned.length} ${returned.length === 1 ? "order was" : "orders were"} not received (${money(config, row.get("returnedAmount"))}) and ${returned.length === 1 ? "is" : "are"} back with you: hand ${returned.length === 1 ? "it" : "them"} over again.` : `${money(config, counted)} received by ${by}.`,
+        link: "/rider/cash"
+      });
+      return { status: "confirmed", returned: returned.length };
+    });
+    Parse.Cloud.define("disputeHandover", async (request) => {
+      const { user: cashier, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(cashier, role);
+      const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
+      const reason = clean(request.params.reason, 300);
+      const counted = Number(request.params.countedAmount);
+      if (reason.length < 5 || !Number.isFinite(counted) || counted < 0)
+        throw invalid("Enter a reason and physical cash count");
+      if (counted >= Number(row.get("amount")))
+        throw invalid("The count matches the claim: confirm the handover instead");
+      await startReview(row);
+      const now = /* @__PURE__ */ new Date();
+      row.set({
+        status: "disputed",
+        cashier,
+        disputeReason: reason,
+        countedAmount: counted,
+        disputedAt: now,
+        tillAt: now
+      });
+      await row.save(null, MASTER);
+      await audit(
+        cashier,
+        "cash.handover_disputed",
+        row,
+        { status: "pending", amount: row.get("amount") },
+        { status: "disputed", countedAmount: counted, reason }
+      );
+      const { values: config } = await loadConfig();
+      const disputed = {
+        kind: "cash.handover_disputed",
+        tone: "alert",
+        title: `Handover ${row.get("handoverCode")} disputed`,
+        body: `Counted ${money(config, counted)} of ${money(config, row.get("amount"))}: ${reason}`
+      };
+      await notifyUser(row.get("rider"), { ...disputed, link: "/rider/cash" });
+      await notifyAdmins({ ...disputed, link: "/admin/payments", except: cashier });
+      return { status: "disputed" };
+    });
+    var RESOLUTIONS = ["write_off", "deduct", "reopen"];
+    Parse.Cloud.define("adminResolveHandover", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      if (!RESOLUTIONS.includes(p.action)) throw invalid("Choose how to resolve it");
+      const row = await new Parse.Query("CashHandover").get(p.handoverId, MASTER);
+      if (row.get("status") !== "disputed") throw invalid("Only disputed handovers can be resolved");
+      const note = clean(p.note, 300);
+      if (note.length < 5) throw invalid("Enter a resolution note");
+      const shortage = Math.max(0, Number(row.get("amount")) - Number(row.get("countedAmount") || 0));
+      const now = /* @__PURE__ */ new Date();
+      const base = { resolutionNote: note, resolvedBy: actor, resolvedAt: now, resolution: p.action };
+      if (p.action === "reopen") {
+        if (row.has("tillAt")) row.unset("tillAt");
+        row.set({
+          ...base,
+          status: "pending",
+          reviewRound: Number(row.get("reviewRound") || 0) + 1
+        });
+      } else {
+        const orders = await loadOrders(row);
+        orders.forEach((order) => order.set({ cashStatus: "RECONCILED", settledAt: now }));
+        await Parse.Object.saveAll(orders, MASTER);
+        row.set({
+          ...base,
+          status: "confirmed",
+          confirmedAt: now,
+          shortage,
+          shortageStatus: p.action === "deduct" ? "owed" : "written_off"
+        });
+      }
+      await row.save(null, MASTER);
+      await audit(
+        actor,
+        `cash.dispute_${p.action}`,
+        row,
+        { status: "disputed", reason: row.get("disputeReason") },
+        { status: row.get("status"), shortage, note }
+      );
+      const { values: config } = await loadConfig();
+      const messages = {
+        write_off: `Resolved: the ${money(config, shortage)} shortage was written off.`,
+        deduct: `Resolved: the ${money(config, shortage)} shortage will come off your next pay.`,
+        reopen: "The cashier will count it again."
+      };
+      await notifyUser(row.get("rider"), {
+        kind: "cash.dispute_resolved",
+        tone: "update",
+        title: `Handover ${row.get("handoverCode")}`,
+        body: `${messages[p.action]} ${note}`,
+        link: "/rider/cash"
+      });
+      if (p.action === "reopen") await notifyStaffAbout(row, "reopened for counting again", config);
+      return { status: row.get("status"), shortage };
+    });
+    Parse.Cloud.define("reopenHandover", async (request) => {
+      const actor = await adminOnly(request);
+      const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
+      if (row.get("status") !== "disputed") throw invalid("Only disputed handovers can be reopened");
+      const note = clean(request.params.note, 300);
+      if (note.length < 5) throw invalid("Enter a resolution note");
+      row.set({
+        status: "pending",
+        resolutionNote: note,
+        resolvedBy: actor,
+        resolvedAt: /* @__PURE__ */ new Date(),
+        resolution: "reopen",
+        reviewRound: Number(row.get("reviewRound") || 0) + 1
+      });
+      if (row.has("tillAt")) row.unset("tillAt");
+      await row.save(null, MASTER);
+      await audit(actor, "cash.dispute_reopened", row, { status: "disputed" }, { status: "pending" });
+      return { status: "pending" };
+    });
+    async function notifyStaffAbout(row, what, config) {
+      await notifyStaff({
+        kind: "cash.handover",
+        tone: "alert",
+        title: `Handover ${row.get("handoverCode")} ${what}`,
+        body: `${personName(await row.get("rider").fetch(MASTER))} \xB7 ${money(config, row.get("amount"))}`,
+        link: "/cashier/handovers"
+      });
+    }
+    Parse.Cloud.define("adminReceiveCash", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const note = clean(p.note, 200);
+      if (note.length < 5) throw invalid('Say where the cash is (e.g. "Owner took it to the bank")');
+      const rider = await new Parse.Query(Parse.User).get(String(p.riderId), MASTER);
+      const query = new Parse.Query("Order");
+      query.equalTo("createdBy", rider);
+      query.equalTo("status", "DELIVERED");
+      query.equalTo("cashStatus", "WITH_RIDER");
+      if (Array.isArray(p.orderIds)) query.containedIn("objectId", p.orderIds.map(String));
+      query.limit(500);
+      const [orders, { values: config }] = await Promise.all([query.find(MASTER), loadConfig()]);
+      if (!orders.length) throw invalid("This rider holds no cash to receive");
+      await claimOrders(orders);
+      const row = await newHandover({ rider, orders, config, notes: note, cashier: actor });
+      const now = /* @__PURE__ */ new Date();
+      row.set({
+        status: "confirmed",
+        confirmedAt: now,
+        countedAmount: row.get("amount"),
+        receivedByOwner: true
+      });
+      await row.save(null, MASTER);
+      orders.forEach((order) => order.set({ cashStatus: "RECONCILED", settledAt: now }));
+      await Parse.Object.saveAll(orders, MASTER);
+      await audit(actor, "cash.received_by_owner", row, null, { amount: row.get("amount"), note });
+      await notifyUser(rider, {
+        kind: "cash.handover_confirmed",
+        tone: "update",
+        title: `${money(config, row.get("amount"))} received by the owner`,
+        body: note,
+        link: "/rider/cash"
+      });
+      return { id: row.id, amount: row.get("amount") };
+    });
+    function handoverJSON(row) {
+      return {
+        id: row.id,
+        code: row.get("handoverCode"),
+        status: row.get("status"),
+        amount: Number(row.get("amount") || 0),
+        orderCount: row.get("orderCount") || 0,
+        countedAmount: row.get("countedAmount") ?? null,
+        returnedAmount: Number(row.get("returnedAmount") || 0),
+        returnedCount: (row.get("returnedOrders") || []).length,
+        disputeReason: row.get("disputeReason") || "",
+        resolution: row.get("resolution") || "",
+        resolutionNote: row.get("resolutionNote") || "",
+        shortage: Number(row.get("shortage") || 0),
+        shortageStatus: row.get("shortageStatus") || "",
+        handedOverAt: row.get("handedOverAt"),
+        confirmedAt: row.get("confirmedAt") || null,
+        receivedByOwner: row.get("receivedByOwner") === true
+      };
+    }
+    Parse.Cloud.define("getMyHandovers", async (request) => {
+      const { user: rider } = await requireRole(request, ["rider"]);
+      const query = new Parse.Query("CashHandover");
+      query.equalTo("rider", rider);
+      query.descending("handedOverAt");
+      query.limit(20);
+      return (await query.find(MASTER)).map(handoverJSON);
+    });
+    async function pendingHandovers() {
+      const query = new Parse.Query("CashHandover");
+      query.equalTo("status", "pending");
+      query.include("rider");
+      query.ascending("handedOverAt");
+      query.limit(200);
+      return query.find(MASTER);
+    }
+    var STALE_CHECK_MS = Number(process.env.RELAY_STALE_CHECK_MS ?? 18e4);
+    var lastStaleCheck = 0;
+    async function staleHandoverAlerts(config) {
+      if (Date.now() - lastStaleCheck < STALE_CHECK_MS) return 0;
+      lastStaleCheck = Date.now();
+      const cutoff = new Date(Date.now() - STALE_HOURS * 3600 * 1e3);
+      let sent = 0;
+      for (const row of await pendingHandovers()) {
+        if (row.get("handedOverAt") > cutoff) break;
+        const hours = Math.floor((Date.now() - row.get("handedOverAt")) / 36e5);
+        sent += await notifyStaff({
+          kind: "cash.handover_stale",
+          tone: "alert",
+          key: `handover-stale:${row.id}`,
+          title: `Handover ${row.get("handoverCode")} waiting ${hours} h`,
+          body: `${personName(row.get("rider"))} \xB7 ${money(config, row.get("amount"))} has not been counted yet.`,
+          link: "/cashier/handovers"
+        });
+      }
+      return sent;
+    }
+    module2.exports = { STALE_HOURS, staleHandoverAlerts, handoverJSON };
+  }
+});
+
 // cloud/notifications.js
 var require_notifications = __commonJS({
   "cloud/notifications.js"(exports2, module2) {
@@ -8381,11 +8890,15 @@ var require_notifications = __commonJS({
     }
     Parse.Cloud.define("getNotifications", async (request) => {
       const user = requireUser(request);
-      if (await getRoleName(user) === "rider") {
+      const role = await getRoleName(user);
+      if (role === "rider") {
         const { values: config } = await loadConfig();
         const float = await riderFloat(user);
         await cashLimitAlert(user, config, float);
         await handoverReminder(user, config, float);
+      } else if (role === "cashier" || role === "admin") {
+        const { staleHandoverAlerts } = require_cash();
+        await staleHandoverAlerts((await loadConfig()).values);
       }
       const listQuery = new Parse.Query("Notification");
       listQuery.equalTo("recipient", user);
@@ -8562,7 +9075,8 @@ var require_payments = __commonJS({
       requireUser,
       audit,
       loadConfig,
-      requireCashierShift
+      requireCashierShift,
+      takeOrder
     } = require_core();
     var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
     var { dateKey } = require_dates();
@@ -8597,6 +9111,7 @@ var require_payments = __commonJS({
       const received = request.params.received === true;
       const reason = String(request.params.reason || "").trim().slice(0, 200);
       if (!received && reason.length < 3) throw invalid("Say why the payment was not accepted");
+      await takeOrder(order, actor, role);
       order.set({
         paymentStatus: received ? "VERIFIED" : "REJECTED",
         paymentCheckedBy: actor,
@@ -8683,7 +9198,9 @@ var require_payments = __commonJS({
         createdAt: order.createdAt,
         checkedAt: order.get("paymentCheckedAt") || null,
         checkedBy: nameOf(order.get("paymentCheckedBy")),
-        rejectReason: order.get("paymentRejectReason") || ""
+        rejectReason: order.get("paymentRejectReason") || "",
+        holderId: order.get("cashier")?.id || "",
+        holderName: order.get("cashierName") || ""
       };
     }
     Parse.Cloud.define("getMobileMoneyLedger", async (request) => {
@@ -8725,30 +9242,6 @@ var require_payments = __commonJS({
       };
     });
     module2.exports = { checkMobileMoney, PENDING };
-  }
-});
-
-// cloud/lib/money.js
-var require_money = __commonJS({
-  "cloud/lib/money.js"(exports2, module2) {
-    "use strict";
-    var COMMISSION_TYPES = ["per_order", "percent", "hybrid"];
-    var ROUNDING_STEPS = { none: 0, up_100: 100, up_500: 500, up_1000: 1e3 };
-    function roundCommission(amount, rounding = "none") {
-      const whole = Math.round(Number(amount) || 0);
-      const step = ROUNDING_STEPS[rounding] || 0;
-      return step ? Math.ceil(whole / step) * step : whole;
-    }
-    function computeCommission({ type, perOrder, percent, subtotal, rounding }) {
-      const flat = Number(perOrder) || 0;
-      const share = (Number(subtotal) || 0) * (Number(percent) || 0) / 100;
-      const raw = type === "percent" ? share : type === "hybrid" ? flat + share : flat;
-      return roundCommission(raw, rounding);
-    }
-    function sumBy(rows, pick) {
-      return rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0);
-    }
-    module2.exports = { COMMISSION_TYPES, ROUNDING_STEPS, roundCommission, computeCommission, sumBy };
   }
 });
 
@@ -8830,7 +9323,8 @@ var require_orders = __commonJS({
       nextDailyCode,
       riderFloat,
       personName,
-      requireCashierShift
+      requireCashierShift,
+      takeOrder
     } = require_core();
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
@@ -8930,12 +9424,9 @@ var require_orders = __commonJS({
       const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
       const total = subtotal + fee;
       const isCash = paymentMethod === "cash";
-      const amountToCollect = isCash ? Math.round(Number(p.amountToCollect ?? total)) : 0;
-      if (!Number.isFinite(amountToCollect) || amountToCollect < 0)
-        throw invalid("Enter the amount to collect");
-      const shortfallNote = clean(p.shortfallNote, 200);
-      if (isCash && amountToCollect < total && shortfallNote.length < 5)
-        throw invalid("The customer is paying less than the total. Add a note explaining why");
+      if (isCash && p.amountToCollect !== void 0 && Number(p.amountToCollect) !== total)
+        throw invalid("The customer must pay the full total");
+      const amountToCollect = isCash ? total : 0;
       const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
       const order = new Parse.Object("Order");
       order.set({
@@ -8955,7 +9446,6 @@ var require_orders = __commonJS({
         total,
         paymentMethod,
         amountToCollect,
-        shortfallNote: isCash && amountToCollect < total ? shortfallNote : "",
         amountCollected: 0,
         status: "PLACED",
         restaurantStatus: "pending",
@@ -9095,29 +9585,31 @@ var require_orders = __commonJS({
           });
         }
         const isCash = method === "cash";
-        const total = order.get("total");
-        const amount = isCash ? Number(p.amountCollected ?? order.get("amountToCollect") ?? total) : 0;
-        if (!Number.isFinite(amount) || amount < 0) throw invalid("Enter the amount collected");
-        const note = clean(p.shortfallNote, 200) || order.get("shortfallNote") || "";
-        if (isCash && amount < total && note.length < 5)
-          throw invalid("Collected amount is below the total. Add a note explaining why");
+        const due = Number(order.get("amountToCollect") || order.get("total"));
+        const amount = isCash ? Number(p.amountCollected ?? due) : 0;
+        if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
         const rider = await order.get("createdBy").fetch(MASTER);
+        const commission = computeCommission({
+          type: rider.get("commissionType") || "per_order",
+          perOrder: rider.get("commissionPerOrder"),
+          percent: rider.get("commissionPercent"),
+          subtotal: order.get("subtotal"),
+          rounding: config.commissionRounding
+        });
+        const deliveryPay = Number(order.get("deliveryFee") || 0);
         order.set({
           paymentMethod: method,
           deliveredAt: now,
           amountCollected: Math.round(amount),
-          shortfallNote: isCash && amount < total ? note : "",
           paymentCollectedBy: actor,
-          commissionAmount: computeCommission({
-            type: rider.get("commissionType") || "per_order",
-            perOrder: rider.get("commissionPerOrder"),
-            percent: rider.get("commissionPercent"),
-            subtotal: order.get("subtotal"),
-            rounding: config.commissionRounding
-          }),
+          commissionBase: commission,
+          deliveryPay,
+          commissionAmount: commission + deliveryPay,
+          commissionPaid: false,
           cashStatus: isCash ? "WITH_RIDER" : "NOT_APPLICABLE"
         });
       }
+      if (staff && !owner) await takeOrder(order, actor, role);
       await order.save(null, MASTER);
       await audit(actor, `order.${p.action}`, order, before, {
         status: rule.to,
@@ -9254,7 +9746,67 @@ var require_orders = __commonJS({
         }))
       };
     });
-    module2.exports = { riderFloat, servableAccompaniments };
+    var KITCHEN_OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
+    async function onShiftCashiers() {
+      const query = new Parse.Query("Shift");
+      query.equalTo("kind", "cashier");
+      query.equalTo("status", "open");
+      query.include("operator");
+      query.limit(100);
+      const shifts = await query.find(MASTER);
+      const seen = /* @__PURE__ */ new Set();
+      const people = [];
+      for (const shift of shifts) {
+        const person = shift.get("operator");
+        if (!person || seen.has(person.id) || person.get("active") === false) continue;
+        if (await getRoleName(person) !== "cashier") continue;
+        seen.add(person.id);
+        people.push(person);
+      }
+      return people;
+    }
+    Parse.Cloud.define("getOnShiftCashiers", async (request) => {
+      const { user } = await requireRole(request, ["cashier", "admin"]);
+      return (await onShiftCashiers()).filter((person) => person.id !== user.id).map((person) => ({ id: person.id, name: personName(person) }));
+    });
+    Parse.Cloud.define("transferOrder", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      if (!KITCHEN_OPEN.includes(order.get("status")))
+        throw invalid("Only orders still in the kitchen can be transferred");
+      const holder = order.get("cashier");
+      if (role === "cashier" && holder && holder.id !== actor.id)
+        throw forbidden(`${order.get("cashierName")} is handling this order`);
+      const toId = String(request.params.toUserId || "");
+      let target = null;
+      if (toId) {
+        target = (await onShiftCashiers()).find((person) => person.id === toId);
+        if (!target) throw invalid("That colleague is not on shift");
+        if (holder?.id === target.id) throw invalid(`${personName(target)} already has this order`);
+      }
+      const before = { cashier: order.get("cashierName") || "" };
+      order.set("cashierRound", Number(order.get("cashierRound") || 0) + 1);
+      if (target)
+        order.set({ cashier: target, cashierName: personName(target), assignedAt: /* @__PURE__ */ new Date() });
+      else order.set("cashierName", "");
+      if (!target && holder) order.unset("cashier");
+      await order.save(null, MASTER);
+      await audit(actor, "order.transferred", order, before, { cashier: order.get("cashierName") });
+      const code = order.get("orderCode");
+      const from = personName(await actor.fetch(MASTER));
+      if (target)
+        await notifyUser(target, {
+          kind: "order.transferred",
+          tone: "new",
+          title: `${code} passed to you`,
+          body: `${from} transferred it \xB7 ${order.get("customerName")}`,
+          link: "/cashier",
+          order
+        });
+      return { cashier: order.get("cashierName") || "" };
+    });
+    module2.exports = { riderFloat, servableAccompaniments, KITCHEN_OPEN };
   }
 });
 
@@ -9347,148 +9899,304 @@ var require_menu = __commonJS({
   }
 });
 
-// cloud/cash.js
-var require_cash = __commonJS({
-  "cloud/cash.js"() {
+// cloud/payouts.js
+var require_payouts = __commonJS({
+  "cloud/payouts.js"(exports2, module2) {
     "use strict";
     var {
       MASTER,
       invalid,
       requireRole,
-      adminOnly,
       readAcl,
       audit,
       loadConfig,
       nextDailyCode,
-      requireCashierShift
+      requireCashierShift,
+      claimOnce,
+      verifyPin,
+      personName,
+      getRoleName
     } = require_core();
     var { sumBy } = require_money();
-    var { money, notifyUser, notifyStaff, notifyAdmins, personName } = require_notifications();
-    Parse.Cloud.define("createHandover", async (request) => {
+    var { money, notifyUser, notifyAdmins } = require_notifications();
+    var { resolveRange } = require_dates();
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    async function riderPayState(rider) {
+      const orderQuery = new Parse.Query("Order");
+      orderQuery.equalTo("createdBy", rider);
+      orderQuery.equalTo("status", "DELIVERED");
+      orderQuery.notEqualTo("commissionPaid", true);
+      orderQuery.greaterThan("commissionAmount", 0);
+      orderQuery.ascending("deliveredAt");
+      orderQuery.limit(1e3);
+      const shortageQuery = new Parse.Query("CashHandover");
+      shortageQuery.equalTo("rider", rider);
+      shortageQuery.equalTo("shortageStatus", "owed");
+      shortageQuery.limit(200);
+      const [orders, shortages] = await Promise.all([
+        orderQuery.find(MASTER),
+        shortageQuery.find(MASTER)
+      ]);
+      const earned = sumBy(orders, (order) => order.get("commissionAmount"));
+      const deductions = sumBy(shortages, (row) => row.get("shortage"));
+      return { orders, shortages, earned, deductions, owed: earned - deductions };
+    }
+    async function openCashierShift(user) {
+      return new Parse.Query("Shift").equalTo("operator", user).equalTo("kind", "cashier").equalTo("status", "open").first(MASTER);
+    }
+    function payoutJSON(row) {
+      return {
+        id: row.id,
+        code: row.get("payoutCode"),
+        kind: row.get("kind"),
+        amount: Number(row.get("amount") || 0),
+        earned: Number(row.get("earned") || 0),
+        deductions: Number(row.get("deductions") || 0),
+        orderCount: (row.get("orders") || []).length,
+        note: row.get("note") || "",
+        rider: row.get("rider") ? personName(row.get("rider")) : "",
+        paidBy: row.get("paidBy") ? personName(row.get("paidBy")) : "",
+        fromTill: !!row.get("shift"),
+        paidAt: row.get("paidAt")
+      };
+    }
+    Parse.Cloud.define("getRiderPay", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const role = await new Parse.Query(Parse.Role).equalTo("name", "rider").first(MASTER);
+      const riders = role ? await role.getUsers().query().limit(500).find(MASTER) : [];
+      const rows = await Promise.all(
+        riders.map(async (rider) => {
+          const state = await riderPayState(rider);
+          return {
+            riderId: rider.id,
+            rider: personName(rider),
+            active: rider.get("active") !== false,
+            deliveries: state.orders.length,
+            earned: state.earned,
+            deductions: state.deductions,
+            owed: state.owed
+          };
+        })
+      );
+      return rows.filter((row) => row.earned > 0 || row.deductions > 0).sort((a, b) => b.owed - a.owed);
+    });
+    Parse.Cloud.define("getMyPay", async (request) => {
       const { user: rider } = await requireRole(request, ["rider"]);
-      const ids = request.params.orderIds;
-      if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length)
-        throw invalid("Select unique orders");
-      const query = new Parse.Query("Order");
-      query.containedIn("objectId", ids);
-      query.equalTo("createdBy", rider);
-      query.equalTo("status", "DELIVERED");
-      query.equalTo("cashStatus", "WITH_RIDER");
-      const [orders, { values: config }] = await Promise.all([query.find(MASTER), loadConfig()]);
-      if (orders.length !== ids.length) throw invalid("Invalid handover orders");
-      const amount = sumBy(orders, (order) => order.get("amountCollected"));
-      const row = new Parse.Object("CashHandover");
+      const state = await riderPayState(rider);
+      const payouts = await new Parse.Query("TillPayout").equalTo("rider", rider).include("paidBy").descending("paidAt").limit(10).find(MASTER);
+      return {
+        deliveries: state.orders.length,
+        earned: state.earned,
+        deductions: state.deductions,
+        owed: state.owed,
+        payouts: payouts.map(payoutJSON)
+      };
+    });
+    async function newPayout(fields, config) {
+      const row = new Parse.Object("TillPayout");
       row.set({
-        handoverCode: await nextDailyCode("HO", 3, config.timezone, {
-          className: "CashHandover",
-          field: "handoverCode"
+        payoutCode: await nextDailyCode("PO", 3, config.timezone, {
+          className: "TillPayout",
+          field: "payoutCode"
         }),
-        rider,
-        amount,
-        orderCount: orders.length,
-        orders,
-        status: "pending",
-        handedOverAt: /* @__PURE__ */ new Date(),
-        notes: String(request.params.notes || "")
+        paidAt: /* @__PURE__ */ new Date(),
+        ...fields
       });
-      row.setACL(readAcl(rider));
+      row.setACL(readAcl(fields.rider || null));
+      return row;
+    }
+    Parse.Cloud.define("payRider", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      await verifyPin(actor, request.params.pin);
+      const rider = await new Parse.Query(Parse.User).get(String(request.params.riderId), MASTER);
+      if (await getRoleName(rider) !== "rider") throw invalid("Choose a rider");
+      const round = Number(rider.get("payRound") || 0);
+      if (!await claimOnce(`pay-rider:${rider.id}:${round}`))
+        throw invalid("This rider is already being paid. Refresh in a moment");
+      try {
+        const state = await riderPayState(rider);
+        if (state.owed <= 0)
+          throw invalid(
+            state.deductions > state.earned ? "Nothing to pay: the rider\u2019s shortages are more than their earnings" : "Nothing to pay"
+          );
+        const { values: config } = await loadConfig();
+        const shift = role === "cashier" ? await openCashierShift(actor) : null;
+        const row = await newPayout(
+          {
+            kind: "rider",
+            rider,
+            amount: state.owed,
+            earned: state.earned,
+            deductions: state.deductions,
+            orders: state.orders,
+            shortages: state.shortages,
+            paidBy: actor,
+            ...shift && { shift }
+          },
+          config
+        );
+        await row.save(null, MASTER);
+        state.orders.forEach((order) => order.set({ commissionPaid: true, commissionPayout: row }));
+        state.shortages.forEach((h) => h.set({ shortageStatus: "deducted", shortagePayout: row }));
+        await Parse.Object.saveAll([...state.orders, ...state.shortages], MASTER);
+        await audit(actor, "payout.rider", row, null, {
+          amount: state.owed,
+          earned: state.earned,
+          deductions: state.deductions,
+          orders: state.orders.length
+        });
+        await notifyUser(rider, {
+          kind: "payout.rider",
+          tone: "update",
+          title: `You were paid ${money(config, state.owed)}`,
+          body: `${state.orders.length} ${state.orders.length === 1 ? "delivery" : "deliveries"}${state.deductions ? ` less ${money(config, state.deductions)} shortage` : ""} \xB7 paid by ${personName(await actor.fetch(MASTER))}`,
+          link: "/rider/earnings"
+        });
+        return { id: row.id, amount: state.owed };
+      } finally {
+        rider.increment("payRound");
+        await rider.save(null, MASTER);
+      }
+    });
+    Parse.Cloud.define("recordTillPayout", async (request) => {
+      const { user: cashier } = await requireRole(request, ["cashier"]);
+      const shift = await openCashierShift(cashier);
+      if (!shift) throw invalid("Start your shift and count the cash in the till first");
+      const amount = Math.round(Number(request.params.amount));
+      const note = clean(request.params.note, 200);
+      if (!Number.isFinite(amount) || amount <= 0) throw invalid("Enter the amount taken out");
+      if (note.length < 5) throw invalid("Say what the money was for");
+      await verifyPin(cashier, request.params.pin);
+      const { values: config } = await loadConfig();
+      const row = await newPayout({ kind: "expense", amount, note, paidBy: cashier, shift }, config);
       await row.save(null, MASTER);
-      orders.forEach((order) => order.set("cashStatus", "HANDOVER_PENDING"));
-      await Parse.Object.saveAll(orders, MASTER);
-      await audit(rider, "cash.handover_created", row, null, { amount });
-      await notifyStaff({
-        kind: "cash.handover",
-        tone: "new",
-        title: `Cash handover ${row.get("handoverCode")}`,
-        body: `${personName(rider)} \xB7 ${money(config, amount)} \xB7 ${orders.length} ${orders.length === 1 ? "order" : "orders"}`,
-        link: "/cashier/handovers"
+      await audit(cashier, "payout.expense", row, null, { amount, note });
+      await notifyAdmins({
+        kind: "payout.expense",
+        tone: "update",
+        title: `${money(config, amount)} paid out of the till`,
+        body: `${personName(await cashier.fetch(MASTER))}: ${note}`,
+        link: "/admin/payments"
       });
       return { id: row.id, amount };
     });
-    Parse.Cloud.define("confirmHandover", async (request) => {
-      const { user: cashier, role } = await requireRole(request, ["cashier", "admin"]);
-      await requireCashierShift(cashier, role);
-      const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
-      if (row.get("status") !== "pending") throw invalid("Already resolved");
-      const counted = Number(request.params.countedAmount);
-      if (!Number.isFinite(counted) || counted !== Number(row.get("amount")))
-        throw invalid("Counted cash must match the claim; dispute any variance");
-      const orders = await Promise.all((row.get("orders") || []).map((ptr) => ptr.fetch(MASTER)));
-      if (orders.some((order) => order.get("cashStatus") !== "HANDOVER_PENDING"))
-        throw invalid("Orders are no longer pending this handover");
-      orders.forEach((order) => order.set({ cashStatus: "RECONCILED", settledAt: /* @__PURE__ */ new Date() }));
-      await Parse.Object.saveAll(orders, MASTER);
-      row.set({ status: "confirmed", cashier, confirmedAt: /* @__PURE__ */ new Date(), countedAmount: counted });
-      await row.save(null, MASTER);
-      await audit(
-        cashier,
-        "cash.handover_confirmed",
-        row,
-        { status: "pending" },
-        { status: "confirmed", countedAmount: counted }
-      );
+    Parse.Cloud.define("getTillPayouts", async (request) => {
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const query = new Parse.Query("TillPayout");
+      if (role === "admin") {
+        const { values: config } = await loadConfig();
+        const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
+        if (range.error) throw invalid(range.error);
+        query.greaterThanOrEqualTo("paidAt", range.start);
+        query.lessThan("paidAt", range.end);
+      } else {
+        const shift = await openCashierShift(user);
+        if (!shift) return { payouts: [], total: 0 };
+        query.equalTo("shift", shift);
+      }
+      query.include(["rider", "paidBy"]);
+      query.descending("paidAt");
+      query.limit(500);
+      const payouts = (await query.find(MASTER)).map(payoutJSON);
+      return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
+    });
+    module2.exports = { riderPayState };
+  }
+});
+
+// cloud/cashcheck.js
+var require_cashcheck = __commonJS({
+  "cloud/cashcheck.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, adminOnly, loadConfig } = require_core();
+    var { sumBy } = require_money();
+    var { dateKey } = require_dates();
+    var { money, notifyAdmins } = require_notifications();
+    var OPEN_SHIFT_HOURS = 16;
+    async function findAll(query) {
+      query.limit(5e3);
+      return query.find(MASTER);
+    }
+    async function runCashCheck() {
       const { values: config } = await loadConfig();
-      await notifyUser(row.get("rider"), {
-        kind: "cash.handover_confirmed",
-        tone: "update",
-        title: `Handover ${row.get("handoverCode")} confirmed`,
-        body: `${money(config, counted)} received by ${personName(await cashier.fetch(MASTER))}.`,
-        link: "/rider/cash"
-      });
-      return { status: "confirmed" };
-    });
-    Parse.Cloud.define("disputeHandover", async (request) => {
-      const { user: cashier, role } = await requireRole(request, ["cashier", "admin"]);
-      await requireCashierShift(cashier, role);
-      const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
-      if (row.get("status") !== "pending") throw invalid("Only pending handovers can be disputed");
-      const reason = String(request.params.reason || "").trim();
-      const counted = Number(request.params.countedAmount);
-      if (reason.length < 5 || !Number.isFinite(counted) || counted < 0)
-        throw invalid("Enter a reason and physical cash count");
-      row.set({
-        status: "disputed",
-        cashier,
-        disputeReason: reason,
-        countedAmount: counted,
-        disputedAt: /* @__PURE__ */ new Date()
-      });
-      await row.save(null, MASTER);
-      await audit(
-        cashier,
-        "cash.handover_disputed",
-        row,
-        { status: "pending", amount: row.get("amount") },
-        { status: "disputed", countedAmount: counted, reason }
+      const since = new Date(Date.now() - 60 * 24 * 3600 * 1e3);
+      const problems = [];
+      const add = (kind, message) => problems.push({ kind, message });
+      const handovers = await findAll(
+        new Parse.Query("CashHandover").greaterThanOrEqualTo("handedOverAt", since)
       );
-      const { values: config } = await loadConfig();
-      const disputed = {
-        kind: "cash.handover_disputed",
-        tone: "alert",
-        title: `Handover ${row.get("handoverCode")} disputed`,
-        body: `Counted ${money(config, counted)} of ${money(config, row.get("amount"))}: ${reason}`
-      };
-      await notifyUser(row.get("rider"), { ...disputed, link: "/rider/cash" });
-      await notifyAdmins({ ...disputed, link: "/admin/payments", except: cashier });
-      return { status: "disputed" };
-    });
-    Parse.Cloud.define("reopenHandover", async (request) => {
-      const actor = await adminOnly(request);
-      const row = await new Parse.Query("CashHandover").get(request.params.handoverId, MASTER);
-      if (row.get("status") !== "disputed") throw invalid("Only disputed handovers can be reopened");
-      const note = String(request.params.note || "").trim();
-      if (note.length < 5) throw invalid("Enter a resolution note");
-      row.set({ status: "pending", resolutionNote: note, resolvedBy: actor, resolvedAt: /* @__PURE__ */ new Date() });
-      await row.save(null, MASTER);
-      await audit(
-        actor,
-        "cash.dispute_reopened",
-        row,
-        { status: "disputed", reason: row.get("disputeReason") },
-        { status: "pending", note }
+      const inHandover = /* @__PURE__ */ new Map();
+      const confirmedOrders = /* @__PURE__ */ new Set();
+      for (const row of handovers) {
+        const ids = (row.get("orders") || []).map((ptr) => ptr.id);
+        const returned = new Set((row.get("returnedOrders") || []).map((ptr) => ptr.id));
+        if (["pending", "disputed"].includes(row.get("status")))
+          for (const id of ids) inHandover.set(id, [...inHandover.get(id) || [], row]);
+        if (row.get("status") === "confirmed") {
+          for (const id of ids) if (!returned.has(id)) confirmedOrders.add(id);
+        }
+      }
+      const orders = await findAll(
+        new Parse.Query("Order").equalTo("status", "DELIVERED").equalTo("paymentMethod", "cash").greaterThanOrEqualTo("deliveredAt", since)
       );
-      return { status: "pending" };
+      const byId = new Map(orders.map((order) => [order.id, order]));
+      for (const order of orders) {
+        const code = order.get("orderCode");
+        const status = order.get("cashStatus");
+        const waiting = inHandover.get(order.id) || [];
+        if (status === "HANDOVER_PENDING" && waiting.length !== 1)
+          add(
+            "order_handover",
+            waiting.length ? `${code} is in ${waiting.length} handovers at once` : `${code} is marked as handed over but is in no waiting handover`
+          );
+        if (status === "RECONCILED" && !confirmedOrders.has(order.id))
+          add("order_reconciled", `${code} is marked as received but no confirmed handover has it`);
+        if (status === "WITH_RIDER" && waiting.length)
+          add("order_with_rider", `${code} is with the rider but also in a waiting handover`);
+      }
+      for (const row of handovers) {
+        if (row.get("status") !== "pending") continue;
+        const code = row.get("handoverCode");
+        const rowOrders = (row.get("orders") || []).map((ptr) => byId.get(ptr.id)).filter(Boolean);
+        if (rowOrders.some((order) => order.get("cashStatus") !== "HANDOVER_PENDING"))
+          add("handover_orders", `${code} has orders that are no longer waiting for it`);
+        const sum = sumBy(rowOrders, (order) => order.get("amountCollected"));
+        if (rowOrders.length === (row.get("orders") || []).length && sum !== row.get("amount"))
+          add(
+            "handover_amount",
+            `${code} claims ${money(config, row.get("amount"))} but its orders add up to ${money(config, sum)}`
+          );
+      }
+      const staleShifts = await findAll(
+        new Parse.Query("Shift").equalTo("status", "open").lessThan("startedAt", new Date(Date.now() - OPEN_SHIFT_HOURS * 3600 * 1e3)).include("operator")
+      );
+      for (const shift of staleShifts)
+        add(
+          "shift_open",
+          `${shift.get("operator")?.get("name") || "A team member"}'s ${shift.get("kind")} shift has been open for over ${OPEN_SHIFT_HOURS} hours`
+        );
+      const checkedAt = /* @__PURE__ */ new Date();
+      if (problems.length)
+        await notifyAdmins({
+          kind: "cash.check",
+          tone: "alert",
+          key: `cash-check:${dateKey(checkedAt, config.timezone)}:${problems.length}`,
+          title: `Cash check: ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`,
+          body: problems.slice(0, 3).map((p) => p.message).join(" \xB7 "),
+          link: "/admin/payments"
+        });
+      return { checkedAt, ok: !problems.length, problems };
+    }
+    Parse.Cloud.job("cashCheck", async () => {
+      const result = await runCashCheck();
+      return result.ok ? "Cash records agree" : `${result.problems.length} problems found`;
     });
+    Parse.Cloud.define("adminRunCashCheck", async (request) => {
+      await adminOnly(request);
+      return runCashCheck();
+    });
+    module2.exports = { runCashCheck };
   }
 });
 
@@ -9507,19 +10215,45 @@ var require_shifts = __commonJS({
       riderFloat,
       adminOnly,
       loadConfig,
-      personName
+      personName,
+      verifyPin
     } = require_core();
     var { money, notifyAdmins } = require_notifications();
     var { resolveRange } = require_dates();
     var { sumBy } = require_money();
-    async function expectedTill(cashier, shift) {
-      const query = new Parse.Query("CashHandover");
+    async function tillSummary(cashier, shift) {
+      const start = shift.get("startedAt");
+      const end = shift.get("endedAt") || new Date(Date.now() + 6e4);
+      const counted = new Parse.Query("CashHandover");
+      counted.equalTo("cashier", cashier);
+      counted.greaterThanOrEqualTo("tillAt", start);
+      counted.lessThan("tillAt", end);
+      const legacy = new Parse.Query("CashHandover");
+      legacy.equalTo("cashier", cashier);
+      legacy.equalTo("status", "confirmed");
+      legacy.doesNotExist("tillAt");
+      legacy.notEqualTo("receivedByOwner", true);
+      legacy.greaterThanOrEqualTo("confirmedAt", start);
+      legacy.lessThan("confirmedAt", end);
+      const handoverQuery = Parse.Query.or(counted, legacy);
+      handoverQuery.limit(1e3);
+      const payoutQuery = new Parse.Query("TillPayout");
+      payoutQuery.equalTo("shift", shift);
+      payoutQuery.limit(1e3);
+      const [handovers, payouts] = await Promise.all([
+        handoverQuery.find(MASTER),
+        payoutQuery.find(MASTER)
+      ]);
+      const openingFloat = Number(shift.get("openingFloat") || 0);
+      const cashIn = sumBy(handovers, (h) => h.get("countedAmount") ?? h.get("amount"));
+      const paidOut = sumBy(payouts, (row) => row.get("amount"));
+      return { openingFloat, cashIn, paidOut, expected: openingFloat + cashIn - paidOut };
+    }
+    function heldOrdersQuery(cashier) {
+      const query = new Parse.Query("Order");
       query.equalTo("cashier", cashier);
-      query.equalTo("status", "confirmed");
-      query.greaterThanOrEqualTo("confirmedAt", shift.get("startedAt"));
-      query.limit(1e3);
-      const handovers = await query.find(MASTER);
-      return Number(shift.get("openingFloat") || 0) + sumBy(handovers, (h) => h.get("amount"));
+      query.containedIn("status", ["PLACED", "ACCEPTED", "PREPARING", "READY"]);
+      return query;
     }
     async function riderOutstanding(rider) {
       const openQuery = new Parse.Query("Order");
@@ -9560,13 +10294,17 @@ var require_shifts = __commonJS({
       const shift = await openShiftQuery(user).first(MASTER);
       if (!shift) return { shift: null };
       const isCashier = shift.get("kind") === "cashier";
+      const till = isCashier ? await tillSummary(user, shift) : null;
       return {
         shift: {
           id: shift.id,
           kind: shift.get("kind"),
           startedAt: shift.get("startedAt"),
           openingFloat: shift.get("openingFloat"),
-          expectedTill: isCashier ? await expectedTill(user, shift) : null,
+          expectedTill: till ? till.expected : null,
+          cashIn: till ? till.cashIn : null,
+          paidOut: till ? till.paidOut : null,
+          heldOrders: isCashier ? await heldOrdersQuery(user).count(MASTER) : null,
           float: isCashier ? null : await riderFloat(user),
           outstanding: isCashier ? null : await riderOutstanding(user)
         }
@@ -9606,13 +10344,21 @@ var require_shifts = __commonJS({
       if (!isCashier) {
         const problem = outstandingProblem(await riderOutstanding(user));
         if (problem) throw invalid(problem);
+      } else {
+        const held = await heldOrdersQuery(user).count(MASTER);
+        if (held)
+          throw invalid(
+            `You still hold ${held} kitchen order${held === 1 ? "" : "s"}. Finish or transfer ${held === 1 ? "it" : "them"} before ending your shift`
+          );
       }
       const balance = 0;
       let expected = null;
       let counted = null;
       let variance = null;
+      let till = null;
       if (isCashier) {
-        expected = await expectedTill(user, row);
+        till = await tillSummary(user, row);
+        expected = till.expected;
         const rawCount = request.params.physicalCount;
         counted = Number(rawCount);
         if (rawCount === void 0 || rawCount === "" || !Number.isFinite(counted) || counted < 0)
@@ -9622,7 +10368,9 @@ var require_shifts = __commonJS({
       const varianceNote = String(request.params.varianceNote || "").trim().slice(0, 500);
       if (variance && varianceNote.length < 10)
         throw invalid("The till is off: explain the difference before ending your shift");
+      await verifyPin(user, request.params.pin);
       row.set({
+        ...till && { cashIn: till.cashIn, paidOut: till.paidOut },
         status: "closed",
         endedAt: /* @__PURE__ */ new Date(),
         closingFloat: balance,
@@ -9669,6 +10417,7 @@ var require_shifts = __commonJS({
       const shifts = await Promise.all(
         rows.map(async (shift) => {
           const open = shift.get("status") === "open";
+          const till = open ? await tillSummary(shift.get("operator"), shift) : null;
           return {
             id: shift.id,
             cashier: personName(shift.get("operator")),
@@ -9676,7 +10425,9 @@ var require_shifts = __commonJS({
             startedAt: shift.get("startedAt"),
             endedAt: shift.get("endedAt") || null,
             openingFloat: Number(shift.get("openingFloat") || 0),
-            expectedTill: open ? await expectedTill(shift.get("operator"), shift) : shift.get("expectedTill") ?? null,
+            cashIn: till ? till.cashIn : shift.get("cashIn") ?? null,
+            paidOut: till ? till.paidOut : shift.get("paidOut") ?? null,
+            expectedTill: till ? till.expected : shift.get("expectedTill") ?? null,
             physicalCount: shift.get("physicalCount") ?? null,
             variance: shift.get("variance") ?? null,
             varianceNote: shift.get("varianceNote") || ""
@@ -10525,7 +11276,12 @@ var require_reports2 = __commonJS({
         status: h.get("status"),
         reason: h.get("disputeReason") || "",
         createdAt: h.createdAt,
-        confirmedAt: h.get("confirmedAt") || null
+        confirmedAt: h.get("confirmedAt") || null,
+        returnedAmount: Number(h.get("returnedAmount") || 0),
+        shortage: Number(h.get("shortage") || 0),
+        shortageStatus: h.get("shortageStatus") || "",
+        resolutionNote: h.get("resolutionNote") || "",
+        receivedByOwner: h.get("receivedByOwner") === true
       }));
       const transactions = [...cashRows, ...momoRows].sort(byNewest("at"));
       return {
@@ -10821,6 +11577,8 @@ require_payments();
 require_orders();
 require_menu();
 require_cash();
+require_payouts();
+require_cashcheck();
 require_shifts();
 require_admin();
 require_preview();

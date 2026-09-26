@@ -12,6 +12,7 @@ import {
   useFilters,
   useRiderOptions,
 } from './common';
+import { CashCheckPanel, PayoutsPanel, ReceiveCash } from './CashControls';
 
 type Transaction = {
   id: string;
@@ -40,6 +41,11 @@ type Handover = {
   status: string;
   reason: string;
   createdAt: string;
+  returnedAmount: number;
+  shortage: number;
+  shortageStatus: string;
+  resolutionNote: string;
+  receivedByOwner: boolean;
 };
 
 type TillShift = {
@@ -49,6 +55,8 @@ type TillShift = {
   startedAt: string;
   endedAt: string | null;
   openingFloat: number;
+  cashIn: number | null;
+  paidOut: number | null;
   expectedTill: number | null;
   physicalCount: number | null;
   variance: number | null;
@@ -277,6 +285,7 @@ export function PaymentsLedger() {
                 Handovers <small>({data?.handovers.length ?? 0})</small>
               </h2>
             </div>
+            <ReceiveCash riders={riders} onDone={reload} />
           </div>
           {(data?.handovers.length ?? 0) > 0 && (
             <div className="table-scroll">
@@ -306,6 +315,7 @@ export function PaymentsLedger() {
                           <span className={`status-pill ${STATUS_TONE[h.status] || ''}`}>
                             {STATUS_LABEL[h.status] || h.status}
                           </span>
+                          {handoverNote(h, money) && <small>{handoverNote(h, money)}</small>}
                         </td>
                         <td className="num">{money(h.amount)}</td>
                       </tr>
@@ -341,8 +351,8 @@ export function PaymentsLedger() {
             )}
           </div>
           <p className="muted small">
-            Each shift starts with a counted till. Expected = opening count + cash handovers the
-            cashier confirmed during the shift. Any difference must be explained to close.
+            Each shift starts with a counted till. Expected = opening count + cash the cashier took
+            in from riders − payouts. Any difference must be explained to close.
           </p>
           {tills.error && <p className="ops-error">{tills.error}</p>}
           {(tills.data?.shifts.length ?? 0) > 0 ? (
@@ -353,6 +363,8 @@ export function PaymentsLedger() {
                     <th>Cashier</th>
                     <th>Shift</th>
                     <th className="num">Opening</th>
+                    <th className="num">Cash in</th>
+                    <th className="num">Paid out</th>
                     <th className="num">Expected</th>
                     <th className="num">Counted</th>
                     <th className="num">Difference</th>
@@ -368,6 +380,8 @@ export function PaymentsLedger() {
                         <small>{t.endedAt ? `to ${when(t.endedAt)}` : 'On shift now'}</small>
                       </td>
                       <td className="num">{money(t.openingFloat)}</td>
+                      <td className="num">{t.cashIn === null ? '—' : money(t.cashIn)}</td>
+                      <td className="num">{t.paidOut === null ? '—' : money(t.paidOut)}</td>
                       <td className="num">
                         {t.expectedTill === null ? '—' : money(t.expectedTill)}
                       </td>
@@ -396,8 +410,20 @@ export function PaymentsLedger() {
           )}
         </section>
       )}
+      {filters.method !== 'mobile_money' && <PayoutsPanel from={filters.from} to={filters.to} />}
+      <CashCheckPanel />
     </div>
   );
+}
+
+// Short line under a handover's status: what happened to missing cash.
+function handoverNote(h: Handover, money: (n: number) => string) {
+  if (h.receivedByOwner) return 'Taken by the owner';
+  if (h.shortageStatus === 'owed') return `${money(h.shortage)} short · off rider's next pay`;
+  if (h.shortageStatus === 'deducted') return `${money(h.shortage)} short · taken off pay`;
+  if (h.shortageStatus === 'written_off') return `${money(h.shortage)} short · written off`;
+  if (h.returnedAmount) return `${money(h.returnedAmount)} returned to rider`;
+  return '';
 }
 
 function DisputeResolution({
@@ -411,23 +437,30 @@ function DisputeResolution({
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const reopen = async () => {
+  const shortage = handover.amount - (handover.countedAmount || 0);
+  const resolve = async (action: 'deduct' | 'write_off' | 'reopen') => {
     if (note.trim().length < 5) return;
     setBusy(true);
     setError('');
     try {
-      await Parse.Cloud.run('reopenHandover', { handoverId: handover.id, note });
+      await Parse.Cloud.run('adminResolveHandover', {
+        handoverId: handover.id,
+        action,
+        note: note.trim(),
+      });
       onResolved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not reopen dispute');
+      setError(e instanceof Error ? e.message : 'Could not resolve the dispute');
     } finally {
       setBusy(false);
     }
   };
+  const ready = !busy && note.trim().length >= 5;
   return (
     <div className="dispute-panel">
       <strong>
-        Disputed cash count: {money(handover.countedAmount || 0)} / claimed {money(handover.amount)}
+        Counted {money(handover.countedAmount || 0)} of {money(handover.amount)} · {money(shortage)}{' '}
+        short
       </strong>
       <p>{handover.reason}</p>
       <label>
@@ -435,12 +468,24 @@ function DisputeResolution({
         <input
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="Record how this was resolved"
+          placeholder="What you agreed with the rider"
         />
       </label>
-      <button disabled={busy || note.trim().length < 5} onClick={() => void reopen()}>
-        Return to cashier for recount
-      </button>
+      <div className="dispute-actions">
+        <button disabled={!ready} onClick={() => void resolve('deduct')}>
+          Take {money(shortage)} off the rider&apos;s pay
+        </button>
+        <button disabled={!ready} onClick={() => void resolve('write_off')}>
+          Write it off
+        </button>
+        <button
+          className="setup-secondary"
+          disabled={!ready}
+          onClick={() => void resolve('reopen')}
+        >
+          Recount at the counter
+        </button>
+      </div>
       {error && <p className="ops-error">{error}</p>}
     </div>
   );

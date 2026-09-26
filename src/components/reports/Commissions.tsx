@@ -67,7 +67,11 @@ export function Commissions() {
       {error && <p className="ops-error">{error}</p>}
       {data && (
         <div className="stat-grid">
-          <Stat label="Commission earned" value={money(data.total)} note="By delivery date" />
+          <Stat
+            label="Rider pay earned"
+            value={money(data.total)}
+            note="Commission + delivery fees, by delivery date"
+          />
           <Stat label="Deliveries" value={data.deliveries} />
           <Stat
             label="Average per delivery"
@@ -87,7 +91,7 @@ export function Commissions() {
                   <th>Rider</th>
                   <th className="num">Deliveries</th>
                   <th className="num">Sales</th>
-                  <th className="num">Commission</th>
+                  <th className="num">Rider pay</th>
                 </tr>
               </thead>
               <tbody>
@@ -127,7 +131,7 @@ export function Commissions() {
                   <th>Delivered</th>
                   <th>Rider</th>
                   <th className="num">Order total</th>
-                  <th className="num">Commission</th>
+                  <th className="num">Rider pay</th>
                 </tr>
               </thead>
               <tbody>

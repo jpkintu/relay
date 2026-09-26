@@ -118,8 +118,6 @@ export function OrderDetail({
   const [issue, setIssue] = useState('');
   const [showIssue, setShowIssue] = useState(false);
   const [payment, setPayment] = useState('');
-  const [collected, setCollected] = useState('');
-  const [shortNote, setShortNote] = useState('');
   const [provider, setProvider] = useState('');
   const [reference, setReference] = useState('');
 
@@ -156,8 +154,8 @@ export function OrderDetail({
 
   const method = payment || order?.paymentMethod || 'cash';
   const isCash = method === 'cash';
-  const amount = collected === '' ? (order?.amountToCollect ?? 0) : Number(collected);
-  const short = !!order && isCash && amount < order.total;
+  // The full amount is collected at the door.
+  const amount = order?.amountToCollect ?? 0;
   const paidByMomo = order?.paymentMethod === 'mobile_money';
   const switchingToMomo = !!order && !paidByMomo && method === 'mobile_money';
 
@@ -357,41 +355,20 @@ export function OrderDetail({
                   />
                 )}
                 {isCash && (
-                  <label className="setup-field">
-                    Cash collected
-                    <input
-                      type="number"
-                      min="0"
-                      inputMode="numeric"
-                      value={collected === '' ? order.amountToCollect : collected}
-                      onChange={(e) => setCollected(e.target.value)}
-                    />
-                  </label>
-                )}
-                {short && (
-                  <label className="setup-field">
-                    Why is it less than {money(order.total)}?
-                    <input
-                      value={shortNote}
-                      onChange={(e) => setShortNote(e.target.value)}
-                      placeholder={order.shortfallNote || 'Required for short payments'}
-                    />
-                  </label>
+                  <p className="collect-note">
+                    Collect the full <b>{money(amount)}</b> in cash before you confirm.
+                  </p>
                 )}
                 <button
                   className="primary-button wide"
                   disabled={
-                    busy ||
-                    (isCash && !Number.isFinite(amount)) ||
-                    (switchingToMomo && (!provider || !!referenceProblem(reference))) ||
-                    (short && !order.shortfallNote && shortNote.trim().length < 5)
+                    busy || (switchingToMomo && (!provider || !!referenceProblem(reference)))
                   }
                   onClick={() =>
                     void act('transitionOrder', {
                       action: 'deliver',
                       paymentMethod: method,
                       amountCollected: isCash ? amount : 0,
-                      shortfallNote: shortNote,
                       ...(switchingToMomo && {
                         paymentProvider: provider,
                         paymentReference: reference,

@@ -342,7 +342,7 @@ export function Reports() {
                 <dd>{money(s.deliveryFees)}</dd>
               </div>
               <div>
-                <dt>Rider commission</dt>
+                <dt>Rider pay</dt>
                 <dd>−{money(s.commission)}</dd>
               </div>
               <div>
@@ -425,7 +425,7 @@ export function Reports() {
                       <th className="num">Change</th>
                       <th className="num">Orders</th>
                       <th className="num">Avg order</th>
-                      <th className="num">Commission</th>
+                      <th className="num">Rider pay</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -604,7 +604,7 @@ export function Reports() {
                         <th>Rider</th>
                         <th className="num">Delivered</th>
                         <th className="num">Sales</th>
-                        <th className="num">Commission</th>
+                        <th className="num">Rider pay</th>
                         <th className="num">Order to door</th>
                         <th className="num">Cancelled</th>
                       </tr>

@@ -3,6 +3,7 @@ import { Clock3 } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
+import { usePin } from '../lib/pin';
 
 type Shift = {
   id: string;
@@ -10,6 +11,9 @@ type Shift = {
   startedAt: string;
   openingFloat: number;
   expectedTill: number | null;
+  cashIn: number | null;
+  paidOut: number | null;
+  heldOrders: number | null;
   float: number | null;
   outstanding: { openOrders: number; cashWithRider: number; cashPending: number } | null;
 };
@@ -25,6 +29,7 @@ export function ShiftPanel({
 }) {
   const money = useMoney();
   const { timezone } = useConfig();
+  const withPin = usePin();
   const [shift, setShift] = useState<Shift | null>(null),
     [opening, setOpening] = useState(''),
     [varianceNote, setVarianceNote] = useState(''),
@@ -65,26 +70,26 @@ export function ShiftPanel({
   };
   const end = async () => {
     if (!shift) return;
-    setBusy(true);
     setError('');
-    try {
-      const result = await Parse.Cloud.run('endShift', {
+    let result: { variance: number } | null = null;
+    const closed = await withPin('End your shift', async (pin) => {
+      result = await Parse.Cloud.run('endShift', {
         shiftId: shift.id,
         physicalCount: kind === 'cashier' ? Number(physical) : undefined,
         varianceNote,
+        pin,
       });
-      setShift(null);
-      setNotice(
-        kind === 'cashier' ? `Shift closed. Variance: ${money(result.variance)}.` : 'Shift closed.',
-      );
-      setPhysical('');
-      setVarianceNote('');
-      onChanged?.();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not close shift');
-    } finally {
-      setBusy(false);
-    }
+    });
+    if (!closed) return;
+    setShift(null);
+    setNotice(
+      kind === 'cashier' && result
+        ? `Shift closed. Variance: ${money((result as { variance: number }).variance)}.`
+        : 'Shift closed.',
+    );
+    setPhysical('');
+    setVarianceNote('');
+    onChanged?.();
   };
   const outstanding = shift?.outstanding;
   const difference =
@@ -113,12 +118,25 @@ export function ShiftPanel({
             <>
               <div className="shift-figures">
                 <span>
-                  Opening float <strong>{money(shift.openingFloat)}</strong>
+                  Opening count <strong>{money(shift.openingFloat)}</strong>
+                </span>
+                <span>
+                  Cash in <strong>+ {money(shift.cashIn ?? 0)}</strong>
+                </span>
+                <span>
+                  Paid out <strong>− {money(shift.paidOut ?? 0)}</strong>
                 </span>
                 <span>
                   Expected till <strong>{money(shift.expectedTill)}</strong>
                 </span>
               </div>
+              {Boolean(shift.heldOrders) && (
+                <p className="till-difference short">
+                  You hold {shift.heldOrders} kitchen order{shift.heldOrders === 1 ? '' : 's'}.
+                  Finish or transfer {shift.heldOrders === 1 ? 'it' : 'them'} before ending your
+                  shift.
+                </p>
+              )}
               <label className="setup-field">
                 Physical till count
                 <input

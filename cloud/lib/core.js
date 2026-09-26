@@ -237,6 +237,73 @@ async function nextStaffCode(role) {
   );
 }
 
+// True for exactly one caller per key: the first to increment it. Used to make
+// "whoever gets there first" steps (claiming an order, reviewing a handover,
+// paying a rider) safe when two devices act at the same moment.
+async function claimOnce(key) {
+  return (await nextSequence(key)) === 1;
+}
+
+const PIN_ATTEMPTS = 5;
+const PIN_LOCK_MINUTES = 15;
+
+// Sensitive steps (handing over cash, ending a shift, paying from the till)
+// ask for the PIN again. Five wrong PINs lock these steps for 15 minutes.
+async function verifyPin(user, pin) {
+  const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+  const lockedUntil = fresh.get('pinLockedUntil');
+  if (lockedUntil && lockedUntil > new Date()) {
+    const minutes = Math.ceil((lockedUntil - new Date()) / 60000);
+    throw invalid(`Too many wrong PINs. Try again in ${minutes} min`);
+  }
+  const value = String(pin ?? '');
+  if (!value) throw invalid('Enter your PIN to continue');
+  try {
+    await Parse.User.verifyPassword(fresh.get('username'), value);
+  } catch {
+    const failures = Number(fresh.get('pinFailures') || 0) + 1;
+    const locked = failures >= PIN_ATTEMPTS;
+    fresh.set('pinFailures', locked ? 0 : failures);
+    if (locked) fresh.set('pinLockedUntil', new Date(Date.now() + PIN_LOCK_MINUTES * 60000));
+    await fresh.save(null, MASTER);
+    throw invalid(
+      locked
+        ? `Wrong PIN. Locked for ${PIN_LOCK_MINUTES} min`
+        : `Wrong PIN (${PIN_ATTEMPTS - failures} tries left)`,
+    );
+  }
+  if (fresh.get('pinFailures')) {
+    fresh.set('pinFailures', 0);
+    await fresh.save(null, MASTER);
+  }
+}
+
+// Kitchen orders belong to one cashier at a time. The first cashier to act on
+// an order takes it; others are told who has it and can ask for a transfer.
+// Admins can act on any order without taking it. Sets the fields on `order`
+// (the caller saves it).
+async function takeOrder(order, actor, role) {
+  if (role !== 'cashier') return;
+  const holder = order.get('cashier');
+  if (holder) {
+    if (holder.id === actor.id) return;
+    throw forbidden(
+      `${order.get('cashierName') || 'Another cashier'} is handling this order. Ask them to transfer it to you`,
+    );
+  }
+  if (!(await claimOnce(`order-cashier:${order.id}:${order.get('cashierRound') || 0}`))) {
+    const latest = await new Parse.Query('Order').get(order.id, MASTER);
+    const name = latest.get('cashierName');
+    throw forbidden(
+      name
+        ? `${name} just took this order. Ask them to transfer it to you`
+        : 'Another cashier is taking this order. Refresh and try again',
+    );
+  }
+  const me = await actor.fetch(MASTER);
+  order.set({ cashier: me, cashierName: personName(me), assignedAt: new Date() });
+}
+
 // A code produced by the old bug ("…[object Object]") or otherwise not in the
 // expected shape.
 const isBrokenCode = (code) => typeof code === 'string' && /object|undefined|NaN/.test(code);
@@ -264,4 +331,8 @@ module.exports = {
   requireCashierShift,
   isBrokenCode,
   nextStaffCode,
+  nextSequence,
+  claimOnce,
+  verifyPin,
+  takeOrder,
 };
