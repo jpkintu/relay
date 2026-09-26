@@ -12,9 +12,11 @@ import {
   Users,
   CircleDollarSign,
   BarChart3,
+  TriangleAlert,
 } from 'lucide-react';
 import Parse from '../parse';
 import { AdminOrders } from './AdminOrders';
+import { AdminProblems } from './AdminProblems';
 import { PaymentsLedger } from './reports/PaymentsLedger';
 import { Commissions } from './reports/Commissions';
 import { Reports } from './reports/Reports';
@@ -25,6 +27,7 @@ import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, isToday } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { useDevice } from '../lib/device';
+import { NotificationBell } from './NotificationBell';
 
 type AdminOrder = {
   id: string;
@@ -43,6 +46,7 @@ const NAV = [
   [LayoutDashboard, 'Overview', ''],
   [BarChart3, 'Reports', 'reports'],
   [ClipboardList, 'Orders', 'orders'],
+  [TriangleAlert, 'Problems', 'problems'],
   [HandCoins, 'Payments ledger', 'payments'],
   [CircleDollarSign, 'Commissions', 'commissions'],
   [Users, 'Team', 'team'],
@@ -72,6 +76,7 @@ export function AdminWorkspace() {
     navigate(`/admin/${NAV.find((entry) => entry[1] === label)?.[2] ?? ''}`);
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [error, setError] = useState('');
+  const [openIssues, setOpenIssues] = useState(0);
   const load = useCallback(async () => {
     try {
       if (preview) {
@@ -97,7 +102,11 @@ export function AdminWorkspace() {
         orderQ.include('createdBy');
         orderQ.descending('createdAt');
         orderQ.limit(100);
-        const orderRows = await orderQ.find();
+        const [orderRows, issues] = await Promise.all([
+          orderQ.find(),
+          Parse.Cloud.run('adminListIssues', { state: 'open' }) as Promise<{ open: number }>,
+        ]);
+        setOpenIssues(issues.open);
         setOrders(
           orderRows.map((o) => ({
             id: o.id!,
@@ -160,6 +169,9 @@ export function AdminWorkspace() {
             >
               <Icon />
               {label}
+              {label === 'Problems' && openIssues > 0 && (
+                <span className="nav-count">{openIssues}</span>
+              )}
             </button>
           ))}
           <button onClick={() => navigate('/cashier')}>
@@ -187,11 +199,14 @@ export function AdminWorkspace() {
             </p>
             <h1>{section === 'Overview' ? 'Restaurant overview' : section}</h1>
           </div>
-          {section === 'Overview' && (
-            <button className="refresh-button" onClick={() => void load()}>
-              Refresh data
-            </button>
-          )}
+          <div className="header-actions">
+            {section === 'Overview' && (
+              <button className="refresh-button" onClick={() => void load()}>
+                Refresh data
+              </button>
+            )}
+            <NotificationBell />
+          </div>
         </header>
         {error && <p className="ops-error">{error}</p>}
         {section === 'Overview' && (
@@ -278,12 +293,14 @@ export function AdminWorkspace() {
             </section>
           </>
         )}
-        {preview && ['Reports', 'Orders', 'Payments ledger', 'Commissions'].includes(section) ? (
+        {preview &&
+        ['Reports', 'Orders', 'Problems', 'Payments ledger', 'Commissions'].includes(section) ? (
           <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
         ) : (
           <>
             {section === 'Reports' && <Reports />}
             {section === 'Orders' && <AdminOrders />}
+            {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
             {section === 'Payments ledger' && <PaymentsLedger />}
             {section === 'Commissions' && <Commissions />}
           </>

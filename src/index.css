@@ -3748,3 +3748,316 @@ table.data.compact-table {
     box-shadow: none;
   }
 }
+
+/* ---------- Notifications ---------- */
+.bell {
+  position: relative;
+  flex: none;
+}
+.bell-button {
+  position: relative;
+}
+.bell-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--on-dark);
+  font: 700 11px/19px var(--font-body);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.bell-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px #0b163326;
+  text-align: left;
+}
+.bell-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.bell-panel h2 {
+  margin: 0;
+  font: 700 17px var(--font-display);
+}
+.bell-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.bell-panel li > button {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.bell-panel li > button:hover {
+  background: var(--surface-2);
+}
+.bell-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: transparent;
+}
+.bell-panel li.unread .bell-dot {
+  background: var(--blue);
+}
+.bell-panel li.unread .bell-dot.alert {
+  background: var(--accent);
+}
+.bell-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.bell-text strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.bell-panel li:not(.unread) .bell-text strong {
+  font-weight: 500;
+  color: var(--muted);
+}
+.bell-text span {
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.bell-text small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.bell-empty {
+  padding: 18px 16px;
+  color: var(--muted);
+}
+.bell-panel footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.bell-panel footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  padding: 6px 0;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.bell-panel footer svg {
+  width: 17px;
+  height: 17px;
+}
+.bell-panel footer small {
+  color: var(--muted);
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* On phones the panel spans the screen under the header. */
+@media (max-width: 599px) {
+  .bell-panel {
+    position: fixed;
+    top: 64px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+  }
+}
+
+/* ---------- Cash limit and problems ---------- */
+.limit-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 16px 0;
+  padding: 14px 16px;
+  border: 1px solid #efc5b9;
+  border-radius: 12px;
+  background: #fff3ee;
+  color: #8a2f1c;
+  font-size: 14px;
+}
+.limit-banner button {
+  border: 0;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--on-dark);
+  padding: 10px 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.order-page > .limit-banner {
+  margin: 12px clamp(16px, 4vw, 40px) 0;
+}
+.limit-note {
+  margin: 16px 0 0;
+  color: #8a5a00;
+  font-size: 14px;
+  font-weight: 500;
+}
+.nav-count {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 11px;
+  background: var(--accent);
+  color: var(--on-dark);
+  font: 700 12px/20px var(--font-body);
+  text-align: center;
+}
+.issue-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.issue-card {
+  padding: 16px 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.issue-card.open {
+  border-color: #efc5b9;
+}
+.issue-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.issue-note {
+  margin: 10px 0;
+  font-size: 16px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.issue-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+}
+.issue-card dl > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+}
+.issue-card dt {
+  color: var(--muted);
+}
+.issue-card dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.issue-resolve {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+.issue-resolve label {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.issue-resolve input {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.issue-resolve .primary-button {
+  width: auto;
+  min-height: 44px;
+  padding: 0 18px;
+}
+@media (max-width: 599px) {
+  .issue-card dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}
+.order-head > .bell {
+  margin-left: auto;
+}
+.order-head > .status-pill + .bell {
+  margin-left: 0;
+}
+.rider-header {
+  gap: 10px;
+}
+.rider-header .shift-live {
+  min-width: 0;
+  max-width: 40vw;
+  margin-left: auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rider-header .shift-live + .bell,
+.rider-header > .bell:first-of-type {
+  flex: none;
+}
+/* Cashier header between tablet and wide laptop: make room for the bell. */
+@media (min-width: 851px) and (max-width: 1199px) {
+  .ops-header {
+    gap: 12px;
+    padding: 0 18px;
+  }
+  .ops-header .shift-live {
+    display: none;
+  }
+  .ops-header nav button {
+    padding: 0 9px;
+    gap: 6px;
+    font-size: 14px;
+  }
+  .ops-header > .icon-button,
+  .ops-header > .bell {
+    flex: none;
+  }
+}

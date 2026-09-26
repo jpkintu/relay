@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { dayKey, formatMoney, greeting, initials, isToday } from './format';
+import { dayKey, formatMoney, greeting, initials, isToday, timeAgo } from './format';
 
 describe('formatMoney', () => {
   test('uses the configured symbol and whole units', () => {
@@ -38,4 +38,12 @@ test('initials', () => {
   expect(initials('Rita Nansubuga Rider')).toBe('RR');
   expect(initials('amina')).toBe('AM');
   expect(initials('  ')).toBe('?');
+});
+
+test('timeAgo', () => {
+  const now = new Date('2026-09-26T12:00:00Z');
+  expect(timeAgo('2026-09-26T11:59:40Z', now)).toBe('just now');
+  expect(timeAgo('2026-09-26T11:55:00Z', now)).toBe('5 min ago');
+  expect(timeAgo('2026-09-26T09:00:00Z', now)).toBe('3 h ago');
+  expect(timeAgo('2026-09-24T12:00:00Z', now)).toBe('2 d ago');
 });

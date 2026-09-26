@@ -38,6 +38,7 @@ const PROTECTED_CLASSES = [
   'Customer',
   'Counter',
   'DemoOrder',
+  'Notification',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = ['Counter', 'DemoOrder', 'Configuration'];
@@ -142,6 +143,8 @@ const SCHEMAS = {
     paymentCheckedBy: user,
     paymentCheckedAt: D,
     paymentRejectReason: S,
+    disputeResolvedBy: user,
+    disputeResolvedAt: D,
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -200,6 +203,8 @@ const SCHEMAS = {
     airtelMerchantName: S,
     mtnMerchantCode: S,
     mtnMerchantName: S,
+    cashReminderHour: N,
+    floatWarningPercent: N,
   },
   MenuItem: {
     title: S,
@@ -235,6 +240,17 @@ const SCHEMAS = {
     status: S,
     restaurantStatus: S,
     isDemo: B,
+  },
+  Notification: {
+    recipient: user,
+    kind: S,
+    tone: S,
+    title: S,
+    body: S,
+    link: S,
+    order: ['Pointer', 'Order'],
+    key: S,
+    readAt: D,
   },
 };
 

@@ -385,6 +385,12 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     throw invalid('Fee and float limit must be nonnegative');
   const timezone = String(p.timezone || current.timezone).trim();
   if (!isValidTimeZone(timezone)) throw invalid('Unknown timezone, e.g. Africa/Kampala');
+  const reminderHour = Number(p.cashReminderHour ?? current.cashReminderHour);
+  if (!Number.isInteger(reminderHour) || reminderHour < 0 || reminderHour > 23)
+    throw invalid('Cash reminder hour must be 0-23');
+  const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
+  if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
+    throw invalid('Cash warning must be between 50% and 99% of the limit');
   config.set({
     restaurantName: String(p.restaurantName || current.restaurantName).trim(),
     currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
@@ -400,6 +406,8 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     airtelMerchantName: merchantField(p.airtelMerchantName, 60),
     mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
     mtnMerchantName: merchantField(p.mtnMerchantName, 60),
+    cashReminderHour: reminderHour,
+    floatWarningPercent: warnPercent,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

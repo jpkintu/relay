@@ -582,7 +582,7 @@ agent's "remaining" list.
 - [x] `requireCashierConfirmForPickup` setting: when on, only the cashier's "Hand to rider" moves an order to PICKED_UP
 - [x] Draft mode: unsent order kept on the phone with a "Draft · not submitted" badge; `clientId` makes submits idempotent
 - [x] Order `disputeFlag` (food complaint): rider or staff report with `flagOrderIssue`; owner resolves with `resolveOrderIssue`
-- [ ] Admin UI to see and resolve reported order problems (the Cloud function exists; do it with the admin order detail in Phase 5)
+- [x] Admin **Problems** page: open/resolved reports with who reported and when, resolve with a note (`adminListIssues`, `resolveOrderIssue`); open count on the nav
 
 ### Accompaniments (added 2026-09-25)
 
@@ -640,7 +640,9 @@ starts.
 ### Phase 4 — Operations & notifications
 
 - [ ] Replace 10 s polling with LiveQuery subscriptions (cashier board, rider active orders, handovers), keeping polling as a fallback
-- [ ] Notifications (in-app `Notification` + Web Push): new order → cashiers; order ready → rider; handover created → cashiers; handover disputed / float over max / handover stale > N h → admin
+- [x] In-app notifications (`Notification` class, `cloud/notifications.js`, polled every 12 s): new orders, new transaction IDs and cash handovers → cashiers and admins; order accepted/preparing/ready/handed over/rejected/cancelled, payment confirmed/not received, handover confirmed/disputed, problem resolved → the rider; problems reported and disputed handovers → admins. Bell with unread count on every workspace, sounds (Web Audio: new / update / alert), a sound toggle, and browser alerts while the app is in the background
+- [x] Rider cash reminders: warning at `floatWarningPercent` (default 80 %) of the limit, "limit reached" at 100 % (new orders of any payment type are blocked), and an end-of-day handover reminder from `cashReminderHour` (default 20:00); each at most once a day
+- [ ] Web Push (alerts when the app is fully closed) and a stale-handover alert to admins
 - [ ] Commission payouts: the rider requests a payout; the admin marks it paid per line or in bulk for a period; `commissionPaid` flags; optional TillPayout link
 - [x] Rider earnings: Week / Month summaries with date presets and custom dates, count, average, change, chart, list (`getRiderEarnings`)
 - [ ] PWA: manifest, icons, install prompt, offline shell (makes the web app feel native)
@@ -716,3 +718,4 @@ starts.
 | 2026-09-26 | Credit: "Powered by Embiro" badge (`PoweredBy`) on sign-in, admin pages, rider profile and cashier Shift tab; `NOTICE` file, author meta tag, and credit comments at the top of the built app and the Cloud Code bundle.                                                                                                                                                                                                                                   |
 | 2026-09-26 | Fix `[object Object]` codes: on Back4App the counter's save() did not return the new value, so order, handover and staff codes broke. Codes are now read back and checked for uniqueness; Settings → Apply security rules repairs existing broken codes. CI e2e now runs with direct access like Back4App.                                                                                                                                                 |
 | 2026-09-26 | Design pass guided by Hallmark (github.com/Nutlope/hallmark): self-hosted Space Grotesk / Geist / Geist Mono, roman headings, decorative eyebrows and icon tiles removed, tinted surfaces, ink primary buttons with blue for focus/active, real tables (sticky header, scroll, tabular numbers, totals). "Powered by Embiro" moved under the Relay name. Rider header hides the restaurant pill until a name is set; the owner is prompted on Overview.    |
+| 2026-09-26 | Notifications: bell with sound on every workspace (new orders, handovers and mobile money for cashiers/admins; order status, payments, handovers and problems for riders), rider cash warnings, limit-reached block on all new orders, end-of-day handover reminder; admin Problems page. New settings: cash reminder hour, warning %. e2e 58, unit 53.                                                                                                    |

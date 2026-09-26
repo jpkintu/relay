@@ -11,6 +11,7 @@ import { BrandMark } from './components/BrandMark';
 import { SessionProvider, homePath, useSession } from './lib/session';
 import type { Role } from './lib/session';
 import { useDeviceAttribute } from './lib/device';
+import { NotificationsProvider } from './lib/notifications';
 
 export default function App() {
   return (
@@ -44,12 +45,14 @@ function AppRoutes() {
   const guard = (area: keyof typeof ACCESS, element: ReactNode) =>
     ACCESS[area].includes(role) ? element : <Navigate to={homePath(role)} replace />;
   return (
-    <Routes>
-      <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
-      <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
-      <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
-      <Route path="*" element={<Navigate to={homePath(role)} replace />} />
-    </Routes>
+    <NotificationsProvider>
+      <Routes>
+        <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
+        <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
+        <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
+        <Route path="*" element={<Navigate to={homePath(role)} replace />} />
+      </Routes>
+    </NotificationsProvider>
   );
 }
 

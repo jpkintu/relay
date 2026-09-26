@@ -21,6 +21,10 @@ const DEFAULT_CONFIG = {
   airtelMerchantName: '',
   mtnMerchantCode: '',
   mtnMerchantName: '',
+  // Hour of the day (restaurant time) to remind riders to hand over cash.
+  cashReminderHour: 20,
+  // Warn riders when their cash reaches this % of maxRiderFloat.
+  floatWarningPercent: 80,
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
@@ -122,6 +126,26 @@ function countUsers() {
   return query.count(MASTER);
 }
 
+// Cash the rider is still accountable for: delivered cash orders that have
+// not been reconciled. Derived from orders, never stored.
+async function riderFloat(rider) {
+  const query = new Parse.Query('Order');
+  query.equalTo('createdBy', rider);
+  query.equalTo('status', 'DELIVERED');
+  query.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
+  query.limit(1000);
+  const orders = await query.find(MASTER);
+  return orders.reduce((sum, order) => sum + (Number(order.get('amountCollected')) || 0), 0);
+}
+
+// "R-001 · Rita" style label for notifications and ledgers.
+const personName = (user) =>
+  user
+    ? [user.get('riderCode') || user.get('cashierCode'), user.get('name') || user.get('username')]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+
 // Atomic counter. Two callers racing to create the same key both end up
 // incrementing the earliest-created row, so values stay unique.
 async function nextSequence(key) {
@@ -222,6 +246,8 @@ module.exports = {
   loadConfig,
   countUsers,
   nextDailyCode,
+  riderFloat,
+  personName,
   isBrokenCode,
   nextStaffCode,
 };

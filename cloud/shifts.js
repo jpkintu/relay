@@ -6,9 +6,9 @@ const {
   getRoleName,
   readAcl,
   audit,
+  riderFloat,
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
-const { riderFloat } = require('./orders');
 
 // Opening float plus every handover this cashier confirmed since the shift began.
 async function expectedTill(cashier, shift) {

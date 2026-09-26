@@ -119,10 +119,13 @@ export function NewOrder({
   onGoToCash,
   onOpenOrder,
   preview,
+  cashBlocked = '',
 }: {
   onBack: () => void;
   onPlaced: (payload: OrderPayload) => Promise<{ id?: string; orderCode?: string } | void>;
   onGoToCash: () => void;
+  // Set when the rider is at the cash limit: explains why ordering is blocked.
+  cashBlocked?: string;
   onOpenOrder: (id: string) => void;
   preview: boolean;
 }) {
@@ -317,6 +320,12 @@ export function NewOrder({
           </button>
         )}
       </header>
+      {cashBlocked && (
+        <div className="limit-banner" role="alert">
+          <span>{cashBlocked}</span>
+          <button onClick={onGoToCash}>Hand over cash</button>
+        </div>
+      )}
 
       <section className="customer-grid">
         <CustomerField
@@ -530,7 +539,7 @@ export function NewOrder({
           {error ? (
             <span className="order-error">
               {error}
-              {error.startsWith('Hand over cash') && (
+              {/^(Hand over cash|Cash limit reached)/.test(error) && (
                 <button className="link-button" onClick={onGoToCash}>
                   Hand over cash
                 </button>
@@ -542,7 +551,7 @@ export function NewOrder({
             <span>Ready to send</span>
           )}
         </div>
-        <button disabled={!!problems.length || saving} onClick={place}>
+        <button disabled={!!problems.length || saving || !!cashBlocked} onClick={place}>
           {saving ? 'Sending…' : 'Place order'}
           <ArrowLeft className="arrow-forward" />
         </button>

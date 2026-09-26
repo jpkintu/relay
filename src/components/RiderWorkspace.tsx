@@ -17,6 +17,7 @@ import { ShiftPanel } from './ShiftPanel';
 import { BrandMark } from './BrandMark';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
+import { NotificationBell } from './NotificationBell';
 
 type LiveOrder = {
   id: string;
@@ -37,7 +38,8 @@ const sum = (rows: LiveOrder[], pick: (o: LiveOrder) => number | undefined) =>
   rows.reduce((total, o) => total + (pick(o) || 0), 0);
 
 export function RiderWorkspace() {
-  const { user, preview } = useSession();
+  const { user, preview, config } = useSession();
+  const money = useMoney();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<LiveOrder[]>([]);
   const [loadError, setLoadError] = useState('');
@@ -90,6 +92,13 @@ export function RiderWorkspace() {
         element={
           <NewOrder
             preview={preview}
+            cashBlocked={
+              !preview &&
+              cashLevel(cashHeld(orders), config.maxRiderFloat, config.floatWarningPercent) ===
+                'reached'
+                ? `Cash limit reached: you hold ${money(cashHeld(orders))} of ${money(config.maxRiderFloat)}. Hand over cash before taking new orders.`
+                : ''
+            }
             onBack={() => navigate('/rider')}
             onGoToCash={() => navigate('/rider/cash')}
             onOpenOrder={(id) => navigate(`/rider/order/${id}`)}
@@ -114,23 +123,32 @@ export function RiderWorkspace() {
   );
 }
 
+// Cash the rider still holds: delivered cash not yet reconciled.
+const cashHeld = (orders: LiveOrder[]) =>
+  sum(
+    orders.filter(
+      (o) =>
+        o.status === 'DELIVERED' && ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.cashStatus || ''),
+    ),
+    (o) => o.amountCollected,
+  );
+
+// Same rule as the server: 'reached' blocks new orders, 'near' warns.
+function cashLevel(cash: number, limit: number, warnPercent = 80): 'reached' | 'near' | null {
+  if (!(limit > 0)) return null;
+  if (cash >= limit) return 'reached';
+  return cash >= (limit * warnPercent) / 100 ? 'near' : null;
+}
+
 function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: string }) {
   const { profile, preview, config } = useSession();
   const money = useMoney();
   const navigate = useNavigate();
   const name = profile?.name || (preview ? 'Preview rider' : 'Rider');
   const inFlight = orders.filter(IN_FLIGHT);
-  const cashOnMe = preview
-    ? 0
-    : sum(
-        orders.filter(
-          (o) =>
-            o.status === 'DELIVERED' &&
-            ['WITH_RIDER', 'HANDOVER_PENDING'].includes(o.cashStatus || ''),
-        ),
-        (o) => o.amountCollected,
-      );
+  const cashOnMe = preview ? 0 : cashHeld(orders);
   const limit = config.maxRiderFloat;
+  const level = cashLevel(cashOnMe, limit, config.floatWarningPercent);
   const limitShare = limit > 0 ? Math.min(100, Math.round((cashOnMe / limit) * 100)) : 0;
   const deliveredToday = orders.filter(
     (o) => o.status === 'DELIVERED' && isToday(o.deliveredAt, config.timezone),
@@ -144,6 +162,7 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
         {config.restaurantNameSet !== false && (
           <div className="shift-live">{config.restaurantName}</div>
         )}
+        <NotificationBell />
         <button
           className="avatar-button"
           aria-label="Profile"
@@ -166,14 +185,31 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
               <em>{name.split(' ')[0]}.</em>
             </h1>
           </div>
-          <button className="new-order-hero" onClick={() => navigate('/rider/new')}>
-            <span>
-              <Plus />
-            </span>
-            <b>New order</b>
-            <small>Start a delivery ticket</small>
-            <ChevronRight />
-          </button>
+          {level === 'reached' ? (
+            <div className="limit-banner" role="alert">
+              <span>
+                <b>Cash limit reached.</b> You hold {money(cashOnMe)} of {money(limit)}. Hand over
+                cash to take new orders.
+              </span>
+              <button onClick={() => navigate('/rider/cash')}>Hand over cash</button>
+            </div>
+          ) : (
+            <>
+              {level === 'near' && (
+                <p className="limit-note">
+                  You hold {money(cashOnMe)} of your {money(limit)} limit. Hand over cash soon.
+                </p>
+              )}
+              <button className="new-order-hero" onClick={() => navigate('/rider/new')}>
+                <span>
+                  <Plus />
+                </span>
+                <b>New order</b>
+                <small>Start a delivery ticket</small>
+                <ChevronRight />
+              </button>
+            </>
+          )}
         </section>
         <section className="metric-grid">
           <article className="metric-card cash">
@@ -372,6 +408,7 @@ function RiderSubPage({
         <div>
           <h2>{TITLES[screen]}</h2>
         </div>
+        <NotificationBell />
       </header>
       <div className="subpage-content">
         {message && <p className="ops-error">{message}</p>}
