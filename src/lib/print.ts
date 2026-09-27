@@ -13,6 +13,8 @@ export type PrintKind = 'kitchen' | 'receipt';
 
 type Receipt = {
   restaurant: string;
+  // The restaurant's logo URL (Settings), '' when none.
+  logo?: string;
   header: string;
   footer: string;
   width: number;
@@ -79,6 +81,8 @@ function styles(width: number) {
     .note { font-weight: 700; }
     .sub { font-size: 0.9em; padding-left: 2mm; }
     .total td { font-weight: 700; font-size: 1.15em; padding-top: 1mm; }
+    .logo { display: block; margin: 0 auto 2mm; max-width: 60%; max-height: 24mm;
+      object-fit: contain; filter: grayscale(1) contrast(1.2); }
     .stamp { border: 2px solid #000; text-align: center; font-weight: 700; padding: 1mm; margin: 2mm 0; }
   `;
 }
@@ -129,6 +133,7 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string) {
           ? 'PAY ON DELIVERY (cash)'
           : `PAYMENT BEING CHECKED · ${method}`;
   return `
+    ${r.logo ? `<img class="logo" src="${escape(r.logo)}" alt="">` : ''}
     <h1>${escape(r.restaurant)}</h1>
     ${r.header ? `<div class="center muted">${lines(r.header)}</div>` : ''}
     <hr>
@@ -183,6 +188,21 @@ export async function printOrder(
     )}</style></head><body>${body}</body></html>`,
   );
   doc.close();
+  // Let the logo load before printing (at most 3 s, so a slow link never
+  // holds up the ticket).
+  await Promise.race([
+    Promise.all(
+      Array.from(doc.images).map(
+        (image) =>
+          image.complete ||
+          new Promise((resolve) => {
+            image.onload = resolve;
+            image.onerror = resolve;
+          }),
+      ),
+    ),
+    new Promise((resolve) => window.setTimeout(resolve, 3000)),
+  ]);
   await new Promise((resolve) => window.setTimeout(resolve, 150));
   frame.contentWindow!.focus();
   frame.contentWindow!.print();

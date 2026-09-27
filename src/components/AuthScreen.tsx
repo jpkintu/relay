@@ -4,6 +4,7 @@ import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
 import { useSession } from '../lib/session';
 import { BrandMark } from './BrandMark';
+import { RestaurantBadge } from './RestaurantBadge';
 
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
@@ -77,9 +78,17 @@ export function AuthScreen() {
       <section className="auth-panel">
         <div className="login-card">
           <BrandMark className="mobile-brand" />
-          <p className="eyebrow">
-            {creating ? 'Restaurant setup' : appInfo.restaurantName || 'Shift access'}
-          </p>
+          {creating ? (
+            <p className="eyebrow">Restaurant setup</p>
+          ) : appInfo.restaurantLogo ? (
+            <RestaurantBadge
+              className="login-restaurant"
+              name={appInfo.restaurantName}
+              logo={appInfo.restaurantLogo}
+            />
+          ) : (
+            <p className="eyebrow">{appInfo.restaurantName || 'Shift access'}</p>
+          )}
           <h2>{creating ? 'Create owner account.' : 'Welcome back.'}</h2>
           <p className="muted">
             {creating

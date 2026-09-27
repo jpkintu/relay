@@ -29,6 +29,7 @@ import { AuditLog } from './AuditLog';
 import { ZReportPage } from './reports/ZReport';
 import { BrandMark } from './BrandMark';
 import { useConfig, useSession } from '../lib/session';
+import { RestaurantBadge } from './RestaurantBadge';
 import { formatDate } from '../lib/format';
 import { useDevice } from '../lib/device';
 import { NotificationBell } from './NotificationBell';
@@ -50,7 +51,7 @@ type Section = (typeof NAV)[number][1];
 
 export function AdminWorkspace() {
   const { preview, logout } = useSession();
-  const { timezone, restaurantNameSet } = useConfig();
+  const { timezone, restaurantNameSet, restaurantName, restaurantLogo } = useConfig();
   const navigate = useNavigate();
   const device = useDevice();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -99,7 +100,7 @@ export function AdminWorkspace() {
     <main className="admin-shell">
       <aside className={menuOpen && compact ? 'admin-side menu-open' : 'admin-side'}>
         <BrandMark onDark />
-        <p>Restaurant operations</p>
+        <RestaurantBadge className="admin-restaurant" name={restaurantName} logo={restaurantLogo} />
         {compact && (
           <button
             className="admin-menu-toggle"

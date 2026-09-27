@@ -9,6 +9,8 @@ export type Role = 'admin' | 'cashier' | 'rider';
 
 export type AppConfig = {
   restaurantName: string;
+  // The restaurant's own logo (Settings), '' when none.
+  restaurantLogo?: string;
   currencySymbol: string;
   currencyCode: string;
   timezone: string;
@@ -46,6 +48,7 @@ export type Profile = {
 
 export type AppInfo = {
   restaurantName: string;
+  restaurantLogo?: string;
   currencySymbol: string;
   currencyCode: string;
   timezone: string;
