@@ -899,6 +899,42 @@ describe('ledgers, earnings and reports', () => {
     await rejects(run('adminSearchOrders', range, s.cashier), /admin role required/);
   });
 
+  test('admin order search filters by channel and cash status, and pages', async () => {
+    const everything = await all();
+    const result = await run('adminSearchOrders', range, s.owner);
+    assert.deepEqual(
+      [result.page, result.pages, result.pageSize, result.totalRows],
+      [0, 1, 2000, everything.length],
+    );
+    for (const channel of new Set(everything.map((o) => o.get('channel')).filter(Boolean))) {
+      const byChannel = await run('adminSearchOrders', { ...range, channel }, s.owner);
+      assert.equal(
+        byChannel.totalRows,
+        everything.filter((o) => o.get('channel') === channel).length,
+        channel,
+      );
+      assert.ok(byChannel.rows.every((r) => r.channel === channel));
+    }
+    const reconciled = await run(
+      'adminSearchOrders',
+      { ...range, cashStatus: 'RECONCILED' },
+      s.owner,
+    );
+    assert.equal(
+      reconciled.totalRows,
+      everything.filter((o) => o.get('cashStatus') === 'RECONCILED').length,
+    );
+    const beyond = await run('adminSearchOrders', { ...range, page: 1 }, s.owner);
+    assert.equal(beyond.rows.length, 0, 'past the last page is empty');
+    assert.equal(beyond.summary.orders, everything.length, 'the summary covers every match');
+    await rejects(run('adminSearchOrders', { ...range, channel: 'fax' }, s.owner), /channel/);
+    await rejects(
+      run('adminSearchOrders', { ...range, cashStatus: 'LOST' }, s.owner),
+      /cash status/,
+    );
+    await rejects(run('adminSearchOrders', { ...range, page: -1 }, s.owner), /page/);
+  });
+
   test('the commission ledger totals per rider', async () => {
     const delivered = await all((q) => q.equalTo('status', 'DELIVERED'));
     const ledger = await run('getCommissionLedger', range, s.owner);

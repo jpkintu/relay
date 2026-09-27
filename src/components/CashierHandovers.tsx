@@ -34,7 +34,8 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     [payNow, setPayNow] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [search, setSearch] = useState('');
   const load = useCallback(async () => {
     if (preview) return;
     try {
@@ -162,6 +163,11 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     }
   };
   const current = rows.find((h) => h.id === selected);
+  // Search by handover code (HO-…) or rider code / name (R-001 · Rita).
+  const needle = search.trim().toLowerCase();
+  const shown = needle
+    ? rows.filter((h) => `${h.code} ${h.rider}`.toLowerCase().includes(needle))
+    : rows;
   const tickedTotal = current
     ? current.orders.filter((o) => received.includes(o.id)).reduce((n, o) => n + o.amount, 0)
     : 0;
@@ -184,7 +190,17 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
           Cash handovers require signed-in riders and cashiers. Demo orders do not move real cash.
         </p>
       )}
-      {rows.map((row) => (
+      {rows.length > 0 && (
+        <input
+          className="admin-filter compact handover-search"
+          type="search"
+          placeholder="Search rider code, name or handover code"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Search handovers"
+        />
+      )}
+      {shown.map((row) => (
         <article
           className={hoursWaiting(row.createdAt) >= STALE_HOURS ? 'handover stale' : 'handover'}
           key={row.id}
@@ -216,6 +232,9 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
       ))}
       {!rows.length && !preview && (
         <p className="empty-orders">No handovers waiting for confirmation.</p>
+      )}
+      {rows.length > 0 && !shown.length && (
+        <p className="empty-orders">No waiting handover matches “{search.trim()}”.</p>
       )}
       {current && (
         <div className="cash-modal-backdrop">

@@ -9686,6 +9686,17 @@ var require_reports2 = __commonJS({
       };
     });
     var ORDER_STATUSES = ["open", "DELIVERED", "CANCELLED", "PICKED_UP"];
+    var ORDER_CHANNELS = ["walkin", "phone", "whatsapp", "other"];
+    var CASH_STATUSES = [
+      "NOT_COLLECTED",
+      "WITH_RIDER",
+      "HANDOVER_PENDING",
+      "RECONCILED",
+      "IN_TILL",
+      "UNPAID",
+      "REFUNDED",
+      "NOT_APPLICABLE"
+    ];
     Parse.Cloud.define("adminSearchOrders", async (request) => {
       await requireRole(request, ["admin"]);
       const p = request.params;
@@ -9700,12 +9711,27 @@ var require_reports2 = __commonJS({
           query.containedIn("status", ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"]);
         else query.equalTo("status", p.status);
       }
+      if (p.channel) {
+        if (!ORDER_CHANNELS.includes(p.channel)) throw invalid("Unknown channel filter");
+        query.equalTo("channel", p.channel);
+      }
+      if (p.cashStatus) {
+        if (!CASH_STATUSES.includes(p.cashStatus)) throw invalid("Unknown cash status filter");
+        query.equalTo("cashStatus", p.cashStatus);
+      }
+      const page = Number(p.page ?? 0);
+      if (!Number.isInteger(page) || page < 0) throw invalid("Invalid page");
       const facts = (await findAll(query)).map(factOf).sort(byNewest("createdAt"));
+      const pages = Math.max(1, Math.ceil(facts.length / MAX_ROWS));
       return {
         range: rangeInfo(range),
         summary: R.summarize(facts),
-        rows: facts.slice(0, MAX_ROWS).map(({ customerKey: _key, ...row }) => row),
-        truncated: facts.length > MAX_ROWS
+        rows: facts.slice(page * MAX_ROWS, (page + 1) * MAX_ROWS).map(({ customerKey: _key, ...row }) => row),
+        page,
+        pages,
+        pageSize: MAX_ROWS,
+        totalRows: facts.length,
+        truncated: page + 1 < pages
       };
     });
     var PAID_FILTERS = ["all", "paid", "owed"];
