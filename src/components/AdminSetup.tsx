@@ -64,6 +64,10 @@ type Settings = {
   moduleRiderOrders?: boolean;
   moduleCallIn?: boolean;
   moduleCounter?: boolean;
+  receiptWidth?: number;
+  receiptHeader?: string;
+  receiptFooter?: string;
+  autoPrintKitchen?: boolean;
 };
 const input = (
   label: string,
@@ -727,6 +731,55 @@ export function AdminSetup({
               (v) => setSettings((p) => ({ ...p, zReportHour: Number(v) })),
               'number',
             )}
+            <div className="full-row merchant-settings receipts">
+              <p className="setup-field-label">Printed receipts</p>
+              <p className="muted">
+                Kitchen tickets and customer receipts print from the kitchen board and after a
+                counter order. Choose the receipt printer in the print dialog once; the browser
+                remembers it.
+              </p>
+              <label className="setup-field">
+                Paper width
+                <select
+                  value={settings.receiptWidth ?? 80}
+                  onChange={(e) =>
+                    setSettings((p) => ({ ...p, receiptWidth: Number(e.target.value) }))
+                  }
+                >
+                  <option value={80}>80 mm (most receipt printers)</option>
+                  <option value={58}>58 mm (small printers)</option>
+                </select>
+              </label>
+              <label className="setup-field">
+                Bottom line
+                <input
+                  value={settings.receiptFooter ?? ''}
+                  maxLength={200}
+                  onChange={(e) => setSettings((p) => ({ ...p, receiptFooter: e.target.value }))}
+                  placeholder="e.g. Thank you! Follow us @mamarose"
+                />
+              </label>
+              <label className="setup-field full-row">
+                Under the restaurant name (address, phone, TIN…)
+                <textarea
+                  rows={2}
+                  maxLength={300}
+                  value={settings.receiptHeader ?? ''}
+                  onChange={(e) => setSettings((p) => ({ ...p, receiptHeader: e.target.value }))}
+                  placeholder={'Plot 12 Kampala Road\nTel 0772 000000'}
+                />
+              </label>
+              <label className="setup-checkbox full-row">
+                <input
+                  type="checkbox"
+                  checked={!!settings.autoPrintKitchen}
+                  onChange={(e) =>
+                    setSettings((p) => ({ ...p, autoPrintKitchen: e.target.checked }))
+                  }
+                />{' '}
+                Print the kitchen ticket as soon as a counter order is placed
+              </label>
+            </div>
             <div className="full-row merchant-settings modules">
               <p className="setup-field-label">How this restaurant takes orders</p>
               <p className="muted">Switch on the ways orders come in. At least one must stay on.</p>

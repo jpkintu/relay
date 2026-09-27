@@ -36,6 +36,12 @@ const DEFAULT_CONFIG = {
   moduleRiderOrders: true,
   moduleCallIn: false,
   moduleCounter: false,
+  // Printed receipts: paper width in mm (58 or 80), text above and below.
+  receiptWidth: 80,
+  receiptHeader: '',
+  receiptFooter: 'Thank you!',
+  // Open the print dialog for the kitchen ticket when a counter order is placed.
+  autoPrintKitchen: false,
   // Where the map opens (the restaurant); Kampala until the owner pins it.
   restaurantLat: 0.3476,
   restaurantLng: 32.5825,

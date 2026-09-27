@@ -173,6 +173,12 @@ var require_core = __commonJS({
       moduleRiderOrders: true,
       moduleCallIn: false,
       moduleCounter: false,
+      // Printed receipts: paper width in mm (58 or 80), text above and below.
+      receiptWidth: 80,
+      receiptHeader: "",
+      receiptFooter: "Thank you!",
+      // Open the print dialog for the kitchen ticket when a counter order is placed.
+      autoPrintKitchen: false,
       // Where the map opens (the restaurant); Kampala until the owner pins it.
       restaurantLat: 0.3476,
       restaurantLng: 32.5825
@@ -705,7 +711,11 @@ var require_security = __commonJS({
         restaurantLng: N,
         moduleRiderOrders: B,
         moduleCallIn: B,
-        moduleCounter: B
+        moduleCounter: B,
+        receiptWidth: N,
+        receiptHeader: S,
+        receiptFooter: S,
+        autoPrintKitchen: B
       },
       MenuItem: {
         title: S,
@@ -11737,6 +11747,53 @@ var require_counter = __commonJS({
         (a, b) => Number(b.onShift && b.available) - Number(a.onShift && a.available) || a.name.localeCompare(b.name)
       );
     });
+    Parse.Cloud.define("getReceipt", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const query = new Parse.Query("Order");
+      query.include(["createdBy", "placedBy", "cashier", "tillCashier"]);
+      const order = await query.get(idOf(request.params.orderId) || "none", MASTER);
+      const items = await new Parse.Query("OrderItem").equalTo("order", order).limit(200).find(MASTER);
+      const { values: config } = await loadConfig();
+      const type = order.get("orderType") || "delivery";
+      const method = order.get("paymentMethod");
+      const paid = order.get("billOpen") ? "unpaid" : method === "cash" ? ["IN_TILL", "RECONCILED"].includes(order.get("cashStatus")) ? "paid" : "on_delivery" : order.get("paymentStatus") === "VERIFIED" ? "paid" : "checking";
+      return {
+        restaurant: config.restaurantName,
+        header: config.receiptHeader || "",
+        footer: config.receiptFooter || "",
+        width: Number(config.receiptWidth) === 58 ? 58 : 80,
+        code: order.get("orderCode"),
+        type,
+        status: order.get("status"),
+        table: order.get("tableLabel") || "",
+        channel: order.get("channel") || "",
+        placedAt: order.createdAt,
+        customer: order.get("customerName") || "",
+        phone: order.get("customerPhone") || "",
+        address: type === "delivery" ? order.get("deliveryAddress") || "" : "",
+        notes: order.get("deliveryNotes") || "",
+        rider: order.get("createdBy") ? personName(order.get("createdBy")) : "",
+        staff: personName(order.get("tillCashier") || order.get("placedBy") || order.get("cashier")),
+        lines: items.map((item) => ({
+          name: item.get("itemNameSnapshot"),
+          qty: item.get("quantity"),
+          price: item.get("unitPriceSnapshot"),
+          total: item.get("lineTotal"),
+          notes: item.get("notes") || "",
+          accompaniments: item.get("accompanimentNames") || []
+        })),
+        subtotal: Number(order.get("subtotal") || 0),
+        deliveryFee: Number(order.get("deliveryFee") || 0),
+        total: Number(order.get("total") || 0),
+        payment: {
+          method,
+          provider: order.get("paymentProvider") || "",
+          reference: order.get("paymentReference") || "",
+          state: paid,
+          paidAt: order.get("paidAt") || null
+        }
+      };
+    });
     module2.exports = { modulesOf, COUNTER_TYPES };
   }
 });
@@ -12968,7 +13025,11 @@ var require_admin = __commonJS({
         restaurantLng: place.location.lng,
         moduleRiderOrders: (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
         moduleCallIn: (p.moduleCallIn ?? current.moduleCallIn) === true,
-        moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true
+        moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true,
+        receiptWidth: Number(p.receiptWidth ?? current.receiptWidth) === 58 ? 58 : 80,
+        receiptHeader: merchantField(p.receiptHeader ?? current.receiptHeader, 300),
+        receiptFooter: merchantField(p.receiptFooter ?? current.receiptFooter, 200),
+        autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -13443,6 +13504,12 @@ var require_profile = __commonJS({
         commissionRounding: values.commissionRounding,
         requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
         floatWarningPercent: values.floatWarningPercent,
+        receipt: {
+          width: Number(values.receiptWidth) === 58 ? 58 : 80,
+          header: values.receiptHeader || "",
+          footer: values.receiptFooter || "",
+          autoPrintKitchen: values.autoPrintKitchen === true
+        },
         modules: {
           riderOrders: values.moduleRiderOrders !== false,
           callIn: values.moduleCallIn === true,

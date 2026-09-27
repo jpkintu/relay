@@ -344,4 +344,61 @@ Parse.Cloud.define('getAssignableRiders', async (request) => {
     );
 });
 
+// Staff: what to print for one order (kitchen ticket or customer receipt).
+Parse.Cloud.define('getReceipt', async (request) => {
+  await requireRole(request, ['cashier', 'admin']);
+  const query = new Parse.Query('Order');
+  query.include(['createdBy', 'placedBy', 'cashier', 'tillCashier']);
+  const order = await query.get(idOf(request.params.orderId) || 'none', MASTER);
+  const items = await new Parse.Query('OrderItem').equalTo('order', order).limit(200).find(MASTER);
+  const { values: config } = await loadConfig();
+  const type = order.get('orderType') || 'delivery';
+  const method = order.get('paymentMethod');
+  const paid = order.get('billOpen')
+    ? 'unpaid'
+    : method === 'cash'
+      ? ['IN_TILL', 'RECONCILED'].includes(order.get('cashStatus'))
+        ? 'paid'
+        : 'on_delivery'
+      : order.get('paymentStatus') === 'VERIFIED'
+        ? 'paid'
+        : 'checking';
+  return {
+    restaurant: config.restaurantName,
+    header: config.receiptHeader || '',
+    footer: config.receiptFooter || '',
+    width: Number(config.receiptWidth) === 58 ? 58 : 80,
+    code: order.get('orderCode'),
+    type,
+    status: order.get('status'),
+    table: order.get('tableLabel') || '',
+    channel: order.get('channel') || '',
+    placedAt: order.createdAt,
+    customer: order.get('customerName') || '',
+    phone: order.get('customerPhone') || '',
+    address: type === 'delivery' ? order.get('deliveryAddress') || '' : '',
+    notes: order.get('deliveryNotes') || '',
+    rider: order.get('createdBy') ? personName(order.get('createdBy')) : '',
+    staff: personName(order.get('tillCashier') || order.get('placedBy') || order.get('cashier')),
+    lines: items.map((item) => ({
+      name: item.get('itemNameSnapshot'),
+      qty: item.get('quantity'),
+      price: item.get('unitPriceSnapshot'),
+      total: item.get('lineTotal'),
+      notes: item.get('notes') || '',
+      accompaniments: item.get('accompanimentNames') || [],
+    })),
+    subtotal: Number(order.get('subtotal') || 0),
+    deliveryFee: Number(order.get('deliveryFee') || 0),
+    total: Number(order.get('total') || 0),
+    payment: {
+      method,
+      provider: order.get('paymentProvider') || '',
+      reference: order.get('paymentReference') || '',
+      state: paid,
+      paidAt: order.get('paidAt') || null,
+    },
+  };
+});
+
 module.exports = { modulesOf, COUNTER_TYPES };

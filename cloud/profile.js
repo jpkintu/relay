@@ -25,6 +25,12 @@ function publicConfig(values) {
     commissionRounding: values.commissionRounding,
     requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
     floatWarningPercent: values.floatWarningPercent,
+    receipt: {
+      width: Number(values.receiptWidth) === 58 ? 58 : 80,
+      header: values.receiptHeader || '',
+      footer: values.receiptFooter || '',
+      autoPrintKitchen: values.autoPrintKitchen === true,
+    },
     modules: {
       riderOrders: values.moduleRiderOrders !== false,
       callIn: values.moduleCallIn === true,
