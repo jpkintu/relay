@@ -151,6 +151,15 @@ function countUsers() {
   return query.count(MASTER);
 }
 
+// Every row a query matches, fetched 1,000 at a time, so totals are never cut
+// off at a row limit. The query must not set a sort, skip or limit (sort the
+// result in memory instead).
+async function findAll(query, options = MASTER) {
+  const rows = [];
+  await query.eachBatch((batch) => void rows.push(...batch), { ...options, batchSize: 1000 });
+  return rows;
+}
+
 // Cash the rider is still accountable for: delivered cash orders that have
 // not been reconciled. Derived from orders, never stored.
 async function riderFloat(rider) {
@@ -158,8 +167,7 @@ async function riderFloat(rider) {
   query.equalTo('createdBy', rider);
   query.equalTo('status', 'DELIVERED');
   query.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
-  query.limit(1000);
-  const orders = await query.find(MASTER);
+  const orders = await findAll(query);
   return orders.reduce((sum, order) => sum + (Number(order.get('amountCollected')) || 0), 0);
 }
 
@@ -383,6 +391,7 @@ const isBrokenCode = (code) => typeof code === 'string' && /object|undefined|NaN
 
 module.exports = {
   MASTER,
+  findAll,
   DEFAULT_CONFIG,
   forbidden,
   invalid,

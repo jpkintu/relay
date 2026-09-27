@@ -267,13 +267,17 @@ var require_core = __commonJS({
       query.exists("username");
       return query.count(MASTER);
     }
+    async function findAll(query, options = MASTER) {
+      const rows = [];
+      await query.eachBatch((batch) => void rows.push(...batch), { ...options, batchSize: 1e3 });
+      return rows;
+    }
     async function riderFloat(rider) {
       const query = new Parse.Query("Order");
       query.equalTo("createdBy", rider);
       query.equalTo("status", "DELIVERED");
       query.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
-      query.limit(1e3);
-      const orders = await query.find(MASTER);
+      const orders = await findAll(query);
       return orders.reduce((sum, order) => sum + (Number(order.get("amountCollected")) || 0), 0);
     }
     function withRiderLimit(config, rider) {
@@ -431,6 +435,7 @@ var require_core = __commonJS({
     var isBrokenCode = (code) => typeof code === "string" && /object|undefined|NaN/.test(code);
     module2.exports = {
       MASTER,
+      findAll,
       DEFAULT_CONFIG,
       forbidden,
       invalid,
@@ -794,8 +799,7 @@ var require_security = __commonJS({
       pinLockedUntil: D,
       payRound: N,
       available: B,
-      maxFloat: N,
-      payoutRequestedAt: D
+      maxFloat: N
     };
     async function applySchemas() {
       const existing = new Map((await Parse.Schema.all()).map((schema) => [schema.className, schema]));
@@ -8355,7 +8359,7 @@ var require_push = __commonJS({
   "cloud/push.js"(exports2, module2) {
     "use strict";
     var webpush = require_src2();
-    var { MASTER, invalid, requireUser } = require_core();
+    var { MASTER, invalid, requireUser, findAll } = require_core();
     var PUSH_HOST_SUFFIXES = [
       "fcm.googleapis.com",
       "android.googleapis.com",
@@ -8445,8 +8449,7 @@ var require_push = __commonJS({
           "user",
           [...byUser.keys()].map((id) => Parse.User.createWithoutData(id))
         );
-        query.limit(1e3);
-        const subs = await query.find(MASTER);
+        const subs = await findAll(query);
         if (!subs.length) return 0;
         const keys = await vapidKeys();
         const options = {
@@ -8575,10 +8578,11 @@ var require_payouts = __commonJS({
       claimOnce,
       verifyPin,
       personName,
-      getRoleName
+      getRoleName,
+      findAll
     } = require_core();
     var { sumBy, orderRiderPay } = require_money();
-    var { money, notifyUser, notifyAdmins, notifyStaff } = require_notifications();
+    var { money, notifyUser, notifyAdmins } = require_notifications();
     var { resolveRange } = require_dates();
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var feeOf = (order) => order.get("deliveryPay") ?? order.get("deliveryFee") ?? 0;
@@ -8589,16 +8593,11 @@ var require_payouts = __commonJS({
       orderQuery.equalTo("createdBy", rider);
       orderQuery.equalTo("status", "DELIVERED");
       orderQuery.notEqualTo("commissionPaid", true);
-      orderQuery.ascending("deliveredAt");
-      orderQuery.limit(1e3);
       const shortageQuery = new Parse.Query("CashHandover");
       shortageQuery.equalTo("rider", rider);
       shortageQuery.equalTo("shortageStatus", "owed");
-      shortageQuery.limit(200);
-      const [delivered, shortages] = await Promise.all([
-        orderQuery.find(MASTER),
-        shortageQuery.find(MASTER)
-      ]);
+      const [unsorted, shortages] = await Promise.all([findAll(orderQuery), findAll(shortageQuery)]);
+      const delivered = unsorted.sort((a, b) => a.get("deliveredAt") - b.get("deliveredAt"));
       const orders = delivered.filter((order) => payOwed(order) > 0);
       const earned = sumBy(orders, payOwed);
       const deliveryFees = sumBy(orders, feeOwed);
@@ -8629,7 +8628,7 @@ var require_payouts = __commonJS({
     Parse.Cloud.define("getRiderPay", async (request) => {
       await requireRole(request, ["cashier", "admin"]);
       const role = await new Parse.Query(Parse.Role).equalTo("name", "rider").first(MASTER);
-      const riders = role ? await role.getUsers().query().limit(500).find(MASTER) : [];
+      const riders = role ? await findAll(role.getUsers().query()) : [];
       const rows = await Promise.all(
         riders.map(async (rider) => {
           const state = await riderPayState(rider);
@@ -8642,8 +8641,7 @@ var require_payouts = __commonJS({
             commission: state.earned - state.deliveryFees,
             deliveryFees: state.deliveryFees,
             deductions: state.deductions,
-            owed: state.owed,
-            requestedAt: rider.get("payoutRequestedAt") || null
+            owed: state.owed
           };
         })
       );
@@ -8659,31 +8657,8 @@ var require_payouts = __commonJS({
         deliveryFees: state.deliveryFees,
         deductions: state.deductions,
         owed: state.owed,
-        requestedAt: (await rider.fetch(MASTER)).get("payoutRequestedAt") || null,
         payouts: payouts.map(payoutJSON)
       };
-    });
-    var REQUEST_GAP_MS = 30 * 6e4;
-    Parse.Cloud.define("requestPayout", async (request) => {
-      const { user } = await requireRole(request, ["rider"]);
-      const rider = await new Parse.Query(Parse.User).get(user.id, MASTER);
-      const state = await riderPayState(rider);
-      if (state.owed <= 0) throw invalid("Nothing is owed to you right now");
-      const last = rider.get("payoutRequestedAt");
-      if (last && Date.now() - last.getTime() < REQUEST_GAP_MS)
-        throw invalid("You already asked. The cashier has been told");
-      const { values: config } = await loadConfig();
-      rider.set("payoutRequestedAt", /* @__PURE__ */ new Date());
-      await rider.save(null, MASTER);
-      await audit(rider, "payout.requested", rider, null, { owed: state.owed });
-      await notifyStaff({
-        kind: "payout.requested",
-        tone: "alert",
-        title: `${personName(rider)} asks to be paid`,
-        body: `${money(config, state.owed)} owed for ${state.orders.length} ${state.orders.length === 1 ? "delivery" : "deliveries"}. Pay from Payouts.`,
-        link: "/cashier/payouts"
-      });
-      return { requestedAt: rider.get("payoutRequestedAt"), owed: state.owed };
     });
     async function newPayout(fields, config) {
       const row = new Parse.Object("TillPayout");
@@ -8702,7 +8677,6 @@ var require_payouts = __commonJS({
       const round = Number(rider.get("payRound") || 0);
       if (!await claimOnce(`pay-rider:${rider.id}:${round}`))
         throw invalid("This rider is already being paid. Refresh in a moment");
-      let paid = false;
       try {
         const state = await riderPayState(rider);
         const orders = (orderIds ? state.orders.filter((order) => orderIds.includes(order.id)) : state.orders).filter((order) => !feesOnly || feeOwed(order) > 0);
@@ -8758,10 +8732,8 @@ var require_payouts = __commonJS({
           )} delivery fees)${deductions ? ` less ${money(config, deductions)} shortage` : ""}`} \xB7 paid by ${personName(await actor.fetch(MASTER))}`,
           link: "/rider/earnings"
         });
-        paid = true;
         return { id: row.id, amount, deliveries: orders.length };
       } finally {
-        if (paid && !feesOnly && rider.has("payoutRequestedAt")) rider.unset("payoutRequestedAt");
         rider.increment("payRound");
         await rider.save(null, MASTER);
       }
@@ -8811,9 +8783,7 @@ var require_payouts = __commonJS({
         query.equalTo("shift", shift);
       }
       query.include(["rider", "paidBy"]);
-      query.descending("paidAt");
-      query.limit(500);
-      const payouts = (await query.find(MASTER)).map(payoutJSON);
+      const payouts = (await findAll(query)).sort((a, b) => b.get("paidAt") - a.get("paidAt")).map(payoutJSON);
       return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
     });
     module2.exports = { riderPayState, payOut, payoutJSON, payOwed };
@@ -8836,7 +8806,8 @@ var require_cash = __commonJS({
       requireCashierShift,
       claimOnce,
       verifyPin,
-      personName
+      personName,
+      findAll
     } = require_core();
     var { sumBy } = require_money();
     var { money, notifyUser, notifyStaff, notifyAdmins } = require_notifications();
@@ -9137,8 +9108,7 @@ var require_cash = __commonJS({
       query.equalTo("status", "DELIVERED");
       query.equalTo("cashStatus", "WITH_RIDER");
       if (Array.isArray(p.orderIds)) query.containedIn("objectId", p.orderIds.map(String));
-      query.limit(500);
-      const [orders, { values: config }] = await Promise.all([query.find(MASTER), loadConfig()]);
+      const [orders, { values: config }] = await Promise.all([findAll(query), loadConfig()]);
       if (!orders.length) throw invalid("This rider holds no cash to receive");
       await claimOrders(orders);
       const row = await newHandover({ rider, orders, config, notes: note, cashier: actor });
@@ -9194,9 +9164,7 @@ var require_cash = __commonJS({
       const query = new Parse.Query("CashHandover");
       query.equalTo("status", "pending");
       query.include("rider");
-      query.ascending("handedOverAt");
-      query.limit(200);
-      return query.find(MASTER);
+      return (await findAll(query)).sort((a, b) => a.get("handedOverAt") - b.get("handedOverAt"));
     }
     var STALE_CHECK_MS = Number(process.env.RELAY_STALE_CHECK_MS ?? 18e4);
     var lastStaleCheck = 0;
@@ -9465,7 +9433,7 @@ var require_mobileMoney = __commonJS({
 var require_reports2 = __commonJS({
   "cloud/reports.js"(exports2, module2) {
     "use strict";
-    var { MASTER, invalid, requireRole, loadConfig } = require_core();
+    var { invalid, requireRole, loadConfig, findAll } = require_core();
     var { merchantAccounts } = require_mobileMoney();
     var { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require_dates();
     var R = require_reports();
@@ -9474,11 +9442,6 @@ var require_reports2 = __commonJS({
     var MAX_ROWS = 2e3;
     var PERIODS = ["day", "week", "month"];
     var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
-    async function findAll(query) {
-      const rows = [];
-      await query.eachBatch((batch) => void rows.push(...batch), { ...MASTER, batchSize: 1e3 });
-      return rows;
-    }
     function rangeOf(params, config, options) {
       const range = resolveRange(params, config.timezone, options);
       if (range.error) throw invalid(range.error);
@@ -9550,9 +9513,9 @@ var require_reports2 = __commonJS({
       await requireRole(request, ["cashier", "admin"]);
       const query = new Parse.Query(Parse.User);
       query.exists("riderCode");
-      query.ascending("riderCode");
-      query.limit(1e3);
-      const riders = await query.find(MASTER);
+      const riders = (await findAll(query)).sort(
+        (a, b) => String(a.get("riderCode")).localeCompare(String(b.get("riderCode")))
+      );
       return {
         riders: riders.map((user) => ({
           id: user.id,
@@ -10424,7 +10387,8 @@ var require_notifications = __commonJS({
       readAcl,
       riderFloat,
       withRiderLimit,
-      personName
+      personName,
+      findAll
     } = require_core();
     var { floatLevel, handoverReminderDue } = require_alerts();
     var { dateKey, localClock } = require_dates();
@@ -10434,9 +10398,7 @@ var require_notifications = __commonJS({
       const query = new Parse.Query(Parse.Role);
       query.containedIn("name", names);
       const roles = await query.find(MASTER);
-      const lists = await Promise.all(
-        roles.map((role) => role.getUsers().query().limit(1e3).find(MASTER))
-      );
+      const lists = await Promise.all(roles.map((role) => findAll(role.getUsers().query())));
       const byId = /* @__PURE__ */ new Map();
       for (const user of lists.flat()) if (user.get("active") !== false) byId.set(user.id, user);
       return [...byId.values()];
@@ -10565,8 +10527,7 @@ var require_notifications = __commonJS({
         if (!ids.length) return { updated: 0 };
         query.containedIn("objectId", ids.slice(0, 200));
       }
-      query.limit(500);
-      const rows = await query.find(MASTER);
+      const rows = await findAll(query);
       const now = /* @__PURE__ */ new Date();
       rows.forEach((row) => row.set("readAt", now));
       if (rows.length) await Parse.Object.saveAll(rows, MASTER);
@@ -10703,7 +10664,8 @@ var require_payments = __commonJS({
       audit,
       loadConfig,
       requireCashierShift,
-      takeOrder
+      takeOrder,
+      findAll
     } = require_core();
     var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
     var { dateKey } = require_dates();
@@ -10855,17 +10817,15 @@ var require_payments = __commonJS({
       const pendingQuery = new Parse.Query("Order");
       pendingQuery.equalTo("paymentStatus", PENDING);
       pendingQuery.include(["createdBy"]);
-      pendingQuery.ascending("createdAt");
-      pendingQuery.limit(500);
       const checkedQuery = new Parse.Query("Order");
       checkedQuery.containedIn("paymentStatus", ["VERIFIED", "REJECTED"]);
       checkedQuery.greaterThanOrEqualTo("paymentCheckedAt", new Date(Date.now() - 48 * 3600 * 1e3));
       checkedQuery.include(["createdBy", "paymentCheckedBy"]);
-      checkedQuery.descending("paymentCheckedAt");
-      checkedQuery.limit(1e3);
       const [pending, checked] = await Promise.all([
-        pendingQuery.find(MASTER),
-        checkedQuery.find(MASTER)
+        findAll(pendingQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
+        findAll(checkedQuery).then(
+          (rows) => rows.sort((a, b) => b.get("paymentCheckedAt") - a.get("paymentCheckedAt"))
+        )
       ]);
       const today = dateKey(/* @__PURE__ */ new Date(), config.timezone);
       const checkedToday = checked.filter(
@@ -10989,7 +10949,8 @@ var require_orders = __commonJS({
       personName,
       requireCashierShift,
       takeOrder,
-      withRiderLimit
+      withRiderLimit,
+      findAll
     } = require_core();
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
@@ -10998,6 +10959,7 @@ var require_orders = __commonJS({
     var { checkMobileMoney, PENDING } = require_payments();
     var { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require_notifications();
     var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
+    var PINNED_ONLY = "Pinned on the map";
     var PAYMENT_METHODS = ["cash", "mobile_money", "card", "prepaid"];
     var MAX_LINES = 30;
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
@@ -11096,8 +11058,9 @@ var require_orders = __commonJS({
       const pin = cleanLocation(p.location);
       if (pin.error) throw invalid(pin.error);
       const customerName = clean(p.customerName, 80);
-      const deliveryAddress = clean(p.deliveryAddress, 200);
-      if (!customerName || !deliveryAddress) throw invalid("Customer and address are required");
+      if (!customerName) throw invalid("Customer name is required");
+      const deliveryAddress = clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : "");
+      if (!deliveryAddress) throw invalid("Add a delivery address or pin it on the map");
       const channel = p.channel || "walkin";
       const paymentMethod = p.paymentMethod || "cash";
       if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
@@ -11105,11 +11068,10 @@ var require_orders = __commonJS({
       const activeQuery = new Parse.Query("Order");
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
-      activeQuery.limit(200);
       const [lines, { values: settings }, active, float, me] = await Promise.all([
         priceLines(p.items),
         loadConfig(),
-        activeQuery.find(MASTER),
+        findAll(activeQuery),
         riderFloat(rider),
         new Parse.Query(Parse.User).get(rider.id, MASTER)
       ]);
@@ -11557,6 +11519,7 @@ var require_orders = __commonJS({
     });
     module2.exports = {
       riderFloat,
+      PINNED_ONLY,
       priceLines,
       saveLines,
       clean,
@@ -11587,14 +11550,15 @@ var require_counter = __commonJS({
       nextDailyCode,
       personName,
       requireCashierShift,
-      orNone
+      orNone,
+      findAll
     } = require_core();
     var { sumBy } = require_money();
     var { cleanLocation } = require_geo();
     var { recordCustomerOrder } = require_customers();
     var { checkMobileMoney, PENDING } = require_payments();
     var { money, notifyUser, notifyStaff } = require_notifications();
-    var { priceLines, saveLines, clean, cleanPhone, CHANNELS } = require_orders();
+    var { priceLines, saveLines, clean, cleanPhone, CHANNELS, PINNED_ONLY } = require_orders();
     var ORDER_TYPES = ["delivery", "eat_in", "pickup"];
     var COUNTER_TYPES = ["eat_in", "pickup"];
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
@@ -11678,13 +11642,13 @@ var require_counter = __commonJS({
       }
       const isDelivery = type === "delivery";
       const customerName = clean(p.customerName, 80) || (isDelivery ? "" : type === "eat_in" ? "Eat-in guest" : "Pick-up");
-      const deliveryAddress = isDelivery ? clean(p.deliveryAddress, 200) : "";
-      if (!customerName || isDelivery && !deliveryAddress)
-        throw invalid("Customer and address are required");
-      const channel = p.channel || (isDelivery ? "phone" : "walkin");
-      if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
       const pin = isDelivery ? cleanLocation(p.location) : { location: null };
       if (pin.error) throw invalid(pin.error);
+      const deliveryAddress = isDelivery ? clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : "") : "";
+      if (!customerName) throw invalid("Customer name is required");
+      if (isDelivery && !deliveryAddress) throw invalid("Add a delivery address or pin it on the map");
+      const channel = p.channel || (isDelivery ? "phone" : "walkin");
+      if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
       const method = p.paymentMethod || "cash";
       if (!["cash", "mobile_money"].includes(method)) throw invalid("Choose cash or mobile money");
       const payLater = !isDelivery && p.payLater === true;
@@ -11839,8 +11803,10 @@ var require_counter = __commonJS({
     Parse.Cloud.define("getAssignableRiders", async (request) => {
       await requireRole(request, ["cashier", "admin"]);
       const role = await new Parse.Query(Parse.Role).equalTo("name", "rider").first(MASTER);
-      const riders = role ? await role.getUsers().query().limit(500).find(MASTER) : [];
-      const shifts = await new Parse.Query("Shift").equalTo("kind", "rider").equalTo("status", "open").limit(500).find(MASTER);
+      const riders = role ? await findAll(role.getUsers().query()) : [];
+      const shifts = await findAll(
+        new Parse.Query("Shift").equalTo("kind", "rider").equalTo("status", "open")
+      );
       const onShift = new Set(shifts.map((s) => s.get("operator")?.id));
       return riders.filter((rider) => rider.get("active") !== false).map((rider) => ({
         id: rider.id,
@@ -12005,15 +11971,11 @@ var require_menu = __commonJS({
 var require_cashcheck = __commonJS({
   "cloud/cashcheck.js"(exports2, module2) {
     "use strict";
-    var { MASTER, adminOnly, loadConfig } = require_core();
+    var { adminOnly, loadConfig, findAll } = require_core();
     var { sumBy } = require_money();
     var { dateKey } = require_dates();
     var { money, notifyAdmins } = require_notifications();
     var OPEN_SHIFT_HOURS = 16;
-    async function findAll(query) {
-      query.limit(5e3);
-      return query.find(MASTER);
-    }
     async function runCashCheck() {
       const { values: config } = await loadConfig();
       const since = new Date(Date.now() - 60 * 24 * 3600 * 1e3);
@@ -12113,7 +12075,8 @@ var require_shifts = __commonJS({
       loadConfig,
       personName,
       verifyPin,
-      orNone
+      orNone,
+      findAll
     } = require_core();
     var { money, notifyAdmins } = require_notifications();
     var { resolveRange } = require_dates();
@@ -12133,20 +12096,17 @@ var require_shifts = __commonJS({
       legacy.greaterThanOrEqualTo("confirmedAt", start);
       legacy.lessThan("confirmedAt", end);
       const handoverQuery = Parse.Query.or(counted, legacy);
-      handoverQuery.limit(1e3);
       const payoutQuery = new Parse.Query("TillPayout");
       payoutQuery.equalTo("shift", shift);
-      payoutQuery.limit(1e3);
       const counterQuery = new Parse.Query("Order");
       counterQuery.equalTo("tillCashier", cashier);
       counterQuery.equalTo("cashStatus", "IN_TILL");
       counterQuery.greaterThanOrEqualTo("paidAt", start);
       counterQuery.lessThan("paidAt", end);
-      counterQuery.limit(5e3);
       const [handovers, payouts, counterOrders] = await Promise.all([
-        handoverQuery.find(MASTER),
-        payoutQuery.find(MASTER),
-        counterQuery.find(MASTER).catch(orNone([]))
+        findAll(handoverQuery),
+        findAll(payoutQuery),
+        findAll(counterQuery).catch(orNone([]))
       ]);
       const openingFloat = Number(shift.get("openingFloat") || 0);
       const riderCash = sumBy(handovers, (h) => h.get("countedAmount") ?? h.get("amount"));
@@ -12176,14 +12136,13 @@ var require_shifts = __commonJS({
       cashQuery.equalTo("createdBy", rider);
       cashQuery.equalTo("status", "DELIVERED");
       cashQuery.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
-      cashQuery.limit(1e3);
       const momoQuery = new Parse.Query("Order");
       momoQuery.equalTo("createdBy", rider);
       momoQuery.equalTo("status", "DELIVERED");
       momoQuery.equalTo("paymentStatus", "PENDING_VERIFICATION");
       const [openOrders, cashOrders, momoPending] = await Promise.all([
         openQuery.count(MASTER),
-        cashQuery.find(MASTER),
+        findAll(cashQuery),
         momoQuery.count(MASTER)
       ]);
       const sum = (status) => sumBy(
@@ -12349,9 +12308,7 @@ var require_shifts = __commonJS({
       query.greaterThanOrEqualTo("startedAt", range.start);
       query.lessThan("startedAt", range.end);
       query.include("operator");
-      query.descending("startedAt");
-      query.limit(500);
-      const rows = await query.find(MASTER);
+      const rows = (await findAll(query)).sort((a, b) => b.get("startedAt") - a.get("startedAt"));
       const shifts = await Promise.all(
         rows.map(async (shift) => {
           const open = shift.get("status") === "open";
@@ -12687,7 +12644,8 @@ var require_admin = __commonJS({
       countUsers,
       nextStaffCode,
       endSessions,
-      fileUrl
+      fileUrl,
+      findAll
     } = require_core();
     var { COMMISSION_TYPES, ROUNDING_STEPS } = require_money();
     var { isValidTimeZone } = require_dates();
@@ -12777,7 +12735,7 @@ var require_admin = __commonJS({
       query.containedIn("name", ROLE_NAMES);
       const held = {};
       for (const role of await query.find(MASTER)) {
-        const users = await role.getUsers().query().limit(1e3).find(MASTER);
+        const users = await findAll(role.getUsers().query());
         for (const user of users) (held[user.id] ||= []).push(role.getName());
       }
       const members = {};
@@ -12788,8 +12746,6 @@ var require_admin = __commonJS({
     Parse.Cloud.define("adminListSetup", async (request) => {
       await adminOnly(request);
       const userQuery = new Parse.Query(Parse.User);
-      userQuery.ascending("createdAt");
-      userQuery.limit(1e3);
       const menuQuery = new Parse.Query("MenuItem");
       menuQuery.ascending("sortOrder");
       menuQuery.limit(1e3);
@@ -12803,11 +12759,9 @@ var require_admin = __commonJS({
       cashQuery.equalTo("status", "DELIVERED");
       cashQuery.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
       cashQuery.select("createdBy", "amountCollected");
-      cashQuery.limit(5e3);
       const shiftQuery = new Parse.Query("Shift");
       shiftQuery.equalTo("status", "open");
       shiftQuery.select("operator");
-      shiftQuery.limit(1e3);
       const [
         users,
         menu,
@@ -12818,14 +12772,14 @@ var require_admin = __commonJS({
         cashOrders,
         openShifts
       ] = await Promise.all([
-        userQuery.find(MASTER),
+        findAll(userQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
         menuQuery.find(MASTER),
         categoryQuery.find(MASTER),
         roleMembership(),
         loadConfig(),
         accompanimentQuery.find(MASTER),
-        cashQuery.find(MASTER),
-        shiftQuery.find(MASTER)
+        findAll(cashQuery),
+        findAll(shiftQuery)
       ]);
       const cashHeld = {};
       for (const order of cashOrders) {

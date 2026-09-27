@@ -17,6 +17,7 @@ const {
   loadConfig,
   requireCashierShift,
   takeOrder,
+  findAll,
 } = require('./lib/core');
 const { merchantAccounts, cleanReference, referenceProblem } = require('./lib/mobileMoney');
 const { dateKey } = require('./lib/dates');
@@ -202,17 +203,15 @@ Parse.Cloud.define('getMobileMoneyLedger', async (request) => {
   const pendingQuery = new Parse.Query('Order');
   pendingQuery.equalTo('paymentStatus', PENDING);
   pendingQuery.include(['createdBy']);
-  pendingQuery.ascending('createdAt');
-  pendingQuery.limit(500);
   const checkedQuery = new Parse.Query('Order');
   checkedQuery.containedIn('paymentStatus', ['VERIFIED', 'REJECTED']);
   checkedQuery.greaterThanOrEqualTo('paymentCheckedAt', new Date(Date.now() - 48 * 3600 * 1000));
   checkedQuery.include(['createdBy', 'paymentCheckedBy']);
-  checkedQuery.descending('paymentCheckedAt');
-  checkedQuery.limit(1000);
   const [pending, checked] = await Promise.all([
-    pendingQuery.find(MASTER),
-    checkedQuery.find(MASTER),
+    findAll(pendingQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
+    findAll(checkedQuery).then((rows) =>
+      rows.sort((a, b) => b.get('paymentCheckedAt') - a.get('paymentCheckedAt')),
+    ),
   ]);
   const today = dateKey(new Date(), config.timezone);
   const checkedToday = checked.filter(

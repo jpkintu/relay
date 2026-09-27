@@ -14,6 +14,7 @@ const {
   requireCashierShift,
   takeOrder,
   withRiderLimit,
+  findAll,
 } = require('./lib/core');
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
@@ -23,6 +24,8 @@ const { checkMobileMoney, PENDING } = require('./payments');
 const { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require('./notifications');
 
 const CHANNELS = ['walkin', 'phone', 'whatsapp', 'other'];
+// Stored as the address when a delivery was only pinned on the map.
+const PINNED_ONLY = 'Pinned on the map';
 const PAYMENT_METHODS = ['cash', 'mobile_money', 'card', 'prepaid'];
 const MAX_LINES = 30;
 
@@ -137,8 +140,10 @@ Parse.Cloud.define('createOrder', async (request) => {
   const pin = cleanLocation(p.location);
   if (pin.error) throw invalid(pin.error);
   const customerName = clean(p.customerName, 80);
-  const deliveryAddress = clean(p.deliveryAddress, 200);
-  if (!customerName || !deliveryAddress) throw invalid('Customer and address are required');
+  if (!customerName) throw invalid('Customer name is required');
+  // A delivery needs a written address or a pin on the map (either is enough).
+  const deliveryAddress = clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : '');
+  if (!deliveryAddress) throw invalid('Add a delivery address or pin it on the map');
   const channel = p.channel || 'walkin';
   const paymentMethod = p.paymentMethod || 'cash';
   if (!CHANNELS.includes(channel)) throw invalid('Invalid channel');
@@ -147,11 +152,10 @@ Parse.Cloud.define('createOrder', async (request) => {
   const activeQuery = new Parse.Query('Order');
   activeQuery.equalTo('createdBy', rider);
   activeQuery.notContainedIn('status', ['DELIVERED', 'CANCELLED']);
-  activeQuery.limit(200);
   const [lines, { values: settings }, active, float, me] = await Promise.all([
     priceLines(p.items),
     loadConfig(),
-    activeQuery.find(MASTER),
+    findAll(activeQuery),
     riderFloat(rider),
     new Parse.Query(Parse.User).get(rider.id, MASTER),
   ]);
@@ -674,6 +678,7 @@ Parse.Cloud.define('transferOrder', async (request) => {
 
 module.exports = {
   riderFloat,
+  PINNED_ONLY,
   priceLines,
   saveLines,
   clean,

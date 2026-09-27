@@ -607,6 +607,20 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
       await run('transitionOrder', { orderId: id, action: 'cancel', reason: 'test' }, s.rider2);
   });
 
+  test('a delivery needs a written address or a map pin', async () => {
+    const M = { useMasterKey: true };
+    await rejects(order({ deliveryAddress: '' }), /delivery address or pin it on the map/);
+    const pinned = await order({ deliveryAddress: '', location: { lat: 0.35, lng: 32.6 } });
+    const saved = await new Parse.Query('Order').get(pinned.id, M);
+    assert.equal(saved.get('deliveryAddress'), 'Pinned on the map');
+    assert.equal(saved.get('location').latitude, 0.35);
+    await run(
+      'transitionOrder',
+      { orderId: pinned.id, action: 'cancel', reason: 'test' },
+      s.rider2,
+    );
+  });
+
   test('a full order records channel, phone, notes and accompaniments, once', async () => {
     const placed = await order({
       clientId: 'draft-1',
@@ -2790,23 +2804,14 @@ describe('owner reporting and control', () => {
     await rejects(run('adminGetAuditLog', { group: 'nope' }, s.owner), /kind of action/);
   });
 
-  test('a rider can ask to be paid; the commission ledger shows paid and owed', async () => {
-    await rejects(run('requestPayout', {}, s.dina), /rider role required/);
+  test('the commission ledger shows paid and owed', async () => {
     const placed = await orderBy(s.val, 'Pay me');
     await toReady(placed.id);
     await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.val);
     await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.val);
-    const asked = await run('requestPayout', {}, s.val);
-    assert.ok(asked.owed > 0);
-    await rejects(run('requestPayout', {}, s.val), /already asked/);
-    const row = (await run('getRiderPay', {}, s.owner)).find((r) => r.riderId === val.id);
-    assert.ok(row.requestedAt);
-    assert.ok((await run('getMyPay', {}, s.val)).requestedAt);
-    const told = await new Parse.Query('Notification')
-      .equalTo('recipient', s.owner)
-      .equalTo('kind', 'payout.requested')
-      .first(M);
-    assert.ok(told);
+    assert.ok((await run('getMyPay', {}, s.val)).owed > 0);
+    // Riders no longer ask to be paid: the cashier pays from the Payouts page.
+    await rejects(run('requestPayout', {}, s.val), /Invalid function/);
 
     const ledger = await run('getCommissionLedger', { riderId: val.id }, s.owner);
     assert.equal(ledger.owed, ledger.total);
@@ -2817,8 +2822,7 @@ describe('owner reporting and control', () => {
     assert.equal(paid.rows.length, ledger.rows.length);
     const owed = await run('getCommissionLedger', { riderId: val.id, paid: 'owed' }, s.owner);
     assert.equal(owed.rows.length, 0);
-    assert.equal((await run('getMyPay', {}, s.val)).requestedAt, null);
-    await rejects(run('requestPayout', {}, s.val), /Nothing is owed/);
+    assert.equal((await run('getMyPay', {}, s.val)).owed, 0);
     await rejects(run('getCommissionLedger', { paid: 'maybe' }, s.owner), /all, paid or owed/);
   });
 

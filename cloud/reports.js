@@ -5,7 +5,7 @@
 // in the restaurant timezone (see lib/dates.js). Money totals are computed
 // here from orders; nothing is stored.
 
-const { MASTER, invalid, requireRole, loadConfig } = require('./lib/core');
+const { invalid, requireRole, loadConfig, findAll } = require('./lib/core');
 const { merchantAccounts } = require('./lib/mobileMoney');
 const { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require('./lib/dates');
 const R = require('./lib/reports');
@@ -21,12 +21,6 @@ const nameOf = (user) =>
         .filter(Boolean)
         .join(' · ')
     : '';
-
-async function findAll(query) {
-  const rows = [];
-  await query.eachBatch((batch) => void rows.push(...batch), { ...MASTER, batchSize: 1000 });
-  return rows;
-}
 
 function rangeOf(params, config, options) {
   const range = resolveRange(params, config.timezone, options);
@@ -112,9 +106,9 @@ Parse.Cloud.define('getReportOptions', async (request) => {
   await requireRole(request, ['cashier', 'admin']);
   const query = new Parse.Query(Parse.User);
   query.exists('riderCode');
-  query.ascending('riderCode');
-  query.limit(1000);
-  const riders = await query.find(MASTER);
+  const riders = (await findAll(query)).sort((a, b) =>
+    String(a.get('riderCode')).localeCompare(String(b.get('riderCode'))),
+  );
   return {
     riders: riders.map((user) => ({
       id: user.id,

@@ -356,7 +356,6 @@ const USER_FIELDS = {
   payRound: N,
   available: B,
   maxFloat: N,
-  payoutRequestedAt: D,
 };
 
 // Creates missing classes with their fields, adds any missing fields to

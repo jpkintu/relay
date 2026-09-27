@@ -3,17 +3,12 @@
 // "cashCheck" (schedule it in Back4App → Cloud Code → Jobs) and on demand
 // from the owner's Payments ledger.
 
-const { MASTER, adminOnly, loadConfig } = require('./lib/core');
+const { adminOnly, loadConfig, findAll } = require('./lib/core');
 const { sumBy } = require('./lib/money');
 const { dateKey } = require('./lib/dates');
 const { money, notifyAdmins } = require('./notifications');
 
 const OPEN_SHIFT_HOURS = 16;
-
-async function findAll(query) {
-  query.limit(5000);
-  return query.find(MASTER);
-}
 
 async function runCashCheck() {
   const { values: config } = await loadConfig();

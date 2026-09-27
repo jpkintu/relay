@@ -7,7 +7,7 @@
 // class, so there is nothing to configure on Back4App.
 
 const webpush = require('web-push');
-const { MASTER, invalid, requireUser } = require('./lib/core');
+const { MASTER, invalid, requireUser, findAll } = require('./lib/core');
 
 // Browser push services. Subscriptions pointing anywhere else are refused so
 // the server cannot be used to call arbitrary URLs.
@@ -115,8 +115,7 @@ async function pushNotifications(rows) {
       'user',
       [...byUser.keys()].map((id) => Parse.User.createWithoutData(id)),
     );
-    query.limit(1000);
-    const subs = await query.find(MASTER);
+    const subs = await findAll(query);
     if (!subs.length) return 0;
     const keys = await vapidKeys();
     const options = {

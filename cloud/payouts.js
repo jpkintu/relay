@@ -15,9 +15,10 @@ const {
   verifyPin,
   personName,
   getRoleName,
+  findAll,
 } = require('./lib/core');
 const { sumBy, orderRiderPay } = require('./lib/money');
-const { money, notifyUser, notifyAdmins, notifyStaff } = require('./notifications');
+const { money, notifyUser, notifyAdmins } = require('./notifications');
 const { resolveRange } = require('./lib/dates');
 
 const clean = (value, max) =>
@@ -38,16 +39,11 @@ async function riderPayState(rider) {
   orderQuery.equalTo('createdBy', rider);
   orderQuery.equalTo('status', 'DELIVERED');
   orderQuery.notEqualTo('commissionPaid', true);
-  orderQuery.ascending('deliveredAt');
-  orderQuery.limit(1000);
   const shortageQuery = new Parse.Query('CashHandover');
   shortageQuery.equalTo('rider', rider);
   shortageQuery.equalTo('shortageStatus', 'owed');
-  shortageQuery.limit(200);
-  const [delivered, shortages] = await Promise.all([
-    orderQuery.find(MASTER),
-    shortageQuery.find(MASTER),
-  ]);
+  const [unsorted, shortages] = await Promise.all([findAll(orderQuery), findAll(shortageQuery)]);
+  const delivered = unsorted.sort((a, b) => a.get('deliveredAt') - b.get('deliveredAt'));
   // Commission + delivery fee per order (see riderPay in lib/money.js), less
   // any delivery fee already paid at the cash handover.
   const orders = delivered.filter((order) => payOwed(order) > 0);
@@ -89,7 +85,7 @@ function payoutJSON(row) {
 Parse.Cloud.define('getRiderPay', async (request) => {
   await requireRole(request, ['cashier', 'admin']);
   const role = await new Parse.Query(Parse.Role).equalTo('name', 'rider').first(MASTER);
-  const riders = role ? await role.getUsers().query().limit(500).find(MASTER) : [];
+  const riders = role ? await findAll(role.getUsers().query()) : [];
   const rows = await Promise.all(
     riders.map(async (rider) => {
       const state = await riderPayState(rider);
@@ -103,7 +99,6 @@ Parse.Cloud.define('getRiderPay', async (request) => {
         deliveryFees: state.deliveryFees,
         deductions: state.deductions,
         owed: state.owed,
-        requestedAt: rider.get('payoutRequestedAt') || null,
       };
     }),
   );
@@ -126,37 +121,8 @@ Parse.Cloud.define('getMyPay', async (request) => {
     deliveryFees: state.deliveryFees,
     deductions: state.deductions,
     owed: state.owed,
-    requestedAt: (await rider.fetch(MASTER)).get('payoutRequestedAt') || null,
     payouts: payouts.map(payoutJSON),
   };
-});
-
-// Rider: ask to be paid what they are owed. Cashiers on shift and the owner
-// are told; the request shows on the Payouts page until the rider is paid.
-// At most one request every 30 minutes.
-const REQUEST_GAP_MS = 30 * 60000;
-Parse.Cloud.define('requestPayout', async (request) => {
-  const { user } = await requireRole(request, ['rider']);
-  const rider = await new Parse.Query(Parse.User).get(user.id, MASTER);
-  const state = await riderPayState(rider);
-  if (state.owed <= 0) throw invalid('Nothing is owed to you right now');
-  const last = rider.get('payoutRequestedAt');
-  if (last && Date.now() - last.getTime() < REQUEST_GAP_MS)
-    throw invalid('You already asked. The cashier has been told');
-  const { values: config } = await loadConfig();
-  rider.set('payoutRequestedAt', new Date());
-  await rider.save(null, MASTER);
-  await audit(rider, 'payout.requested', rider, null, { owed: state.owed });
-  await notifyStaff({
-    kind: 'payout.requested',
-    tone: 'alert',
-    title: `${personName(rider)} asks to be paid`,
-    body: `${money(config, state.owed)} owed for ${state.orders.length} ${
-      state.orders.length === 1 ? 'delivery' : 'deliveries'
-    }. Pay from Payouts.`,
-    link: '/cashier/payouts',
-  });
-  return { requestedAt: rider.get('payoutRequestedAt'), owed: state.owed };
 });
 
 async function newPayout(fields, config) {
@@ -183,7 +149,6 @@ async function payOut({ actor, role, rider, orderIds, feesOnly = false }) {
   const round = Number(rider.get('payRound') || 0);
   if (!(await claimOnce(`pay-rider:${rider.id}:${round}`)))
     throw invalid('This rider is already being paid. Refresh in a moment');
-  let paid = false;
   try {
     const state = await riderPayState(rider);
     const orders = (
@@ -247,11 +212,8 @@ async function payOut({ actor, role, rider, orderIds, feesOnly = false }) {
       } · paid by ${personName(await actor.fetch(MASTER))}`,
       link: '/rider/earnings',
     });
-    paid = true;
     return { id: row.id, amount, deliveries: orders.length };
   } finally {
-    // A full payout answers the rider's request to be paid.
-    if (paid && !feesOnly && rider.has('payoutRequestedAt')) rider.unset('payoutRequestedAt');
     rider.increment('payRound');
     await rider.save(null, MASTER);
   }
@@ -306,9 +268,9 @@ Parse.Cloud.define('getTillPayouts', async (request) => {
     query.equalTo('shift', shift);
   }
   query.include(['rider', 'paidBy']);
-  query.descending('paidAt');
-  query.limit(500);
-  const payouts = (await query.find(MASTER)).map(payoutJSON);
+  const payouts = (await findAll(query))
+    .sort((a, b) => b.get('paidAt') - a.get('paidAt'))
+    .map(payoutJSON);
   return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
 });
 
