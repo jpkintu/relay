@@ -167,7 +167,10 @@ var require_core = __commonJS({
       defaultCommissionPerOrder: 0,
       defaultCommissionPercent: 0,
       // Hour of the day (restaurant time) after which the daily Z-report is saved.
-      zReportHour: 23
+      zReportHour: 23,
+      // Where the map opens (the restaurant); Kampala until the owner pins it.
+      restaurantLat: 0.3476,
+      restaurantLng: 32.5825
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -533,6 +536,7 @@ var require_security = __commonJS({
         createdBy: user,
         customerName: S,
         customerPhone: S,
+        location: "GeoPoint",
         deliveryAddress: S,
         subtotal: N,
         deliveryFee: N,
@@ -674,7 +678,9 @@ var require_security = __commonJS({
         defaultCommissionType: S,
         defaultCommissionPerOrder: N,
         defaultCommissionPercent: N,
-        zReportHour: N
+        zReportHour: N,
+        restaurantLat: N,
+        restaurantLng: N
       },
       MenuItem: {
         title: S,
@@ -10447,13 +10453,17 @@ var require_customers = __commonJS({
       query.equalTo("key", key);
       query.ascending("createdAt");
       const customer = await query.first(MASTER) || new Parse.Object("Customer");
-      const address = { text: order.get("deliveryAddress"), notes: order.get("deliveryNotes") || "" };
-      const addresses = [
-        address,
-        ...(customer.get("addresses") || []).filter(
-          (saved) => saved.text.toLowerCase() !== address.text.toLowerCase()
-        )
-      ].slice(0, MAX_ADDRESSES);
+      const saved = customer.get("addresses") || [];
+      const text = order.get("deliveryAddress");
+      const same = (entry) => entry.text.toLowerCase() === text.toLowerCase();
+      const pin = order.get("location");
+      const previous = saved.find(same);
+      const address = {
+        text,
+        notes: order.get("deliveryNotes") || "",
+        ...pin ? { lat: pin.latitude, lng: pin.longitude } : previous?.lat !== void 0 && { lat: previous.lat, lng: previous.lng }
+      };
+      const addresses = [address, ...saved.filter((entry) => !same(entry))].slice(0, MAX_ADDRESSES);
       customer.set({
         key,
         name,
@@ -10467,6 +10477,24 @@ var require_customers = __commonJS({
       customer.setACL(readAcl(null, ["admin"]));
       await customer.save(null, MASTER);
       return customer;
+    }
+    async function pinCustomerAddress(order, location) {
+      const pointer = order.get("customer");
+      if (!pointer) return;
+      const customer = await new Parse.Query("Customer").get(pointer.id, MASTER).catch(() => null);
+      if (!customer) return;
+      const text = String(order.get("deliveryAddress") || "").toLowerCase();
+      const addresses = (customer.get("addresses") || []).map(
+        (entry) => entry.text.toLowerCase() === text ? {
+          ...entry,
+          ...location ? { lat: location.lat, lng: location.lng } : { lat: void 0, lng: void 0 }
+        } : entry
+      );
+      customer.set(
+        "addresses",
+        addresses.map((entry) => JSON.parse(JSON.stringify(entry)))
+      );
+      await customer.save(null, MASTER);
     }
     var escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     Parse.Cloud.define("searchCustomers", async (request) => {
@@ -10511,7 +10539,7 @@ var require_customers = __commonJS({
         };
       });
     });
-    module2.exports = { recordCustomerOrder };
+    module2.exports = { recordCustomerOrder, pinCustomerAddress };
   }
 });
 
@@ -10775,6 +10803,24 @@ var require_accompaniments = __commonJS({
   }
 });
 
+// cloud/lib/geo.js
+var require_geo = __commonJS({
+  "cloud/lib/geo.js"(exports2, module2) {
+    "use strict";
+    function cleanLocation(value) {
+      if (value === void 0 || value === null || value === "") return { location: null };
+      const lat = Number(value?.lat);
+      const lng = Number(value?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
+        return { error: "That map pin is not a valid location" };
+      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
+      const round = (n) => Math.round(n * 1e6) / 1e6;
+      return { location: { lat: round(lat), lng: round(lng) } };
+    }
+    module2.exports = { cleanLocation };
+  }
+});
+
 // cloud/orders.js
 var require_orders = __commonJS({
   "cloud/orders.js"(exports2, module2) {
@@ -10798,7 +10844,8 @@ var require_orders = __commonJS({
     } = require_core();
     var { computeCommission, sumBy } = require_money();
     var { availableGroups, selectionError } = require_accompaniments();
-    var { recordCustomerOrder } = require_customers();
+    var { recordCustomerOrder, pinCustomerAddress } = require_customers();
+    var { cleanLocation } = require_geo();
     var { checkMobileMoney, PENDING } = require_payments();
     var { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require_notifications();
     var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
@@ -10868,6 +10915,8 @@ var require_orders = __commonJS({
             duplicate: true
           };
       }
+      const pin = cleanLocation(p.location);
+      if (pin.error) throw invalid(pin.error);
       const customerName = clean(p.customerName, 80);
       const deliveryAddress = clean(p.deliveryAddress, 200);
       if (!customerName || !deliveryAddress) throw invalid("Customer and address are required");
@@ -10927,6 +10976,7 @@ var require_orders = __commonJS({
         commissionAmount: 0,
         commissionPaid: false,
         disputeFlag: false,
+        ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
         ...momo && {
           paymentProvider: momo.provider,
           paymentReference: momo.reference,
@@ -11143,6 +11193,29 @@ var require_orders = __commonJS({
         await cashLimitAlert(fresh, withRiderLimit(config, fresh));
       }
     }
+    Parse.Cloud.define("setOrderLocation", async (request) => {
+      const actor = requireUser(request);
+      const order = await new Parse.Query("Order").get(String(request.params.orderId || ""), MASTER);
+      const role = await getRoleName(actor);
+      const staff = ["cashier", "admin"].includes(role);
+      if (order.get("createdBy")?.id !== actor.id && !staff) throw forbidden("Not your order");
+      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
+      const pin = cleanLocation(request.params.location);
+      if (pin.error) throw invalid(pin.error);
+      const before = order.get("location");
+      if (pin.location) order.set("location", new Parse.GeoPoint(pin.location.lat, pin.location.lng));
+      else if (order.has("location")) order.unset("location");
+      await order.save(null, MASTER);
+      await pinCustomerAddress(order, pin.location);
+      await audit(
+        actor,
+        "order.location",
+        order,
+        { location: before ? { lat: before.latitude, lng: before.longitude } : null },
+        { location: pin.location }
+      );
+      return { location: pin.location };
+    });
     Parse.Cloud.define("flagOrderIssue", async (request) => {
       const actor = requireUser(request);
       const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
@@ -12025,6 +12098,7 @@ var require_admin = __commonJS({
     var { SEED_MENU } = require_seed();
     var { normalizeGroups } = require_accompaniments();
     var { applySecurity } = require_security();
+    var { cleanLocation } = require_geo();
     var ROLE_NAMES = ["admin", "cashier", "rider"];
     var STAFF_ROLES = ["rider", "cashier"];
     var merchantField = (value, max) => String(value ?? "").trim().slice(0, max);
@@ -12461,6 +12535,10 @@ var require_admin = __commonJS({
       const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
       if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
         throw invalid("Cash warning must be between 50% and 99% of the limit");
+      const place = cleanLocation(
+        p.restaurantLat !== void 0 || p.restaurantLng !== void 0 ? { lat: p.restaurantLat, lng: p.restaurantLng } : { lat: current.restaurantLat, lng: current.restaurantLng }
+      );
+      if (place.error) throw invalid(`Restaurant location: ${place.error}`);
       const zHour = Number(p.zReportHour ?? current.zReportHour);
       if (!Number.isInteger(zHour) || zHour < 0 || zHour > 23)
         throw invalid("Z-report hour must be 0-23");
@@ -12493,7 +12571,9 @@ var require_admin = __commonJS({
         defaultCommissionType: commissionType,
         defaultCommissionPerOrder: perOrder,
         defaultCommissionPercent: percent,
-        zReportHour: zHour
+        zReportHour: zHour,
+        restaurantLat: place.location.lat,
+        restaurantLng: place.location.lng
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -12693,6 +12773,7 @@ var require_overrides = __commonJS({
         channel: order.get("channel"),
         rider: { id: rider?.id || "", name: personName(rider) },
         cashier: personName(order.get("cashier")),
+        location: order.get("location") ? { lat: order.get("location").latitude, lng: order.get("location").longitude } : null,
         customer: {
           name: order.get("customerName") || "",
           phone: order.get("customerPhone") || "",
@@ -12966,6 +13047,7 @@ var require_profile = __commonJS({
         commissionRounding: values.commissionRounding,
         requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
         floatWarningPercent: values.floatWarningPercent,
+        mapCenter: { lat: Number(values.restaurantLat), lng: Number(values.restaurantLng) },
         mobileMoney: merchantAccounts(values),
         // False until the owner saves a restaurant name in Settings.
         restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName

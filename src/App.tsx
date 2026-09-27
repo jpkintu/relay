@@ -13,6 +13,8 @@ import type { Role } from './lib/session';
 import { useDeviceAttribute } from './lib/device';
 import { NotificationsProvider } from './lib/notifications';
 import { PinProvider } from './lib/pin';
+import { useOnline } from './lib/online';
+import { OfflineBanner } from './components/InstallPrompt';
 
 export default function App() {
   return (
@@ -32,6 +34,16 @@ const ACCESS: Record<string, Role[]> = {
 };
 
 function AppRoutes() {
+  const online = useOnline();
+  return (
+    <>
+      <OfflineBanner online={online} />
+      <AppScreens />
+    </>
+  );
+}
+
+function AppScreens() {
   useDeviceAttribute();
   const session = useSession();
   const { user, profile, preview, status } = session;

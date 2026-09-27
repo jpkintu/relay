@@ -7,6 +7,7 @@ import { formatDate } from '../lib/format';
 import { statusLabel, statusTone } from '../lib/labels';
 import { useCloud } from './reports/common';
 import { Chart, SERIES } from './reports/Chart';
+import { useLiveRefresh } from '../lib/live';
 
 type Dashboard = {
   day: string;
@@ -55,10 +56,7 @@ export function AdminOverview({ version }: { version: number }) {
   useEffect(() => {
     if (version) reload();
   }, [version, reload]);
-  useEffect(() => {
-    const timer = window.setInterval(reload, 30000);
-    return () => window.clearInterval(timer);
-  }, [reload]);
+  useLiveRefresh(['Order', 'CashHandover'], reload, { fastMs: 30000, slowMs: 120000 });
 
   const charts = useMemo(() => {
     if (!data) return null;

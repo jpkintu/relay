@@ -98,6 +98,9 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
     channel: order.get('channel'),
     rider: { id: rider?.id || '', name: personName(rider) },
     cashier: personName(order.get('cashier')),
+    location: order.get('location')
+      ? { lat: order.get('location').latitude, lng: order.get('location').longitude }
+      : null,
     customer: {
       name: order.get('customerName') || '',
       phone: order.get('customerPhone') || '',

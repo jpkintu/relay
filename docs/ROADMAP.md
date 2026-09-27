@@ -128,6 +128,12 @@ Code:
    **Cash check job:** Back4App dashboard → Cloud Code → Jobs → schedule
    `cashCheck` nightly (e.g. 23:30). It notifies the owner if cash records
    disagree.
+   **Live updates (LiveQuery):** Back4App → App Settings → Server Settings →
+   Web Hosting and Live Query: turn on Live Query with the classes `Order`,
+   `CashHandover` and `Notification`, note the subdomain, and set
+   `VITE_PARSE_LIVEQUERY_URL = wss://<subdomain>.b4a.io` on the frontend
+   Container, then redeploy it. Without it everything still works; screens
+   refresh every 10 s instead of instantly.
    **Z-report job:** schedule `dailyZReport` hourly. It saves the day's
    Z-report once the Z-report hour in Settings has passed (default 23:00) and
    pushes it to the owner; it also runs when the owner opens the app. Dish
@@ -141,15 +147,15 @@ Code:
 
 **Bubble notes in the original brief → Parse equivalents**
 
-| Brief (Bubble)          | Relay (Parse / Back4App)                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------- |
-| Option sets             | String enums validated in Cloud Code (see §4.2)                                                   |
-| Backend workflow        | `Parse.Cloud.define` / `beforeSave` / `afterSave`                                                 |
-| Scheduled workflow      | Back4App **Cloud Jobs** (`Parse.Cloud.job`) + dashboard schedule                                  |
-| "Do every 10 s" refresh | Polling today; move to **LiveQuery** (enable it on the Parse app, set `VITE_PARSE_LIVEQUERY_URL`) |
-| Privacy rules           | Class-Level Permissions (CLP) + per-object ACL + role checks in cloud functions                   |
-| OneSignal               | Web Push (VAPID) or OneSignal via Cloud Code HTTP                                                 |
-| PDF Conjurer / CSV      | Server-side HTML email or PDF from a Cloud Job; client CSV export (exists for orders)             |
+| Brief (Bubble)          | Relay (Parse / Back4App)                                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Option sets             | String enums validated in Cloud Code (see §4.2)                                                                                         |
+| Backend workflow        | `Parse.Cloud.define` / `beforeSave` / `afterSave`                                                                                       |
+| Scheduled workflow      | Back4App **Cloud Jobs** (`Parse.Cloud.job`) + dashboard schedule                                                                        |
+| "Do every 10 s" refresh | **LiveQuery** (`src/lib/live.ts`): instant when enabled on Back4App and `VITE_PARSE_LIVEQUERY_URL` is set; otherwise polling every 10 s |
+| Privacy rules           | Class-Level Permissions (CLP) + per-object ACL + role checks in cloud functions                                                         |
+| OneSignal               | Web Push (VAPID) or OneSignal via Cloud Code HTTP                                                                                       |
+| PDF Conjurer / CSV      | Server-side HTML email or PDF from a Cloud Job; client CSV export (exists for orders)                                                   |
 
 ### Can't sign in as owner? (recovery)
 
@@ -664,7 +670,7 @@ starts.
 
 ### Phase 4 — Operations & notifications
 
-- [ ] Replace 10 s polling with LiveQuery subscriptions (cashier board, rider active orders, handovers), keeping polling as a fallback
+- [x] LiveQuery live updates (`useLiveRefresh`): kitchen board, cashier badges, handovers, mobile money, rider orders and cash, order detail, owner overview, the bell; polling every 10 s as the fallback (60 s while live). ACLs decide who hears what (e2e tested)
 - [x] In-app notifications (`Notification` class, `cloud/notifications.js`, polled every 12 s): new orders, new transaction IDs and cash handovers → cashiers and admins; order accepted/preparing/ready/handed over/rejected/cancelled, payment confirmed/not received, handover confirmed/disputed, problem resolved → the rider; problems reported and disputed handovers → admins. Bell with unread count on every workspace, sounds (Web Audio: new / update / alert), a sound toggle, and browser alerts while the app is in the background
 - [x] Rider cash reminders: warning at `floatWarningPercent` (default 80 %) of the limit, "limit reached" at 100 % (new orders of any payment type are blocked), and an end-of-day handover reminder from `cashReminderHour` (default 20:00); each at most once a day
 - [x] Web Push to the lock screen, even with the app closed (`cloud/push.js`, `public/sw.js`): VAPID keys are generated on first use and kept in the private `Secret` class; each device registers a `PushSubscription` (only real browser push services are accepted); every notification is pushed with high urgency for new/alert, vibration, and "stay until tapped" for alerts; dead subscriptions are dropped. Relay is installable (manifest + icons); on iPhone/iPad push works once Relay is added to the Home Screen (iOS 16.4+). Riders and cashiers get a "Turn on phone notifications" card; signing out unregisters the device
@@ -672,7 +678,8 @@ starts.
 - [x] Rider pay from the till: rider pay = commission + delivery fee (owner's decision 2026-09-26); the cashier pays everything owed (less shortages charged to the rider) with a PIN; `commissionPaid` flags; the rider sees "Owed to you" and recent pay. Riders can ask to be paid (`requestPayout`, done 2026-09-27)
 - [x] Rider earnings: Week / Month summaries with date presets and custom dates, count, average, change, chart, list (`getRiderEarnings`)
 - [x] PWA basics: manifest, icons, service worker (for push)
-- [ ] PWA: install prompt, offline shell
+- [x] Delivery map pin on OpenStreetMap (Leaflet; owner's decision 2026-09-27): pin when taking the order or later / at the door (`setOrderLocation`), saved on the order (`location`) and the customer's address for repeat orders, map preview + Directions for the rider and on the owner's order page; restaurant location in Settings sets where maps open
+- [x] PWA: install prompt (Chrome/Android `beforeinstallprompt`; iPhone keeps the Add to Home Screen hint), offline shell (service worker caches the page and built assets; last profile kept on the device) and an offline strip
 
 ### Phase 5 — Admin & reporting
 
@@ -724,7 +731,7 @@ Open items above, grouped into release-sized batches in recommended order.
    commission payouts (paid/owed, rider payout request), daily Z-report + emailed job,
    order detail with audited admin override, complete Settings form, menu
    description/image/sort/archive.
-4. **Real-time & app feel.** LiveQuery instead of 10 s polling (instant badges),
+4. ~~**Real-time & app feel.**~~ Done 2026-09-27. LiveQuery instead of 10 s polling (instant badges),
    PWA install prompt + offline shell, map pin (needs a Maps/Leaflet decision).
 5. **Release readiness.** Error reporting, backups + staging app, onboarding wizard
    with menu CSV import, privacy notice / terms, white-label (name, logo, colours from
@@ -796,3 +803,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-26 | Paying at the cash handover now pays only the delivery fees of those orders (`deliveryFeePaid`); their commission stays owed and is paid from Payouts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 2026-09-27 | Batch 2, People: `people.js` (`changeMyPin`, `setMyAvailability`, `adminResetPin`, `adminGetMember`); rider and cashier profiles with PIN change; rider break toggle (new orders refused while on a break); Team table and a page per member (cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, own cash limit `maxFloat`, deactivate signs out); default commission rule and rounding in Settings. `_User` gains `available`, `maxFloat` (run Apply security rules).                                                                                                                                                                                                                                                                 |
 | 2026-09-27 | Batch 3, Owner reporting & control: `owner.js` (`getDashboard` fixes B7, `adminGetAuditLog`, Z-report `adminGetZReport` / `adminListZReports` + Cloud Job `dailyZReport`, saved in `ZReport`, pushed to the owner), `overrides.js` (`adminGetOrder`, `adminOverrideOrder`: cancel, payment switch, mark delivered, undo delivery, move rider; reason required, audited, riders told), commission ledger paid/owed, riders ask to be paid (`requestPayout`), menu description / photo / order / archive, Z-report hour in Settings. New Overview, order page, Audit log, Z-report page.                                                                                                                                                                            |
+| 2026-09-27 | Batch 4, Real-time & app feel: LiveQuery live updates (`src/lib/live.ts`) on every board, badge and the bell with polling as fallback (3 e2e tests prove ACLs hold); install prompt and offline shell (service worker caches page + assets, profile cached for offline start, offline strip); OpenStreetMap delivery pins (`setOrderLocation`, `Order.location`, pins saved on customer addresses, map preview + Directions, restaurant location in Settings).                                                                                                                                                                                                                                                                                                    |

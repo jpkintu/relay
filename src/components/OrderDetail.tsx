@@ -11,6 +11,8 @@ import {
 } from './MobileMoney';
 import { NotificationBell } from './NotificationBell';
 import { statusLabel, statusTone } from '../lib/labels';
+import { useLiveRefresh } from '../lib/live';
+import { PinPreview, PinSheet } from './MapPin';
 
 type Line = { id: string; title: string; quantity: number; total: number; details: string };
 type Detail = {
@@ -22,6 +24,7 @@ type Detail = {
   customerPhone: string;
   address: string;
   addressNotes: string;
+  location: { lat: number; lng: number } | null;
   subtotal: number;
   fee: number;
   total: number;
@@ -70,6 +73,9 @@ async function loadDetail(orderId: string): Promise<Detail> {
     customerPhone: order.get('customerPhone') || '',
     address: order.get('deliveryAddress'),
     addressNotes: order.get('deliveryNotes') || '',
+    location: order.get('location')
+      ? { lat: order.get('location').latitude, lng: order.get('location').longitude }
+      : null,
     subtotal: order.get('subtotal'),
     fee: order.get('deliveryFee'),
     total: order.get('total'),
@@ -120,6 +126,7 @@ export function OrderDetail({
   const [payment, setPayment] = useState('');
   const [provider, setProvider] = useState('');
   const [reference, setReference] = useState('');
+  const [pinning, setPinning] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -132,9 +139,8 @@ export function OrderDetail({
   useEffect(() => {
     if (preview) return;
     void load();
-    const timer = window.setInterval(() => void load(), 10000);
-    return () => window.clearInterval(timer);
   }, [load, preview]);
+  useLiveRefresh(['Order'], () => void load(), { enabled: !preview });
 
   const act = async (fn: string, params: Record<string, unknown>) => {
     setBusy(true);
@@ -198,7 +204,38 @@ export function OrderDetail({
                 <MapPin size={16} /> {order.address}
               </a>
               {order.addressNotes && <p className="muted">{order.addressNotes}</p>}
+              {order.location ? (
+                <>
+                  <PinPreview location={order.location} label={`Map of ${order.address}`} />
+                  {order.status !== 'CANCELLED' && (
+                    <button className="link-button" onClick={() => setPinning(true)}>
+                      Move the pin
+                    </button>
+                  )}
+                </>
+              ) : (
+                order.status !== 'CANCELLED' && (
+                  <button className="pin-button" onClick={() => setPinning(true)}>
+                    <MapPin size={16} />
+                    {order.status === 'PICKED_UP' || order.status === 'DELIVERED'
+                      ? 'At the door? Pin this address for next time'
+                      : 'Pin this address on the map'}
+                  </button>
+                )
+              )}
             </section>
+            {pinning && (
+              <PinSheet
+                title="Pin the delivery address"
+                initial={order.location}
+                startWithMyLocation={order.status === 'PICKED_UP' || order.status === 'DELIVERED'}
+                onSave={async (location) => {
+                  await Parse.Cloud.run('setOrderLocation', { orderId: order.id, location });
+                  await load();
+                }}
+                onClose={() => setPinning(false)}
+              />
+            )}
 
             <section className="detail-card">
               <p className="eyebrow">Items</p>

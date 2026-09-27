@@ -17,7 +17,8 @@ const {
 } = require('./lib/core');
 const { computeCommission, sumBy } = require('./lib/money');
 const { availableGroups, selectionError } = require('./lib/accompaniments');
-const { recordCustomerOrder } = require('./customers');
+const { recordCustomerOrder, pinCustomerAddress } = require('./customers');
+const { cleanLocation } = require('./lib/geo');
 const { checkMobileMoney, PENDING } = require('./payments');
 const { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require('./notifications');
 
@@ -100,6 +101,8 @@ Parse.Cloud.define('createOrder', async (request) => {
       };
   }
 
+  const pin = cleanLocation(p.location);
+  if (pin.error) throw invalid(pin.error);
   const customerName = clean(p.customerName, 80);
   const deliveryAddress = clean(p.deliveryAddress, 200);
   if (!customerName || !deliveryAddress) throw invalid('Customer and address are required');
@@ -173,6 +176,7 @@ Parse.Cloud.define('createOrder', async (request) => {
     commissionAmount: 0,
     commissionPaid: false,
     disputeFlag: false,
+    ...(pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) }),
     ...(momo && {
       paymentProvider: momo.provider,
       paymentReference: momo.reference,
@@ -420,6 +424,33 @@ async function notifyTransition(order, action, { staff, owner, actor, config }) 
     await cashLimitAlert(fresh, withRiderLimit(config, fresh));
   }
 }
+
+// The rider who owns the order (or staff): pin the delivery location on the
+// map, or remove the pin ({ location: null }). The customer's saved address
+// keeps the pin for next time.
+Parse.Cloud.define('setOrderLocation', async (request) => {
+  const actor = requireUser(request);
+  const order = await new Parse.Query('Order').get(String(request.params.orderId || ''), MASTER);
+  const role = await getRoleName(actor);
+  const staff = ['cashier', 'admin'].includes(role);
+  if (order.get('createdBy')?.id !== actor.id && !staff) throw forbidden('Not your order');
+  if (order.get('status') === 'CANCELLED') throw invalid('This order was cancelled');
+  const pin = cleanLocation(request.params.location);
+  if (pin.error) throw invalid(pin.error);
+  const before = order.get('location');
+  if (pin.location) order.set('location', new Parse.GeoPoint(pin.location.lat, pin.location.lng));
+  else if (order.has('location')) order.unset('location');
+  await order.save(null, MASTER);
+  await pinCustomerAddress(order, pin.location);
+  await audit(
+    actor,
+    'order.location',
+    order,
+    { location: before ? { lat: before.latitude, lng: before.longitude } : null },
+    { location: pin.location },
+  );
+  return { location: pin.location };
+});
 
 // A food/delivery complaint, independent of the cash status.
 Parse.Cloud.define('flagOrderIssue', async (request) => {

@@ -119,6 +119,7 @@ const SCHEMAS = {
     createdBy: user,
     customerName: S,
     customerPhone: S,
+    location: 'GeoPoint',
     deliveryAddress: S,
     subtotal: N,
     deliveryFee: N,
@@ -261,6 +262,8 @@ const SCHEMAS = {
     defaultCommissionPerOrder: N,
     defaultCommissionPercent: N,
     zReportHour: N,
+    restaurantLat: N,
+    restaurantLng: N,
   },
   MenuItem: {
     title: S,

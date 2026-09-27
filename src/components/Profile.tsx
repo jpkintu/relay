@@ -3,6 +3,7 @@ import { Coffee, KeyRound, LogOut, Zap } from 'lucide-react';
 import Parse from '../parse';
 import { useSession } from '../lib/session';
 import { initials } from '../lib/format';
+import { InstallPrompt } from './InstallPrompt';
 
 // Change your own PIN (riders, cashiers) or password (owner). The server
 // signs every device out, so the app signs straight back in with the new one.
@@ -182,6 +183,7 @@ export function CashierProfile() {
           <p>Account details are available after signing in.</p>
         )}
         {!preview && profile && <ChangePin />}
+        {!preview && <InstallPrompt button />}
         <button className="profile-logout" onClick={() => void logout()}>
           <LogOut /> {preview ? 'Leave preview' : 'Log out'}
         </button>

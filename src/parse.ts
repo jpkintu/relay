@@ -16,13 +16,21 @@ const env = import.meta.env;
 Parse.initialize(env.VITE_PARSE_APP_ID || 'sandbox-app-id', env.VITE_PARSE_JS_KEY || '');
 Parse.serverURL = env.VITE_PARSE_SERVER_URL || '/parse';
 
-// LiveQuery is not used yet (screens poll). Only configure it when explicitly
-// set, or when Parse is served from this origin (local development).
+// LiveQuery (live updates, src/lib/live.ts). On Back4App: Server Settings →
+// Web Hosting and Live Query → turn on Live Query for Order, CashHandover and
+// Notification, and set VITE_PARSE_LIVEQUERY_URL = wss://<subdomain>.b4a.io.
+// Without it the screens poll every 10 s, as before. Local development uses
+// the Parse Server on this origin.
 if (env.VITE_PARSE_LIVEQUERY_URL) {
   Parse.liveQueryServerURL = env.VITE_PARSE_LIVEQUERY_URL;
 } else if (typeof window !== 'undefined' && Parse.serverURL.startsWith('/')) {
   const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   Parse.liveQueryServerURL = `${wsProto}//${window.location.host}${Parse.serverURL}`;
 }
+
+export const LIVE_ENABLED = Boolean(
+  env.VITE_PARSE_LIVEQUERY_URL ||
+  (typeof window !== 'undefined' && Parse.serverURL.startsWith('/')),
+);
 
 export default Parse;

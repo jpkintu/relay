@@ -20,6 +20,8 @@ export type AppConfig = {
   mobileMoney?: MerchantAccount[];
   restaurantNameSet?: boolean;
   floatWarningPercent?: number;
+  // Where maps open: the restaurant (Settings).
+  mapCenter?: { lat: number; lng: number };
 };
 
 export type MerchantAccount = { provider: string; label: string; code: string; name: string };
@@ -104,6 +106,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } catch {
       // Session already invalid on the server; clearing it locally is enough.
     }
+    try {
+      for (const key of Object.keys(localStorage))
+        if (key.startsWith('relay:profile:')) localStorage.removeItem(key);
+    } catch {
+      // Nothing cached.
+    }
     setUserState(null);
     setProfile(null);
     setPreview(false);
@@ -112,11 +120,31 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!user) return;
     setLoadingProfile(true);
+    const cacheKey = `relay:profile:${user.id}`;
     try {
-      setProfile(await Parse.Cloud.run('getMyProfile'));
+      const fresh: Profile = await Parse.Cloud.run('getMyProfile');
+      setProfile(fresh);
       setError('');
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(fresh));
+      } catch {
+        // Storage full or blocked: the app still works online.
+      }
     } catch (e) {
-      if (e instanceof Parse.Error && e.code === Parse.Error.INVALID_SESSION_TOKEN) {
+      // No connection: open with the last profile seen on this device, so the
+      // app still starts offline (the screens show what they can).
+      const offline =
+        !navigator.onLine || (e instanceof Parse.Error && e.code === Parse.Error.CONNECTION_FAILED);
+      let cached: Profile | null;
+      try {
+        cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+      } catch {
+        cached = null;
+      }
+      if (offline && cached) {
+        setProfile(cached);
+        setError('');
+      } else if (e instanceof Parse.Error && e.code === Parse.Error.INVALID_SESSION_TOKEN) {
         await logout();
       } else if (e instanceof Parse.Error && e.message === 'Account is inactive') {
         await logout();
@@ -131,6 +159,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh();
+    // Back online: load the account again (it may have changed).
+    const onOnline = () => void refresh();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
   }, [refresh]);
 
   const previewAvailable = PREVIEW_BUILD && appInfo.previewEnabled;

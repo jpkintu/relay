@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, Minus, Plus, RotateCcw, Search, ShoppingBag, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  MapPin,
+  Minus,
+  Plus,
+  RotateCcw,
+  Search,
+  ShoppingBag,
+  X,
+} from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import {
@@ -14,6 +24,8 @@ import {
 } from '../lib/cart';
 import type { AccompanimentOption, CartLine, MenuItem } from '../lib/cart';
 import { MobileMoneyPanel, referenceProblem } from './MobileMoney';
+import { PinSheet } from './MapPin';
+import type { LatLng } from './MapPin';
 
 const SAMPLE: MenuItem[] = [
   { id: '1', title: 'Smoky chicken bowl', category: 'Mains', price: 18500, color: '#f3b35b' },
@@ -54,7 +66,7 @@ type Customer = {
   name: string;
   phone: string;
   orderCount: number;
-  addresses: { text: string; notes: string }[];
+  addresses: { text: string; notes: string; lat?: number; lng?: number }[];
   lastOrder: {
     menuItemId: string;
     title: string;
@@ -72,6 +84,7 @@ type Draft = {
   channel: string;
   address: string;
   addressNotes: string;
+  location?: LatLng | null;
   cart: CartLine[];
   fee: number | null;
   payment: string;
@@ -91,6 +104,7 @@ const emptyDraft = (): Draft => ({
   channel: 'walkin',
   address: '',
   addressNotes: '',
+  location: null,
   cart: [],
   fee: null,
   payment: 'cash',
@@ -138,6 +152,7 @@ export function NewOrder({
   const [category, setCategory] = useState('All');
   const [query, setQuery] = useState('');
   const [sheet, setSheet] = useState<MenuItem | null>(null);
+  const [pinning, setPinning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -201,6 +216,12 @@ export function NewOrder({
       phone: customer.phone || draft.phone,
       address: address?.text || draft.address,
       addressNotes: address?.notes || draft.addressNotes,
+      location:
+        address?.lat !== undefined && address?.lng !== undefined
+          ? { lat: address.lat, lng: address.lng }
+          : address
+            ? null
+            : draft.location,
     };
     if (repeat) {
       let cart = draft.cart;
@@ -245,6 +266,7 @@ export function NewOrder({
         channel: draft.channel,
         deliveryAddress: draft.address.trim(),
         deliveryNotes: draft.addressNotes.trim(),
+        ...(draft.location && { location: draft.location }),
         deliveryFee: fee,
         paymentMethod: draft.payment,
         paymentProvider: isCash ? undefined : draft.provider,
@@ -373,6 +395,21 @@ export function NewOrder({
             placeholder="e.g. blue gate, call on arrival"
           />
         </label>
+        <div className="pin-row full-row">
+          <button type="button" className="pin-button" onClick={() => setPinning(true)}>
+            <MapPin />
+            {draft.location ? 'Pinned on the map · change' : 'Pin on the map (optional)'}
+          </button>
+          {draft.location && (
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => update({ location: null })}
+            >
+              Remove pin
+            </button>
+          )}
+        </div>
         {notice && <p className="setup-notice full-row">{notice}</p>}
       </section>
 
@@ -546,6 +583,14 @@ export function NewOrder({
         </button>
       </div>
 
+      {pinning && (
+        <PinSheet
+          title="Where to deliver"
+          initial={draft.location ?? null}
+          onSave={(location) => update({ location })}
+          onClose={() => setPinning(false)}
+        />
+      )}
       {sheet && (
         <ItemSheet
           item={sheet}

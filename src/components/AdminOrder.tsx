@@ -9,12 +9,14 @@ import { actionLabel, changedFields } from '../lib/audit';
 import { useCloud, useRiderOptions } from './reports/common';
 import { PAYMENT_STATUS_LABEL, providerLabel } from './MobileMoney';
 import { STATUS_LABEL } from './reports/PaymentsLedger';
+import { PinPreview } from './MapPin';
 
 type OrderPage = {
   id: string;
   code: string;
   status: string;
   channel: string;
+  location: { lat: number; lng: number } | null;
   rider: { id: string; name: string };
   cashier: string;
   customer: { name: string; phone: string; address: string; notes: string };
@@ -239,6 +241,15 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
         <strong className="order-total">{money(o.total)}</strong>
       </section>
       {notice && <p className="setup-notice">{notice}</p>}
+
+      {o.location && (
+        <section className="admin-panel admin-section-panel">
+          <div className="panel-title">
+            <h2>Delivery pin</h2>
+          </div>
+          <PinPreview location={o.location} label={`Map of ${o.customer.address}`} />
+        </section>
+      )}
 
       <div className="order-page-grid">
         <section className="admin-panel admin-section-panel">
