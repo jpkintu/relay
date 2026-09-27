@@ -314,8 +314,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | New order                       | ✅    | Customer type-ahead + repeat, phone, channel, notes, dish sheet with accompaniments, cart, bill, payment, cash to collect, earn preview, draft. No map pin                     |
 | Active orders                   | ✅    | Rows open the order; quick Pick up; Deliver opens the delivery form                                                                                                            |
 | Order detail `/rider/order/:id` | ✅    | Customer, call, Maps link, items with accompaniments, bill, cancel, pickup, delivery form, report a problem                                                                    |
-| My cash                         | 🟡    | List + multi-select handover. No grouping by date, no over-limit colour, no notes field. Pending handovers not shown                                                           |
-| Handover                        | 🟡    | Inline on the cash screen. No PIN, no "waiting for cashier" state list                                                                                                         |
+| My cash                         | 🟡    | List + multi-select handover, handovers with their status. No grouping by date, no over-limit colour on this screen (Home has the limit bar and warnings), no notes field      |
+| Handover                        | ✅    | Inline on the cash screen with PIN; "Your handovers" lists waiting / confirmed / returned / disputed                                                                           |
 | Earnings                        | ✅    | Weekly / Monthly report with date presets or custom dates, change vs previous period, earnings chart (Plotly), per-period table and deliveries list. No payout request yet     |
 | Profile                         | ✅    | Name, code, username, phone, commission rule, available / on a break, change PIN (old PIN required), logout                                                                    |
 | Shift start/end                 | ✅    | Ending is blocked while orders are open, cash is held or a handover is unconfirmed (checklist on the shift card)                                                               |
@@ -324,10 +324,10 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 | Brief screen | State | Notes                                                                                                                                  |
 | ------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Live board   | ✅    | Accompaniments/notes per line, wait time, channel, payment, problems; reject/cancel with reason; one-tap Mark ready. Polls every 10 s  |
+| Live board   | ✅    | Accompaniments/notes per line, wait time, channel, payment, problems; reject/cancel with reason; one-tap Mark ready. Live updates      |
 | Stock        | ✅    | Sold out / back in stock for dishes and accompaniments                                                                                 |
-| Handovers    | ✅    | No search by rider or handover code. No partial acceptance                                                                             |
-| Shift / till | 🟡    | Board locked until a shift starts with a counted till; differences must be explained. Expected till ignores cash paid out (no payouts) |
+| Handovers    | ✅    | Partial acceptance, stale (> 4 h) highlight. No search by rider or handover code                                                       |
+| Shift / till | ✅    | Board locked until a shift starts; till summary (opening, rider handovers, counter sales, paid out, expected) and close-out with check |
 | Profile      | ✅    | Open from the name in the header (works before a shift starts): name, code, phone, change PIN, logout                                  |
 
 **Admin**
@@ -339,7 +339,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | Riders list/detail                | ✅    | Team table (role, on shift, on a break, cash held) → member page: cash, open orders, lifetime figures, handovers, pay, shifts, edit, reset PIN, cash limit, deactivate                         |
 | New rider / cashier               | ✅    | In Team, with auto codes `R-001` / `C-001`. No email                                                                                                                                           |
 | Menu                              | ✅    | Accompaniments + groups per dish, description, photo, order (arrows), archive/restore. No prep time; category is a free string                                                                 |
-| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction, filters (dates, rider, type), totals, handovers + reopen dispute. No write-off                                                                          |
+| Payments ledger (was Cash ledger) | 🟡    | Every cash + mobile money transaction incl. counter sales, filters, totals, handovers; disputes resolved (charge / write off / reopen). No > 4 h pending highlight                             |
 | Commissions                       | ✅    | Date + rider filters, All / Owed / Paid, paid out and still owed totals, per-rider owed, CSV                                                                                                   |
 | Settings                          | ✅    | Every Configuration field (incl. commission defaults, rounding, Z-report hour), owner password, Apply security rules                                                                           |
 | Audit viewer                      | ✅    | `/admin/audit`: dates, kind, person; what changed (before → after); links to orders and people; CSV; load older                                                                                |
@@ -600,7 +600,7 @@ agent's "remaining" list.
 ### Phase 1 — Orders complete
 
 - [x] New-order screen per brief §5.1: customer block (name with type-ahead, phone, channel pills), address + landmark notes, category tabs, dish sheet (accompaniments, qty, notes), cart lines, bill (editable fee), payment pills, cash to collect, "You'll earn X" preview
-- [ ] "Pin on map" (lat/lng on the order): deferred, needs a Maps/Leaflet key decision
+- [x] "Pin on map" (lat/lng on the order): done 2026-09-27 with OpenStreetMap (see Phase 4)
 - [x] Validation: short payment needs a note; B2 float-after-order check with a "Hand over cash" link
 - [x] `createOrder` takes `channel`, `paymentMethod`, `customerPhone`, `deliveryNotes`, line `notes` and `accompaniments`
 - [x] `Customer` upsert + `searchCustomers(q)` (top 5 by orderCount, by name or phone) + saved address + "Repeat last order"
@@ -640,7 +640,7 @@ starts.
 - [x] Cashier **Mobile money** tab: waiting payments (Received / Not received), confirmed today with **totals per provider** to reconcile against the merchant statements, rejected today (`getMobileMoneyLedger`)
 - [x] A cash order can be paid by mobile money at the door: the delivery form takes provider + transaction ID and the cashier confirms it the same way
 - [ ] Automatic confirmation via the MTN MoMo / Airtel Money APIs (collections + callbacks) instead of manual checks: needs merchant API credentials; phase 2
-- [ ] Mobile money badge on the cashier header refreshes every 10 s (not instantly after a confirmation)
+- [x] Mobile money badge on the cashier header updates live (LiveQuery, 2026-09-27)
 
 ### Phase 2 — Cash integrity (the critical piece)
 
@@ -716,10 +716,49 @@ Owner's decisions 2026-09-27: the cashier picks the rider for call-in deliveries
 - [ ] Backups / export of the Back4App DB; staging vs. production apps with separate app IDs
 - [ ] Seed/onboarding wizard for a new restaurant (menu import CSV, first rider/cashier)
 - [ ] Legal: privacy notice (customer phone numbers are personal data), terms, data retention
-- [ ] Commercial: decide whether each client gets **a Back4App app per restaurant** (simplest, matches the single-vendor design) or a multi-tenant build later; white-label name/logo/colours from Configuration; pricing & billing outside the app
+- [ ] Commercial: decide whether each client gets **a Back4App app per restaurant** (simplest, matches the single-vendor design) or a multi-tenant build later; white-label name/logo/colours from Configuration (_done 2026-09-27: Admin → Branding_); pricing & billing outside the app
 - [ ] Phase 2 features: mobile money via API (MTN MoMo / Airtel / Flutterwave), customer QR menu, rider GPS, native wrapper
 
 ---
+
+### Still open (reviewed 2026-09-27)
+
+Everything not built yet, from the sections above, in suggested order.
+
+**Owner actions on Back4App (no code)**
+
+- S5 account lockout and S7 session length (server settings, §2)
+- Schedule the Cloud Jobs: `cashCheck` nightly, `dailyZReport` hourly
+
+**Small gaps in built features**
+
+- Rider cash screen: group cash by day (orders from previous days) and show the over-limit state there too
+- Cashier handovers: search by rider code or handover code
+- Payments ledger: highlight payments / handovers pending more than 4 h
+- Orders table: channel and cash-status filters; paging beyond 2,000 rows
+- B6 row limits: some server queries still stop at 100–1,000 rows (lists, stats); page or aggregate
+- B9: address is required for every rider order (fine for deliveries; counter orders already skip it). Confirm with the owner (§9 Q1)
+- Reports: till variance across days (per-shift differences are in the Z-report and ledger)
+- Menu: prep time per dish; categories as their own records (now free text)
+
+**Release readiness (Phase 6)**
+
+- Error reporting (e.g. Sentry) and structured Cloud Code logs
+- Backups / export, and a staging app separate from production
+- Onboarding wizard for a new restaurant (menu CSV import, first rider and cashier)
+- Privacy notice, terms, data retention (customer phone numbers)
+- Code-splitting: the main bundle is ~750 kB (charts and map already load on demand)
+- Low-end Android / slow network pass; tap targets and contrast check
+- Full role × function permission matrix in e2e
+
+**Later / postponed (phase 2, needs decisions or credentials)**
+
+- MTN MoMo / Airtel Money API auto-confirmation (merchant API credentials)
+- Priced add-ons (extra chicken +2,000)
+- Customer QR menu, live rider GPS, native app wrapper, email reports (owner chose in-app + phone)
+- Multi-restaurant (multi-tenant) build vs. one Back4App app per restaurant
+
+**Open questions for the owner (§9)**: Q1 address for walk-ins, Q2 commission base (subtotal only?), Q5 keep Google sign-in?
 
 ### Next up (reviewed 2026-09-26)
 
@@ -821,3 +860,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-27 | Branding follow-up: the owner's menu header shows the restaurant logo in place of the Relay mark (desktop sidebar and the tablet/phone top bar); charts on Overview, Reports and rider earnings take the branding colours (first series the main colour, second the accent; `recolor` in `Chart.tsx`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 2026-09-27 | Branding: links, notification dots, info banners, the "Eat in / Pick up" ticket tag and "You are handling this" follow the theme (`--blue` becomes the main colour under a custom theme; remaining hard-coded blues and tints replaced with tokens).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | 2026-09-27 | Landing pages and shift page: after signing in, riders start on Home, cashiers on the kitchen board (also right after opening a shift) and the owner on the Overview; a reload with a live session keeps the page. Cashier shift page redesigned: status and time open, till summary (opening count, cash in split into rider handovers and counter sales, paid out, expected in the till) and a "Close your till" panel with a large count field, live match / short / over, and End shift (disabled while the cashier still holds orders). "Kept by the restaurant" renamed "Net revenue" on the Overview, Reports, Z-report and the Z-report alert.                                                                                                                                                                                                                                                                                                                                                                      |
+| 2026-09-27 | Browser tab and installed app name are now just "Relay". Roadmap reviewed: stale items ticked (map pin, live mobile money badge, white-label), screen notes refreshed, and a consolidated "Still open" list added to §7.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
