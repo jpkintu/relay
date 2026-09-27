@@ -1552,7 +1552,12 @@ describe('Web Push to phones (lock screen)', () => {
       .first(M);
     assert.ok(ok.get('lastSuccessAt'));
     await broken.destroy(M);
-    assert.deepEqual(await run('sendTestPush', {}, s.nia), { sent: 0, failed: 0, devices: [] });
+    assert.deepEqual(await run('sendTestPush', {}, s.nia), {
+      testId: '',
+      sent: 0,
+      failed: 0,
+      devices: [],
+    });
   });
 
   test('expired subscriptions are removed; devices can be unregistered', async () => {

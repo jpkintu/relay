@@ -1,7 +1,19 @@
 import { useState } from 'react';
 import { BellRing, Share, X } from 'lucide-react';
 import { useNotifications } from '../lib/notifications';
-import { sendTestPush, type TestResult } from '../lib/push';
+import { sendTestPush, waitForArrival, type Arrival, type TestResult } from '../lib/push';
+
+const ARRIVAL: Record<Arrival, { good: boolean; text: string }> = {
+  shown: {
+    good: true,
+    text: 'received and handed to the system. If no banner appeared, notifications for this browser are off or silenced on the device: on Windows, Settings → System → Notifications (Chrome on, Do not disturb / Focus off); on Android, Settings → Apps → Chrome (or Relay) → Notifications, and Do not disturb off.',
+  },
+  error: { good: false, text: 'received, but the browser would not show it: ' },
+  'not-received': {
+    good: false,
+    text: 'Google / Apple accepted it, but it has not reached this device yet. Check the device is online, the network does not block push notifications, and battery saver lets the browser run in the background.',
+  },
+};
 
 // Notifications are on: a test button that says, per device, whether the
 // push service accepted it (the notification itself shows even with Relay open).
@@ -9,16 +21,25 @@ function PushOn() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
   const [error, setError] = useState('');
+  const [arrival, setArrival] = useState<{ arrival: Arrival; message: string } | null>(null);
+  const [waiting, setWaiting] = useState(false);
   const test = async () => {
     setBusy(true);
     setError('');
     setResult(null);
+    setArrival(null);
     try {
-      setResult(await sendTestPush());
+      const sent = await sendTestPush();
+      setResult(sent);
+      if (sent.sent > 0) {
+        setWaiting(true);
+        setArrival(await waitForArrival(sent.testId));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not send the test');
     } finally {
       setBusy(false);
+      setWaiting(false);
     }
   };
   return (
@@ -27,7 +48,7 @@ function PushOn() {
         <BellRing aria-hidden /> Notifications are on for this device
       </p>
       <button className="link-button" disabled={busy} onClick={() => void test()}>
-        {busy ? 'Sending…' : 'Send a test notification'}
+        {waiting ? 'Waiting for it to arrive…' : busy ? 'Sending…' : 'Send a test notification'}
       </button>
       {error && <p className="ops-error">{error}</p>}
       {result && (
@@ -40,6 +61,12 @@ function PushOn() {
               <b>{d.device}</b>: {d.ok ? 'sent. It should appear in a few seconds.' : d.problem}
             </li>
           ))}
+          {arrival && (
+            <li className={ARRIVAL[arrival.arrival].good ? 'good' : 'bad'}>
+              <b>This device</b>: {ARRIVAL[arrival.arrival].text}
+              {arrival.message}
+            </li>
+          )}
         </ul>
       )}
     </div>
