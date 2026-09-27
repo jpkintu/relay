@@ -70,6 +70,9 @@ function factOf(order) {
   const rider = order.get('createdBy');
   const phone = order.get('customerPhone');
   const name = String(order.get('customerName') || '').toLowerCase();
+  // Walk-in guests without a phone ("Eat-in guest", "Pick-up") are not known
+  // customers; only riders' named customers are matched by name.
+  const fromCounter = order.get('source') === 'counter';
   return {
     id: order.id,
     code: order.get('orderCode'),
@@ -79,7 +82,9 @@ function factOf(order) {
     orderType: order.get('orderType') || 'delivery',
     source: order.get('source') || 'rider',
     customer: order.get('customerName') || '',
-    customerKey: order.get('customer')?.id || (phone ? `tel:${phone}` : name && `name:${name}`),
+    customerKey:
+      order.get('customer')?.id ||
+      (phone ? `tel:${phone}` : !fromCounter && name ? `name:${name}` : ''),
     riderId: rider?.id || '',
     rider: nameOf(rider),
     total: Number(order.get('total') || 0),
@@ -133,6 +138,7 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
   const cashQuery = ordersIn(range, 'deliveredAt', p.riderId);
   cashQuery.equalTo('paymentMethod', 'cash');
   cashQuery.equalTo('status', 'DELIVERED');
+  cashQuery.include('tillCashier');
   const momoQuery = ordersIn(range, 'createdAt', p.riderId);
   momoQuery.equalTo('paymentMethod', 'mobile_money');
   momoQuery.include('paymentCheckedBy');
@@ -162,7 +168,8 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
       at: f.deliveredAt,
       code: f.code,
       riderId: f.riderId,
-      rider: f.rider,
+      // Eat-in / pick-up cash was taken at the counter, not by a rider.
+      rider: f.rider || `Counter · ${nameOf(order.get('tillCashier'))}`,
       customer: f.customer,
       amount: f.amountCollected,
       orderTotal: f.total,
@@ -233,6 +240,8 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
         withRiders: sum(cashRows, (r) => r.status === 'WITH_RIDER'),
         handoverPending: sum(cashRows, (r) => r.status === 'HANDOVER_PENDING'),
         reconciled: sum(cashRows, (r) => r.status === 'RECONCILED'),
+        // Taken at the counter (eat-in / pick-up), straight into a till.
+        inTill: sum(cashRows, (r) => r.status === 'IN_TILL'),
       },
       mobileMoney: {
         count: momoRows.length,
@@ -304,6 +313,8 @@ Parse.Cloud.define('getCommissionLedger', async (request) => {
   const range = rangeOf(p, config, { defaultDays: 7 });
   const query = ordersIn(range, 'deliveredAt', p.riderId);
   query.equalTo('status', 'DELIVERED');
+  // Rider deliveries only: eat-in and pick-up orders have no rider pay.
+  query.exists('createdBy');
   const all = (await findAll(query))
     .map((order) => {
       const fact = factOf(order);

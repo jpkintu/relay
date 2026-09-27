@@ -21,7 +21,12 @@ type Dashboard = {
     kept: number;
     avgOrder: number;
     avgDeliveryMinutes: number | null;
+    avgCounterMinutes: number | null;
     cashReceived: number;
+    riderCash: number;
+    counterCash: number;
+    byType: { key: string; orders: number; amount: number }[];
+    counterSales: number;
   };
   topRider: { rider: string; delivered: number; sales: number } | null;
   cash: { total: number; withRiders: number; handedOver: number; riders: number };
@@ -46,6 +51,8 @@ type Dashboard = {
     createdAt: string;
   }[];
 };
+
+const KIND: Record<string, string> = { delivery: 'delivery', eat_in: 'eat in', pickup: 'pick up' };
 
 // Owner: today at a glance, computed on the server (getDashboard).
 export function AdminOverview({ version }: { version: number }) {
@@ -133,8 +140,13 @@ export function AdminOverview({ version }: { version: number }) {
           <span>Orders today</span>
           <strong>{t.orders}</strong>
           <small>
-            {t.delivered} delivered · {t.open} in flight
+            {t.delivered} delivered · {t.open} in progress
             {t.cancelled ? ` · ${t.cancelled} cancelled` : ''}
+            {t.byType.some((k) => k.key !== 'delivery' && k.orders) &&
+              ` · ${t.byType
+                .filter((k) => k.orders)
+                .map((k) => `${k.orders} ${KIND[k.key] || k.key}`)
+                .join(', ')}`}
           </small>
         </article>
         <article>
@@ -148,7 +160,10 @@ export function AdminOverview({ version }: { version: number }) {
         <article>
           <span>Cash counted in today</span>
           <strong>{money(t.cashReceived)}</strong>
-          <small>From rider handovers</small>
+          <small>
+            {money(t.riderCash)} from rider handovers
+            {t.counterCash ? ` · ${money(t.counterCash)} at the counter` : ''}
+          </small>
         </article>
         <article>
           <span>Rider pay owed</span>
@@ -168,9 +183,12 @@ export function AdminOverview({ version }: { version: number }) {
           <span>Average order</span>
           <strong>{money(t.avgOrder)}</strong>
           <small>
-            {t.avgDeliveryMinutes !== null
-              ? `${t.avgDeliveryMinutes} min from order to door`
-              : 'Delivered orders today'}
+            {[
+              t.avgDeliveryMinutes !== null && `${t.avgDeliveryMinutes} min order to door`,
+              t.avgCounterMinutes !== null && `${t.avgCounterMinutes} min to serve at the counter`,
+            ]
+              .filter(Boolean)
+              .join(' · ') || 'Delivered orders today'}
           </small>
         </article>
         <article>

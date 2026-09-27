@@ -301,6 +301,7 @@ var require_core = __commonJS({
         const query = new Parse.Query("Counter");
         query.equalTo("key", key);
         query.ascending("createdAt");
+        query.addAscending("objectId");
         return query.first(MASTER);
       };
       if (!await find()) {
@@ -9234,7 +9235,11 @@ var require_reports = __commonJS({
         if (!fact.customerKey) continue;
         perCustomer.set(fact.customerKey, (perCustomer.get(fact.customerKey) || 0) + 1);
       }
-      const minutes = delivered.filter((f) => f.deliveredAt && f.createdAt).map((f) => (f.deliveredAt - f.createdAt) / 6e4);
+      const minutesOf = (rows) => rows.filter((f) => f.deliveredAt && f.createdAt).map((f) => (f.deliveredAt - f.createdAt) / 6e4);
+      const average = (values) => values.length ? Math.round(values.reduce((n, m) => n + m, 0) / values.length) : null;
+      const atCounter = (f) => ["eat_in", "pickup"].includes(f.orderType);
+      const minutes = minutesOf(delivered.filter((f) => !atCounter(f)));
+      const counterMinutes = minutesOf(delivered.filter(atCounter));
       return {
         orders: facts.length,
         delivered: delivered.length,
@@ -9254,7 +9259,13 @@ var require_reports = __commonJS({
         unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + round(f.total), 0),
         customers: perCustomer.size,
         repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
-        avgDeliveryMinutes: minutes.length ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length) : null
+        avgDeliveryMinutes: average(minutes),
+        avgCounterMinutes: average(counterMinutes),
+        // Delivered orders by how they came in.
+        byType: typeMix(facts),
+        // Sales by who took the order: riders, or the counter (cashier).
+        riderSales: delivered.filter((f) => f.source !== "counter").reduce((n, f) => n + round(f.total), 0),
+        counterSales: delivered.filter((f) => f.source === "counter").reduce((n, f) => n + round(f.total), 0)
       };
     }
     function series(facts, keys, keyOf) {
@@ -9360,6 +9371,16 @@ var require_reports = __commonJS({
       }
       return [...byKey.values()].sort((a, b) => b.amount - a.amount);
     }
+    function typeMix(facts) {
+      const rows = { delivery: 0, eat_in: 0, pickup: 0 };
+      const amounts = { delivery: 0, eat_in: 0, pickup: 0 };
+      for (const fact of facts.filter(isDelivered)) {
+        const key = fact.orderType in rows ? fact.orderType : "delivery";
+        rows[key] += 1;
+        amounts[key] += round(fact.total);
+      }
+      return Object.keys(rows).map((key) => ({ key, orders: rows[key], amount: amounts[key] }));
+    }
     function channelMix(facts) {
       const byKey = /* @__PURE__ */ new Map();
       for (const fact of facts.filter(isDelivered)) {
@@ -9380,7 +9401,8 @@ var require_reports = __commonJS({
       riderStats,
       timeOfDay,
       paymentMix,
-      channelMix
+      channelMix,
+      typeMix
     };
   }
 });
@@ -9478,6 +9500,7 @@ var require_reports2 = __commonJS({
       const rider = order.get("createdBy");
       const phone = order.get("customerPhone");
       const name = String(order.get("customerName") || "").toLowerCase();
+      const fromCounter = order.get("source") === "counter";
       return {
         id: order.id,
         code: order.get("orderCode"),
@@ -9487,7 +9510,7 @@ var require_reports2 = __commonJS({
         orderType: order.get("orderType") || "delivery",
         source: order.get("source") || "rider",
         customer: order.get("customerName") || "",
-        customerKey: order.get("customer")?.id || (phone ? `tel:${phone}` : name && `name:${name}`),
+        customerKey: order.get("customer")?.id || (phone ? `tel:${phone}` : !fromCounter && name ? `name:${name}` : ""),
         riderId: rider?.id || "",
         rider: nameOf(rider),
         total: Number(order.get("total") || 0),
@@ -9534,6 +9557,7 @@ var require_reports2 = __commonJS({
       const cashQuery = ordersIn(range, "deliveredAt", p.riderId);
       cashQuery.equalTo("paymentMethod", "cash");
       cashQuery.equalTo("status", "DELIVERED");
+      cashQuery.include("tillCashier");
       const momoQuery = ordersIn(range, "createdAt", p.riderId);
       momoQuery.equalTo("paymentMethod", "mobile_money");
       momoQuery.include("paymentCheckedBy");
@@ -9560,7 +9584,8 @@ var require_reports2 = __commonJS({
           at: f.deliveredAt,
           code: f.code,
           riderId: f.riderId,
-          rider: f.rider,
+          // Eat-in / pick-up cash was taken at the counter, not by a rider.
+          rider: f.rider || `Counter \xB7 ${nameOf(order.get("tillCashier"))}`,
           customer: f.customer,
           amount: f.amountCollected,
           orderTotal: f.total,
@@ -9622,7 +9647,9 @@ var require_reports2 = __commonJS({
             collected: sum(cashRows, () => true),
             withRiders: sum(cashRows, (r) => r.status === "WITH_RIDER"),
             handoverPending: sum(cashRows, (r) => r.status === "HANDOVER_PENDING"),
-            reconciled: sum(cashRows, (r) => r.status === "RECONCILED")
+            reconciled: sum(cashRows, (r) => r.status === "RECONCILED"),
+            // Taken at the counter (eat-in / pick-up), straight into a till.
+            inTill: sum(cashRows, (r) => r.status === "IN_TILL")
           },
           mobileMoney: {
             count: momoRows.length,
@@ -9684,6 +9711,7 @@ var require_reports2 = __commonJS({
       const range = rangeOf(p, config, { defaultDays: 7 });
       const query = ordersIn(range, "deliveredAt", p.riderId);
       query.equalTo("status", "DELIVERED");
+      query.exists("createdBy");
       const all = (await findAll(query)).map((order) => {
         const fact = factOf(order);
         const owed2 = order.get("commissionPaid") === true ? 0 : payOwed(order);
@@ -10000,7 +10028,19 @@ var require_owner = __commonJS({
           kept: sales.net,
           avgOrder: sales.avgOrder,
           avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null,
-          cashReceived: sumBy(received, (r) => r.amount)
+          avgCounterMinutes: sales.avgCounterMinutes ?? null,
+          cashReceived: sumBy(received, (r) => r.amount),
+          // Of which: counted in from riders' handovers / taken at the counter.
+          riderCash: sumBy(
+            received.filter((r) => r.status !== "counter"),
+            (r) => r.amount
+          ),
+          counterCash: sumBy(
+            received.filter((r) => r.status === "counter"),
+            (r) => r.amount
+          ),
+          byType: sales.byType,
+          counterSales: sales.counterSales
         },
         topRider: riders[0] ? {
           rider: riders[0].rider,
@@ -10187,7 +10227,9 @@ var require_owner = __commonJS({
           delivered: sales.delivered,
           cancelled,
           avgOrder: sales.avgOrder,
-          avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null
+          avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null,
+          avgCounterMinutes: sales.avgCounterMinutes ?? null,
+          byType: sales.byType
         },
         sales: {
           total: sales.revenue,
@@ -10195,7 +10237,9 @@ var require_owner = __commonJS({
           deliveryFees: sales.deliveryFees,
           riderCommission: sales.riderCommission,
           riderPay: sales.commission,
-          kept: sales.net
+          kept: sales.net,
+          riderOrders: sales.riderSales,
+          counterOrders: sales.counterSales
         },
         payments: {
           cash: sumBy(cash, (f) => f.amountCollected),
@@ -10206,6 +10250,10 @@ var require_owner = __commonJS({
         },
         till: {
           cashReceived: sumBy(received, (r) => r.amount),
+          riderCash: sumBy(
+            received.filter((r) => r.status !== "counter"),
+            (r) => r.amount
+          ),
           counterCash: sumBy(
             received.filter((r) => r.status === "counter"),
             (r) => r.amount

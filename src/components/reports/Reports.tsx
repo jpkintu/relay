@@ -37,6 +37,10 @@ type Summary = {
   customers: number;
   repeatCustomers: number;
   avgDeliveryMinutes: number | null;
+  avgCounterMinutes: number | null;
+  byType: { key: string; orders: number; amount: number }[];
+  riderSales: number;
+  counterSales: number;
 };
 type SeriesRow = {
   key: string;
@@ -103,6 +107,12 @@ const CHANNEL_NAMES: Record<string, string> = {
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
 const pct = (part: number, whole: number) => (whole ? Math.round((part / whole) * 1000) / 10 : 0);
+
+const KIND_NAMES: Record<string, string> = {
+  delivery: 'Delivery',
+  eat_in: 'Eat in',
+  pickup: 'Pick up',
+};
 
 export function Reports() {
   const money = useMoney();
@@ -371,14 +381,16 @@ export function Reports() {
               label="Orders"
               value={s.orders}
               change={data.change.orders}
-              note={`${s.delivered} delivered · ${s.open} in progress`}
+              note={`${s.delivered} delivered · ${s.open} in progress${
+                s.counterSales ? ` · ${money(s.counterSales)} taken at the counter` : ''
+              }`}
             />
             <Stat label="Average order" value={money(s.avgOrder)} change={data.change.avgOrder} />
             <Stat
               label="Customers"
               value={s.customers}
               change={data.change.customers}
-              note={`${s.repeatCustomers} ordered more than once`}
+              note={`${s.repeatCustomers} ordered more than once · walk-in guests without a phone not counted`}
             />
             <Stat
               label="Cancelled"
@@ -388,7 +400,11 @@ export function Reports() {
             <Stat
               label="Order to door"
               value={s.avgDeliveryMinutes === null ? '—' : `${s.avgDeliveryMinutes} min`}
-              note="Average, placed to delivered"
+              note={`Deliveries, placed to delivered${
+                s.avgCounterMinutes !== null
+                  ? ` · eat in / pick up ${s.avgCounterMinutes} min to served`
+                  : ''
+              }`}
             />
             <Stat
               label="Cash / mobile money"
@@ -584,6 +600,18 @@ export function Reports() {
                   for a cashier, and mobile money waiting for a check.
                 </p>
               )}
+              <p className="mini-table-title">Orders by kind</p>
+              <div className="mini-table">
+                {s.byType
+                  .filter((k) => k.orders > 0)
+                  .map((k) => (
+                    <div key={k.key}>
+                      <span>{KIND_NAMES[k.key] || k.key}</span>
+                      <span>{k.orders} orders</span>
+                      <strong>{money(k.amount)}</strong>
+                    </div>
+                  ))}
+              </div>
               <p className="mini-table-title">Orders by channel</p>
               <div className="mini-table">
                 {data.channels.map((c) => (

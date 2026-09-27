@@ -3335,3 +3335,64 @@ describe('printed receipts', () => {
       );
   });
 });
+
+describe('reports agree across order sources', () => {
+  let item;
+  let settings;
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run(
+      'adminSaveSettings',
+      { ...settings, moduleCallIn: true, moduleCounter: true },
+      s.owner,
+    );
+  });
+  after(async () => run('adminSaveSettings', settings, s.owner));
+
+  test('overview, Z-report, reports and ledgers count counter orders the same way', async () => {
+    const lines = [{ id: item.id, quantity: 1 }];
+    // An eat-in paid in cash, a pick-up paid later in cash, both served.
+    const eatIn = await run('createCounterOrder', { orderType: 'eat_in', items: lines }, s.dina);
+    const pickup = await run(
+      'createCounterOrder',
+      { orderType: 'pickup', payLater: true, items: lines },
+      s.dina,
+    );
+    await run('takeCounterPayment', { orderId: pickup.id, paymentMethod: 'cash' }, s.dina);
+    for (const id of [eatIn.id, pickup.id])
+      for (const action of ['accept', 'ready', 'complete'])
+        await run('transitionOrder', { orderId: id, action }, s.dina);
+
+    const today = (await run('getDashboard', {}, s.owner)).today;
+    const z = (await run('adminGetZReport', {}, s.owner)).report;
+    assert.equal(today.sales, z.sales.total, 'overview and Z-report sales agree');
+    assert.equal(today.kept, z.sales.kept);
+    assert.equal(today.cashReceived, today.riderCash + today.counterCash);
+    assert.equal(z.till.cashReceived, z.till.riderCash + z.till.counterCash);
+    assert.ok(today.counterCash >= eatIn.total + pickup.total);
+    const eatInKind = today.byType.find((k) => k.key === 'eat_in');
+    assert.ok(eatInKind.orders >= 1);
+    assert.equal(z.sales.total, z.sales.riderOrders + z.sales.counterOrders);
+
+    const report = await run('getOperationsReport', {}, s.owner);
+    assert.equal(report.summary.revenue, report.summary.riderSales + report.summary.counterSales);
+    assert.ok(!report.riders.some((r) => !r.riderId), 'no rider-less rows in the rider table');
+
+    const commission = await run('getCommissionLedger', {}, s.owner);
+    assert.ok(
+      commission.rows.every((r) => r.riderId),
+      'rider pay is for rider deliveries only',
+    );
+    assert.ok(!commission.rows.some((r) => [eatIn.id, pickup.id].includes(r.id)));
+
+    const ledger = await run('getPaymentsLedger', { method: 'cash' }, s.owner);
+    const rows = ledger.transactions.filter((r) => [eatIn.id, pickup.id].includes(r.id));
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.status === 'IN_TILL' && /^Counter · /.test(r.rider)));
+    const c = ledger.summary.cash;
+    assert.equal(c.collected, c.withRiders + c.handoverPending + c.reconciled + c.inTill);
+  });
+});

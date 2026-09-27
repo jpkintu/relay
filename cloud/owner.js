@@ -158,7 +158,19 @@ Parse.Cloud.define('getDashboard', async (request) => {
       kept: sales.net,
       avgOrder: sales.avgOrder,
       avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null,
+      avgCounterMinutes: sales.avgCounterMinutes ?? null,
       cashReceived: sumBy(received, (r) => r.amount),
+      // Of which: counted in from riders' handovers / taken at the counter.
+      riderCash: sumBy(
+        received.filter((r) => r.status !== 'counter'),
+        (r) => r.amount,
+      ),
+      counterCash: sumBy(
+        received.filter((r) => r.status === 'counter'),
+        (r) => r.amount,
+      ),
+      byType: sales.byType,
+      counterSales: sales.counterSales,
     },
     topRider: riders[0]
       ? {
@@ -361,6 +373,8 @@ async function buildZReport(day, config) {
       cancelled,
       avgOrder: sales.avgOrder,
       avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null,
+      avgCounterMinutes: sales.avgCounterMinutes ?? null,
+      byType: sales.byType,
     },
     sales: {
       total: sales.revenue,
@@ -369,6 +383,8 @@ async function buildZReport(day, config) {
       riderCommission: sales.riderCommission,
       riderPay: sales.commission,
       kept: sales.net,
+      riderOrders: sales.riderSales,
+      counterOrders: sales.counterSales,
     },
     payments: {
       cash: sumBy(cash, (f) => f.amountCollected),
@@ -379,6 +395,10 @@ async function buildZReport(day, config) {
     },
     till: {
       cashReceived: sumBy(received, (r) => r.amount),
+      riderCash: sumBy(
+        received.filter((r) => r.status !== 'counter'),
+        (r) => r.amount,
+      ),
       counterCash: sumBy(
         received.filter((r) => r.status === 'counter'),
         (r) => r.amount,

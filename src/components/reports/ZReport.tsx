@@ -13,6 +13,8 @@ type Z = {
     cancelled: number;
     avgOrder: number;
     avgDeliveryMinutes: number | null;
+    avgCounterMinutes?: number | null;
+    byType?: { key: string; orders: number; amount: number }[];
   };
   sales: {
     total: number;
@@ -21,6 +23,8 @@ type Z = {
     riderCommission: number;
     riderPay: number;
     kept: number;
+    riderOrders?: number;
+    counterOrders?: number;
   };
   payments: {
     cash: number;
@@ -31,6 +35,8 @@ type Z = {
   };
   till: {
     cashReceived: number;
+    riderCash?: number;
+    counterCash?: number;
     riderPay: number;
     otherPayouts: number;
     disputes: number;
@@ -175,6 +181,16 @@ export function ZReportPage({ day: wanted }: { day: string }) {
                   <dt>Average order</dt>
                   <dd>{money(z.orders.avgOrder)}</dd>
                 </div>
+                {(z.orders.byType || [])
+                  .filter((k) => k.orders && k.key !== 'delivery')
+                  .map((k) => (
+                    <div key={k.key}>
+                      <dt>{k.key === 'eat_in' ? 'Of which eat in' : 'Of which pick up'}</dt>
+                      <dd>
+                        {k.orders} · {money(k.amount)}
+                      </dd>
+                    </div>
+                  ))}
                 <div>
                   <dt>Order to door</dt>
                   <dd>
@@ -213,8 +229,16 @@ export function ZReportPage({ day: wanted }: { day: string }) {
               <dl>
                 <div>
                   <dt>Counted in from riders</dt>
-                  <dd>{money(z.till.cashReceived)}</dd>
+                  <dd>
+                    {money(z.till.riderCash ?? z.till.cashReceived - (z.till.counterCash || 0))}
+                  </dd>
                 </div>
+                {!!z.till.counterCash && (
+                  <div>
+                    <dt>Taken at the counter</dt>
+                    <dd>{money(z.till.counterCash)}</dd>
+                  </div>
+                )}
                 <div>
                   <dt>Rider pay from tills</dt>
                   <dd>− {money(z.till.riderPay)}</dd>

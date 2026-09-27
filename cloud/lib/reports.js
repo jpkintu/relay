@@ -35,9 +35,16 @@ function summarize(facts) {
     if (!fact.customerKey) continue;
     perCustomer.set(fact.customerKey, (perCustomer.get(fact.customerKey) || 0) + 1);
   }
-  const minutes = delivered
-    .filter((f) => f.deliveredAt && f.createdAt)
-    .map((f) => (f.deliveredAt - f.createdAt) / 60000);
+  // Order-to-door time is for deliveries; eat-in / pick-up have their own.
+  const minutesOf = (rows) =>
+    rows
+      .filter((f) => f.deliveredAt && f.createdAt)
+      .map((f) => (f.deliveredAt - f.createdAt) / 60000);
+  const average = (values) =>
+    values.length ? Math.round(values.reduce((n, m) => n + m, 0) / values.length) : null;
+  const atCounter = (f) => ['eat_in', 'pickup'].includes(f.orderType);
+  const minutes = minutesOf(delivered.filter((f) => !atCounter(f)));
+  const counterMinutes = minutesOf(delivered.filter(atCounter));
   return {
     orders: facts.length,
     delivered: delivered.length,
@@ -61,9 +68,17 @@ function summarize(facts) {
       .reduce((n, f) => n + round(f.total), 0),
     customers: perCustomer.size,
     repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
-    avgDeliveryMinutes: minutes.length
-      ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length)
-      : null,
+    avgDeliveryMinutes: average(minutes),
+    avgCounterMinutes: average(counterMinutes),
+    // Delivered orders by how they came in.
+    byType: typeMix(facts),
+    // Sales by who took the order: riders, or the counter (cashier).
+    riderSales: delivered
+      .filter((f) => f.source !== 'counter')
+      .reduce((n, f) => n + round(f.total), 0),
+    counterSales: delivered
+      .filter((f) => f.source === 'counter')
+      .reduce((n, f) => n + round(f.total), 0),
   };
 }
 
@@ -193,6 +208,18 @@ function paymentMix(facts) {
   return [...byKey.values()].sort((a, b) => b.amount - a.amount);
 }
 
+// Delivered orders and sales by kind: delivery, eat in, pick up.
+function typeMix(facts) {
+  const rows = { delivery: 0, eat_in: 0, pickup: 0 };
+  const amounts = { delivery: 0, eat_in: 0, pickup: 0 };
+  for (const fact of facts.filter(isDelivered)) {
+    const key = fact.orderType in rows ? fact.orderType : 'delivery';
+    rows[key] += 1;
+    amounts[key] += round(fact.total);
+  }
+  return Object.keys(rows).map((key) => ({ key, orders: rows[key], amount: amounts[key] }));
+}
+
 function channelMix(facts) {
   const byKey = new Map();
   for (const fact of facts.filter(isDelivered)) {
@@ -215,4 +242,5 @@ module.exports = {
   timeOfDay,
   paymentMix,
   channelMix,
+  typeMix,
 };
