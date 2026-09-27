@@ -6459,3 +6459,65 @@ a {
   font: 500 14px var(--font-body);
   color: var(--muted);
 }
+/* Notifications panel: test result per device. */
+.push-state.on {
+  display: grid;
+  gap: 4px;
+}
+.push-state.on > p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.push-state .link-button {
+  justify-self: start;
+  font-size: 13px;
+}
+.push-test {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.push-test .good {
+  color: #2b6a1f;
+}
+.push-test .bad {
+  color: #a3372a;
+}
+/* Owner: settle a till difference. */
+.settle-panel {
+  display: grid;
+  align-items: start;
+  max-width: 640px;
+}
+.settle-panel strong {
+  font-size: 15px;
+}
+.settle-modes {
+  display: grid;
+  gap: 6px;
+}
+.settle-modes input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--ink);
+}
+.settle-panel > label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+.settle-button {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+}
+.settled-note {
+  display: block;
+  margin-top: 4px;
+}

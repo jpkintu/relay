@@ -58,46 +58,78 @@ async function save(sub: PushSubscription) {
   });
 }
 
-// Asks for permission (must run from a tap) and registers this device.
-export async function enablePush(): Promise<PushState> {
-  if (!supported()) return pushState();
-  const permission = await Notification.requestPermission();
-  if (permission !== 'granted') return pushState();
+const base64url = (buffer: ArrayBuffer | null | undefined) =>
+  buffer
+    ? btoa(String.fromCharCode(...new Uint8Array(buffer)))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '')
+    : '';
+
+// Makes sure this device has a working subscription for the server's current
+// key, and that it is registered to the signed-in user. A subscription made
+// for an older key is rejected by the push service, so it is replaced.
+// Needs notification permission already granted (no tap required then).
+async function subscribeAndSave(): Promise<PushState> {
   const registration =
     (await navigator.serviceWorker.getRegistration()) ??
     (await navigator.serviceWorker.register('/sw.js'));
   await navigator.serviceWorker.ready;
   const { publicKey } = await Parse.Cloud.run('getPushConfig');
-  const sub =
-    (await registration.pushManager.getSubscription()) ??
-    (await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: keyBytes(publicKey) as BufferSource,
-    }));
+  let sub = await registration.pushManager.getSubscription();
+  if (sub && base64url(sub.options.applicationServerKey) !== publicKey) {
+    await sub.unsubscribe().catch(() => undefined);
+    sub = null;
+  }
+  sub ??= await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes(publicKey) as BufferSource,
+  });
   await save(sub);
   return 'on';
 }
 
-// After sign-in: make sure this device's subscription belongs to the
-// signed-in user (another person may have used the phone before).
+// Asks for permission (must run from a tap) and registers this device.
+export async function enablePush(): Promise<PushState> {
+  if (!supported()) return pushState();
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') return pushState();
+  return subscribeAndSave();
+}
+
+// On every start and after sign-in: if notifications are allowed on this
+// device, (re)register it for the signed-in user, so they keep working after
+// signing out and in, a new phone user, or a key change on the server.
 export async function refreshPush() {
   try {
-    if (Notification.permission !== 'granted') return;
-    const sub = await subscription();
-    if (sub) await save(sub);
+    if (!supported() || Notification.permission !== 'granted') return;
+    await subscribeAndSave();
   } catch {
-    // Not supported or offline: nothing to refresh.
+    // Offline or push service unreachable: tried again next start.
   }
 }
 
 // Before sign-out: stop sending this user's notifications to this device.
+// The browser keeps its subscription, so the next person to sign in on this
+// device gets notifications without turning them on again.
 export async function forgetPush() {
   try {
     const sub = await subscription();
     if (!sub) return;
     await Parse.Cloud.run('removePushSubscription', { endpoint: sub.endpoint });
-    await sub.unsubscribe();
   } catch {
     // Signed out already or offline; the server drops dead subscriptions.
   }
+}
+
+export type TestResult = {
+  sent: number;
+  failed: number;
+  devices: { device: string; ok: boolean; problem: string }[];
+};
+
+// Sends a test notification to this user's devices (shown even if Relay is open).
+export async function sendTestPush(): Promise<TestResult> {
+  await refreshPush();
+  return Parse.Cloud.run('sendTestPush');
 }

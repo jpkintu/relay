@@ -113,7 +113,12 @@ self.addEventListener('push', (event) => {
       // Tell open copies of the app to refresh their bell now.
       for (const client of windows) client.postMessage({ type: 'relay:push', data });
       // The app is on screen: it plays its own sound, no system banner needed.
-      if (windows.some((client) => client.focused && client.visibilityState === 'visible')) return;
+      // (A test notification is always shown.)
+      if (
+        !data.force &&
+        windows.some((client) => client.focused && client.visibilityState === 'visible')
+      )
+        return;
       await self.registration.showNotification(data.title || 'Relay', {
         body: data.body || '',
         tag: data.id || undefined,

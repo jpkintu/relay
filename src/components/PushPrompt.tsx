@@ -1,6 +1,50 @@
 import { useState } from 'react';
 import { BellRing, Share, X } from 'lucide-react';
 import { useNotifications } from '../lib/notifications';
+import { sendTestPush, type TestResult } from '../lib/push';
+
+// Notifications are on: a test button that says, per device, whether the
+// push service accepted it (the notification itself shows even with Relay open).
+function PushOn() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<TestResult | null>(null);
+  const [error, setError] = useState('');
+  const test = async () => {
+    setBusy(true);
+    setError('');
+    setResult(null);
+    try {
+      setResult(await sendTestPush());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not send the test');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="push-state on">
+      <p>
+        <BellRing aria-hidden /> Notifications are on for this device
+      </p>
+      <button className="link-button" disabled={busy} onClick={() => void test()}>
+        {busy ? 'Sending…' : 'Send a test notification'}
+      </button>
+      {error && <p className="ops-error">{error}</p>}
+      {result && (
+        <ul className="push-test">
+          {!result.devices.length && (
+            <li className="bad">No device is registered for you. Turn notifications on again.</li>
+          )}
+          {result.devices.map((d, i) => (
+            <li key={i} className={d.ok ? 'good' : 'bad'}>
+              <b>{d.device}</b>: {d.ok ? 'sent. It should appear in a few seconds.' : d.problem}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 const DISMISS_KEY = 'relay:push-prompt-dismissed';
 
@@ -23,12 +67,7 @@ export function PushPrompt({ card = false }: { card?: boolean }) {
 
   if (card && (push === 'on' || dismissed)) return null;
 
-  if (push === 'on')
-    return (
-      <p className="push-state on">
-        <BellRing aria-hidden /> Notifications are on for this device
-      </p>
-    );
+  if (push === 'on') return <PushOn />;
   if (push === 'blocked')
     return (
       <p className="push-state">

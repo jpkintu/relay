@@ -300,13 +300,17 @@ Parse.Cloud.define('getShiftReport', async (request) => {
         physicalCount: shift.get('physicalCount') ?? null,
         variance: shift.get('variance') ?? null,
         varianceNote: shift.get('varianceNote') || '',
+        originalVariance: shift.get('originalVariance') ?? null,
+        settled: shift.get('varianceSettled') === true,
+        settlementNote: shift.get('settlementNote') || '',
       };
     }),
   );
   return {
     range: { from: range.from, to: range.to },
     shifts,
-    totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0),
+    // Differences still to settle (settled ones are explained).
+    totalVariance: shifts.reduce((n, s) => n + (s.settled ? 0 : Number(s.variance) || 0), 0),
     // Differences per day (the day the till was closed) and per cashier.
     trend: tillTrend(
       shifts

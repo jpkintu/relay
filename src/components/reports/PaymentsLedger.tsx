@@ -61,6 +61,10 @@ type TillShift = {
   physicalCount: number | null;
   variance: number | null;
   varianceNote: string;
+  // The difference before the owner settled it, and how it was settled.
+  originalVariance: number | null;
+  settled: boolean;
+  settlementNote: string;
 };
 
 type Ledger = {
@@ -146,6 +150,7 @@ export function PaymentsLedger() {
     from: filters.from,
     to: filters.to,
   });
+  const [settling, setSettling] = useState<string | null>(null);
   const s = data?.summary;
   const rows = data?.transactions ?? [];
   const staleCount = rows.filter((t) => overdue(t.status, t.at)).length;
@@ -403,34 +408,71 @@ export function PaymentsLedger() {
                 </thead>
                 <tbody>
                   {tills.data!.shifts.map((t) => (
-                    <tr key={t.id}>
-                      <td>{t.cashier}</td>
-                      <td className="nowrap">
-                        {when(t.startedAt)}
-                        <small>{t.endedAt ? `to ${when(t.endedAt)}` : 'On shift now'}</small>
-                      </td>
-                      <td className="num">{money(t.openingFloat)}</td>
-                      <td className="num">{t.cashIn === null ? '—' : money(t.cashIn)}</td>
-                      <td className="num">{t.paidOut === null ? '—' : money(t.paidOut)}</td>
-                      <td className="num">
-                        {t.expectedTill === null ? '—' : money(t.expectedTill)}
-                      </td>
-                      <td className="num">
-                        {t.physicalCount === null ? '—' : money(t.physicalCount)}
-                      </td>
-                      <td
-                        className={`num strong ${
-                          !t.variance ? '' : t.variance < 0 ? 'down' : 'up'
-                        }`}
-                      >
-                        {t.variance === null
-                          ? '—'
-                          : t.variance === 0
-                            ? 'Matched'
-                            : `${t.variance > 0 ? '+' : '−'}${money(Math.abs(t.variance))}`}
-                      </td>
-                      <td>{t.varianceNote || (t.status === 'open' ? '' : '—')}</td>
-                    </tr>
+                    <Fragment key={t.id}>
+                      <tr>
+                        <td>{t.cashier}</td>
+                        <td className="nowrap">
+                          {when(t.startedAt)}
+                          <small>{t.endedAt ? `to ${when(t.endedAt)}` : 'On shift now'}</small>
+                        </td>
+                        <td className="num">{money(t.openingFloat)}</td>
+                        <td className="num">{t.cashIn === null ? '—' : money(t.cashIn)}</td>
+                        <td className="num">{t.paidOut === null ? '—' : money(t.paidOut)}</td>
+                        <td className="num">
+                          {t.expectedTill === null ? '—' : money(t.expectedTill)}
+                        </td>
+                        <td className="num">
+                          {t.physicalCount === null ? '—' : money(t.physicalCount)}
+                        </td>
+                        <td
+                          className={`num strong ${
+                            !t.variance ? '' : t.variance < 0 ? 'down' : 'up'
+                          }`}
+                        >
+                          {t.variance === null
+                            ? '—'
+                            : t.variance === 0
+                              ? 'Matched'
+                              : `${t.variance > 0 ? '+' : '−'}${money(Math.abs(t.variance))}`}
+                          {t.originalVariance !== null && t.originalVariance !== t.variance && (
+                            <small>
+                              was {t.originalVariance > 0 ? '+' : '−'}
+                              {money(Math.abs(t.originalVariance))}
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          {t.varianceNote || (t.status === 'open' ? '' : '—')}
+                          {t.settled && (
+                            <small className="settled-note">
+                              <span className="status-pill good">Settled</span> {t.settlementNote}
+                            </small>
+                          )}
+                          {!t.settled && !!t.variance && t.status === 'closed' && (
+                            <button
+                              className="link-button settle-button"
+                              onClick={() => setSettling(settling === t.id ? null : t.id)}
+                            >
+                              {settling === t.id ? 'Close' : 'Settle'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {settling === t.id && (
+                        <tr className="detail-row">
+                          <td colSpan={9}>
+                            <SettleTill
+                              till={t}
+                              onDone={() => {
+                                setSettling(null);
+                                tills.reload();
+                                reload();
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -517,6 +559,97 @@ function DisputeResolution({
         </button>
       </div>
       {error && <p className="ops-error">{error}</p>}
+    </div>
+  );
+}
+
+// Owner: settle a till difference. A short till is usually cash paid out
+// without being recorded (fees, supplies): record that payment and the
+// difference shrinks. What is left can be written off with a note.
+function SettleTill({ till, onDone }: { till: TillShift; onDone: () => void }) {
+  const money = useMoney();
+  const short = (till.variance ?? 0) < 0;
+  const gap = Math.abs(till.variance ?? 0);
+  const [mode, setMode] = useState<'payout' | 'writeoff'>(short ? 'payout' : 'writeoff');
+  const [amount, setAmount] = useState(String(gap));
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const ready =
+    !busy &&
+    note.trim().length >= 5 &&
+    (mode === 'writeoff' || (Number(amount) > 0 && Number(amount) <= gap));
+  const submit = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('adminSettleTillDifference', {
+        shiftId: till.id,
+        mode,
+        amount: Number(amount),
+        note: note.trim(),
+      });
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not settle the till');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="dispute-panel settle-panel">
+      <strong>
+        {till.cashier}: till {short ? 'short' : 'over'} by {money(gap)}
+      </strong>
+      {till.varianceNote && <p>Cashier said: {till.varianceNote}</p>}
+      <div className="settle-modes" role="radiogroup" aria-label="How to settle">
+        {short && (
+          <label>
+            <input type="radio" checked={mode === 'payout'} onChange={() => setMode('payout')} />
+            Match a till payment that was not recorded (lowers the expected till)
+          </label>
+        )}
+        <label>
+          <input type="radio" checked={mode === 'writeoff'} onChange={() => setMode('writeoff')} />
+          {short ? 'Write it off as a loss' : 'Accept the extra cash'}
+        </label>
+      </div>
+      {mode === 'payout' && (
+        <label>
+          Amount paid out ({money(gap)} at most)
+          <input
+            type="number"
+            inputMode="numeric"
+            min="1"
+            max={gap}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </label>
+      )}
+      <label>
+        {mode === 'payout' ? 'What was it paid for?' : 'Note'}
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={200}
+          placeholder={
+            mode === 'payout' ? 'e.g. Delivery fees paid to riders' : 'e.g. Counting error'
+          }
+        />
+      </label>
+      {error && <p className="ops-error">{error}</p>}
+      <div className="dispute-actions">
+        <button disabled={!ready} onClick={() => void submit()}>
+          {busy
+            ? 'Saving…'
+            : mode === 'payout'
+              ? `Record ${money(Number(amount) || 0)} payment`
+              : short
+                ? 'Write off'
+                : 'Accept'}
+        </button>
+      </div>
     </div>
   );
 }

@@ -700,7 +700,13 @@ var require_security = __commonJS({
         variance: N,
         varianceNote: S,
         cashIn: N,
-        paidOut: N
+        paidOut: N,
+        // Owner's settlement of a till difference (adminSettleTillDifference).
+        originalVariance: N,
+        varianceSettled: B,
+        settledAt: D,
+        settledBy: user,
+        settlementNote: S
       },
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
@@ -783,7 +789,11 @@ var require_security = __commonJS({
         p256dh: S,
         auth: S,
         userAgent: S,
-        lastSeenAt: D
+        lastSeenAt: D,
+        // Last delivery: when a push was accepted, or why it was not.
+        lastSuccessAt: D,
+        lastError: S,
+        lastErrorAt: D
       },
       Secret: { key: S, value: "Object" },
       Notification: {
@@ -8443,6 +8453,54 @@ var require_push = __commonJS({
       if (row) await row.destroy(MASTER);
       return { ok: !!row };
     });
+    var DEAD = [403, 404, 410];
+    function deviceName(userAgent = "") {
+      const os = /iPhone|iPad/.test(userAgent) ? "iPhone / iPad" : /Android/.test(userAgent) ? "Android" : /Windows/.test(userAgent) ? "Windows" : /Mac OS/.test(userAgent) ? "Mac" : "Device";
+      const browser = /SamsungBrowser/.test(userAgent) ? "Samsung Internet" : /Edg\//.test(userAgent) ? "Edge" : /Firefox/.test(userAgent) ? "Firefox" : /Chrome/.test(userAgent) ? "Chrome" : /Safari/.test(userAgent) ? "Safari" : "browser";
+      return `${os} \xB7 ${browser}`;
+    }
+    async function sendToSubscriptions(subs, payloadFor) {
+      const keys = await vapidKeys();
+      const options = {
+        vapidDetails: { subject: CONTACT, publicKey: keys.publicKey, privateKey: keys.privateKey },
+        TTL: 6 * 3600,
+        timeout: SEND_TIMEOUT_MS
+      };
+      return Promise.all(
+        subs.map(async (sub) => {
+          const payload = payloadFor(sub);
+          const device = deviceName(sub.get("userAgent"));
+          try {
+            await webpush.sendNotification(
+              {
+                endpoint: sub.get("endpoint"),
+                keys: { p256dh: sub.get("p256dh"), auth: sub.get("auth") }
+              },
+              JSON.stringify(payload),
+              // "high" wakes a sleeping phone straight away.
+              { ...options, urgency: payload.tone === "update" ? "normal" : "high" }
+            );
+            sub.set({ lastSuccessAt: /* @__PURE__ */ new Date(), lastError: "" });
+            await sub.save(null, MASTER).catch(() => void 0);
+            return { device, ok: true, problem: "" };
+          } catch (error) {
+            const status = error?.statusCode || 0;
+            const problem = status ? `The push service answered ${status}${error.body ? `: ${String(error.body).slice(0, 120)}` : ""}` : `Could not reach the push service (${error?.code || error?.message || "network error"})`;
+            if (DEAD.includes(status)) await sub.destroy(MASTER).catch(() => void 0);
+            else {
+              sub.set({ lastError: problem.slice(0, 200), lastErrorAt: /* @__PURE__ */ new Date() });
+              await sub.save(null, MASTER).catch(() => void 0);
+              console.error("push not delivered:", problem);
+            }
+            return {
+              device,
+              ok: false,
+              problem: DEAD.includes(status) ? `${problem}. This device's registration was out of date and has been removed; opening Relay on it registers it again.` : problem
+            };
+          }
+        })
+      );
+    }
     async function pushNotifications(rows) {
       try {
         if (!rows.length) return 0;
@@ -8455,50 +8513,42 @@ var require_push = __commonJS({
         );
         const subs = await findAll(query);
         if (!subs.length) return 0;
-        const keys = await vapidKeys();
-        const options = {
-          vapidDetails: { subject: CONTACT, publicKey: keys.publicKey, privateKey: keys.privateKey },
-          TTL: 6 * 3600,
-          timeout: SEND_TIMEOUT_MS
-        };
-        const results = await Promise.allSettled(
-          subs.map(async (sub) => {
-            const row = byUser.get(sub.get("user").id);
-            const tone = row.get("tone");
-            const payload = JSON.stringify({
-              id: row.id,
-              title: row.get("title"),
-              body: row.get("body"),
-              link: row.get("link"),
-              tone
-            });
-            try {
-              await webpush.sendNotification(
-                {
-                  endpoint: sub.get("endpoint"),
-                  keys: { p256dh: sub.get("p256dh"), auth: sub.get("auth") }
-                },
-                payload,
-                // "high" wakes a sleeping phone straight away.
-                { ...options, urgency: tone === "update" ? "normal" : "high" }
-              );
-              return true;
-            } catch (error) {
-              if ([404, 410].includes(error?.statusCode)) await sub.destroy(MASTER);
-              throw error;
-            }
-          })
-        );
-        for (const result of results)
-          if (result.status === "rejected" && ![404, 410].includes(result.reason?.statusCode))
-            console.error("push not delivered:", result.reason?.statusCode || result.reason?.message);
-        return results.filter((r) => r.status === "fulfilled").length;
+        const results = await sendToSubscriptions(subs, (sub) => {
+          const row = byUser.get(sub.get("user").id);
+          return {
+            id: row.id,
+            title: row.get("title"),
+            body: row.get("body"),
+            link: row.get("link"),
+            tone: row.get("tone")
+          };
+        });
+        return results.filter((r) => r.ok).length;
       } catch (error) {
         console.error("push failed", error);
         return 0;
       }
     }
-    module2.exports = { pushNotifications, allowedEndpoint };
+    Parse.Cloud.define("sendTestPush", async (request) => {
+      const user = requireUser(request);
+      const subs = await findAll(new Parse.Query("PushSubscription").equalTo("user", user));
+      if (!subs.length) return { sent: 0, failed: 0, devices: [] };
+      const devices = await sendToSubscriptions(subs, () => ({
+        id: `test-${Date.now()}`,
+        title: "Relay test notification",
+        body: "Notifications work on this device.",
+        link: "/",
+        tone: "new",
+        // Shown even while Relay is open on screen.
+        force: true
+      }));
+      return {
+        sent: devices.filter((d) => d.ok).length,
+        failed: devices.filter((d) => !d.ok).length,
+        devices
+      };
+    });
+    module2.exports = { pushNotifications, allowedEndpoint, deviceName };
   }
 });
 
@@ -8583,7 +8633,8 @@ var require_payouts = __commonJS({
       verifyPin,
       personName,
       getRoleName,
-      findAll
+      findAll,
+      adminOnly
     } = require_core();
     var { sumBy, orderRiderPay } = require_money();
     var { money, notifyUser, notifyAdmins } = require_notifications();
@@ -8789,6 +8840,63 @@ var require_payouts = __commonJS({
       query.include(["rider", "paidBy"]);
       const payouts = (await findAll(query)).sort((a, b) => b.get("paidAt") - a.get("paidAt")).map(payoutJSON);
       return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
+    });
+    Parse.Cloud.define("adminSettleTillDifference", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const shift = await new Parse.Query("Shift").include("operator").get(String(p.shiftId || ""), MASTER).catch(() => null);
+      if (!shift || shift.get("kind") !== "cashier" || shift.get("status") !== "closed")
+        throw invalid("Only a closed cashier till can be settled");
+      const variance = Number(shift.get("variance") || 0);
+      if (!variance || shift.get("varianceSettled") === true)
+        throw invalid("This till has no difference left to settle");
+      const note = clean(p.note, 200);
+      if (note.length < 5) throw invalid("Say what the difference was (at least 5 characters)");
+      const { values: config } = await loadConfig();
+      const before = {
+        variance,
+        paidOut: Number(shift.get("paidOut") || 0),
+        expectedTill: Number(shift.get("expectedTill") || 0)
+      };
+      let payout = null;
+      if (p.mode === "payout") {
+        if (variance > 0) throw invalid("Only a short till can be matched to a missing payment");
+        const amount = Math.round(Number(p.amount));
+        if (!Number.isFinite(amount) || amount <= 0 || amount > -variance)
+          throw invalid(`Enter an amount from 1 to ${money(config, -variance)}`);
+        payout = await newPayout(
+          { kind: "expense", amount, note: `Till difference: ${note}`, paidBy: actor, shift },
+          config
+        );
+        payout.set("paidAt", shift.get("endedAt") || /* @__PURE__ */ new Date());
+        await payout.save(null, MASTER);
+        shift.set({
+          paidOut: before.paidOut + amount,
+          expectedTill: before.expectedTill - amount,
+          variance: variance + amount
+        });
+      } else if (p.mode !== "writeoff") {
+        throw invalid("Match a missing payment or write the difference off");
+      }
+      if (!shift.has("originalVariance")) shift.set("originalVariance", variance);
+      const settled = p.mode === "writeoff" || shift.get("variance") === 0;
+      shift.set({
+        settlementNote: [shift.get("settlementNote"), note].filter(Boolean).join(" \xB7 ").slice(0, 500),
+        ...settled && { varianceSettled: true, settledAt: /* @__PURE__ */ new Date(), settledBy: actor }
+      });
+      await shift.save(null, MASTER);
+      await audit(actor, "till.difference_settled", shift, before, {
+        mode: p.mode,
+        variance: shift.get("variance"),
+        settled,
+        note,
+        ...payout && { payout: payout.get("payoutCode"), amount: payout.get("amount") }
+      });
+      return {
+        variance: shift.get("variance"),
+        settled,
+        payoutCode: payout?.get("payoutCode") || null
+      };
     });
     module2.exports = { riderPayState, payOut, payoutJSON, payOwed };
   }
@@ -12367,14 +12475,18 @@ var require_shifts = __commonJS({
             expectedTill: till ? till.expected : shift.get("expectedTill") ?? null,
             physicalCount: shift.get("physicalCount") ?? null,
             variance: shift.get("variance") ?? null,
-            varianceNote: shift.get("varianceNote") || ""
+            varianceNote: shift.get("varianceNote") || "",
+            originalVariance: shift.get("originalVariance") ?? null,
+            settled: shift.get("varianceSettled") === true,
+            settlementNote: shift.get("settlementNote") || ""
           };
         })
       );
       return {
         range: { from: range.from, to: range.to },
         shifts,
-        totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0),
+        // Differences still to settle (settled ones are explained).
+        totalVariance: shifts.reduce((n, s) => n + (s.settled ? 0 : Number(s.variance) || 0), 0),
         // Differences per day (the day the till was closed) and per cashier.
         trend: tillTrend(
           shifts.filter((s) => s.status === "closed").map((s) => ({
