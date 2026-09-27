@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   LogOut,
   Settings,
+  Palette,
   Users,
   CircleDollarSign,
   BarChart3,
@@ -29,7 +30,6 @@ import { AuditLog } from './AuditLog';
 import { ZReportPage } from './reports/ZReport';
 import { BrandMark } from './BrandMark';
 import { useConfig, useSession } from '../lib/session';
-import { RestaurantBadge } from './RestaurantBadge';
 import { formatDate } from '../lib/format';
 import { useDevice } from '../lib/device';
 import { NotificationBell } from './NotificationBell';
@@ -45,6 +45,7 @@ const NAV = [
   [Users, 'Team', 'team'],
   [History, 'Audit log', 'audit'],
   [ClipboardList, 'Menu', 'menu'],
+  [Palette, 'Branding', 'branding'],
   [Settings, 'Settings', 'settings'],
 ] as const;
 type Section = (typeof NAV)[number][1];
@@ -100,7 +101,11 @@ export function AdminWorkspace() {
     <main className="admin-shell">
       <aside className={menuOpen && compact ? 'admin-side menu-open' : 'admin-side'}>
         <BrandMark onDark />
-        <RestaurantBadge className="admin-restaurant" name={restaurantName} logo={restaurantLogo} />
+        {restaurantLogo && (
+          <div className="admin-restaurant">
+            <img src={restaurantLogo} alt={restaurantName} />
+          </div>
+        )}
         {compact && (
           <button
             className="admin-menu-toggle"
@@ -210,8 +215,11 @@ export function AdminWorkspace() {
           </>
         )}
         {memberId && <AdminMember key={memberId} id={memberId} />}
-        {!memberId && ['Team', 'Menu', 'Settings'].includes(section) && (
-          <AdminSetup section={section as 'Team' | 'Menu' | 'Settings'} preview={preview} />
+        {!memberId && ['Team', 'Menu', 'Branding', 'Settings'].includes(section) && (
+          <AdminSetup
+            section={section as 'Team' | 'Menu' | 'Branding' | 'Settings'}
+            preview={preview}
+          />
         )}
       </section>
     </main>

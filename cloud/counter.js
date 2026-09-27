@@ -62,6 +62,15 @@ async function activeRider(riderId) {
   const rider = id ? await new Parse.Query(Parse.User).get(id, MASTER).catch(() => null) : null;
   if (!rider || (await getRoleName(rider)) !== 'rider') throw invalid('Choose a rider');
   if (rider.get('active') === false) throw forbidden('That rider is deactivated');
+  // A rider on a break (on shift, marked unavailable) takes no new orders.
+  if (rider.get('available') === false) {
+    const onShift = await new Parse.Query('Shift')
+      .equalTo('kind', 'rider')
+      .equalTo('operator', rider)
+      .equalTo('status', 'open')
+      .first(MASTER);
+    if (onShift) throw forbidden(`${personName(rider)} is on a break. Choose another rider`);
+  }
   return rider;
 }
 
@@ -318,7 +327,8 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
 });
 
 // Staff: riders who can take a call-in delivery (active riders; those on
-// shift and available first).
+// shift and available first). Riders on a break are listed but cannot be
+// chosen (activeRider refuses them).
 Parse.Cloud.define('getAssignableRiders', async (request) => {
   await requireRole(request, ['cashier', 'admin']);
   const role = await new Parse.Query(Parse.Role).equalTo('name', 'rider').first(MASTER);

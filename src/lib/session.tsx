@@ -4,6 +4,7 @@ import Parse from '../parse';
 import { completeGoogleSignIn } from './googleSignIn';
 import { formatMoney } from './format';
 import { forgetPush } from './push';
+import { applyTheme, type Theme } from './theme';
 
 export type Role = 'admin' | 'cashier' | 'rider';
 
@@ -11,6 +12,8 @@ export type AppConfig = {
   restaurantName: string;
   // The restaurant's own logo (Settings), '' when none.
   restaurantLogo?: string;
+  // Theme colours (Admin → Branding); '' keeps Relay's.
+  theme?: Theme;
   currencySymbol: string;
   currencyCode: string;
   timezone: string;
@@ -49,6 +52,7 @@ export type Profile = {
 export type AppInfo = {
   restaurantName: string;
   restaurantLogo?: string;
+  theme?: Theme;
   currencySymbol: string;
   currencyCode: string;
   timezone: string;
@@ -56,9 +60,29 @@ export type AppInfo = {
   previewEnabled: boolean;
 };
 
+// The restaurant's name and logo from the last visit, so they show at once
+// (and the logo starts loading) before the server answers.
+const BRAND_KEY = 'relay.brand';
+function rememberedBrand(): Pick<AppInfo, 'restaurantName' | 'restaurantLogo'> | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BRAND_KEY) || 'null');
+    return saved && typeof saved.restaurantName === 'string' ? saved : null;
+  } catch {
+    return null;
+  }
+}
+function rememberBrand({ restaurantName, restaurantLogo }: AppInfo) {
+  try {
+    localStorage.setItem(BRAND_KEY, JSON.stringify({ restaurantName, restaurantLogo }));
+  } catch {
+    // Private mode: nothing to remember.
+  }
+}
+
 // Only used until the server answers; real values come from Configuration.
 const FALLBACK_INFO: AppInfo = {
   restaurantName: 'Relay',
+  ...rememberedBrand(),
   currencySymbol: '',
   currencyCode: '',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -99,7 +123,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     Parse.Cloud.run('getAppInfo')
-      .then((info: AppInfo) => setAppInfo(info))
+      .then((info: AppInfo) => {
+        setAppInfo(info);
+        rememberBrand(info);
+      })
       .catch((e) => setServerError(e instanceof Error ? e.message : String(e)));
     completeGoogleSignIn()
       .then((signedIn) => signedIn && setUserState(signedIn))
@@ -177,6 +204,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     () =>
       profile?.config ?? {
         restaurantName: appInfo.restaurantName,
+        restaurantLogo: appInfo.restaurantLogo,
+        theme: appInfo.theme,
         currencySymbol: appInfo.currencySymbol,
         currencyCode: appInfo.currencyCode,
         timezone: appInfo.timezone,
@@ -186,6 +215,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
     [profile, appInfo],
   );
+  // The restaurant's colours, once the server has said what they are.
+  const themeKnown = !!profile || appInfo !== FALLBACK_INFO;
+  const { ink = '', accent = '' } = config.theme || {};
+  useEffect(() => {
+    if (themeKnown) applyTheme({ ink, accent });
+  }, [themeKnown, ink, accent]);
 
   const value: Session = {
     status: loadingProfile ? 'loading' : 'ready',

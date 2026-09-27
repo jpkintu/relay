@@ -70,6 +70,7 @@ function styles(width: number) {
     body { width: ${body}mm; margin: 0 auto; padding: 3mm 0 6mm;
       font: ${width === 58 ? 11 : 12}px/1.35 'Courier New', ui-monospace, monospace; }
     h1 { font-size: 1.35em; margin: 0 0 1mm; text-align: center; }
+    .logo + h1 { margin-top: 0.5mm; }
     .big { font-size: 1.6em; font-weight: 700; text-align: center; margin: 1mm 0; }
     .center { text-align: center; }
     .muted { font-size: 0.9em; }
@@ -81,7 +82,7 @@ function styles(width: number) {
     .note { font-weight: 700; }
     .sub { font-size: 0.9em; padding-left: 2mm; }
     .total td { font-weight: 700; font-size: 1.15em; padding-top: 1mm; }
-    .logo { display: block; margin: 0 auto 2mm; max-width: 60%; max-height: 24mm;
+    .logo { display: block; margin: 0 auto; max-width: 60%; max-height: 24mm;
       object-fit: contain; filter: grayscale(1) contrast(1.2); }
     .stamp { border: 2px solid #000; text-align: center; font-weight: 700; padding: 1mm; margin: 2mm 0; }
   `;

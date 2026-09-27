@@ -17,6 +17,7 @@ function publicConfig(values) {
   return {
     restaurantName: values.restaurantName,
     restaurantLogo: values.restaurantLogo,
+    theme: { ink: values.themeInk, accent: values.themeAccent },
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
     timezone: values.timezone,
@@ -50,6 +51,7 @@ Parse.Cloud.define('getAppInfo', async () => {
   return {
     restaurantName: values.restaurantName,
     restaurantLogo: values.restaurantLogo,
+    theme: { ink: values.themeInk, accent: values.themeAccent },
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
     timezone: values.timezone,

@@ -534,7 +534,7 @@ export function NewOrder({
                 >
                   <option value="">Assign later (from the kitchen board)</option>
                   {riders.map((r) => (
-                    <option key={r.id} value={r.id}>
+                    <option key={r.id} value={r.id} disabled={r.onShift && !r.available}>
                       {r.name}
                       {!r.onShift ? ' (off shift)' : !r.available ? ' (on a break)' : ''}
                     </option>

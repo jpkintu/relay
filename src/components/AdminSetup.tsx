@@ -1,7 +1,9 @@
+import type { CSSProperties } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowDown, ArrowUp, ChevronRight, ImagePlus, MapPin } from 'lucide-react';
 import { shrinkImage } from '../lib/image';
+import { DEFAULT_THEME, themeProblems, type Theme } from '../lib/theme';
 import Parse from '../parse';
 import { useMoney, useSession } from '../lib/session';
 import { ChangePin } from './Profile';
@@ -200,7 +202,7 @@ function RestaurantLogo({
   const upload = async (file: File | undefined) => {
     if (!file) return;
     try {
-      const image = await shrinkImage(file, 320, 0.9, 'image/png');
+      const image = await shrinkImage(file, 480, 0.9, 'image/png', true);
       await run({ image }, 'Could not save the logo');
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Could not read the logo');
@@ -241,13 +243,138 @@ function RestaurantLogo({
   );
 }
 
+// A few ready-made colour pairs; any pair can be picked by hand.
+const PRESETS: [string, Theme][] = [
+  ['Relay', DEFAULT_THEME],
+  ['Forest', { ink: '#123524', accent: '#e0a526' }],
+  ['Wine', { ink: '#3b0d1c', accent: '#f2b33d' }],
+  ['Ocean', { ink: '#0b2e4a', accent: '#2bc4b4' }],
+  ['Charcoal', { ink: '#1e1e1e', accent: '#ff6b35' }],
+];
+
+// Theme colours with a live preview; saved with adminSaveBranding.
+function BrandColours({
+  saved,
+  disabled,
+  onSave,
+}: {
+  saved?: Theme;
+  disabled: boolean;
+  onSave: (theme: Theme) => void;
+}) {
+  const [ink, setInk] = useState(saved?.ink || DEFAULT_THEME.ink);
+  const [accent, setAccent] = useState(saved?.accent || DEFAULT_THEME.accent);
+  useEffect(() => {
+    setInk(saved?.ink || DEFAULT_THEME.ink);
+    setAccent(saved?.accent || DEFAULT_THEME.accent);
+  }, [saved?.ink, saved?.accent]);
+  const problems = themeProblems({ ink, accent });
+  // Relay's own colours are stored as '' so later default changes apply.
+  const stored = (value: string, fallback: string) =>
+    value.toLowerCase() === fallback ? '' : value.toLowerCase();
+  const field = (label: string, value: string, set: (v: string) => void) => (
+    <label className="colour-field">
+      {label}
+      <span>
+        <input
+          type="color"
+          value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'}
+          onChange={(e) => set(e.target.value)}
+          disabled={disabled}
+        />
+        <input
+          value={value}
+          onChange={(e) => set(e.target.value.trim())}
+          maxLength={7}
+          spellCheck={false}
+          disabled={disabled}
+          aria-label={`${label} (hex)`}
+        />
+      </span>
+    </label>
+  );
+  return (
+    <div className="brand-colours">
+      <div className="colour-presets" role="group" aria-label="Ready-made colours">
+        {PRESETS.map(([name, theme]) => (
+          <button
+            key={name}
+            type="button"
+            className="colour-preset"
+            disabled={disabled}
+            onClick={() => {
+              setInk(theme.ink);
+              setAccent(theme.accent);
+            }}
+          >
+            <i style={{ background: theme.ink }} />
+            <i style={{ background: theme.accent }} />
+            {name}
+          </button>
+        ))}
+      </div>
+      <div className="colour-fields">
+        {field('Main colour', ink, setInk)}
+        {field('Accent colour', accent, setAccent)}
+      </div>
+      <div
+        className="theme-preview"
+        style={
+          problems.length ? undefined : ({ '--ink': ink, '--accent': accent } as CSSProperties)
+        }
+        aria-label="Preview"
+      >
+        <div className="theme-preview-bar">
+          <b>Kitchen board</b>
+          <span>New order</span>
+        </div>
+        <div className="theme-preview-body">
+          <p>Order ORD-0012 · Table 4</p>
+          <div>
+            <button type="button" tabIndex={-1} className="preview-main">
+              Place order
+            </button>
+            <button type="button" tabIndex={-1} className="preview-accent">
+              Take payment
+            </button>
+          </div>
+        </div>
+      </div>
+      {problems.length > 0 && <p className="ops-error">{problems[0]}</p>}
+      <div className="colour-actions">
+        <button
+          type="button"
+          className="primary-button"
+          disabled={disabled || problems.length > 0}
+          onClick={() =>
+            onSave({
+              ink: stored(ink, DEFAULT_THEME.ink),
+              accent: stored(accent, DEFAULT_THEME.accent),
+            })
+          }
+        >
+          Save colours
+        </button>
+        <button
+          type="button"
+          className="setup-secondary"
+          disabled={disabled}
+          onClick={() => onSave({ ink: '', accent: '' })}
+        >
+          Use Relay's colours
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
 export function AdminSetup({
   section,
   preview,
 }: {
-  section: 'Team' | 'Menu' | 'Settings';
+  section: 'Team' | 'Menu' | 'Branding' | 'Settings';
   preview: boolean;
 }) {
   const { config, refresh } = useSession();
@@ -996,12 +1123,31 @@ export function AdminSetup({
           </form>
         </div>
       )}
-      {section === 'Settings' && !preview && (
+      {section === 'Branding' && (
+        <div className="admin-panel">
+          <h2>Colours</h2>
+          <p className="muted">
+            Replace Relay's colours with your restaurant's. The main colour is used for the menu
+            bar, headers, main buttons and text; the accent for highlights and secondary buttons.
+            Everyone sees the change the next time their screen loads. The app icon stays the same.
+          </p>
+          <BrandColours
+            saved={config.theme}
+            disabled={busy || preview}
+            onSave={(theme) =>
+              void save('adminSaveBranding', theme, () => {
+                void refresh();
+              })
+            }
+          />
+        </div>
+      )}
+      {section === 'Branding' && !preview && (
         <div className="admin-panel">
           <h2>Restaurant logo</h2>
           <p className="muted">
-            Shown on the sign-in screen, in the admin menu and at the top of printed receipts. A
-            square PNG with a transparent or white background works best.
+            Shown on the sign-in screen, in the admin menu and at the top of printed receipts. A PNG
+            with a transparent or white background works best; blank margins are trimmed off.
           </p>
           <RestaurantLogo
             logo={settings.restaurantLogo}

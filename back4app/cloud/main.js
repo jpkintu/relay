@@ -179,6 +179,9 @@ var require_core = __commonJS({
       receiptFooter: "Thank you!",
       // Open the print dialog for the kitchen ticket when a counter order is placed.
       autoPrintKitchen: false,
+      // Branding: theme colours (#rrggbb); '' keeps Relay's own.
+      themeInk: "",
+      themeAccent: "",
       // Where the map opens (the restaurant); Kampala until the owner pins it.
       restaurantLat: 0.3476,
       restaurantLng: 32.5825
@@ -718,7 +721,9 @@ var require_security = __commonJS({
         receiptHeader: S,
         receiptFooter: S,
         autoPrintKitchen: B,
-        restaurantLogo: "File"
+        restaurantLogo: "File",
+        themeInk: S,
+        themeAccent: S
       },
       MenuItem: {
         title: S,
@@ -11563,6 +11568,10 @@ var require_counter = __commonJS({
       const rider = id ? await new Parse.Query(Parse.User).get(id, MASTER).catch(() => null) : null;
       if (!rider || await getRoleName(rider) !== "rider") throw invalid("Choose a rider");
       if (rider.get("active") === false) throw forbidden("That rider is deactivated");
+      if (rider.get("available") === false) {
+        const onShift = await new Parse.Query("Shift").equalTo("kind", "rider").equalTo("operator", rider).equalTo("status", "open").first(MASTER);
+        if (onShift) throw forbidden(`${personName(rider)} is on a break. Choose another rider`);
+      }
       return rider;
     }
     async function cashIntoTill(order, actor, role) {
@@ -12567,6 +12576,48 @@ var require_seed = __commonJS({
   }
 });
 
+// cloud/lib/theme.js
+var require_theme = __commonJS({
+  "cloud/lib/theme.js"(exports2, module2) {
+    "use strict";
+    var DEFAULT_THEME = { ink: "#0b1633", accent: "#f14c1d" };
+    var CREAM = "#f4f6fb";
+    var HEX = /^#[0-9a-f]{6}$/i;
+    function luminance(hex) {
+      const channel = (i) => {
+        const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+    }
+    function contrast(a, b) {
+      const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+      return (x + 0.05) / (y + 0.05);
+    }
+    function themeProblems({ ink = "", accent = "" }) {
+      const problems = [];
+      for (const [label, value] of [
+        ["Main colour", ink],
+        ["Accent colour", accent]
+      ])
+        if (value && !HEX.test(value)) problems.push(`${label} must look like #1a2b3c`);
+      if (problems.length) return problems;
+      const main = ink || DEFAULT_THEME.ink;
+      const highlight = accent || DEFAULT_THEME.accent;
+      if (contrast(main, CREAM) < 7)
+        problems.push("Main colour is too light: text in it would be hard to read. Pick a darker one");
+      else if (contrast(highlight, main) < 3)
+        problems.push("Accent colour is too close to the main colour. Pick a brighter one");
+      return problems;
+    }
+    function cleanTheme(params) {
+      const tidy = (value) => String(value || "").trim().toLowerCase();
+      return { ink: tidy(params.ink), accent: tidy(params.accent) };
+    }
+    module2.exports = { DEFAULT_THEME, themeProblems, cleanTheme, contrast };
+  }
+});
+
 // cloud/admin.js
 var require_admin = __commonJS({
   "cloud/admin.js"(exports2, module2) {
@@ -12593,6 +12644,7 @@ var require_admin = __commonJS({
     var { normalizeGroups } = require_accompaniments();
     var { applySecurity } = require_security();
     var { cleanLocation } = require_geo();
+    var { cleanTheme, themeProblems } = require_theme();
     var ROLE_NAMES = ["admin", "cashier", "rider"];
     var STAFF_ROLES = ["rider", "cashier"];
     var merchantField = (value, max) => String(value ?? "").trim().slice(0, max);
@@ -13027,6 +13079,22 @@ var require_admin = __commonJS({
         available: row.get("available")
       });
       return { id: row.id };
+    });
+    Parse.Cloud.define("adminSaveBranding", async (request) => {
+      const actor = await adminOnly(request);
+      const theme = cleanTheme(request.params);
+      const problems = themeProblems(theme);
+      if (problems.length) throw invalid(problems[0]);
+      let { object: config } = await loadConfig();
+      if (!config) {
+        config = new Parse.Object("Configuration");
+        config.setACL(readAcl(null, ["admin"]));
+      }
+      const before = { ink: config.get("themeInk") || "", accent: config.get("themeAccent") || "" };
+      config.set({ themeInk: theme.ink, themeAccent: theme.accent });
+      await config.save(null, MASTER);
+      await audit(actor, "configuration.branding", config, before, theme);
+      return theme;
     });
     Parse.Cloud.define("adminSaveSettings", async (request) => {
       const actor = await adminOnly(request);
@@ -13564,6 +13632,7 @@ var require_profile = __commonJS({
       return {
         restaurantName: values.restaurantName,
         restaurantLogo: values.restaurantLogo,
+        theme: { ink: values.themeInk, accent: values.themeAccent },
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
         timezone: values.timezone,
@@ -13595,6 +13664,7 @@ var require_profile = __commonJS({
       return {
         restaurantName: values.restaurantName,
         restaurantLogo: values.restaurantLogo,
+        theme: { ink: values.themeInk, accent: values.themeAccent },
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
         timezone: values.timezone,

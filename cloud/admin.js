@@ -20,6 +20,7 @@ const { SEED_MENU } = require('./lib/seed');
 const { normalizeGroups } = require('./lib/accompaniments');
 const { applySecurity } = require('./security');
 const { cleanLocation } = require('./lib/geo');
+const { cleanTheme, themeProblems } = require('./lib/theme');
 
 const ROLE_NAMES = ['admin', 'cashier', 'rider'];
 const STAFF_ROLES = ['rider', 'cashier'];
@@ -522,6 +523,25 @@ Parse.Cloud.define('adminSaveAccompaniment', async (request) => {
     available: row.get('available'),
   });
   return { id: row.id };
+});
+
+// Owner: theme colours (Branding). { ink, accent } as #rrggbb; '' restores
+// Relay's colour. Refused when text would be hard to read.
+Parse.Cloud.define('adminSaveBranding', async (request) => {
+  const actor = await adminOnly(request);
+  const theme = cleanTheme(request.params);
+  const problems = themeProblems(theme);
+  if (problems.length) throw invalid(problems[0]);
+  let { object: config } = await loadConfig();
+  if (!config) {
+    config = new Parse.Object('Configuration');
+    config.setACL(readAcl(null, ['admin']));
+  }
+  const before = { ink: config.get('themeInk') || '', accent: config.get('themeAccent') || '' };
+  config.set({ themeInk: theme.ink, themeAccent: theme.accent });
+  await config.save(null, MASTER);
+  await audit(actor, 'configuration.branding', config, before, theme);
+  return theme;
 });
 
 Parse.Cloud.define('adminSaveSettings', async (request) => {

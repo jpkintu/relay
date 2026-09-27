@@ -42,6 +42,9 @@ const DEFAULT_CONFIG = {
   receiptFooter: 'Thank you!',
   // Open the print dialog for the kitchen ticket when a counter order is placed.
   autoPrintKitchen: false,
+  // Branding: theme colours (#rrggbb); '' keeps Relay's own.
+  themeInk: '',
+  themeAccent: '',
   // Where the map opens (the restaurant); Kampala until the owner pins it.
   restaurantLat: 0.3476,
   restaurantLng: 32.5825,
