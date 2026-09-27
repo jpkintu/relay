@@ -201,7 +201,7 @@ export function CashierWorkspace() {
   return (
     <main className="ops-shell">
       <header className="ops-header">
-        <BrandMark />
+        <BrandMark logo={profile?.config.restaurantLogo} name={profile?.config.restaurantName} />
         <nav hidden={onShift === false}>
           <button className={tab === 'orders' ? 'active' : ''} onClick={() => navigate('/cashier')}>
             <UtensilsCrossed />
@@ -606,7 +606,7 @@ function KitchenBoard() {
                           {(riders || [])
                             .filter((r) => r.id !== ticket.riderId)
                             .map((r) => (
-                              <option key={r.id} value={r.id}>
+                              <option key={r.id} value={r.id} disabled={r.onShift && !r.available}>
                                 {r.name}
                                 {!r.onShift ? ' (off shift)' : !r.available ? ' (on a break)' : ''}
                               </option>

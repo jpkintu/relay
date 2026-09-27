@@ -2842,6 +2842,25 @@ describe('owner reporting and control', () => {
     await run('adminSetRestaurantLogo', { remove: true }, s.owner);
     assert.equal((await run('getAppInfo')).restaurantLogo, '');
   });
+
+  test('the owner sets theme colours, checked for readable contrast', async () => {
+    await rejects(run('adminSaveBranding', { ink: '#123524' }, s.dina), /admin role required/);
+    await rejects(run('adminSaveBranding', { ink: 'green' }, s.owner), /must look like/);
+    await rejects(run('adminSaveBranding', { ink: '#99bb99' }, s.owner), /too light/);
+    await rejects(
+      run('adminSaveBranding', { ink: '#0b1633', accent: '#1d2b55' }, s.owner),
+      /too close/,
+    );
+    const saved = await run('adminSaveBranding', { ink: '#123524', accent: '#E0A526' }, s.owner);
+    assert.deepEqual(saved, { ink: '#123524', accent: '#e0a526' });
+    assert.deepEqual((await run('getAppInfo')).theme, saved, 'the sign-in screen gets them');
+    assert.deepEqual((await run('getMyProfile', {}, s.val)).config.theme, saved);
+    const settings = (await run('adminListSetup', {}, s.owner)).settings;
+    await run('adminSaveSettings', settings, s.owner);
+    assert.deepEqual((await run('getAppInfo')).theme, saved, 'saving settings keeps them');
+    await run('adminSaveBranding', { ink: '', accent: '' }, s.owner);
+    assert.deepEqual((await run('getAppInfo')).theme, { ink: '', accent: '' });
+  });
 });
 
 describe('live updates (LiveQuery) respect who may read what', () => {
@@ -3148,6 +3167,24 @@ describe('counter modules: call-in delivery, eat-in and pick-up', () => {
     assert.equal(order.get('cashStatus'), 'WITH_RIDER');
     assert.equal(order.get('amountCollected'), placed.total);
     await run('createHandover', { orderIds: [placed.id] }, s.val);
+  });
+
+  test('a rider on a break cannot be given a call-in delivery', async () => {
+    await run('startShift', { kind: 'rider' }, s.val).catch(() => null);
+    await run('setMyAvailability', { available: false }, s.val);
+    const listed = (await run('getAssignableRiders', {}, s.dina)).find((r) => r.id === s.val.id);
+    assert.equal(listed.onShift && listed.available, false, 'shown as on a break');
+    const call = { orderType: 'delivery', customerName: 'Break Ben', deliveryAddress: 'Kyanja' };
+    await rejects(counter({ ...call, riderId: s.val.id }), /on a break/);
+    const later = await counter(call);
+    await rejects(
+      run('assignOrderRider', { orderId: later.id, riderId: s.val.id }, s.dina),
+      /on a break/,
+    );
+    await run('setMyAvailability', { available: true }, s.val);
+    await run('assignOrderRider', { orderId: later.id, riderId: s.val.id }, s.dina);
+    assert.equal((await fetch(later.id)).get('createdBy').id, s.val.id);
+    await run('transitionOrder', { orderId: later.id, action: 'cancel', reason: 'test' }, s.dina);
   });
 
   test('a prepaid call-in delivery waits for the check and for a rider', async () => {

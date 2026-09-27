@@ -5,6 +5,9 @@
   --ink: #0b1633;
   --cream: #f4f6fb;
   --accent: #f14c1d;
+  /* Raised panels on the main colour (active menu item, rider New order card). */
+  --ink-raised: #1a3a8f;
+  --ink-card: #13306f;
   --blue: #0751f0;
   --line: #ced1d9;
   --muted: #5f687c;
@@ -895,7 +898,7 @@ button {
   border: 1px solid var(--line);
   padding: 6px;
   border-radius: 12px;
-  box-shadow: 0 10px 30px #0b163322;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--ink) 13%, transparent);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1030,7 +1033,7 @@ button {
   border-radius: 14px;
   padding: 18px;
   margin-bottom: 10px;
-  box-shadow: 0 3px 10px #0b163310;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .ticket-top {
   display: flex;
@@ -1160,43 +1163,50 @@ button {
   display: flex;
   flex-direction: column;
 }
-/* The restaurant's own logo and name (Settings → Logo). */
-.restaurant-badge {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.restaurant-badge img {
-  width: 40px;
-  height: 40px;
-  object-fit: contain;
-  border-radius: 8px;
-  background: #fff;
-  padding: 3px;
-  flex: none;
-}
-.restaurant-badge span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The restaurant's own logo (Settings → Restaurant logo), when there is one. */
 .admin-side > .admin-restaurant {
-  color: #c9ceda;
-  font-size: 13px;
-  font-weight: 600;
-  margin: 14px 10px 30px;
+  margin: 16px 10px 28px;
+  align-self: flex-start;
+  background: #fff;
+  border-radius: 12px;
+  padding: 8px;
 }
-.login-restaurant {
-  color: var(--muted, #5b6474);
-  font-size: 15px;
-  font-weight: 600;
+.admin-side > .admin-restaurant img {
+  display: block;
+  max-width: 150px;
+  max-height: 76px;
+  object-fit: contain;
 }
-.login-restaurant img {
-  width: 56px;
-  height: 56px;
-  background: transparent;
-  padding: 0;
+/* Sign-in: the logo (or the Relay mark) large and centred, the name under it. */
+.login-identity {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin-bottom: 26px;
+  text-align: center;
+}
+.login-identity img {
+  display: block;
+  max-width: min(240px, 70%);
+  max-height: 130px;
+  object-fit: contain;
+}
+.login-identity .relay-mark {
+  width: 88px;
+  height: 88px;
+}
+.login-identity span {
+  font: 600 20px var(--font-display);
+  color: var(--ink);
+}
+@media (max-width: 760px) {
+  /* Phones already show the Relay mark at the top of the card. */
+  .login-identity.no-logo .relay-mark {
+    display: none;
+  }
+  .login-card .mobile-brand {
+    margin-bottom: 40px;
+  }
 }
 .admin-side nav {
   display: grid;
@@ -1219,7 +1229,7 @@ button {
   width: 19px;
 }
 .admin-side nav button.active {
-  background: #1a3a8f;
+  background: var(--ink-raised);
   color: var(--on-dark);
 }
 .admin-logout {
@@ -1641,7 +1651,7 @@ button {
   width: 100%;
   height: 60px;
   z-index: 99999 !important;
-  background: #0b1633 !important;
+  background: var(--ink) !important;
   color: var(--on-dark) !important;
   border: 0 !important;
   border-radius: 0 !important;
@@ -1653,7 +1663,7 @@ button {
   box-shadow: 0 5px 20px #0003;
 }
 .role-switch strong {
-  color: #f14c1d;
+  color: var(--accent);
   font-size: 11px;
   letter-spacing: 0.12em;
   margin-right: 14px;
@@ -1665,14 +1675,14 @@ button {
   padding: 8px 14px !important;
 }
 .role-switch button.active {
-  background: #f14c1d !important;
-  color: #0b1633 !important;
-  border-color: #f14c1d !important;
+  background: var(--accent) !important;
+  color: var(--ink) !important;
+  border-color: var(--accent) !important;
 }
 .role-switch .preview-login {
   margin-left: 14px;
   background: var(--surface) !important;
-  color: #0b1633 !important;
+  color: var(--ink) !important;
 }
 .cash-order {
   display: flex;
@@ -1685,7 +1695,7 @@ button {
 .cash-order input {
   width: 20px;
   height: 20px;
-  accent-color: #0b1633;
+  accent-color: var(--ink);
 }
 .cash-order b {
   margin-left: auto;
@@ -1699,7 +1709,7 @@ button {
 }
 .order-row.actionable button {
   border: 0;
-  background: #f14c1d;
+  background: var(--accent);
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 12px;
@@ -2255,7 +2265,7 @@ button {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
-  box-shadow: 0 14px 30px #0b163322;
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--ink) 13%, transparent);
   overflow: hidden;
 }
 .suggestion {
@@ -2361,7 +2371,7 @@ button {
 .sheet-backdrop {
   position: fixed;
   inset: 0;
-  background: #0b163388;
+  background: color-mix(in srgb, var(--ink) 53%, transparent);
   z-index: 40;
   display: flex;
   align-items: flex-end;
@@ -3363,7 +3373,7 @@ svg {
     display: block;
     position: fixed;
     inset: 64px 0 0 0;
-    background: #0b163366;
+    background: color-mix(in srgb, var(--ink) 40%, transparent);
     z-index: 29;
   }
   .admin-main {
@@ -3508,7 +3518,7 @@ svg {
 .ticket-actions button:hover:not(:disabled),
 .refresh-button:hover,
 .shift-action:hover:not(:disabled) {
-  background: #13306f;
+  background: var(--ink-card);
 }
 
 /* ================= Hallmark pass =================
@@ -3809,7 +3819,7 @@ table.data.compact-table {
 }
 .new-order-hero:hover {
   transform: none;
-  background: #13306f;
+  background: var(--ink-card);
 }
 .new-order-hero > span {
   background: var(--accent);
@@ -3898,7 +3908,7 @@ table.data.compact-table {
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 14px;
-  box-shadow: 0 16px 40px #0b163326;
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--ink) 15%, transparent);
   text-align: left;
 }
 .bell-panel header {
@@ -5877,4 +5887,135 @@ img.food-art.photo {
 }
 .logo-field {
   margin-top: 12px;
+}
+/* The restaurant's logo in place of the Relay mark (kitchen board, rider). */
+.brand-mark.restaurant-mark img {
+  display: block;
+  max-height: 44px;
+  max-width: 150px;
+  object-fit: contain;
+}
+/* Branding: theme colours */
+.brand-colours {
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+}
+.colour-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.colour-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-weight: 600;
+}
+.colour-preset i {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #0002;
+}
+.colour-preset i + i {
+  margin-left: -10px;
+}
+.colour-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.colour-field {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 13px;
+}
+.colour-field span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.colour-field input[type='color'] {
+  width: 48px;
+  height: 44px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.colour-field input:not([type='color']) {
+  width: 110px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+.theme-preview {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  max-width: 460px;
+}
+.theme-preview-bar {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--ink);
+  color: var(--on-dark);
+  font-size: 13px;
+}
+.theme-preview-bar b {
+  box-shadow: inset 0 -3px var(--accent);
+  padding-bottom: 4px;
+}
+.theme-preview-body {
+  padding: 14px 16px;
+  background: var(--cream);
+  color: var(--ink);
+}
+.theme-preview-body p {
+  margin: 0 0 10px;
+  font-weight: 700;
+}
+.theme-preview-body div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.theme-preview-body button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.preview-main {
+  background: var(--ink);
+  color: var(--on-dark);
+}
+.preview-accent {
+  background: var(--accent);
+  color: var(--ink);
+}
+.colour-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.colour-actions .primary-button {
+  width: auto;
+}
+/* Logo and name wait for each other (see useImageReady). */
+.login-identity.loading {
+  visibility: hidden;
 }

@@ -280,6 +280,8 @@ const SCHEMAS = {
     receiptFooter: S,
     autoPrintKitchen: B,
     restaurantLogo: 'File',
+    themeInk: S,
+    themeAccent: S,
   },
   MenuItem: {
     title: S,

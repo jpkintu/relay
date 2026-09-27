@@ -4,7 +4,8 @@ import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
 import { useSession } from '../lib/session';
 import { BrandMark } from './BrandMark';
-import { RestaurantBadge } from './RestaurantBadge';
+import { RelayMark } from './RelayMark';
+import { useImageReady } from '../lib/imageReady';
 
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
@@ -35,6 +36,8 @@ export function AuthScreen() {
   const [error, setError] = useState(sessionError);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
+  // Logo and name appear together, like the Relay mark and its credit.
+  const logoReady = useImageReady(appInfo.restaurantLogo);
   const [email, setEmail] = useState('');
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -77,17 +80,21 @@ export function AuthScreen() {
       </section>
       <section className="auth-panel">
         <div className="login-card">
-          <BrandMark className="mobile-brand" />
+          {/* Phones: with a logo, only the restaurant's logo and name show. */}
+          {!appInfo.restaurantLogo && <BrandMark className="mobile-brand" />}
           {creating ? (
             <p className="eyebrow">Restaurant setup</p>
-          ) : appInfo.restaurantLogo ? (
-            <RestaurantBadge
-              className="login-restaurant"
-              name={appInfo.restaurantName}
-              logo={appInfo.restaurantLogo}
-            />
           ) : (
-            <p className="eyebrow">{appInfo.restaurantName || 'Shift access'}</p>
+            // The restaurant's logo (Settings), else the Relay mark, with the
+            // restaurant's name under it.
+            <div
+              className={`login-identity${appInfo.restaurantLogo ? '' : ' no-logo'}${
+                logoReady ? '' : ' loading'
+              }`}
+            >
+              {appInfo.restaurantLogo ? <img src={appInfo.restaurantLogo} alt="" /> : <RelayMark />}
+              <span>{appInfo.restaurantName || 'Shift access'}</span>
+            </div>
           )}
           <h2>{creating ? 'Create owner account.' : 'Welcome back.'}</h2>
           <p className="muted">

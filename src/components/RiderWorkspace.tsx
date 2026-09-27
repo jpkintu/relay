@@ -14,6 +14,7 @@ import { NewOrder } from './NewOrder';
 import { RiderEarnings } from './reports/RiderEarnings';
 import { OrderDetail } from './OrderDetail';
 import { ShiftPanel } from './ShiftPanel';
+import { useImageReady } from '../lib/imageReady';
 import { BrandMark } from './BrandMark';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
@@ -198,6 +199,8 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
   const inFlight = orders.filter(IN_FLIGHT);
   const cashOnMe = preview ? 0 : cashHeld(orders);
   const limit = config.maxRiderFloat;
+  // The restaurant's name chip appears with its logo, not before it.
+  const logoReady = useImageReady(config.restaurantLogo);
   const toCollect = preview ? 0 : cashToCollect(orders);
   const level = cashLevel(cashOnMe + toCollect, limit, config.floatWarningPercent);
   const limitShare = limit > 0 ? Math.min(100, Math.round((cashOnMe / limit) * 100)) : 0;
@@ -209,8 +212,8 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
   return (
     <main className="rider-shell">
       <header className="rider-header">
-        <BrandMark />
-        {config.restaurantNameSet !== false && (
+        <BrandMark logo={config.restaurantLogo} name={config.restaurantName} />
+        {config.restaurantNameSet !== false && logoReady && (
           <div className="shift-live">{config.restaurantName}</div>
         )}
         <NotificationBell />

@@ -8,6 +8,9 @@ import './index.css';
 import './parse';
 import { registerServiceWorker } from './lib/push';
 import { listenForInstall } from './lib/install';
+import { applyStoredTheme } from './lib/theme';
+
+applyStoredTheme();
 
 registerServiceWorker();
 listenForInstall();
