@@ -10315,7 +10315,7 @@ var require_owner = __commonJS({
     var zSummary = (config, data) => [
       `${data.orders.delivered} delivered`,
       `sales ${money(config, data.sales.total)}`,
-      `kept ${money(config, data.sales.kept)}`,
+      `net revenue ${money(config, data.sales.kept)}`,
       data.till.cashWithRidersNow ? `${money(config, data.till.cashWithRidersNow)} still with riders` : "",
       data.shifts.some((s) => s.variance) ? `till off by ${money(
         config,

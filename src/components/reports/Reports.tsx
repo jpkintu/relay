@@ -345,7 +345,7 @@ export function Reports() {
         <>
           <div className="report-hero">
             <div>
-              <span>Kept by the restaurant · {rangeLabel(data.range)}</span>
+              <span>Net revenue · {rangeLabel(data.range)}</span>
               <strong>{money(s.net)}</strong>
               <small>
                 Customers paid {money(s.revenue)}
@@ -371,7 +371,7 @@ export function Reports() {
                 </dd>
               </div>
               <div>
-                <dt>Kept by the restaurant</dt>
+                <dt>Net revenue</dt>
                 <dd>{money(s.net)}</dd>
               </div>
             </dl>

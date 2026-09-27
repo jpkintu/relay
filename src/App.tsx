@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut } from 'lucide-react';
@@ -47,6 +47,19 @@ function AppScreens() {
   useDeviceAttribute();
   const session = useSession();
   const { user, profile, preview, status } = session;
+  const navigate = useNavigate();
+  // After signing in, everyone starts on their home page: riders on Home,
+  // cashiers on the kitchen board, the owner on the Overview. A reload with a
+  // live session keeps the page (and links from notifications still work).
+  const freshSignIn = useRef(!user);
+  const role = profile?.role ?? null;
+  useEffect(() => {
+    if (!user) freshSignIn.current = true;
+    else if (role && freshSignIn.current) {
+      freshSignIn.current = false;
+      navigate(homePath(role), { replace: true });
+    }
+  }, [user, role, navigate]);
 
   if (preview) return <PreviewApp />;
   if (!user) return <AuthScreen />;
@@ -54,9 +67,9 @@ function AppScreens() {
   if (!profile) return <AccountProblem />;
   if (!profile.role) return <NoRole />;
 
-  const role = profile.role;
+  const myRole = profile.role;
   const guard = (area: keyof typeof ACCESS, element: ReactNode) =>
-    ACCESS[area].includes(role) ? element : <Navigate to={homePath(role)} replace />;
+    ACCESS[area].includes(myRole) ? element : <Navigate to={homePath(myRole)} replace />;
   return (
     <NotificationsProvider>
       <PinProvider>
@@ -64,7 +77,7 @@ function AppScreens() {
           <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
           <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
           <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
-          <Route path="*" element={<Navigate to={homePath(role)} replace />} />
+          <Route path="*" element={<Navigate to={homePath(myRole)} replace />} />
         </Routes>
       </PinProvider>
     </NotificationsProvider>

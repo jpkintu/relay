@@ -23,6 +23,13 @@ type Shift = {
     momoPending?: number;
   } | null;
 };
+// "2 h 15 min" since the shift started.
+function openFor(startedAt: string) {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 60000));
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours} h ${minutes % 60} min` : `${minutes} min`;
+}
+
 export function ShiftPanel({
   kind,
   preview,
@@ -108,13 +115,35 @@ export function ShiftPanel({
       outstanding.cashWithRider > 0 ||
       outstanding.cashPending > 0 ||
       (outstanding.momoPending ?? 0) > 0);
+  const endButton = (
+    <button
+      className="shift-action"
+      disabled={
+        busy ||
+        (kind === 'cashier' &&
+          (physical === '' ||
+            Boolean(shift?.heldOrders) ||
+            (!!difference && varianceNote.trim().length < 10))) ||
+        (kind === 'rider' && riderBlocked)
+      }
+      onClick={() => void end()}
+    >
+      End shift
+    </button>
+  );
   return (
     <section className="shift-panel">
       <div className="shift-panel-title">
         <Clock3 />
         <div>
           <h2>{shift ? 'Current shift' : 'Start your shift'}</h2>
+          {shift && (
+            <p>
+              Started {formatDate(shift.startedAt, timezone)} · open for {openFor(shift.startedAt)}
+            </p>
+          )}
         </div>
+        {shift && <span className="shift-status">Open</span>}
       </div>
       {error && <p className="ops-error">{error}</p>}
       {notice && <p className="setup-notice">{notice}</p>}
@@ -122,63 +151,77 @@ export function ShiftPanel({
         <p>Shift management requires a signed-in {kind}. Demo mode never changes cash balances.</p>
       ) : shift ? (
         <>
-          <p>Started {formatDate(shift.startedAt, timezone)}</p>
           {kind === 'cashier' ? (
-            <>
-              <div className="shift-figures">
-                <span>
-                  Opening count <strong>{money(shift.openingFloat)}</strong>
-                </span>
-                <span>
-                  Cash in <strong>+ {money(shift.cashIn ?? 0)}</strong>
-                  {!!shift.counterCash && (
-                    <small>incl. {money(shift.counterCash)} counter sales</small>
-                  )}
-                </span>
-                <span>
-                  Paid out <strong>− {money(shift.paidOut ?? 0)}</strong>
-                </span>
-                <span>
-                  Expected till <strong>{money(shift.expectedTill)}</strong>
-                </span>
+            <div className="till-layout">
+              <div className="till-summary" aria-label="Till summary">
+                <div className="till-line">
+                  <span>Opening count</span>
+                  <strong>{money(shift.openingFloat)}</strong>
+                </div>
+                <div className="till-line in">
+                  <span>Cash in</span>
+                  <strong>+ {money(shift.cashIn ?? 0)}</strong>
+                  <small>
+                    {money(Math.max(0, (shift.cashIn ?? 0) - (shift.counterCash ?? 0)))} from rider
+                    handovers · {money(shift.counterCash ?? 0)} counter sales
+                  </small>
+                </div>
+                <div className="till-line out">
+                  <span>Paid out</span>
+                  <strong>− {money(shift.paidOut ?? 0)}</strong>
+                  <small>Commissions and delivery fees paid from the till</small>
+                </div>
+                <div className="till-line total">
+                  <span>Expected in the till</span>
+                  <strong>{money(shift.expectedTill)}</strong>
+                </div>
               </div>
-              {Boolean(shift.heldOrders) && (
-                <p className="till-difference short">
-                  You hold {shift.heldOrders} kitchen order{shift.heldOrders === 1 ? '' : 's'}.
-                  Finish or transfer {shift.heldOrders === 1 ? 'it' : 'them'} before ending your
-                  shift.
-                </p>
-              )}
-              <label className="setup-field">
-                Physical till count
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  value={physical}
-                  onChange={(e) => setPhysical(e.target.value)}
-                  placeholder="Enter counted amount"
-                />
-              </label>
-              {difference !== null && difference !== 0 && (
-                <>
-                  <p className={`till-difference ${difference < 0 ? 'short' : 'over'}`}>
-                    Till {difference < 0 ? 'short' : 'over'} by {money(Math.abs(difference))}
+              <div className="till-close">
+                <h3>Close your till</h3>
+                {Boolean(shift.heldOrders) && (
+                  <p className="till-warning">
+                    You hold {shift.heldOrders} kitchen order{shift.heldOrders === 1 ? '' : 's'}.
+                    Finish or transfer {shift.heldOrders === 1 ? 'it' : 'them'} before ending your
+                    shift.
                   </p>
-                  <label className="setup-field">
-                    Explain the difference (the owner sees this)
-                    <textarea
-                      value={varianceNote}
-                      onChange={(e) => setVarianceNote(e.target.value)}
-                      maxLength={500}
-                      rows={3}
-                      placeholder="e.g. Gave change twice to one customer"
-                    />
-                  </label>
-                </>
-              )}
-              {difference === 0 && <p className="till-difference ok">Till matches.</p>}
-            </>
+                )}
+                <label className="setup-field till-count">
+                  Count the cash in the till
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    value={physical}
+                    onChange={(e) => setPhysical(e.target.value)}
+                    placeholder="Counted amount"
+                  />
+                </label>
+                {difference === null ? (
+                  <p className="till-hint">
+                    Enter what you counted to compare it with {money(shift.expectedTill)}.
+                  </p>
+                ) : difference === 0 ? (
+                  <p className="till-difference ok">Till matches.</p>
+                ) : (
+                  <>
+                    <p className={`till-difference ${difference < 0 ? 'short' : 'over'}`}>
+                      Till {difference < 0 ? 'short' : 'over'} by {money(Math.abs(difference))}
+                    </p>
+                    <label className="setup-field">
+                      Explain the difference (the owner sees this)
+                      <textarea
+                        value={varianceNote}
+                        onChange={(e) => setVarianceNote(e.target.value)}
+                        maxLength={500}
+                        rows={3}
+                        placeholder="e.g. Gave change twice to one customer"
+                      />
+                    </label>
+                  </>
+                )}
+                {endButton}
+              </div>
+            </div>
           ) : (
             <ul className="shift-checklist" aria-label="Before you end your shift">
               <li className={outstanding?.openOrders ? 'todo' : 'done'}>
@@ -204,18 +247,7 @@ export function ShiftPanel({
               )}
             </ul>
           )}
-          <button
-            className="shift-action"
-            disabled={
-              busy ||
-              (kind === 'cashier' &&
-                (physical === '' || (!!difference && varianceNote.trim().length < 10))) ||
-              (kind === 'rider' && riderBlocked)
-            }
-            onClick={() => void end()}
-          >
-            End shift
-          </button>
+          {kind === 'rider' && endButton}
         </>
       ) : (
         <>

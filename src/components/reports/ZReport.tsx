@@ -157,7 +157,7 @@ export function ZReportPage({ day: wanted }: { day: string }) {
                   <dd>− {money(z.sales.deliveryFees)}</dd>
                 </div>
                 <div className="total">
-                  <dt>Kept by the restaurant</dt>
+                  <dt>Net revenue</dt>
                   <dd>{money(z.sales.kept)}</dd>
                 </div>
               </dl>
@@ -404,7 +404,7 @@ export function ZReportPage({ day: wanted }: { day: string }) {
                   <th>Day</th>
                   <th className="num">Delivered</th>
                   <th className="num">Sales</th>
-                  <th className="num">Kept</th>
+                  <th className="num">Net revenue</th>
                 </tr>
               </thead>
               <tbody>
@@ -429,7 +429,7 @@ export function ZReportPage({ day: wanted }: { day: string }) {
                     <td data-label="Sales" className="num">
                       {money(row.sales)}
                     </td>
-                    <td data-label="Kept" className="num strong">
+                    <td data-label="Net revenue" className="num strong">
                       {money(row.kept)}
                     </td>
                   </tr>

@@ -285,7 +285,15 @@ export function CashierWorkspace() {
             handovers, mobile money and stock open once your shift has started, and your till is
             reconciled against this count when you end it.
           </p>
-          <ShiftPanel kind="cashier" preview={preview} onChanged={() => void checkShift()} />
+          <ShiftPanel
+            kind="cashier"
+            preview={preview}
+            onChanged={() => {
+              // A new shift opens on the kitchen board.
+              navigate('/cashier', { replace: true });
+              void checkShift();
+            }}
+          />
         </div>
       ) : (
         <Routes>
@@ -315,7 +323,15 @@ export function CashierWorkspace() {
             path="shift"
             element={
               <div className="ops-content">
-                <ShiftPanel kind="cashier" preview={preview} onChanged={() => void checkShift()} />
+                <ShiftPanel
+                  kind="cashier"
+                  preview={preview}
+                  onChanged={() => {
+                    // A new shift opens on the kitchen board.
+                    navigate('/cashier', { replace: true });
+                    void checkShift();
+                  }}
+                />
               </div>
             }
           />

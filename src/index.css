@@ -6029,3 +6029,131 @@ img.food-art.photo {
 a {
   color: var(--blue);
 }
+/* Cashier shift: status header, till summary and the close-out panel. */
+.shift-panel:has(.till-layout) {
+  max-width: 980px;
+  padding: 22px 24px 24px;
+}
+.shift-panel-title > div {
+  flex: 1;
+  min-width: 0;
+}
+.shift-panel-title p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.shift-status {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #dff0d6;
+  color: #2b6a1f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.shift-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.till-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 18px;
+  align-items: start;
+}
+.till-summary {
+  display: grid;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.till-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface);
+}
+.till-line span {
+  color: var(--muted);
+  font-size: 14px;
+}
+.till-line strong {
+  font: 600 18px var(--font-display);
+  text-align: right;
+}
+.till-line small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+}
+.till-line.in strong {
+  color: #2b6a1f;
+}
+.till-line.out strong {
+  color: #a3372a;
+}
+.till-line.total {
+  border-bottom: 0;
+  background: var(--ink);
+  color: var(--on-dark);
+}
+.till-line.total span {
+  color: var(--on-dark-muted);
+  font-weight: 600;
+}
+.till-line.total strong {
+  font-size: 24px;
+  color: var(--on-dark);
+}
+.till-close {
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--surface-2);
+}
+.till-close h3 {
+  margin: 0 0 4px;
+  font: 600 18px var(--font-display);
+}
+.shift-panel .till-close .setup-field {
+  max-width: none;
+  margin: 12px 0 8px;
+}
+.till-count input {
+  font: 600 22px var(--font-display);
+  min-height: 56px;
+}
+.till-hint {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.shift-panel:has(.till-layout) .shift-action {
+  width: 100%;
+  min-height: 50px;
+  font-size: 16px;
+}
+@media (max-width: 760px) {
+  .till-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.till-warning {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff4d6;
+  color: #7a5a00;
+  font-size: 13px;
+  font-weight: 600;
+}
