@@ -314,7 +314,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | New order                       | ✅    | Customer type-ahead + repeat, phone, channel, notes, dish sheet with accompaniments, cart, bill, payment, cash to collect, earn preview, draft. No map pin                     |
 | Active orders                   | ✅    | Rows open the order; quick Pick up; Deliver opens the delivery form                                                                                                            |
 | Order detail `/rider/order/:id` | ✅    | Customer, call, Maps link, items with accompaniments, bill, cancel, pickup, delivery form, report a problem                                                                    |
-| My cash                         | 🟡    | List + multi-select handover, handovers with their status. No grouping by date, no over-limit colour on this screen (Home has the limit bar and warnings), no notes field      |
+| My cash                         | ✅    | Cash grouped by day with totals (select a whole day), limit bar and near / over-limit states, multi-select handover, handovers with their status. No notes field               |
 | Handover                        | ✅    | Inline on the cash screen with PIN; "Your handovers" lists waiting / confirmed / returned / disputed                                                                           |
 | Earnings                        | ✅    | Weekly / Monthly report with date presets or custom dates, change vs previous period, earnings chart (Plotly), per-period table and deliveries list. No payout request yet     |
 | Profile                         | ✅    | Name, code, username, phone, commission rule, available / on a break, change PIN (old PIN required), logout                                                                    |
@@ -326,7 +326,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 | ------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Live board   | ✅    | Accompaniments/notes per line, wait time, channel, payment, problems; reject/cancel with reason; one-tap Mark ready. Live updates      |
 | Stock        | ✅    | Sold out / back in stock for dishes and accompaniments                                                                                 |
-| Handovers    | ✅    | Partial acceptance, stale (> 4 h) highlight. No search by rider or handover code                                                       |
+| Handovers    | ✅    | Partial acceptance, stale (> 4 h) highlight, search by rider code / name or handover code                                              |
 | Shift / till | ✅    | Board locked until a shift starts; till summary (opening, rider handovers, counter sales, paid out, expected) and close-out with check |
 | Profile      | ✅    | Open from the name in the header (works before a shift starts): name, code, phone, change PIN, logout                                  |
 
@@ -650,9 +650,9 @@ starts.
 - [x] Admin dispute resolution (`adminResolveHandover`): take the shortage off the rider's pay, write it off, or reopen for a recount. Every path is audited and the rider is told
 - [x] Admin takes cash in person (`adminReceiveCash`) for a rider who cannot reach the counter (replaces "force handover")
 - [x] ~~Rider end-shift with cash auto-creates a pending handover (brief §7)~~ _Superseded (owner's decision 2026-09-26): a rider cannot end a shift with open orders, cash in hand or an unconfirmed handover._
-- [ ] Handovers covering orders from previous days, grouped by date on the rider cash screen
-- [ ] Rider cash screen: over-limit red state, limit bar from config/override (the list of handovers with status is done)
-- [ ] Cashier handover search by rider code / handover code
+- [x] Handovers covering orders from previous days, grouped by date on the rider cash screen (2026-09-27: day groups with totals, select a whole day, earlier days flagged)
+- [x] Rider cash screen: limit bar from config/override, near-limit warning and over-limit red state (2026-09-27)
+- [x] Cashier handover search by rider code, name or handover code (2026-09-27)
 - [x] `TillPayout` + expected till = opening + cash taken in from riders − payouts (rider pay and other expenses, both with PIN)
 - [x] Cash check (`cashcheck.js`): Cloud Job `cashCheck` (schedule nightly in Back4App) and "Run cash check" on the Payments ledger; flags orders and handovers that disagree and shifts left open; notifies the owner
 - [x] Customers pay the full total (part payments refused at order and delivery) — owner's decision 2026-09-26
@@ -694,9 +694,9 @@ Owner's decisions 2026-09-27: the cashier picks the rider for call-in deliveries
 - [x] Server `getDashboard`: orders today, sales and what is kept, cash with riders, cash counted in today, rider pay owed, top rider, on shift, needs attention; charts for orders/hour today and sales/day over 30 days
 - [x] Orders table: server-side filters by date range, rider, payment type and status, totals, CSV (`adminSearchOrders`). Still open: channel/cashStatus filters, pagination beyond 2,000 rows, detail + admin override
 - [x] Order detail + audited admin override (`adminGetOrder`, `adminOverrideOrder`: cancel at any stage before delivery, switch cash ↔ mobile money while the money is with the rider / unverified, mark a ready or picked-up order delivered, undo a delivery before the money is handed over and before the rider is paid, move an open order to another rider; reason required; riders told) — owner's decisions 2026-09-27
-- [ ] Orders table (rest): channel / cashStatus filters, pagination beyond 2,000 rows
+- [x] Orders table (rest): channel / cash-status filters, pages of 2,000 with Newer / Older (2026-09-27)
 - [x] Payments ledger (renamed from Cash ledger): all cash and mobile money transactions, filters (dates, rider, cash / mobile money), totals (reconciled / with riders / verified / pending / per provider), handovers (`getPaymentsLedger`)
-- [ ] Payments ledger: > 4 h pending highlight
+- [x] Payments ledger: > 4 h pending highlight (cash with a rider or in a handover, mobile money unchecked, pending handovers) (2026-09-27)
 - [x] Commission ledger: date + rider filters, totals per rider, CSV (`getCommissionLedger`)
 - [x] Commission ledger: All / Owed / Paid, paid out and still owed totals, owed per rider and per order
 - [x] Settings form with every Configuration field
@@ -732,10 +732,6 @@ Everything not built yet, from the sections above, in suggested order.
 
 **Small gaps in built features**
 
-- Rider cash screen: group cash by day (orders from previous days) and show the over-limit state there too
-- Cashier handovers: search by rider code or handover code
-- Payments ledger: highlight payments / handovers pending more than 4 h
-- Orders table: channel and cash-status filters; paging beyond 2,000 rows
 - B6 row limits: some server queries still stop at 100–1,000 rows (lists, stats); page or aggregate
 - B9: address is required for every rider order (fine for deliveries; counter orders already skip it). Confirm with the owner (§9 Q1)
 - Reports: till variance across days (per-shift differences are in the Z-report and ledger)
@@ -861,3 +857,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-27 | Branding: links, notification dots, info banners, the "Eat in / Pick up" ticket tag and "You are handling this" follow the theme (`--blue` becomes the main colour under a custom theme; remaining hard-coded blues and tints replaced with tokens).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | 2026-09-27 | Landing pages and shift page: after signing in, riders start on Home, cashiers on the kitchen board (also right after opening a shift) and the owner on the Overview; a reload with a live session keeps the page. Cashier shift page redesigned: status and time open, till summary (opening count, cash in split into rider handovers and counter sales, paid out, expected in the till) and a "Close your till" panel with a large count field, live match / short / over, and End shift (disabled while the cashier still holds orders). "Kept by the restaurant" renamed "Net revenue" on the Overview, Reports, Z-report and the Z-report alert.                                                                                                                                                                                                                                                                                                                                                                      |
 | 2026-09-27 | Browser tab and installed app name are now just "Relay". Roadmap reviewed: stale items ticked (map pin, live mobile money badge, white-label), screen notes refreshed, and a consolidated "Still open" list added to §7.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 2026-09-27 | Open-list items 3–6: rider cash screen groups cash by day (select a whole day; earlier days flagged) and shows the limit bar with near / over-limit states; cashier handovers search by rider code, name or handover code; payments ledger highlights money waiting over 4 h (with a summary line); orders table filters by channel and cash status and pages beyond 2,000 rows (`adminSearchOrders` `channel`, `cashStatus`, `page`; e2e tested).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |

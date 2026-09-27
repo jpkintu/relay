@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { providerLabel } from './MobileMoney';
@@ -50,6 +50,11 @@ type Result = {
   };
   rows: OrderRow[];
   truncated: boolean;
+  // Rows come 2,000 per page, newest first; the summary covers every match.
+  page: number;
+  pages: number;
+  pageSize: number;
+  totalRows: number;
 };
 
 const STATUSES = [
@@ -60,17 +65,47 @@ const STATUSES = [
   ['CANCELLED', 'Cancelled'],
 ] as const;
 
+const CHANNELS = [
+  ['', 'Any channel'],
+  ['phone', 'Phone call'],
+  ['whatsapp', 'WhatsApp'],
+  ['walkin', 'Walk-in'],
+  ['other', 'Other'],
+] as const;
+
+const CASH_STATES = [
+  ['', 'Any cash status'],
+  ['WITH_RIDER', 'With rider'],
+  ['HANDOVER_PENDING', 'Handover pending'],
+  ['RECONCILED', 'Reconciled'],
+  ['IN_TILL', 'In the till (counter)'],
+  ['UNPAID', 'Not paid yet'],
+  ['NOT_COLLECTED', 'Not collected yet'],
+  ['REFUNDED', 'Refunded'],
+] as const;
+
 export function AdminOrders() {
   const money = useMoney();
   const { timezone } = useConfig();
   const navigate = useNavigate();
   const [filters, setFilters] = useFilters('last7');
   const [status, setStatus] = useState('');
+  const [channel, setChannel] = useState('');
+  const [cashStatus, setCashStatus] = useState('');
+  const [page, setPage] = useState(0);
   const [query, setQuery] = useState('');
   const riders = useRiderOptions();
+  // Any filter change starts again from the newest page.
+  const filterKey = JSON.stringify([filters, status, channel, cashStatus]);
+  useEffect(() => setPage(0), [filterKey]);
   const { data, error, loading } = useCloud<Result>(
     'adminSearchOrders',
-    filterParams(filters, status ? { status } : {}),
+    filterParams(filters, {
+      ...(status && { status }),
+      ...(channel && { channel }),
+      ...(cashStatus && { cashStatus }),
+      ...(page && { page }),
+    }),
   );
   const rows = (data?.rows ?? []).filter((o) =>
     `${o.code} ${o.customer} ${o.rider} ${o.status} ${o.reference}`
@@ -135,6 +170,30 @@ export function AdminOrders() {
             ))}
           </select>
         </label>
+        <label>
+          <span>Channel</span>
+          <select aria-label="Channel" value={channel} onChange={(e) => setChannel(e.target.value)}>
+            {CHANNELS.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Cash status</span>
+          <select
+            aria-label="Cash status"
+            value={cashStatus}
+            onChange={(e) => setCashStatus(e.target.value)}
+          >
+            {CASH_STATES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button className="filter-action" onClick={exportCsv} disabled={!rows.length}>
           Export CSV
         </button>
@@ -160,7 +219,14 @@ export function AdminOrders() {
         <div className="panel-title">
           <div>
             <h2>
-              Orders <small>({rows.length})</small>
+              Orders{' '}
+              <small>
+                ({rows.length}
+                {data && data.totalRows > rows.length
+                  ? ` of ${data.totalRows.toLocaleString()}`
+                  : ''}
+                )
+              </small>
             </h2>
           </div>
         </div>
@@ -228,8 +294,29 @@ export function AdminOrders() {
           </div>
         )}
         {data && !rows.length && <p className="empty-orders">No matching orders.</p>}
-        {data?.truncated && (
-          <p className="muted small">Showing the latest 2,000. Narrow the dates to see more.</p>
+        {data && data.pages > 1 && (
+          <div className="pager">
+            <button
+              className="setup-secondary"
+              disabled={loading || data.page === 0}
+              onClick={() => setPage(data.page - 1)}
+            >
+              Newer
+            </button>
+            <span>
+              Page {data.page + 1} of {data.pages} · orders{' '}
+              {(data.page * data.pageSize + 1).toLocaleString()}–
+              {Math.min((data.page + 1) * data.pageSize, data.totalRows).toLocaleString()} of{' '}
+              {data.totalRows.toLocaleString()}
+            </span>
+            <button
+              className="setup-secondary"
+              disabled={loading || data.page + 1 >= data.pages}
+              onClick={() => setPage(data.page + 1)}
+            >
+              Older
+            </button>
+          </div>
         )}
       </section>
     </div>

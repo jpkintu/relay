@@ -17,7 +17,7 @@ import { ShiftPanel } from './ShiftPanel';
 import { useImageReady } from '../lib/imageReady';
 import { BrandMark } from './BrandMark';
 import { useConfig, useMoney, useSession } from '../lib/session';
-import { formatDate, greeting, initials, isToday } from '../lib/format';
+import { dayKey, formatDate, greeting, initials, isToday } from '../lib/format';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
 import { InstallPrompt } from './InstallPrompt';
@@ -438,8 +438,37 @@ function RiderSubPage({
     (o) => o.status === 'DELIVERED' && o.paymentStatus === 'PENDING_VERIFICATION',
   );
   const earned = orders.filter((o) => o.status === 'DELIVERED');
+  const config = useConfig();
+  const { requireCashierConfirmForPickup } = config;
+  // Cash on this screen: the same limit rule and warnings as Home.
+  const held = sum(cash, (o) => o.amountCollected);
+  const toCollect = preview ? 0 : cashToCollect(orders);
+  const limit = config.maxRiderFloat;
+  const level = cashLevel(held + toCollect, limit, config.floatWarningPercent);
+  const limitShare = limit > 0 ? Math.min(100, Math.round((held / limit) * 100)) : 0;
+  // Cash grouped by the day it was collected, oldest first (hand that over first).
+  const today = dayKey(new Date(), config.timezone);
+  const days = Object.entries(
+    cash.reduce<Record<string, LiveOrder[]>>((groups, o) => {
+      const key = o.deliveredAt ? dayKey(new Date(o.deliveredAt), config.timezone) : today;
+      (groups[key] ||= []).push(o);
+      return groups;
+    }, {}),
+  ).sort(([a], [b]) => a.localeCompare(b));
+  const dayLabel = (key: string, rows: LiveOrder[]) =>
+    key === today
+      ? 'Today'
+      : formatDate(rows[0].deliveredAt || new Date(), config.timezone, {
+          weekday: 'long',
+          day: 'numeric',
+          month: 'short',
+        });
+  const toggleDay = (rows: LiveOrder[]) => {
+    const ids = rows.map((o) => o.id);
+    const all = ids.every((id) => selected.includes(id));
+    setSelected((p) => (all ? p.filter((id) => !ids.includes(id)) : [...new Set([...p, ...ids])]));
+  };
 
-  const { requireCashierConfirmForPickup } = useConfig();
   const pickup = async (o: LiveOrder) => {
     setBusy(true);
     setMessage('');
@@ -547,32 +576,68 @@ function RiderSubPage({
         )}
         {screen === 'cash' && (
           <>
-            <div className="cash-balance">
+            <div className={`cash-balance${level ? ` ${level}` : ''}`}>
               <p>Cash awaiting handover</p>
-              <strong>{money(sum(cash, (o) => o.amountCollected))}</strong>
-              <span>{cash.length} delivered cash orders</span>
-            </div>
-            {cash.map((o) => (
-              <label className="cash-order" key={o.id}>
-                <input
-                  type="checkbox"
-                  checked={selected.includes(o.id)}
-                  onChange={() =>
-                    setSelected((p) =>
-                      p.includes(o.id) ? p.filter((id) => id !== o.id) : [...p, o.id],
-                    )
-                  }
-                />
-                <span>
-                  {o.code} · {o.customer}
-                  {o.paymentStatus === 'REJECTED' && (
-                    <small className="cash-note">
-                      Mobile money not received: hand over the cash or send the right ID
-                    </small>
-                  )}
+              <strong>{money(held)}</strong>
+              <span>
+                {cash.length} delivered cash order{cash.length === 1 ? '' : 's'}
+                {days.length > 1 ? ` over ${days.length} days` : ''}
+              </span>
+              {limit > 0 && (
+                <span className="limit">
+                  <i style={{ width: `${limitShare}%` }} />
+                  {limitShare}% of your {money(limit)} limit
                 </span>
-                <b>{money(o.amountCollected)}</b>
-              </label>
+              )}
+            </div>
+            {level === 'reached' && (
+              <div className="limit-banner" role="alert">
+                <span>{cashLimitMessage(held, toCollect, limit, money)}</span>
+              </div>
+            )}
+            {level === 'near' && (
+              <p className="limit-note">
+                You hold {money(held)} of your {money(limit)} limit. Hand over cash soon.
+              </p>
+            )}
+            {days.map(([key, rows]) => (
+              <section className="cash-day" key={key}>
+                <label className="cash-day-head">
+                  <input
+                    type="checkbox"
+                    checked={rows.every((o) => selected.includes(o.id))}
+                    onChange={() => toggleDay(rows)}
+                    aria-label={`Select all from ${dayLabel(key, rows)}`}
+                  />
+                  <span>
+                    {dayLabel(key, rows)}
+                    {key !== today && <small>From an earlier day: hand this over first</small>}
+                  </span>
+                  <b>{money(sum(rows, (o) => o.amountCollected))}</b>
+                </label>
+                {rows.map((o) => (
+                  <label className="cash-order" key={o.id}>
+                    <input
+                      type="checkbox"
+                      checked={selected.includes(o.id)}
+                      onChange={() =>
+                        setSelected((p) =>
+                          p.includes(o.id) ? p.filter((id) => id !== o.id) : [...p, o.id],
+                        )
+                      }
+                    />
+                    <span>
+                      {o.code} · {o.customer}
+                      {o.paymentStatus === 'REJECTED' && (
+                        <small className="cash-note">
+                          Mobile money not received: hand over the cash or send the right ID
+                        </small>
+                      )}
+                    </span>
+                    <b>{money(o.amountCollected)}</b>
+                  </label>
+                ))}
+              </section>
             ))}
             {cash.length > 0 && (
               <button

@@ -121,6 +121,18 @@ const STATUS_TONE: Record<string, string> = {
   disputed: 'bad',
 };
 
+// Money still waiting (with a rider, in a handover, or a payment to check)
+// longer than this is highlighted, like the cashier's handover list.
+const STALE_HOURS = 4;
+const WAITING = ['WITH_RIDER', 'HANDOVER_PENDING', 'PENDING_VERIFICATION', 'pending'];
+const hoursSince = (at: string) => Math.floor((Date.now() - new Date(at).getTime()) / 3600000);
+const overdue = (status: string, at: string | null | undefined) =>
+  !!at && WAITING.includes(status) && hoursSince(at) >= STALE_HOURS;
+
+function WaitingTag({ at }: { at: string }) {
+  return <em className="stale-tag">Waiting {hoursSince(at)} h</em>;
+}
+
 export function PaymentsLedger() {
   const money = useMoney();
   const { timezone } = useConfig();
@@ -136,6 +148,7 @@ export function PaymentsLedger() {
   });
   const s = data?.summary;
   const rows = data?.transactions ?? [];
+  const staleCount = rows.filter((t) => overdue(t.status, t.at)).length;
   const when = (at: string) =>
     formatDate(at, timezone, { dateStyle: 'medium', timeStyle: 'short' });
   const how = (t: Transaction) =>
@@ -233,6 +246,13 @@ export function PaymentsLedger() {
           Cash is listed by delivery time, mobile money by order time. Compare mobile money with the
           Airtel / MTN merchant statements by reference.
         </p>
+        {staleCount > 0 && (
+          <p className="stale-summary" role="status">
+            {staleCount} payment{staleCount === 1 ? ' has' : 's have'} been waiting more than{' '}
+            {STALE_HOURS} h (cash still with a rider or in a handover, or mobile money not checked):
+            highlighted below.
+          </p>
+        )}
         {rows.length > 0 && (
           <div className="table-scroll">
             <table className="data">
@@ -248,7 +268,10 @@ export function PaymentsLedger() {
               </thead>
               <tbody>
                 {rows.map((t) => (
-                  <tr key={`${t.kind}-${t.id}`}>
+                  <tr
+                    key={`${t.kind}-${t.id}`}
+                    className={overdue(t.status, t.at) ? 'stale-row' : undefined}
+                  >
                     <td>
                       <span className="code">{t.code}</span>
                       <small>{t.customer}</small>
@@ -269,6 +292,7 @@ export function PaymentsLedger() {
                       <span className={`status-pill ${STATUS_TONE[t.status] || ''}`}>
                         {STATUS_LABEL[t.status] || t.status}
                       </span>
+                      {overdue(t.status, t.at) && <WaitingTag at={t.at} />}
                     </td>
                     <td className="num">{money(t.amount)}</td>
                   </tr>
@@ -307,7 +331,7 @@ export function PaymentsLedger() {
                 <tbody>
                   {(data?.handovers ?? []).map((h) => (
                     <Fragment key={h.id}>
-                      <tr>
+                      <tr className={overdue(h.status, h.createdAt) ? 'stale-row' : undefined}>
                         <td>
                           <span className="code">{h.code}</span>
                           <small>
@@ -320,6 +344,7 @@ export function PaymentsLedger() {
                           <span className={`status-pill ${STATUS_TONE[h.status] || ''}`}>
                             {STATUS_LABEL[h.status] || h.status}
                           </span>
+                          {overdue(h.status, h.createdAt) && <WaitingTag at={h.createdAt} />}
                           {handoverNote(h, money) && <small>{handoverNote(h, money)}</small>}
                         </td>
                         <td className="num">{money(h.amount)}</td>

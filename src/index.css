@@ -6157,3 +6157,79 @@ a {
   font-size: 13px;
   font-weight: 600;
 }
+/* Rider cash screen: limit state and cash grouped by day. */
+.cash-balance .limit {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--on-dark-muted);
+}
+.cash-balance .limit:before {
+  width: 100%;
+  background: #ffffff30;
+}
+.cash-balance.near .limit i {
+  background: #f0b429;
+}
+.cash-balance.reached {
+  background: #7a1f16;
+}
+.cash-balance.reached .limit i {
+  background: #ff8a7a;
+}
+.cash-day {
+  margin-top: 14px;
+}
+.cash-day-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 5px;
+  border-bottom: 2px solid var(--line);
+  font-weight: 700;
+}
+.cash-day-head input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--ink);
+}
+.cash-day-head span {
+  display: grid;
+}
+.cash-day-head small {
+  color: #8a5a00;
+  font-weight: 600;
+  font-size: 12px;
+}
+.cash-day-head b {
+  margin-left: auto;
+}
+/* Payments ledger: money waiting more than 4 h. */
+.data tr.stale-row td {
+  background: #fff6ee;
+}
+.data tr.stale-row td:first-child {
+  box-shadow: inset 3px 0 #b3401c;
+}
+.data td .stale-tag {
+  display: block;
+}
+.stale-summary {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff4d6;
+  color: #7a5a00;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* Orders table: page switcher beyond 2,000 rows. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
