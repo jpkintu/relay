@@ -17,13 +17,20 @@ async function recordCustomerOrder(order) {
   query.equalTo('key', key);
   query.ascending('createdAt');
   const customer = (await query.first(MASTER)) || new Parse.Object('Customer');
-  const address = { text: order.get('deliveryAddress'), notes: order.get('deliveryNotes') || '' };
-  const addresses = [
-    address,
-    ...(customer.get('addresses') || []).filter(
-      (saved) => saved.text.toLowerCase() !== address.text.toLowerCase(),
-    ),
-  ].slice(0, MAX_ADDRESSES);
+  const saved = customer.get('addresses') || [];
+  const text = order.get('deliveryAddress');
+  const same = (entry) => entry.text.toLowerCase() === text.toLowerCase();
+  // The address keeps its map pin: this order's, or the one saved before.
+  const pin = order.get('location');
+  const previous = saved.find(same);
+  const address = {
+    text,
+    notes: order.get('deliveryNotes') || '',
+    ...(pin
+      ? { lat: pin.latitude, lng: pin.longitude }
+      : previous?.lat !== undefined && { lat: previous.lat, lng: previous.lng }),
+  };
+  const addresses = [address, ...saved.filter((entry) => !same(entry))].slice(0, MAX_ADDRESSES);
   customer.set({
     key,
     name,
@@ -37,6 +44,31 @@ async function recordCustomerOrder(order) {
   customer.setACL(readAcl(null, ['admin']));
   await customer.save(null, MASTER);
   return customer;
+}
+
+// Saves a pin on the order's address in the customer's record, so the next
+// order to that address is pinned already.
+async function pinCustomerAddress(order, location) {
+  const pointer = order.get('customer');
+  if (!pointer) return;
+  const customer = await new Parse.Query('Customer').get(pointer.id, MASTER).catch(() => null);
+  if (!customer) return;
+  const text = String(order.get('deliveryAddress') || '').toLowerCase();
+  const addresses = (customer.get('addresses') || []).map((entry) =>
+    entry.text.toLowerCase() === text
+      ? {
+          ...entry,
+          ...(location
+            ? { lat: location.lat, lng: location.lng }
+            : { lat: undefined, lng: undefined }),
+        }
+      : entry,
+  );
+  customer.set(
+    'addresses',
+    addresses.map((entry) => JSON.parse(JSON.stringify(entry))),
+  );
+  await customer.save(null, MASTER);
 }
 
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -92,4 +124,4 @@ Parse.Cloud.define('searchCustomers', async (request) => {
   });
 });
 
-module.exports = { recordCustomerOrder };
+module.exports = { recordCustomerOrder, pinCustomerAddress };

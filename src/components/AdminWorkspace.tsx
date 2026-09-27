@@ -32,6 +32,7 @@ import { useConfig, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { useDevice } from '../lib/device';
 import { NotificationBell } from './NotificationBell';
+import { useLiveRefresh } from '../lib/live';
 
 const NAV = [
   [LayoutDashboard, 'Overview', ''],
@@ -86,9 +87,12 @@ export function AdminWorkspace() {
   }, [preview]);
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 30000);
-    return () => window.clearInterval(timer);
   }, [load]);
+  useLiveRefresh(['Order'], () => void load(), {
+    enabled: !preview,
+    fastMs: 30000,
+    slowMs: 120000,
+  });
   if (slug === 'cash') return <Navigate to="/admin/payments" replace />;
   if (!current) return <Navigate to="/admin" replace />;
   return (

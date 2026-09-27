@@ -26,7 +26,9 @@ import { providerLabel } from './MobileMoney';
 import { BrandMark } from './BrandMark';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
+import { InstallPrompt } from './InstallPrompt';
 import { Stat } from './reports/common';
+import { useLiveRefresh } from '../lib/live';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -130,6 +132,11 @@ export function CashierWorkspace() {
   const { pathname } = useLocation();
   const [pendingHandovers, setPendingHandovers] = useState(0);
   const [pendingPayments, setPendingPayments] = useState(0);
+  // Bumped by live updates (and the fallback poll) to recount the badges.
+  const [liveTick, setLiveTick] = useState(0);
+  useLiveRefresh(['Order', 'CashHandover'], () => setLiveTick((n) => n + 1), {
+    enabled: !preview,
+  });
   // Cashiers must start a shift (counting the till) before using the board.
   // Admins are not till operators and skip this.
   const needsShift = !preview && profile?.role === 'cashier';
@@ -157,9 +164,7 @@ export function CashierWorkspace() {
         .catch(() => undefined);
     };
     void refresh();
-    const timer = window.setInterval(refresh, 10000);
-    return () => window.clearInterval(timer);
-  }, [preview, pathname]);
+  }, [preview, pathname, liveTick]);
 
   const tab = pathname.startsWith('/cashier/handovers')
     ? 'handovers'
@@ -236,6 +241,7 @@ export function CashierWorkspace() {
         </button>
       </header>
       {!preview && <PushPrompt card />}
+      {!preview && <InstallPrompt />}
       {pathname.startsWith('/cashier/profile') ? (
         <CashierProfile />
       ) : onShift === null ? (
@@ -329,9 +335,8 @@ function KitchenBoard() {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 10000);
-    return () => window.clearInterval(timer);
   }, [load]);
+  useLiveRefresh(['Order'], () => void load(), { enabled: !preview });
 
   const checkPayment = async (ticket: Ticket, received: boolean, why = '') => {
     try {
@@ -766,9 +771,8 @@ function MobileMoneyLedger() {
   }, [preview]);
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 10000);
-    return () => window.clearInterval(timer);
   }, [load]);
+  useLiveRefresh(['Order'], () => void load(), { enabled: !preview });
 
   const check = async (row: PaymentRow, received: boolean) => {
     setBusy(row.id);

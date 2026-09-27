@@ -5,6 +5,7 @@ import { useSession } from './session';
 import { playTone, strongestTone, unlockAudio } from './sound';
 import { enablePush, pushState, refreshPush } from './push';
 import type { PushState } from './push';
+import { useLiveRefresh } from './live';
 
 export type AppNotification = {
   id: string;
@@ -97,15 +98,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     // A push arrived while the app is open: fetch now instead of waiting.
     const onMessage = (event: MessageEvent) => event.data?.type === 'relay:push' && void load();
     navigator.serviceWorker?.addEventListener('message', onMessage);
-    const timer = window.setInterval(() => void load(), POLL_MS);
-    const onVisible = () => document.visibilityState === 'visible' && void load();
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-      navigator.serviceWorker?.removeEventListener('message', onMessage);
-    };
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage);
   }, [enabled, load]);
+  // New notifications arrive live; the poll is the fallback.
+  useLiveRefresh(['Notification'], () => void load(), { enabled, fastMs: POLL_MS });
 
   // Audio may only start after a user gesture.
   useEffect(() => {

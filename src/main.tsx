@@ -7,8 +7,10 @@ import '@fontsource-variable/space-grotesk';
 import './index.css';
 import './parse';
 import { registerServiceWorker } from './lib/push';
+import { listenForInstall } from './lib/install';
 
 registerServiceWorker();
+listenForInstall();
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },

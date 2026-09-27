@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowUp, ChevronRight, ImagePlus } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronRight, ImagePlus, MapPin } from 'lucide-react';
 import { shrinkImage } from '../lib/image';
 import Parse from '../parse';
 import { useMoney, useSession } from '../lib/session';
 import { ChangePin } from './Profile';
+import { PinSheet } from './MapPin';
 
 type Member = {
   id: string;
@@ -58,6 +59,8 @@ type Settings = {
   defaultCommissionPerOrder?: number;
   defaultCommissionPercent?: number;
   zReportHour?: number;
+  restaurantLat?: number;
+  restaurantLng?: number;
 };
 const input = (
   label: string,
@@ -191,6 +194,7 @@ export function AdminSetup({
     [editingItem, setEditingItem] = useState<string | null>(null),
     [itemDescription, setItemDescription] = useState(''),
     [categoryTitle, setCategoryTitle] = useState('');
+  const [pinningHome, setPinningHome] = useState(false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
@@ -822,6 +826,41 @@ export function AdminSetup({
               Save settings
             </button>
           </form>
+        </div>
+      )}
+      {section === 'Settings' && !preview && (
+        <div className="admin-panel">
+          <h2>Restaurant on the map</h2>
+          <p className="muted">
+            Maps for delivery pins open here. Saved as soon as you save the pin.
+          </p>
+          <div className="pin-row">
+            <button type="button" className="pin-button" onClick={() => setPinningHome(true)}>
+              <MapPin />
+              {settings.restaurantLat !== undefined
+                ? `${Number(settings.restaurantLat).toFixed(5)}, ${Number(settings.restaurantLng).toFixed(5)} · change`
+                : 'Pin the restaurant'}
+            </button>
+          </div>
+          {pinningHome && (
+            <PinSheet
+              title="Where is the restaurant?"
+              initial={
+                settings.restaurantLat !== undefined && settings.restaurantLng !== undefined
+                  ? { lat: Number(settings.restaurantLat), lng: Number(settings.restaurantLng) }
+                  : null
+              }
+              onSave={async (pin) => {
+                if (!pin) return;
+                const next = { ...settings, restaurantLat: pin.lat, restaurantLng: pin.lng };
+                await Parse.Cloud.run('adminSaveSettings', next);
+                setSettings(next);
+                setNotice('Restaurant location saved.');
+                void refresh();
+              }}
+              onClose={() => setPinningHome(false)}
+            />
+          )}
         </div>
       )}
       {section === 'Settings' && !preview && (

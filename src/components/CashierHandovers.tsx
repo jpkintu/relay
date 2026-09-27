@@ -5,6 +5,7 @@ import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { usePin } from '../lib/pin';
+import { useLiveRefresh } from '../lib/live';
 
 type Handover = {
   id: string;
@@ -63,10 +64,8 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
   }, [preview]);
   useEffect(() => {
     void load();
-    if (preview) return;
-    const timer = window.setInterval(() => void load(), 10000);
-    return () => window.clearInterval(timer);
   }, [load, preview]);
+  useLiveRefresh(['CashHandover', 'Order'], () => void load(), { enabled: !preview });
   const open = async (row: Handover) => {
     setSelected(row.id);
     setCounted('');

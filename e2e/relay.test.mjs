@@ -41,6 +41,7 @@ const CLOUD_MAIN = process.env.RELAY_CLOUD_MAIN
 
 let httpServer;
 let parseServer;
+const LIVE_CLASSES = ['Order', 'CashHandover', 'Notification'];
 
 before(async () => {
   parseServer = new ParseServer({
@@ -61,11 +62,14 @@ before(async () => {
     directAccess: process.env.RELAY_DIRECT_ACCESS === 'true',
     // Dish photos: stored on disk (e2e/files/), so Postgres runs need no GridFS.
     filesAdapter: new FileSystemAdapter(),
+    // The classes the app subscribes to for live updates (see src/lib/live.ts).
+    liveQuery: { classNames: LIVE_CLASSES },
   });
   await parseServer.start();
   const app = express();
   app.use('/parse', parseServer.app);
   httpServer = app.listen(PORT);
+  await ParseServer.createLiveQueryServer(httpServer);
   Parse.initialize(APP_ID, undefined, MASTER_KEY);
   Parse.serverURL = SERVER_URL;
 });
@@ -2815,5 +2819,228 @@ describe('owner reporting and control', () => {
       (await run('adminListSetup', {}, s.owner)).menu.find((i) => i.id === dish.id).image,
       null,
     );
+  });
+});
+
+describe('live updates (LiveQuery) respect who may read what', () => {
+  let item;
+  const clients = [];
+  // A LiveQuery connection as a signed-in user, without the master key.
+  async function liveAs(user) {
+    const client = new Parse.LiveQueryClient({
+      applicationId: APP_ID,
+      serverURL: `ws://localhost:${PORT}/parse`,
+      sessionToken: user.getSessionToken(),
+    });
+    client.open();
+    clients.push(client);
+    return client;
+  }
+  // Collects events of `className` seen by `user`.
+  async function watch(user, className, configure = () => {}) {
+    const client = await liveAs(user);
+    const query = new Parse.Query(className);
+    configure(query);
+    const subscription = client.subscribe(query, user.getSessionToken());
+    const events = [];
+    await new Promise((resolve, reject) => {
+      subscription.on('open', resolve);
+      subscription.on('error', reject);
+    });
+    for (const kind of ['create', 'update', 'enter'])
+      subscription.on(kind, (object) => events.push({ kind, id: object.id, object }));
+    return events;
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 1200));
+
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+  after(() => clients.forEach((client) => client.close()));
+
+  test('cashiers see new orders live; other riders do not', async () => {
+    const kitchen = await watch(s.dina, 'Order');
+    const mine = await watch(s.pia, 'Order');
+    const someoneElse = await watch(s.val, 'Order');
+    const placed = await run(
+      'createOrder',
+      { customerName: 'Live one', deliveryAddress: 'Kira', items: [{ id: item.id, quantity: 1 }] },
+      s.pia,
+    );
+    await settle();
+    assert.ok(
+      kitchen.some((e) => e.id === placed.id),
+      'the kitchen sees it',
+    );
+    assert.ok(
+      mine.some((e) => e.id === placed.id),
+      'the rider sees their own order',
+    );
+    assert.ok(!someoneElse.some((e) => e.id === placed.id), 'another rider does not');
+    await run('transitionOrder', { orderId: placed.id, action: 'accept' }, s.dina);
+    await settle();
+    assert.ok(mine.some((e) => e.id === placed.id && e.object.get('status') === 'ACCEPTED'));
+    await run(
+      'transitionOrder',
+      { orderId: placed.id, action: 'cancel', reason: 'Live test' },
+      s.dina,
+    );
+  });
+
+  test("each person's notifications arrive live, to them only", async () => {
+    const riderBell = await watch(s.pia, 'Notification');
+    const otherBell = await watch(s.val, 'Notification');
+    const placed = await run(
+      'createOrder',
+      { customerName: 'Live two', deliveryAddress: 'Kira', items: [{ id: item.id, quantity: 1 }] },
+      s.pia,
+    );
+    await run('transitionOrder', { orderId: placed.id, action: 'accept' }, s.dina);
+    await settle();
+    assert.ok(riderBell.some((e) => e.object.get('kind') === 'order.accept'));
+    assert.ok(!otherBell.some((e) => e.object.get('kind') === 'order.accept'));
+    await run(
+      'transitionOrder',
+      { orderId: placed.id, action: 'cancel', reason: 'Live test' },
+      s.dina,
+    );
+  });
+
+  test('without signing in, nothing is streamed', async () => {
+    const client = new Parse.LiveQueryClient({
+      applicationId: APP_ID,
+      serverURL: `ws://localhost:${PORT}/parse`,
+    });
+    client.open();
+    clients.push(client);
+    const subscription = client.subscribe(new Parse.Query('Order'));
+    const events = [];
+    const opened = await Promise.race([
+      new Promise((resolve) => subscription.on('open', () => resolve(true))),
+      new Promise((resolve) => subscription.on('error', () => resolve(false))),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 1500)),
+    ]);
+    subscription.on('create', (object) => events.push(object.id));
+    await run(
+      'createOrder',
+      {
+        customerName: 'Live three',
+        deliveryAddress: 'Kira',
+        items: [{ id: item.id, quantity: 1 }],
+      },
+      s.pia,
+    );
+    await settle();
+    assert.deepEqual(events, [], `no events (subscription opened: ${opened})`);
+  });
+});
+
+describe('delivery map pins', () => {
+  const M = { useMasterKey: true };
+  let item;
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+  const place = (extra) =>
+    run(
+      'createOrder',
+      {
+        customerName: 'Pinned Paula',
+        customerPhone: '0772555101',
+        deliveryAddress: 'Plot 4, Kisementi',
+        items: [{ id: item.id, quantity: 1 }],
+        ...extra,
+      },
+      s.pia,
+    );
+
+  test('an order can carry a pin; the customer address keeps it for next time', async () => {
+    await rejects(place({ location: { lat: 200, lng: 32 } }), /not a valid location/);
+    const placed = await place({ location: { lat: 0.33412345678, lng: 32.59876543 } });
+    const order = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(order.get('location').latitude, 0.334123);
+    assert.equal(order.get('location').longitude, 32.598765);
+    const [paula] = await run('searchCustomers', { q: 'Pinned Paula' }, s.pia);
+    assert.deepEqual(
+      { lat: paula.addresses[0].lat, lng: paula.addresses[0].lng },
+      { lat: 0.334123, lng: 32.598765 },
+    );
+    // The next order to the same address without a pin keeps the saved one.
+    const again = await place({});
+    const [still] = await run('searchCustomers', { q: 'Pinned Paula' }, s.pia);
+    assert.equal(still.addresses[0].lat, 0.334123);
+    const page = await run('adminGetOrder', { id: placed.id }, s.owner);
+    assert.deepEqual(page.location, { lat: 0.334123, lng: 32.598765 });
+    for (const id of [placed.id, again.id])
+      await run('transitionOrder', { orderId: id, action: 'cancel', reason: 'Pin test' }, s.pia);
+  });
+
+  test('the rider (or staff) can pin or move the pin later, and remove it', async () => {
+    const placed = await place({});
+    await rejects(
+      run('setOrderLocation', { orderId: placed.id, location: { lat: 0.3, lng: 32.6 } }, s.val),
+      /Not your order/,
+    );
+    await rejects(
+      run('setOrderLocation', { orderId: placed.id, location: { lat: 0, lng: 0 } }, s.pia),
+      /Drop the pin/,
+    );
+    await run(
+      'setOrderLocation',
+      { orderId: placed.id, location: { lat: 0.31, lng: 32.61 } },
+      s.pia,
+    );
+    let order = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(order.get('location').latitude, 0.31);
+    const [paula] = await run('searchCustomers', { q: 'Pinned Paula' }, s.pia);
+    assert.equal(paula.addresses[0].lat, 0.31);
+    await run(
+      'setOrderLocation',
+      { orderId: placed.id, location: { lat: 0.32, lng: 32.62 } },
+      s.dina,
+    );
+    await run('setOrderLocation', { orderId: placed.id, location: null }, s.pia);
+    order = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(order.get('location'), undefined);
+    const logged = await new Parse.Query('AuditLog')
+      .equalTo('entityId', placed.id)
+      .equalTo('action', 'order.location')
+      .count(M);
+    assert.equal(logged, 3);
+    await run(
+      'transitionOrder',
+      { orderId: placed.id, action: 'cancel', reason: 'Pin test' },
+      s.pia,
+    );
+    await rejects(
+      run('setOrderLocation', { orderId: placed.id, location: { lat: 0.3, lng: 32.6 } }, s.pia),
+      /cancelled/,
+    );
+  });
+
+  test('the owner sets where the map opens', async () => {
+    const { settings } = await run('adminListSetup', {}, s.owner);
+    assert.deepEqual((await run('getMyProfile', {}, s.pia)).config.mapCenter, {
+      lat: settings.restaurantLat,
+      lng: settings.restaurantLng,
+    });
+    await rejects(
+      run('adminSaveSettings', { ...settings, restaurantLat: 95, restaurantLng: 32 }, s.owner),
+      /Restaurant location/,
+    );
+    await run(
+      'adminSaveSettings',
+      { ...settings, restaurantLat: 0.3136, restaurantLng: 32.5811 },
+      s.owner,
+    );
+    assert.deepEqual((await run('getMyProfile', {}, s.pia)).config.mapCenter, {
+      lat: 0.3136,
+      lng: 32.5811,
+    });
+    await run('adminSaveSettings', settings, s.owner);
   });
 });

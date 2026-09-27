@@ -19,9 +19,11 @@ import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, greeting, initials, isToday } from '../lib/format';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
+import { InstallPrompt } from './InstallPrompt';
 import { MyHandovers, MyPay } from './RiderMoney';
 import { usePin } from '../lib/pin';
 import { AvailabilityToggle, ChangePin } from './Profile';
+import { useLiveRefresh } from '../lib/live';
 
 type LiveOrder = {
   id: string;
@@ -87,9 +89,8 @@ export function RiderWorkspace() {
 
   useEffect(() => {
     void loadOrders();
-    const timer = window.setInterval(() => void loadOrders(), 10000);
-    return () => window.clearInterval(timer);
   }, [loadOrders]);
+  useLiveRefresh(['Order', 'CashHandover'], () => void loadOrders(), { enabled: !preview });
 
   const subPage = (screen: SubScreen) => (
     <RiderSubPage screen={screen} orders={orders} refresh={loadOrders} />
@@ -216,6 +217,7 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
       </header>
       <div className="rider-content">
         {!preview && <PushPrompt card />}
+        {!preview && <InstallPrompt />}
         <AvailabilityToggle compact />
         <ShiftPanel kind="rider" preview={preview} />
         <section className="welcome">
@@ -637,6 +639,7 @@ function RiderSubPage({
                   <>
                     <AvailabilityToggle />
                     <ChangePin />
+                    <InstallPrompt button />
                   </>
                 )}
               </>

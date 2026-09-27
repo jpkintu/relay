@@ -31,6 +31,9 @@ const DEFAULT_CONFIG = {
   defaultCommissionPercent: 0,
   // Hour of the day (restaurant time) after which the daily Z-report is saved.
   zReportHour: 23,
+  // Where the map opens (the restaurant); Kampala until the owner pins it.
+  restaurantLat: 0.3476,
+  restaurantLng: 32.5825,
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);

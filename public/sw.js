@@ -1,9 +1,95 @@
 // Relay service worker: shows push notifications on the lock screen and
 // opens the right screen when one is tapped. Push messages come from Cloud
 // Code (cloud/push.js) as JSON: { id, title, body, link, tone }.
+//
+// It also keeps an offline shell: the app's page, scripts, styles, fonts and
+// icons are cached so Relay opens (and shows what it last loaded) without a
+// connection. Pages are fetched from the network first, so a new deploy is
+// picked up on the next load; built assets have hashed names and never change.
+// Data (the Parse API) is never cached here.
 
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+const SHELL = 'relay-shell-v2';
+const PRECACHE = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
+
+// Caches the page and the scripts and styles it loads, so the very next
+// start works offline even if this visit was the first.
+async function precache() {
+  const cache = await caches.open(SHELL);
+  await cache.addAll(PRECACHE);
+  const page = await cache.match('/');
+  const html = page ? await page.text() : '';
+  const assets = [...new Set(html.match(/\/assets\/[^"'\s>]+/g) || [])];
+  await cache.addAll(assets);
+}
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    precache()
+      .catch(() => undefined)
+      .then(() => self.skipWaiting()),
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      for (const key of await caches.keys()) if (key !== SHELL) await caches.delete(key);
+      await self.clients.claim();
+    })(),
+  );
+});
+
+async function networkFirstPage(request) {
+  const cache = await caches.open(SHELL);
+  try {
+    const response = await fetch(request);
+    if (response.ok) {
+      await cache.put('/', response.clone());
+      // A new deploy: fetch its scripts and styles in the background.
+      response
+        .clone()
+        .text()
+        .then((html) => {
+          const assets = [...new Set(html.match(/\/assets\/[^"'\s>]+/g) || [])];
+          return Promise.all(
+            assets.map((asset) =>
+              cache
+                .match(asset, { ignoreVary: true })
+                .then((hit) => hit || cache.add(asset).catch(() => undefined)),
+            ),
+          );
+        })
+        .catch(() => undefined);
+    }
+    return response;
+  } catch {
+    return (await cache.match('/', { ignoreVary: true })) || Response.error();
+  }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(SHELL);
+  // Scripts load in CORS mode (with an Origin header) and hosts send
+  // "Vary: Origin", so match on the URL alone.
+  const cached = await cache.match(request, { ignoreVary: true, ignoreSearch: false });
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response.ok) await cache.put(request, response.clone());
+  return response;
+}
+
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/parse')) return;
+  if (request.mode === 'navigate') {
+    event.respondWith(networkFirstPage(request));
+    return;
+  }
+  if (/^\/(assets|icons)\//.test(url.pathname) || url.pathname === '/manifest.webmanifest')
+    event.respondWith(cacheFirst(request));
+});
 
 // Vibration patterns (ms) per tone; "alert" and "new" are longer and stay on
 // screen until tapped so a rider does not miss them.

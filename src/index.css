@@ -5539,3 +5539,145 @@ img.food-art.photo {
     flex-wrap: wrap;
   }
 }
+
+/* Install prompt and offline banner */
+.install-prompt .push-prompt-icon {
+  color: var(--accent);
+}
+.install-inline {
+  margin: 10px 0 14px;
+}
+.install-inline .setup-secondary,
+.profile-card .install-inline .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #e5e7ec;
+  color: var(--ink);
+  min-height: 44px;
+}
+.install-inline svg {
+  width: 16px;
+  height: 16px;
+}
+.offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background: #3b2a00;
+  color: #ffe9b3;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  padding: 8px 16px;
+}
+
+/* Delivery map pins (OpenStreetMap / Leaflet) */
+.map-view {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #e8ebe4;
+  isolation: isolate;
+}
+.map-canvas {
+  position: absolute;
+  inset: 0;
+}
+.map-failed {
+  position: absolute;
+  inset: auto 12px 12px;
+  background: #fff;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.map-pin-icon span {
+  display: block;
+  width: 30px;
+  height: 30px;
+  margin: 0 auto;
+  border-radius: 50% 50% 50% 0;
+  background: var(--accent);
+  border: 3px solid #fff;
+  transform: rotate(-45deg);
+  box-shadow: 0 3px 8px rgb(0 0 0 / 35%);
+}
+.map-pin-icon span::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  left: 7px;
+  top: 7px;
+  border-radius: 50%;
+  background: #fff;
+}
+.pin-sheet {
+  width: min(760px, 100%);
+}
+.pin-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pin-tools .setup-secondary,
+.pin-actions .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  background: #e5e7ec;
+  color: var(--ink);
+}
+.pin-tools svg,
+.pin-actions svg {
+  width: 17px;
+  height: 17px;
+}
+.pin-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pin-actions .primary-button {
+  flex: 1;
+  justify-content: center;
+  gap: 8px;
+  min-height: 50px;
+}
+.pin-actions .primary-button:disabled {
+  opacity: 0.5;
+}
+.pin-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.pin-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px dashed var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-height: 44px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.pin-button svg {
+  width: 17px;
+  height: 17px;
+  color: var(--accent);
+}
+.pin-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}

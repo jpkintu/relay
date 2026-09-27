@@ -19,6 +19,7 @@ const { isValidTimeZone } = require('./lib/dates');
 const { SEED_MENU } = require('./lib/seed');
 const { normalizeGroups } = require('./lib/accompaniments');
 const { applySecurity } = require('./security');
+const { cleanLocation } = require('./lib/geo');
 
 const ROLE_NAMES = ['admin', 'cashier', 'rider'];
 const STAFF_ROLES = ['rider', 'cashier'];
@@ -519,6 +520,12 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
   const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
   if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
     throw invalid('Cash warning must be between 50% and 99% of the limit');
+  const place = cleanLocation(
+    p.restaurantLat !== undefined || p.restaurantLng !== undefined
+      ? { lat: p.restaurantLat, lng: p.restaurantLng }
+      : { lat: current.restaurantLat, lng: current.restaurantLng },
+  );
+  if (place.error) throw invalid(`Restaurant location: ${place.error}`);
   const zHour = Number(p.zReportHour ?? current.zReportHour);
   if (!Number.isInteger(zHour) || zHour < 0 || zHour > 23)
     throw invalid('Z-report hour must be 0-23');
@@ -554,6 +561,8 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     defaultCommissionPerOrder: perOrder,
     defaultCommissionPercent: percent,
     zReportHour: zHour,
+    restaurantLat: place.location.lat,
+    restaurantLng: place.location.lng,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);
