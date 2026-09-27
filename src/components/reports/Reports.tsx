@@ -68,7 +68,8 @@ type Report = {
     share: number;
     avgPrice: number;
   }[];
-  accompaniments: { name: string; servings: number }[];
+  // `revenue`: what charged sides brought in (0 for free ones).
+  accompaniments: { name: string; servings: number; revenue: number }[];
   riders: {
     riderId: string;
     rider: string;
@@ -207,7 +208,9 @@ export function Reports() {
         y: topSides.map((a) => name(a.name)),
         x: topSides.map((a) => a.servings),
         marker: { color: SERIES[0] },
-        text: topSides.map((a) => String(a.servings)),
+        text: topSides.map((a) =>
+          a.revenue ? `${a.servings} · ${money(a.revenue)}` : String(a.servings),
+        ),
         textposition: 'outside',
         cliponaxis: false,
         textfont: { color: '#0b1633' },
@@ -274,6 +277,7 @@ export function Reports() {
       busyDays,
     };
   }, [data, money, itemMeasure, narrow]);
+  const sidesRevenue = (data?.accompaniments ?? []).reduce((n, a) => n + (a.revenue || 0), 0);
 
   const moneyAxis: Partial<Layout> = useMemo(
     () => ({
@@ -561,7 +565,14 @@ export function Reports() {
               </details>
             </ReportPanel>
 
-            <ReportPanel title="Accompaniments" eyebrow="Free sides served">
+            <ReportPanel
+              title="Accompaniments"
+              eyebrow={
+                sidesRevenue
+                  ? `Sides served · charged sides brought in ${money(sidesRevenue)}`
+                  : 'Sides served'
+              }
+            >
               {charts.topSides.length > 0 ? (
                 <Chart
                   data={charts.sides}

@@ -1,3 +1,4 @@
+import { sidesLabel } from '../lib/cart';
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronRight, MapPin, Phone } from 'lucide-react';
 import Parse from '../parse';
@@ -14,7 +15,16 @@ import { statusLabel, statusTone } from '../lib/labels';
 import { useLiveRefresh } from '../lib/live';
 import { PinPreview, PinSheet } from './MapPin';
 
-type Line = { id: string; title: string; quantity: number; total: number; details: string };
+type Line = {
+  id: string;
+  title: string;
+  quantity: number;
+  total: number;
+  sides: string[];
+  // Price per portion of each side (0 = free).
+  sidePrices: number[];
+  notes: string;
+};
 type Detail = {
   id: string;
   code: string;
@@ -100,9 +110,9 @@ async function loadDetail(orderId: string): Promise<Detail> {
       title: item.get('itemNameSnapshot'),
       quantity: item.get('quantity'),
       total: item.get('lineTotal'),
-      details: [(item.get('accompanimentNames') || []).join(', '), item.get('notes')]
-        .filter(Boolean)
-        .join(' · '),
+      sides: item.get('accompanimentNames') || [],
+      sidePrices: item.get('accompanimentPrices') || [],
+      notes: item.get('notes') || '',
     })),
   };
 }
@@ -255,7 +265,13 @@ export function OrderDetail({
                     <b>
                       {line.quantity}× {line.title}
                     </b>
-                    {line.details && <small>{line.details}</small>}
+                    {(line.sides.length > 0 || line.notes) && (
+                      <small>
+                        {[sidesLabel(line.sides, line.sidePrices, money), line.notes]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </small>
+                    )}
                   </div>
                   <span>{money(line.total)}</span>
                 </div>

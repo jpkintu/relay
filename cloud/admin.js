@@ -220,6 +220,7 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       title: row.get('title'),
       active: row.get('active') !== false,
       available: row.get('available') !== false,
+      price: Number(row.get('price') || 0),
     })),
     categories: categories.map((category) => ({
       id: category.id,
@@ -505,6 +506,10 @@ Parse.Cloud.define('adminSaveAccompaniment', async (request) => {
   const p = request.params;
   const title = String(p.title || '').trim();
   if (!title || title.length > 60) throw invalid('An accompaniment name is required');
+  // Free (price 0) or charged extra: the price is added to the dish's line.
+  const price = p.price === undefined || p.price === null || p.price === '' ? 0 : Number(p.price);
+  if (!Number.isInteger(price) || price < 0 || price > 1000000)
+    throw invalid('An accompaniment price must be a whole amount from 0');
   const row = p.id
     ? await new Parse.Query('Accompaniment').get(p.id, MASTER)
     : new Parse.Object('Accompaniment');
@@ -514,6 +519,7 @@ Parse.Cloud.define('adminSaveAccompaniment', async (request) => {
     active: p.active !== false,
     available: p.available !== false,
     sortOrder: Number(p.sortOrder) || 0,
+    price,
   });
   row.setACL(readAcl(null, ['admin']));
   await row.save(null, MASTER);
@@ -521,6 +527,7 @@ Parse.Cloud.define('adminSaveAccompaniment', async (request) => {
     title,
     active: row.get('active'),
     available: row.get('available'),
+    price,
   });
   return { id: row.id };
 });

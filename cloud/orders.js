@@ -52,10 +52,12 @@ async function saveLines(order, lines, rider) {
       itemNameSnapshot: line.name,
       unitPriceSnapshot: line.price,
       quantity: line.qty,
-      lineTotal: line.price * line.qty,
+      lineTotal: line.lineTotal,
       notes: line.notes,
       accompanimentIds: line.accompanimentIds,
       accompanimentNames: line.accompanimentNames,
+      accompanimentPrices: line.accompanimentPrices,
+      extrasPerUnit: line.extrasPerUnit,
     });
     item.setACL(readAcl(rider));
     return item;
@@ -90,14 +92,23 @@ async function priceLines(items) {
     const chosen = (Array.isArray(line.accompaniments) ? line.accompaniments : []).map(String);
     const problem = selectionError(groups, chosen);
     if (problem) throw invalid(`${title}: ${problem}`);
+    // Charged sides add their price to every unit of the dish.
+    const accompanimentPrices = chosen.map((id) =>
+      Number(accompaniments.get(id).get('price') || 0),
+    );
+    const extrasPerUnit = accompanimentPrices.reduce((n, price) => n + price, 0);
+    const price = Number(saved.get('price'));
     return {
       menuItem: saved,
       name: title,
-      price: Number(saved.get('price')),
+      price,
       qty,
+      extrasPerUnit,
+      lineTotal: (price + extrasPerUnit) * qty,
       notes: clean(line.notes, 140),
       accompanimentIds: chosen,
       accompanimentNames: chosen.map((id) => accompaniments.get(id).get('title')),
+      accompanimentPrices,
     };
   });
 }
@@ -159,7 +170,7 @@ Parse.Cloud.define('createOrder', async (request) => {
   if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
     throw invalid(cashLimitMessage(config, float, toCollect));
 
-  const subtotal = sumBy(lines, (line) => line.price * line.qty);
+  const subtotal = sumBy(lines, (line) => line.lineTotal);
   const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
   const total = subtotal + fee;
   const isCash = paymentMethod === 'cash';

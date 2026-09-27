@@ -1,7 +1,8 @@
 // Order-entry cart helpers. Pure functions, unit-tested. The server re-checks
 // everything (prices, availability, accompaniment rules, commission).
 
-export type AccompanimentOption = { id: string; title: string };
+// `price`: 0 or missing = free; otherwise added to each unit of the dish.
+export type AccompanimentOption = { id: string; title: string; price?: number };
 export type AccompanimentGroup = {
   label: string;
   min: number;
@@ -71,8 +72,25 @@ export function changeQuantity(cart: CartLine[], key: string, delta: number): Ca
 }
 
 export const cartCount = (cart: CartLine[]) => cart.reduce((n, line) => n + line.quantity, 0);
-export const cartSubtotal = (cart: CartLine[]) =>
-  cart.reduce((n, line) => n + line.price * line.quantity, 0);
+
+// What charged sides add to one unit of a dish.
+export const extrasOf = (accompaniments: AccompanimentOption[]) =>
+  accompaniments.reduce((n, a) => n + (a.price || 0), 0);
+// One unit: the dish plus its charged sides (the server prices it the same way).
+export const unitPrice = (line: Pick<CartLine, 'price' | 'accompaniments'>) =>
+  line.price + extrasOf(line.accompaniments);
+export const lineTotal = (line: Pick<CartLine, 'price' | 'accompaniments' | 'quantity'>) =>
+  unitPrice(line) * line.quantity;
+export const cartSubtotal = (cart: CartLine[]) => cart.reduce((n, line) => n + lineTotal(line), 0);
+
+// "Chips (+UGX 2,000), Rice": charged sides show their price.
+export function sidesLabel(
+  names: string[],
+  prices: number[] | undefined,
+  money: (n: number) => string,
+): string {
+  return names.map((name, i) => (prices?.[i] ? `${name} (+${money(prices[i])})` : name)).join(', ');
+}
 
 // Mirrors cloud/lib/accompaniments.js selectionError for the picker.
 export function selectionProblem(groups: AccompanimentGroup[], selected: string[]): string {

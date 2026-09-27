@@ -39,7 +39,14 @@ type Item = {
   archived: boolean;
 };
 type Group = { label: string; options: string[]; min: number; max: number };
-type Accompaniment = { id: string; title: string; active: boolean; available: boolean };
+// `price` 0 = free; otherwise charged on top of the dish, per unit.
+type Accompaniment = {
+  id: string;
+  title: string;
+  active: boolean;
+  available: boolean;
+  price: number;
+};
 type Category = { id: string; title: string; active: boolean };
 type Settings = {
   restaurantName: string;
@@ -385,6 +392,7 @@ export function AdminSetup({
     [accompaniments, setAccompaniments] = useState<Accompaniment[]>([]),
     [itemGroups, setItemGroups] = useState<Group[]>([]),
     [accompanimentTitle, setAccompanimentTitle] = useState(''),
+    [accompanimentPrice, setAccompanimentPrice] = useState(''),
     [categories, setCategories] = useState<Category[]>([]),
     [settings, setSettings] = useState<Settings>(config);
   const [name, setName] = useState(''),
@@ -608,14 +616,21 @@ export function AdminSetup({
             <h2>Accompaniments</h2>
             <p className="muted">
               Add matooke, rice, pumpkin and so on here, then choose which ones each dish offers.
-              Cashiers can mark them sold out from their Stock tab.
+              Sides are free unless you tick <b>Charged extra</b> and set a price: it is added to
+              the dish on the bill, for every portion. Cashiers can mark them sold out from their
+              Stock tab.
             </p>
             <form
               className="category-create"
               onSubmit={(e) => {
                 e.preventDefault();
-                void save('adminSaveAccompaniment', { title: accompanimentTitle }, () =>
-                  setAccompanimentTitle(''),
+                void save(
+                  'adminSaveAccompaniment',
+                  { title: accompanimentTitle, price: Number(accompanimentPrice) || 0 },
+                  () => {
+                    setAccompanimentTitle('');
+                    setAccompanimentPrice('');
+                  },
                 );
               }}
             >
@@ -625,11 +640,22 @@ export function AdminSetup({
                 value={accompanimentTitle}
                 onChange={(e) => setAccompanimentTitle(e.target.value)}
               />
+              <input
+                className="price-input"
+                type="number"
+                inputMode="numeric"
+                min="0"
+                step="1"
+                placeholder="Price if charged"
+                aria-label="Price if charged extra (leave empty for free)"
+                value={accompanimentPrice}
+                onChange={(e) => setAccompanimentPrice(e.target.value)}
+              />
               <button disabled={busy || preview}>Add accompaniment</button>
             </form>
             {accompaniments.map((a) => (
               <AccompanimentEditor
-                key={`${a.id}-${a.title}-${a.active}-${a.available}`}
+                key={`${a.id}-${a.title}-${a.active}-${a.available}-${a.price}`}
                 accompaniment={a}
                 disabled={busy || preview}
                 save={(payload) => save('adminSaveAccompaniment', { ...a, ...payload }, () => {})}
@@ -1322,18 +1348,50 @@ function AccompanimentEditor({
   save: (payload: Partial<Accompaniment>) => Promise<void>;
 }) {
   const [title, setTitle] = useState(accompaniment.title);
+  const [charged, setCharged] = useState(accompaniment.price > 0);
+  const [price, setPrice] = useState(accompaniment.price > 0 ? String(accompaniment.price) : '');
+  const newPrice = charged ? Number(price) : 0;
+  const priceOk = !charged || (Number.isInteger(newPrice) && newPrice > 0);
+  const changed = title.trim() !== accompaniment.title || newPrice !== accompaniment.price;
   return (
-    <div className="setup-row">
+    <div className="setup-row accompaniment-row">
       <input
         aria-label="Accompaniment name"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
       />
+      <label className="charged-toggle">
+        <input
+          type="checkbox"
+          checked={charged}
+          onChange={(e) => setCharged(e.target.checked)}
+          disabled={disabled}
+        />
+        Charged extra
+      </label>
+      {charged ? (
+        <input
+          className="price-input"
+          type="number"
+          inputMode="numeric"
+          min="1"
+          step="1"
+          aria-label={`${accompaniment.title} price`}
+          placeholder="Price"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+        />
+      ) : (
+        <span className="muted">Free</span>
+      )}
       <span>
         {!accompaniment.active ? 'Archived' : accompaniment.available ? 'Available' : 'Sold out'}
       </span>
-      <button disabled={disabled || !title.trim()} onClick={() => void save({ title })}>
-        Save name
+      <button
+        disabled={disabled || !title.trim() || !priceOk || !changed}
+        onClick={() => void save({ title: title.trim(), price: newPrice })}
+      >
+        Save
       </button>
       {accompaniment.active && (
         <button
@@ -1365,7 +1423,7 @@ function GroupsEditor({
     onChange(groups.map((g, i) => (i === index ? fixLimits({ ...g, ...patch }) : g)));
   return (
     <div className="groups-editor">
-      <p className="setup-field-label">Accompaniments (free)</p>
+      <p className="setup-field-label">Accompaniments</p>
       {!accompaniments.length && (
         <p className="muted">Add accompaniments above first, then choose them here.</p>
       )}
@@ -1404,6 +1462,9 @@ function GroupsEditor({
                   }
                 >
                   {a.title}
+                  {a.price > 0 && (
+                    <small className="choice-price">+{a.price.toLocaleString()}</small>
+                  )}
                 </button>
               );
             })}

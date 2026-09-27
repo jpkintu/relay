@@ -5,9 +5,12 @@ import {
   cartSubtotal,
   changeQuantity,
   describeLine,
+  lineTotal,
   previewCommission,
   selectionProblem,
+  sidesLabel,
   toggleOption,
+  unitPrice,
 } from './cart';
 
 const stew = { id: 'stew', title: 'Chicken stew', price: 25000 };
@@ -31,6 +34,17 @@ describe('cart lines', () => {
     expect(cart[0].quantity).toBe(2);
     expect(cartCount(cart)).toBe(3);
     expect(cartSubtotal(cart)).toBe(75000);
+  });
+
+  test('charged sides add to every unit of the dish', () => {
+    const chips = { id: 'c', title: 'Chips', price: 2000 };
+    const cart = addToCart([], stew, 2, [chips, matooke]);
+    expect(unitPrice(cart[0])).toBe(27000);
+    expect(lineTotal(cart[0])).toBe(54000);
+    expect(cartSubtotal(cart)).toBe(54000);
+    expect(sidesLabel(['Chips', 'Matooke'], [2000, 0], (n) => `UGX ${n}`)).toBe(
+      'Chips (+UGX 2000), Matooke',
+    );
   });
 
   test('quantity changes remove a line at zero', () => {

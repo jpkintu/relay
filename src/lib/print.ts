@@ -37,6 +37,8 @@ type Receipt = {
     total: number;
     notes: string;
     accompaniments: string[];
+    // Price per portion of each side (0 = free); lines up with accompaniments.
+    accompanimentPrices?: number[];
   }[];
   subtotal: number;
   deliveryFee: number;
@@ -149,7 +151,19 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string) {
         .map(
           (line) => `
         <tr><td class="qty">${line.qty}×</td><td>${escape(line.name)}
-          ${line.accompaniments.length ? `<div class="sub">+ ${escape(line.accompaniments.join(', '))}</div>` : ''}
+          ${
+            line.accompaniments.length
+              ? `<div class="sub">+ ${escape(
+                  line.accompaniments
+                    .map((name, i) =>
+                      line.accompanimentPrices?.[i]
+                        ? `${name} (${formatMoney(line.accompanimentPrices[i], symbol)})`
+                        : name,
+                    )
+                    .join(', '),
+                )}</div>`
+              : ''
+          }
         </td><td class="num">${money(line.total)}</td></tr>`,
         )
         .join('')}

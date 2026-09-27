@@ -21,7 +21,10 @@ import {
   describeLine,
   previewCommission,
   selectionProblem,
+  sidesLabel,
   toggleOption,
+  lineTotal,
+  extrasOf,
 } from '../lib/cart';
 import type { AccompanimentOption, CartLine, MenuItem } from '../lib/cart';
 import { MobileMoneyPanel, referenceProblem } from './MobileMoney';
@@ -616,7 +619,20 @@ export function NewOrder({
             <div className="cart-line" key={line.key}>
               <div>
                 <b>{line.title}</b>
-                {describeLine(line) && <small>{describeLine(line)}</small>}
+                {describeLine(line) && (
+                  <small>
+                    {[
+                      sidesLabel(
+                        line.accompaniments.map((a) => a.title),
+                        line.accompaniments.map((a) => a.price || 0),
+                        money,
+                      ),
+                      line.notes,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </small>
+                )}
               </div>
               <div className="qty">
                 <button
@@ -633,7 +649,7 @@ export function NewOrder({
                   <Plus />
                 </button>
               </div>
-              <span>{money(line.price * line.quantity)}</span>
+              <span>{money(lineTotal(line))}</span>
             </div>
           ))}
 
@@ -868,6 +884,8 @@ function ItemSheet({
   const [notes, setNotes] = useState('');
   const problem = selectionProblem(item.accompanimentGroups, selected);
   const options = item.accompanimentGroups.flatMap((g) => g.options);
+  // Charged sides add to each unit of the dish.
+  const unit = item.price + extrasOf(options.filter((o) => selected.includes(o.id)));
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <section
@@ -893,7 +911,8 @@ function ItemSheet({
               <b>{group.label}</b>{' '}
               <small>
                 {group.max === 1 ? 'Pick one' : `Pick up to ${group.max}`}
-                {group.min > 0 ? ' · required' : ' · optional'} · free
+                {group.min > 0 ? ' · required' : ' · optional'}
+                {group.options.every((o) => !o.price) ? ' · free' : ''}
               </small>
             </p>
             <div className="choices">
@@ -905,6 +924,7 @@ function ItemSheet({
                   aria-pressed={selected.includes(option.id)}
                 >
                   {selected.includes(option.id) && <Check size={14} />} {option.title}
+                  {!!option.price && <small className="choice-price">+{money(option.price)}</small>}
                 </button>
               ))}
             </div>
@@ -940,7 +960,7 @@ function ItemSheet({
               )
             }
           >
-            {problem || `Add ${quantity} · ${money(item.price * quantity)}`}
+            {problem || `Add ${quantity} · ${money(unit * quantity)}`}
           </button>
         </div>
       </section>

@@ -108,8 +108,25 @@ test('item sales rank by revenue with share of sales', () => {
     { name: 'Chips', qty: 3, revenue: 15000, orders: 1, share: 16.7, avgPrice: 5000 },
   ]);
   expect(accompanimentCounts(lines)).toEqual([
-    { name: 'Matooke', servings: 3 },
-    { name: 'Rice', servings: 2 },
+    { name: 'Matooke', servings: 3, revenue: 0 },
+    { name: 'Rice', servings: 2, revenue: 0 },
+  ]);
+});
+
+test('charged accompaniments count what they brought in', () => {
+  const lines = [
+    {
+      name: 'Chicken stew',
+      qty: 2,
+      total: 54000,
+      accompaniments: ['Chips', 'Rice'],
+      accompanimentPrices: [2000, 0],
+    },
+    { name: 'Fish', qty: 1, total: 32000, accompaniments: ['Chips'], accompanimentPrices: [2000] },
+  ];
+  expect(accompanimentCounts(lines)).toEqual([
+    { name: 'Chips', servings: 3, revenue: 6000 },
+    { name: 'Rice', servings: 2, revenue: 0 },
   ]);
 });
 

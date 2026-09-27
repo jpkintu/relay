@@ -38,7 +38,11 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
         accompaniments.has(id),
       ).map((group) => ({
         ...group,
-        options: group.options.map((id) => ({ id, title: accompaniments.get(id).get('title') })),
+        options: group.options.map((id) => ({
+          id,
+          title: accompaniments.get(id).get('title'),
+          price: Number(accompaniments.get(id).get('price') || 0),
+        })),
       })),
     })),
     deliveryFee: config.defaultDeliveryFee,
@@ -69,6 +73,7 @@ Parse.Cloud.define('getStock', async (request) => {
       id: row.id,
       title: row.get('title'),
       available: row.get('available') !== false,
+      price: Number(row.get('price') || 0),
     })),
   };
 });

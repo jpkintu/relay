@@ -6241,3 +6241,24 @@ a {
   font-size: 13px;
   color: var(--muted);
 }
+/* Charged accompaniment: its price on the choice chip. */
+.choice-price {
+  margin-left: 4px;
+  font-weight: 700;
+  opacity: 0.8;
+}
+/* Menu → Accompaniments: free or charged extra. */
+.price-input {
+  width: 130px;
+}
+.charged-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.accompaniment-row {
+  flex-wrap: wrap;
+}

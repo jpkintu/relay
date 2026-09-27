@@ -3,7 +3,8 @@
 // A menu item carries `accompanimentGroups`, e.g. for "Chicken stew":
 //   [{ label: 'Rice',  options: [vegRiceId, friedRiceId],        min: 0, max: 1 },
 //    { label: 'Sides', options: [matookeId, pumpkinId, yamsId],  min: 0, max: 3 }]
-// Accompaniments are free. `max: 1` is how "one or the other, not both" is
+// Accompaniments are free unless the owner gives one a price (charged per
+// unit of the dish, see orders.js priceLines). `max: 1` is how "one or the other, not both" is
 // expressed.
 
 const MAX_GROUPS = 6;
