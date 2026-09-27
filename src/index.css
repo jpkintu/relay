@@ -8,6 +8,7 @@
   /* Raised panels on the main colour (active menu item, rider New order card). */
   --ink-raised: #1a3a8f;
   --ink-card: #13306f;
+  /* Links, unread dots, info tints; the main colour under a custom theme. */
   --blue: #0751f0;
   --line: #ced1d9;
   --muted: #5f687c;
@@ -168,7 +169,7 @@ button {
 .login-card input:focus,
 .customer-grid input:focus {
   border-color: var(--ink);
-  box-shadow: 0 0 0 3px #0751f055;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 33%, transparent);
 }
 .input-icon {
   position: relative;
@@ -284,7 +285,7 @@ button {
   margin: 12px 0;
 }
 .welcome h1 em {
-  color: #0751f0;
+  color: var(--blue);
 }
 .new-order-hero {
   border: 0;
@@ -346,12 +347,12 @@ button {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: #1d2c55;
+  background: color-mix(in srgb, var(--ink) 88%, white);
   display: grid;
   place-items: center;
 }
 .metric-icon.lime {
-  background: #dbe6fd;
+  background: color-mix(in srgb, var(--blue) 14%, white);
 }
 .metric-icon.yellow {
   background: #f7ddb2;
@@ -1126,7 +1127,7 @@ button {
 }
 .handover-code > svg {
   padding: 9px;
-  background: #e3ecfe;
+  background: color-mix(in srgb, var(--blue) 11%, white);
   width: 42px;
   height: 42px;
   border-radius: 10px;
@@ -1163,19 +1164,17 @@ button {
   display: flex;
   flex-direction: column;
 }
-/* The restaurant's own logo (Settings → Restaurant logo), when there is one. */
-.admin-side > .admin-restaurant {
-  margin: 16px 10px 28px;
+/* The restaurant's logo in place of the Relay mark in the owner's menu. */
+.admin-side > .brand-mark.restaurant-mark {
+  margin: 0 10px 28px;
   align-self: flex-start;
   background: #fff;
   border-radius: 12px;
   padding: 8px;
 }
-.admin-side > .admin-restaurant img {
-  display: block;
+.admin-side > .brand-mark.restaurant-mark img {
   max-width: 150px;
   max-height: 76px;
-  object-fit: contain;
 }
 /* Sign-in: the logo (or the Relay mark) large and centred, the name under it. */
 .login-identity {
@@ -1415,7 +1414,6 @@ button {
     flex-direction: row;
     align-items: center;
   }
-  .admin-side > .admin-restaurant,
   .admin-side nav button:not(.active),
   .admin-logout {
     display: none;
@@ -1506,7 +1504,7 @@ button {
   font-size: 13px;
 }
 .cash-balance.earnings {
-  background: #0751f0;
+  background: var(--blue);
 }
 .handover-cta {
   width: 100%;
@@ -1618,7 +1616,7 @@ button {
   width: 58px;
   height: 58px;
   border-radius: 15px;
-  background: #e3ecfe;
+  background: color-mix(in srgb, var(--blue) 11%, white);
   display: grid;
   place-items: center;
 }
@@ -1884,8 +1882,8 @@ button {
   cursor: not-allowed;
 }
 .setup-notice {
-  background: #e6eefe;
-  color: #0a3aa8;
+  background: color-mix(in srgb, var(--blue) 10%, white);
+  color: var(--blue);
   border-radius: 10px;
   padding: 12px 15px;
 }
@@ -2144,7 +2142,7 @@ button {
   align-items: center;
 }
 .shift-panel-title > svg {
-  background: #e3ecfe;
+  background: color-mix(in srgb, var(--blue) 11%, white);
   border-radius: 10px;
   padding: 9px;
   width: 44px;
@@ -2293,7 +2291,7 @@ button {
 .repeat-button {
   border: 0;
   border-left: 1px solid #e7e9ee;
-  background: #eef3fe;
+  background: color-mix(in srgb, var(--blue) 7%, white);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3319,8 +3317,15 @@ svg {
     align-items: center;
     gap: 12px;
   }
-  .admin-side > .admin-restaurant {
-    display: none;
+  /* In the top bar the restaurant logo is small, like the Relay mark. */
+  .admin-side > .brand-mark.restaurant-mark {
+    margin: 0;
+    padding: 4px;
+    border-radius: 8px;
+  }
+  .admin-side > .brand-mark.restaurant-mark img {
+    max-height: 40px;
+    max-width: 120px;
   }
   .admin-menu-toggle {
     margin-left: auto;
@@ -4212,9 +4217,9 @@ table.data.compact-table {
   gap: 12px;
   margin: 16px 0;
   padding: 14px 44px 14px 16px;
-  border: 1px solid #c9d8fb;
+  border: 1px solid color-mix(in srgb, var(--blue) 22%, white);
   border-radius: 14px;
-  background: #eef3fe;
+  background: color-mix(in srgb, var(--blue) 7%, white);
   color: var(--ink);
   font-size: 14px;
 }
@@ -5096,7 +5101,7 @@ table.data.compact-table {
   outline-offset: -2px;
 }
 .data tr.selected td {
-  background: #eef3ff;
+  background: color-mix(in srgb, var(--blue) 7%, white);
 }
 .overview.busy {
   opacity: 0.85;
@@ -5774,8 +5779,8 @@ img.food-art.photo {
   padding: 0 18px;
 }
 .ticket-type {
-  background: #e8f0ff;
-  color: #1d47b8 !important;
+  background: color-mix(in srgb, var(--blue) 9%, white);
+  color: var(--blue) !important;
   font-weight: 700;
 }
 .ticket-unpaid {
@@ -5814,7 +5819,7 @@ img.food-art.photo {
   font-weight: 400;
 }
 .counter-note {
-  background: #eef3ff;
+  background: color-mix(in srgb, var(--blue) 7%, white);
   border-radius: 10px;
   padding: 8px 12px;
   font-size: 13px;
@@ -6018,4 +6023,9 @@ img.food-art.photo {
 /* Logo and name wait for each other (see useImageReady). */
 .login-identity.loading {
   visibility: hidden;
+}
+
+/* Links follow the theme (Relay blue by default, the main colour otherwise). */
+a {
+  color: var(--blue);
 }

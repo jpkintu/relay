@@ -52,6 +52,33 @@ const BASE_LAYOUT: Partial<Layout> = {
   },
 };
 
+// The restaurant's colours (Admin → Branding): with a custom theme, the first
+// series takes the main colour and the second the accent; Relay's navy
+// (labels, tooltips) becomes the main colour. Relay's own palette otherwise.
+function themeColors(): Record<string, string> {
+  const custom = document.documentElement.style;
+  const ink = custom.getPropertyValue('--ink').trim();
+  const accent = custom.getPropertyValue('--accent').trim();
+  const map: Record<string, string> = {};
+  if (ink) {
+    map['#0751f0'] = ink;
+    map['#0b1633'] = ink;
+  }
+  if (accent) map['#f14c1d'] = accent;
+  return map;
+}
+
+// Copies chart data or layout, swapping Relay's colours for the theme's.
+export function recolor<T>(value: T, map: Record<string, string>): T {
+  if (typeof value === 'string') return (map[value.toLowerCase()] ?? value) as T;
+  if (Array.isArray(value)) return value.map((item) => recolor(item, map)) as T;
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype)
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, recolor(item, map)]),
+    ) as T;
+  return value;
+}
+
 const CONFIG: Partial<Config> = {
   displayModeBar: false,
   responsive: true,
@@ -111,7 +138,10 @@ export function Chart({ data, layout, height = 260, bars, horizontal, label, bus
           bargap,
           barcornerradius: 4,
         } as Partial<Layout>;
-        return Plotly.react(el, data, merged, CONFIG);
+        const colors = themeColors();
+        return Object.keys(colors).length
+          ? Plotly.react(el, recolor(data, colors), recolor(merged, colors), CONFIG)
+          : Plotly.react(el, data, merged, CONFIG);
       })
       .catch(() => !cancelled && setFailed(true));
     return () => {

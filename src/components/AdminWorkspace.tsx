@@ -100,12 +100,7 @@ export function AdminWorkspace() {
   return (
     <main className="admin-shell">
       <aside className={menuOpen && compact ? 'admin-side menu-open' : 'admin-side'}>
-        <BrandMark onDark />
-        {restaurantLogo && (
-          <div className="admin-restaurant">
-            <img src={restaurantLogo} alt={restaurantName} />
-          </div>
-        )}
+        <BrandMark onDark className="admin-brand" logo={restaurantLogo} name={restaurantName} />
         {compact && (
           <button
             className="admin-menu-toggle"

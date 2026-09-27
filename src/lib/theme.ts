@@ -52,10 +52,13 @@ export function applyTheme(theme?: Partial<Theme> | null) {
     // A lighter shade of the main colour for raised panels on it.
     root.setProperty('--ink-raised', `color-mix(in srgb, ${ink} 72%, white)`);
     root.setProperty('--ink-card', `color-mix(in srgb, ${ink} 80%, white)`);
+    // Links, unread dots and info tints take the main colour too.
+    root.setProperty('--blue', ink);
   } else {
     root.removeProperty('--ink');
     root.removeProperty('--ink-raised');
     root.removeProperty('--ink-card');
+    root.removeProperty('--blue');
   }
   if (ok && accent) root.setProperty('--accent', accent);
   else root.removeProperty('--accent');
