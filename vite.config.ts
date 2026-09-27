@@ -4,6 +4,13 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  // The build date, sent with crash reports (src/lib/errors.ts) so the owner
+  // can tell an old copy of the app from the current one.
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(
+      process.env.VITE_APP_VERSION || new Date().toISOString().slice(0, 16).replace('T', ' '),
+    ),
+  },
   resolve: {
     // Force ONE copy of React. If a mid-session dep re-optimize (below) ever
     // slips through, deduping keeps the app and react-dom on the same React

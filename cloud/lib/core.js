@@ -48,6 +48,9 @@ const DEFAULT_CONFIG = {
   // Where the map opens (the restaurant); Kampala until the owner pins it.
   restaurantLat: 0.3476,
   restaurantLng: 32.5825,
+  // Admin → Get started: true once the owner finishes it, false when they
+  // reopen it, null (not set) to decide from the restaurant's state.
+  setupDone: null,
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);

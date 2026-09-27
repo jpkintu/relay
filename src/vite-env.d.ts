@@ -13,6 +13,8 @@ interface ImportMetaEnv {
   readonly VITE_ENABLE_PREVIEW?: string;
   /** Back4App managed Google sign-in proxy, if used. */
   readonly VITE_BACK4APP_OAUTH_PROXY_URL?: string;
+  /** Build date (set in vite.config.ts), sent with crash reports. */
+  readonly VITE_APP_VERSION?: string;
 }
 
 interface ImportMeta {

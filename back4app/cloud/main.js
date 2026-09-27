@@ -184,7 +184,10 @@ var require_core = __commonJS({
       themeAccent: "",
       // Where the map opens (the restaurant); Kampala until the owner pins it.
       restaurantLat: 0.3476,
-      restaurantLng: 32.5825
+      restaurantLng: 32.5825,
+      // Admin → Get started: true once the owner finishes it, false when they
+      // reopen it, null (not set) to decide from the restaurant's state.
+      setupDone: null
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -469,6 +472,226 @@ var require_core = __commonJS({
   }
 });
 
+// cloud/lib/log.js
+var require_log = __commonJS({
+  "cloud/lib/log.js"(exports2, module2) {
+    "use strict";
+    function log(level, event, fields = {}) {
+      const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), level, event, ...fields });
+      if (level === "error") console.error(line);
+      else if (level === "warn") console.warn(line);
+      else console.log(line);
+    }
+    function errorMessage(error) {
+      const message = error?.message;
+      if (message && typeof message === "object")
+        return String(message.message || JSON.stringify(message));
+      return String(message || error || "Unknown error");
+    }
+    var UNEXPECTED_PARSE_CODES = [-1, 1, 100];
+    function isUnexpected(error) {
+      if (!error || typeof error.code !== "number") return true;
+      return UNEXPECTED_PARSE_CODES.includes(error.code);
+    }
+    module2.exports = { log, errorMessage, isUnexpected };
+  }
+});
+
+// cloud/errors.js
+var require_errors = __commonJS({
+  "cloud/errors.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var { MASTER, adminOnly, audit, findAll, getRoleName, invalid, readAcl } = require_core();
+    var { log, errorMessage, isUnexpected } = require_log();
+    var clip = (value, max) => String(value ?? "").replace(/\s+$/g, "").slice(0, max);
+    var fingerprintOf = (source, where, message) => crypto.createHash("sha1").update(
+      [
+        source,
+        where,
+        message.replace(/https?:\/\/\S+/g, "").replace(/[0-9a-f]{8,}|\d+/gi, "#")
+      ].join("|")
+    ).digest("hex");
+    async function recordError({ source, where, message, stack, user, userAgent, url, appVersion }) {
+      const text = clip(message, 500) || "Unknown error";
+      const place = clip(where, 200);
+      const fingerprint = fingerprintOf(source, place, text);
+      const query = new Parse.Query("ErrorLog");
+      query.equalTo("fingerprint", fingerprint);
+      query.notEqualTo("resolved", true);
+      const existing = await query.first(MASTER);
+      const role = user ? await getRoleName(user).catch(() => null) : null;
+      const seen = {
+        lastSeenAt: /* @__PURE__ */ new Date(),
+        stack: clip(stack, 4e3),
+        userAgent: clip(userAgent, 300),
+        url: clip(url, 300),
+        appVersion: clip(appVersion, 40),
+        role: role || (user ? "unassigned" : "signed out"),
+        userName: user ? clip(user.get("name") || user.get("username"), 80) : "",
+        ...user && { user }
+      };
+      if (existing) {
+        existing.increment("count");
+        existing.set(seen);
+        await existing.save(null, MASTER);
+        return existing;
+      }
+      const row = new Parse.Object("ErrorLog");
+      row.set({
+        source,
+        where: place,
+        message: text,
+        fingerprint,
+        count: 1,
+        firstSeenAt: /* @__PURE__ */ new Date(),
+        resolved: false,
+        ...seen
+      });
+      row.setACL(readAcl(null, []));
+      await row.save(null, MASTER);
+      return row;
+    }
+    function recordQuietly(entry) {
+      return recordError(entry).catch(
+        (error) => log("error", "errorlog.failed", { message: errorMessage(error) })
+      );
+    }
+    var define = Parse.Cloud.define.bind(Parse.Cloud);
+    Parse.Cloud.define = (name, handler, validator) => define(
+      name,
+      async (request) => {
+        const started = Date.now();
+        try {
+          return await handler(request);
+        } catch (error) {
+          if (isUnexpected(error)) {
+            const message = errorMessage(error);
+            log("error", "function.failed", {
+              fn: name,
+              user: request.user?.id || null,
+              ms: Date.now() - started,
+              message
+            });
+            await recordQuietly({
+              source: "server",
+              where: name,
+              message,
+              stack: error?.stack,
+              user: request.user
+            });
+          }
+          throw error;
+        }
+      },
+      validator
+    );
+    var job = Parse.Cloud.job.bind(Parse.Cloud);
+    Parse.Cloud.job = (name, handler) => job(name, async (request) => {
+      const started = Date.now();
+      log("info", "job.started", { job: name });
+      try {
+        const result = await handler(request);
+        log("info", "job.finished", { job: name, ms: Date.now() - started });
+        return result;
+      } catch (error) {
+        const message = errorMessage(error);
+        log("error", "job.failed", { job: name, ms: Date.now() - started, message });
+        await recordQuietly({ source: "job", where: name, message, stack: error?.stack });
+        throw error;
+      }
+    });
+    var REPORT_WINDOW_MS = 10 * 60 * 1e3;
+    var REPORT_LIMIT = 20;
+    var recent = /* @__PURE__ */ new Map();
+    function allowReport(key) {
+      const now = Date.now();
+      const times = (recent.get(key) || []).filter((time) => now - time < REPORT_WINDOW_MS);
+      if (times.length >= REPORT_LIMIT) return false;
+      times.push(now);
+      recent.set(key, times);
+      if (recent.size > 5e3) recent.clear();
+      return true;
+    }
+    Parse.Cloud.define("reportClientError", async (request) => {
+      const p = request.params || {};
+      const message = clip(p.message, 500);
+      if (!message) throw invalid("Nothing to report");
+      const key = request.user?.id || request.ip || "unknown";
+      if (!allowReport(key)) return { recorded: false };
+      if (request.user?.get("active") === false) return { recorded: false };
+      log("warn", "app.error", { user: request.user?.id || null, where: clip(p.where, 200), message });
+      const row = await recordError({
+        source: "app",
+        where: p.where,
+        message,
+        stack: p.stack,
+        user: request.user,
+        userAgent: p.userAgent || request.headers?.["user-agent"],
+        url: p.url,
+        appVersion: p.appVersion
+      });
+      return { recorded: true, id: row.id };
+    });
+    var OPEN_DAYS = 90;
+    var FIXED_DAYS = 30;
+    Parse.Cloud.define("adminListErrors", async (request) => {
+      await adminOnly(request);
+      const state = request.params?.state === "fixed" ? "fixed" : "open";
+      const now = Date.now();
+      const stale = await findAll(new Parse.Query("ErrorLog"));
+      const expired = stale.filter((row) => {
+        const age = (now - (row.get("lastSeenAt") || row.createdAt)) / 864e5;
+        return age > (row.get("resolved") ? FIXED_DAYS : OPEN_DAYS);
+      });
+      if (expired.length) await Parse.Object.destroyAll(expired, MASTER);
+      const rows = stale.filter((row) => !expired.includes(row));
+      const open = rows.filter((row) => !row.get("resolved"));
+      if (request.params?.countOnly) return { open: open.length };
+      const shown = (state === "fixed" ? rows.filter((row) => row.get("resolved")) : open).sort((a, b) => (b.get("lastSeenAt") || 0) - (a.get("lastSeenAt") || 0)).slice(0, 200);
+      return {
+        open: open.length,
+        rows: shown.map((row) => ({
+          id: row.id,
+          source: row.get("source"),
+          where: row.get("where") || "",
+          message: row.get("message"),
+          stack: row.get("stack") || "",
+          count: Number(row.get("count") || 1),
+          firstSeenAt: row.get("firstSeenAt")?.toISOString() || row.createdAt.toISOString(),
+          lastSeenAt: row.get("lastSeenAt")?.toISOString() || row.createdAt.toISOString(),
+          role: row.get("role") || "",
+          userName: row.get("userName") || "",
+          userAgent: row.get("userAgent") || "",
+          url: row.get("url") || "",
+          appVersion: row.get("appVersion") || "",
+          resolved: !!row.get("resolved"),
+          resolvedAt: row.get("resolvedAt")?.toISOString() || null
+        }))
+      };
+    });
+    Parse.Cloud.define("adminResolveErrors", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params || {};
+      const query = new Parse.Query("ErrorLog");
+      query.notEqualTo("resolved", true);
+      if (!p.all) {
+        const ids = Array.isArray(p.ids) ? p.ids.map(String).slice(0, 500) : [];
+        if (!ids.length) throw invalid("Choose the errors to mark as fixed");
+        query.containedIn("objectId", ids);
+      }
+      const rows = await findAll(query);
+      for (const row of rows) row.set({ resolved: true, resolvedAt: /* @__PURE__ */ new Date(), resolvedBy: actor });
+      if (rows.length) {
+        await Parse.Object.saveAll(rows, MASTER);
+        await audit(actor, "errors.resolved", rows[0], null, { count: rows.length });
+      }
+      return { resolved: rows.length };
+    });
+    module2.exports = { recordError };
+  }
+});
+
 // cloud/security.js
 var require_security = __commonJS({
   "cloud/security.js"(exports2, module2) {
@@ -504,7 +727,8 @@ var require_security = __commonJS({
       "Notification",
       "PushSubscription",
       "Secret",
-      "ZReport"
+      "ZReport",
+      "ErrorLog"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -512,7 +736,8 @@ var require_security = __commonJS({
       "Configuration",
       "PushSubscription",
       "Secret",
-      "ZReport"
+      "ZReport",
+      "ErrorLog"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -711,6 +936,7 @@ var require_security = __commonJS({
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
         restaurantName: S,
+        setupDone: B,
         currencySymbol: S,
         currencyCode: S,
         timezone: S,
@@ -782,6 +1008,25 @@ var require_security = __commonJS({
         status: S,
         restaurantStatus: S,
         isDemo: B
+      },
+      ErrorLog: {
+        source: S,
+        where: S,
+        message: S,
+        stack: S,
+        fingerprint: S,
+        count: N,
+        firstSeenAt: D,
+        lastSeenAt: D,
+        user,
+        userName: S,
+        role: S,
+        userAgent: S,
+        url: S,
+        appVersion: S,
+        resolved: B,
+        resolvedAt: D,
+        resolvedBy: user
       },
       PushSubscription: {
         user,
@@ -10233,7 +10478,9 @@ var require_owner = __commonJS({
       "configuration",
       "security",
       "owner",
-      "report"
+      "report",
+      "setup",
+      "errors"
     ];
     var PAGE = 100;
     var parseJson = (json) => {
@@ -13386,6 +13633,216 @@ var require_admin = __commonJS({
   }
 });
 
+// cloud/lib/menuImport.js
+var require_menuImport = __commonJS({
+  "cloud/lib/menuImport.js"(exports2, module2) {
+    "use strict";
+    var MAX_ROWS = 500;
+    function parsePrice(value) {
+      if (typeof value === "number") return value;
+      const text2 = String(value ?? "").replace(/[^\d.,-]/g, "").replace(/,(?=\d{3}(\D|$))/g, "");
+      if (!/^-?\d+(\.\d+)?$/.test(text2)) return NaN;
+      return Number(text2);
+    }
+    var text = (value, max) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+    function checkImportRows(input) {
+      if (!Array.isArray(input) || !input.length)
+        return { rows: [], errors: [{ row: 0, message: "The file has no dishes" }] };
+      if (input.length > MAX_ROWS)
+        return {
+          rows: [],
+          errors: [{ row: 0, message: `Import at most ${MAX_ROWS} dishes at a time` }]
+        };
+      const rows = [];
+      const errors = [];
+      const seen = /* @__PURE__ */ new Map();
+      input.forEach((raw, index) => {
+        const row = index + 2;
+        const title = text(raw?.title, 120);
+        const category = text(raw?.category, 80) || "Mains";
+        const description = String(raw?.description ?? "").trim().slice(0, 300);
+        const price = parsePrice(raw?.price);
+        const prepText = String(raw?.prepMinutes ?? "").trim();
+        const prepMinutes = prepText === "" ? void 0 : Number(prepText);
+        if (!title) return errors.push({ row, message: "The dish has no name" });
+        if (!Number.isFinite(price) || price < 0 || price > 1e8)
+          return errors.push({ row, message: `"${title}": the price is not a number` });
+        if (prepMinutes !== void 0 && (!Number.isInteger(prepMinutes) || prepMinutes < 0 || prepMinutes > 240))
+          return errors.push({ row, message: `"${title}": prep time must be whole minutes, 0 to 240` });
+        const key = title.toLowerCase();
+        if (seen.has(key))
+          return errors.push({ row, message: `"${title}" is already on row ${seen.get(key)}` });
+        seen.set(key, row);
+        rows.push({ row, title, price, category, description, prepMinutes });
+      });
+      return { rows, errors };
+    }
+    module2.exports = { checkImportRows, parsePrice, MAX_ROWS };
+  }
+});
+
+// cloud/onboarding.js
+var require_onboarding = __commonJS({
+  "cloud/onboarding.js"() {
+    "use strict";
+    var {
+      MASTER,
+      DEFAULT_CONFIG,
+      adminOnly,
+      audit,
+      findAll,
+      invalid,
+      loadConfig,
+      readAcl
+    } = require_core();
+    var { SEED_MENU } = require_seed();
+    var { checkImportRows } = require_menuImport();
+    var STARTER_TITLES = new Set(SEED_MENU.map((entry) => entry.title.toLowerCase()));
+    var isStarter = (item) => STARTER_TITLES.has(String(item.get("title") || "").toLowerCase());
+    async function activeMembers(roleName) {
+      const role = await new Parse.Query(Parse.Role).equalTo("name", roleName).first(MASTER);
+      if (!role) return 0;
+      const users = await findAll(role.getUsers().query());
+      return users.filter((user) => user.get("active") !== false).length;
+    }
+    Parse.Cloud.define("getSetupProgress", async (request) => {
+      await adminOnly(request);
+      const dishQuery = new Parse.Query("MenuItem");
+      dishQuery.notEqualTo("active", false);
+      const [{ values }, dishes, riders, cashiers] = await Promise.all([
+        loadConfig(),
+        findAll(dishQuery),
+        activeMembers("rider"),
+        activeMembers("cashier")
+      ]);
+      const ownDishes = dishes.filter((item) => !isStarter(item)).length;
+      const hasOrders = !!await new Parse.Query("Order").first(MASTER);
+      const steps = {
+        details: values.restaurantName !== DEFAULT_CONFIG.restaurantName,
+        logo: !!values.restaurantLogo,
+        menu: ownDishes > 0,
+        riders: riders > 0,
+        cashiers: cashiers > 0
+      };
+      const complete = steps.details && steps.menu && steps.riders && steps.cashiers;
+      return {
+        steps,
+        dishes: ownDishes,
+        starterDishes: dishes.length - ownDishes,
+        riders,
+        cashiers,
+        complete,
+        // A restaurant already taking orders is not asked to "get started" unless
+        // the owner reopens it.
+        finished: values.setupDone === true || values.setupDone !== false && complete && hasOrders
+      };
+    });
+    Parse.Cloud.define("adminImportMenu", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params || {};
+      const { rows, errors } = checkImportRows(p.rows);
+      const [menu, categories] = await Promise.all([
+        findAll(new Parse.Query("MenuItem")),
+        findAll(new Parse.Query("MenuCategory"))
+      ]);
+      const current = menu.filter((item) => !item.get("archivedAt"));
+      const byTitle = new Map(current.map((item) => [item.get("title").toLowerCase(), item]));
+      const known = new Map(
+        categories.map((row) => [row.get("title").toLowerCase(), row.get("title")])
+      );
+      const starter = p.removeStarter ? current.filter(
+        (item) => isStarter(item) && !rows.some((row) => row.title.toLowerCase() === item.get("title").toLowerCase())
+      ) : [];
+      const wanted = [
+        ...categories.length ? [] : current.filter((item) => !starter.includes(item)).map((item) => item.get("category")),
+        ...rows.map((row) => row.category)
+      ];
+      const newCategories = [];
+      for (const title of wanted.filter(Boolean)) {
+        if (known.has(title.toLowerCase())) continue;
+        known.set(title.toLowerCase(), title);
+        newCategories.push(title);
+      }
+      for (const row of rows) row.category = known.get(row.category.toLowerCase()) || row.category;
+      const create = rows.filter((row) => !byTitle.has(row.title.toLowerCase()));
+      const existing = rows.filter((row) => byTitle.has(row.title.toLowerCase()));
+      const summary = {
+        created: create.length,
+        updated: p.updateExisting ? existing.length : 0,
+        skipped: p.updateExisting ? 0 : existing.length,
+        categoriesCreated: newCategories,
+        starterRemoved: starter.length,
+        errors
+      };
+      if (p.dryRun) return summary;
+      if (errors.length)
+        throw invalid(
+          `Row ${errors[0].row}: ${errors[0].message}${errors.length > 1 ? ` (and ${errors.length - 1} more)` : ""}`
+        );
+      let categoryOrder = Math.max(0, ...categories.map((row) => Number(row.get("sortOrder") || 0)));
+      const categoryRows = newCategories.map((title) => {
+        const row = new Parse.Object("MenuCategory");
+        categoryOrder += 1;
+        row.set({ title, active: true, sortOrder: categoryOrder });
+        row.setACL(readAcl(null, ["admin"]));
+        return row;
+      });
+      if (categoryRows.length) await Parse.Object.saveAll(categoryRows, MASTER);
+      let dishOrder = Math.max(0, ...menu.map((item) => Number(item.get("sortOrder") || 0)));
+      const changed = [];
+      for (const row of create) {
+        const item = new Parse.Object("MenuItem");
+        dishOrder += 1;
+        item.set({
+          title: row.title,
+          price: row.price,
+          category: row.category,
+          description: row.description,
+          active: true,
+          availableToday: true,
+          sortOrder: dishOrder,
+          ...row.prepMinutes !== void 0 && { prepMinutes: row.prepMinutes }
+        });
+        item.setACL(readAcl(null, ["admin"]));
+        changed.push(item);
+      }
+      if (p.updateExisting)
+        for (const row of existing) {
+          const item = byTitle.get(row.title.toLowerCase());
+          item.set({ price: row.price, category: row.category });
+          if (row.description) item.set("description", row.description);
+          if (row.prepMinutes !== void 0) item.set("prepMinutes", row.prepMinutes);
+          changed.push(item);
+        }
+      for (const item of starter) {
+        item.set({ active: false, archivedAt: /* @__PURE__ */ new Date() });
+        changed.push(item);
+      }
+      if (changed.length) await Parse.Object.saveAll(changed, MASTER);
+      await audit(actor, "menu.imported", { className: "MenuItem", id: "import" }, null, {
+        created: create.map((row) => row.title),
+        updated: summary.updated ? existing.map((row) => row.title) : [],
+        skipped: summary.skipped,
+        categoriesCreated: newCategories,
+        starterRemoved: starter.map((item) => item.get("title"))
+      });
+      return summary;
+    });
+    Parse.Cloud.define("adminFinishSetup", async (request) => {
+      const actor = await adminOnly(request);
+      const done = request.params?.done !== false;
+      const { object } = await loadConfig();
+      const config = object || new Parse.Object("Configuration");
+      const before = { setupDone: config.get("setupDone") === true };
+      config.set("setupDone", done);
+      config.setACL(readAcl(null, ["admin"]));
+      await config.save(null, MASTER);
+      await audit(actor, "setup.finished", config, before, { setupDone: done });
+      return { finished: done };
+    });
+  }
+});
+
 // cloud/preview.js
 var require_preview = __commonJS({
   "cloud/preview.js"(exports2, module2) {
@@ -13909,6 +14366,7 @@ var require_profile = __commonJS({
 });
 
 // cloud/main.js
+require_errors();
 require_security();
 require_push();
 require_notifications();
@@ -13923,6 +14381,7 @@ require_cashcheck();
 require_shifts();
 require_people();
 require_admin();
+require_onboarding();
 require_preview();
 require_reports2();
 require_owner();

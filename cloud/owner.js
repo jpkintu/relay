@@ -224,6 +224,8 @@ const AUDIT_GROUPS = [
   'security',
   'owner',
   'report',
+  'setup',
+  'errors',
 ];
 const PAGE = 100;
 

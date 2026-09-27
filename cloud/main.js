@@ -1,6 +1,7 @@
 // Relay Cloud Code entry point. Back4App loads this file; each module
 // registers its Cloud functions, triggers and jobs.
 //
+//   errors.js    error reporting: wraps every function and job, ErrorLog
 //   security.js  write guards, _User rules, applySecurity migration
 //   profile.js   getAppInfo, getMyProfile
 //   orders.js    createOrder, transitionOrder (incl. cancel/reject), order issues
@@ -16,11 +17,13 @@
 //   shifts.js    rider and cashier shifts
 //   people.js    PIN change/reset, rider availability, the owner's member page
 //   admin.js     owner setup, team, menu, settings
+//   onboarding.js Get started: setup progress, menu import, finish setup
 //   reports.js   payments ledger, order/commission ledgers, earnings, reports
 //   owner.js     dashboard, audit log, daily Z-report (Cloud Job "dailyZReport")
 //   overrides.js the owner's order page and overrides
 //   preview.js   optional demo mode (RELAY_ENABLE_PREVIEW=true)
 
+require('./errors');
 require('./security');
 require('./push');
 require('./notifications');
@@ -35,6 +38,7 @@ require('./cashcheck');
 require('./shifts');
 require('./people');
 require('./admin');
+require('./onboarding');
 require('./preview');
 require('./reports');
 require('./owner');
