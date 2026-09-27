@@ -58,4 +58,16 @@ describe('printed receipts', () => {
     );
     expect(unpaid).toContain('NOT PAID');
   });
+  test('the receipt shows the restaurant logo only when there is one', () => {
+    expect(receiptHtml.customerReceipt(receipt, 'Africa/Kampala', 'UGX')).not.toContain('<img');
+    const html = receiptHtml.customerReceipt(
+      { ...receipt, logo: 'https://files.example/logo.png?a=1&b=2' },
+      'Africa/Kampala',
+      'UGX',
+    );
+    expect(html).toContain('<img class="logo" src="https://files.example/logo.png?a=1&amp;b=2"');
+    expect(
+      receiptHtml.kitchenTicket({ ...receipt, logo: 'x.png' }, 'Africa/Kampala'),
+    ).not.toContain('<img');
+  });
 });

@@ -41,6 +41,7 @@ type Accompaniment = { id: string; title: string; active: boolean; available: bo
 type Category = { id: string; title: string; active: boolean };
 type Settings = {
   restaurantName: string;
+  restaurantLogo?: string;
   currencySymbol: string;
   currencyCode: string;
   timezone: string;
@@ -162,6 +163,75 @@ function DishPhoto({
             className="setup-secondary"
             disabled={disabled || busy}
             onClick={() => void remove()}
+          >
+            Remove
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Restaurant logo: shown on the sign-in screen, the admin menu and receipts.
+// Saved as PNG so a transparent background stays transparent.
+function RestaurantLogo({
+  logo,
+  disabled,
+  onDone,
+  onError,
+}: {
+  logo?: string;
+  disabled: boolean;
+  onDone: () => void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const run = async (params: Record<string, unknown>, failed: string) => {
+    setBusy(true);
+    try {
+      await Parse.Cloud.run('adminSetRestaurantLogo', params);
+      onDone();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : failed);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const image = await shrinkImage(file, 320, 0.9, 'image/png');
+      await run({ image }, 'Could not save the logo');
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Could not read the logo');
+    }
+  };
+  return (
+    <div className="dish-photo logo-field">
+      <div>
+        {logo ? (
+          <img src={logo} alt="Restaurant logo" className="dish-thumb large logo-thumb" />
+        ) : (
+          <span className="dish-thumb large empty" aria-hidden />
+        )}
+        <label className={`setup-secondary file-button ${disabled || busy ? 'disabled' : ''}`}>
+          <ImagePlus /> {busy ? 'Saving…' : logo ? 'Change logo' : 'Upload logo'}
+          <input
+            type="file"
+            accept="image/*"
+            disabled={disabled || busy}
+            onChange={(e) => {
+              void upload(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+        {logo && (
+          <button
+            type="button"
+            className="setup-secondary"
+            disabled={disabled || busy}
+            onClick={() => void run({ remove: true }, 'Could not remove the logo')}
           >
             Remove
           </button>
@@ -924,6 +994,25 @@ export function AdminSetup({
               Save settings
             </button>
           </form>
+        </div>
+      )}
+      {section === 'Settings' && !preview && (
+        <div className="admin-panel">
+          <h2>Restaurant logo</h2>
+          <p className="muted">
+            Shown on the sign-in screen, in the admin menu and at the top of printed receipts. A
+            square PNG with a transparent or white background works best.
+          </p>
+          <RestaurantLogo
+            logo={settings.restaurantLogo}
+            disabled={busy}
+            onDone={() => {
+              setNotice('Logo saved.');
+              void load();
+              void refresh();
+            }}
+            onError={setError}
+          />
         </div>
       )}
       {section === 'Settings' && !preview && (

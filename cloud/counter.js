@@ -365,6 +365,7 @@ Parse.Cloud.define('getReceipt', async (request) => {
         : 'checking';
   return {
     restaurant: config.restaurantName,
+    logo: config.restaurantLogo,
     header: config.receiptHeader || '',
     footer: config.receiptFooter || '',
     width: Number(config.receiptWidth) === 58 ? 58 : 80,

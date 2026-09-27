@@ -2820,6 +2820,28 @@ describe('owner reporting and control', () => {
       null,
     );
   });
+
+  test('the owner uploads a restaurant logo for sign-in and receipts', async () => {
+    const PNG =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    await rejects(run('adminSetRestaurantLogo', { image: PNG }, s.dina), /admin role required/);
+    await rejects(
+      run('adminSetRestaurantLogo', { image: 'aGVsbG8=' }, s.owner),
+      /JPEG, PNG or WebP/,
+    );
+    const { logo } = await run('adminSetRestaurantLogo', { image: PNG }, s.owner);
+    assert.match(logo, /^https?:\/\/.+logo\.png$/);
+    assert.equal((await run('getAppInfo')).restaurantLogo, logo, 'shown before sign-in');
+    assert.equal((await run('getMyProfile', {}, s.val)).config.restaurantLogo, logo);
+    assert.equal((await run('adminListSetup', {}, s.owner)).settings.restaurantLogo, logo);
+    const order = await new Parse.Query('Order').first(M);
+    assert.equal((await run('getReceipt', { orderId: order.id }, s.owner)).logo, logo);
+    const settings = (await run('adminListSetup', {}, s.owner)).settings;
+    await run('adminSaveSettings', settings, s.owner);
+    assert.equal((await run('getAppInfo')).restaurantLogo, logo, 'saving settings keeps it');
+    await run('adminSetRestaurantLogo', { remove: true }, s.owner);
+    assert.equal((await run('getAppInfo')).restaurantLogo, '');
+  });
 });
 
 describe('live updates (LiveQuery) respect who may read what', () => {

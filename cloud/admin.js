@@ -454,25 +454,47 @@ Parse.Cloud.define('adminSortMenu', async (request) => {
 // first) } or { id, remove: true }.
 const IMAGE_TYPES = { '/9j/': 'image/jpeg', iVBOR: 'image/png', UklGR: 'image/webp' };
 const MAX_IMAGE_BASE64 = 700000; // about 500 KB
+// A Parse.File from an uploaded base64 image, checked for type and size.
+async function imageFile(base64, name) {
+  const data = String(base64 || '').replace(/^data:[^,]+,/, '');
+  const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
+  if (!type) throw invalid('Use a JPEG, PNG or WebP photo');
+  if (data.length > MAX_IMAGE_BASE64) throw invalid('The photo is too large (500 KB at most)');
+  const extension = type.split('/')[1].replace('jpeg', 'jpg');
+  const file = new Parse.File(`${name}.${extension}`, { base64: data }, type);
+  await file.save(MASTER);
+  return file;
+}
+
 Parse.Cloud.define('adminSetMenuImage', async (request) => {
   const actor = await adminOnly(request);
   const item = await new Parse.Query('MenuItem').get(String(request.params.id || ''), MASTER);
   const before = { image: fileUrl(item.get('image')) };
   if (request.params.remove === true) {
     if (item.has('image')) item.unset('image');
-  } else {
-    const data = String(request.params.image || '').replace(/^data:[^,]+,/, '');
-    const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
-    if (!type) throw invalid('Use a JPEG, PNG or WebP photo');
-    if (data.length > MAX_IMAGE_BASE64) throw invalid('The photo is too large (500 KB at most)');
-    const extension = type.split('/')[1].replace('jpeg', 'jpg');
-    const file = new Parse.File(`dish.${extension}`, { base64: data }, type);
-    await file.save(MASTER);
-    item.set('image', file);
-  }
+  } else item.set('image', await imageFile(request.params.image, 'dish'));
   await item.save(null, MASTER);
   await audit(actor, 'menu.image', item, before, { image: fileUrl(item.get('image')) });
   return { image: fileUrl(item.get('image')) };
+});
+
+// Owner: the restaurant's logo, shown on the sign-in screen, the admin menu
+// and printed receipts. { image: base64 PNG/JPEG/WebP } or { remove: true }.
+Parse.Cloud.define('adminSetRestaurantLogo', async (request) => {
+  const actor = await adminOnly(request);
+  let { object: config } = await loadConfig();
+  if (!config) {
+    config = new Parse.Object('Configuration');
+    config.setACL(readAcl(null, ['admin']));
+  }
+  const before = { logo: fileUrl(config.get('restaurantLogo')) };
+  if (request.params.remove === true) {
+    if (config.has('restaurantLogo')) config.unset('restaurantLogo');
+  } else config.set('restaurantLogo', await imageFile(request.params.image, 'logo'));
+  await config.save(null, MASTER);
+  const logo = fileUrl(config.get('restaurantLogo'));
+  await audit(actor, 'configuration.logo', config, before, { logo });
+  return { logo: logo || '' };
 });
 
 // Accompaniments are free sides (matooke, rice, ...) attached to dishes in

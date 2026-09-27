@@ -367,36 +367,38 @@ export function NewOrder({
             another order.
           </p>
         )}
-        {placed.id && !preview && (
-          <button className="setup-secondary" onClick={() => onOpenOrder(placed.id!)}>
-            View order
-          </button>
-        )}
-        {counter && placed.id && !preview && (
-          <div className="print-actions">
-            <button className="setup-secondary" onClick={() => void print(placed.id!, 'kitchen')}>
-              <Printer /> Kitchen ticket
+        <div className="success-actions">
+          {placed.id && !preview && (
+            <button className="setup-secondary" onClick={() => onOpenOrder(placed.id!)}>
+              View order
             </button>
-            <button className="setup-secondary" onClick={() => void print(placed.id!, 'receipt')}>
-              <Printer /> Receipt
+          )}
+          {counter && placed.id && !preview && (
+            <div className="print-actions">
+              <button className="setup-secondary" onClick={() => void print(placed.id!, 'kitchen')}>
+                <Printer /> Kitchen ticket
+              </button>
+              <button className="setup-secondary" onClick={() => void print(placed.id!, 'receipt')}>
+                <Printer /> Receipt
+              </button>
+            </div>
+          )}
+          {printError && <p className="ops-error">{printError}</p>}
+          {counter && (
+            <button
+              className="setup-secondary"
+              onClick={() => {
+                setDraft({ ...emptyDraft(), orderType });
+                setPlaced(null);
+              }}
+            >
+              Take another order
             </button>
-          </div>
-        )}
-        {printError && <p className="ops-error">{printError}</p>}
-        {counter && (
-          <button
-            className="setup-secondary"
-            onClick={() => {
-              setDraft({ ...emptyDraft(), orderType });
-              setPlaced(null);
-            }}
-          >
-            Take another order
+          )}
+          <button className="primary-button" onClick={onBack}>
+            {counter ? 'Back to the kitchen board' : 'Back to dashboard'} <ArrowLeft />
           </button>
-        )}
-        <button className="primary-button" onClick={onBack}>
-          {counter ? 'Back to the kitchen board' : 'Back to dashboard'} <ArrowLeft />
-        </button>
+        </div>
       </div>
     );
 

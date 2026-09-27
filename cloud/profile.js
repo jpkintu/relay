@@ -16,6 +16,7 @@ const { merchantAccounts } = require('./lib/mobileMoney');
 function publicConfig(values) {
   return {
     restaurantName: values.restaurantName,
+    restaurantLogo: values.restaurantLogo,
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
     timezone: values.timezone,
@@ -48,6 +49,7 @@ Parse.Cloud.define('getAppInfo', async () => {
   const [{ values }, users] = await Promise.all([loadConfig(), countUsers()]);
   return {
     restaurantName: values.restaurantName,
+    restaurantLogo: values.restaurantLogo,
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
     timezone: values.timezone,

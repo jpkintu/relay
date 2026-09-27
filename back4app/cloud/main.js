@@ -256,6 +256,7 @@ var require_core = __commonJS({
           if (value !== void 0 && value !== null && value !== "") values[key] = value;
         }
       }
+      values.restaurantLogo = fileUrl(object?.get("restaurantLogo")) || "";
       return { object, values };
     }
     function countUsers() {
@@ -716,7 +717,8 @@ var require_security = __commonJS({
         receiptWidth: N,
         receiptHeader: S,
         receiptFooter: S,
-        autoPrintKitchen: B
+        autoPrintKitchen: B,
+        restaurantLogo: "File"
       },
       MenuItem: {
         title: S,
@@ -11807,6 +11809,7 @@ var require_counter = __commonJS({
       const paid = order.get("billOpen") ? "unpaid" : method === "cash" ? ["IN_TILL", "RECONCILED"].includes(order.get("cashStatus")) ? "paid" : "on_delivery" : order.get("paymentStatus") === "VERIFIED" ? "paid" : "checking";
       return {
         restaurant: config.restaurantName,
+        logo: config.restaurantLogo,
         header: config.receiptHeader || "",
         footer: config.receiptFooter || "",
         width: Number(config.receiptWidth) === 58 ? 58 : 80,
@@ -12966,25 +12969,42 @@ var require_admin = __commonJS({
     });
     var IMAGE_TYPES = { "/9j/": "image/jpeg", iVBOR: "image/png", UklGR: "image/webp" };
     var MAX_IMAGE_BASE64 = 7e5;
+    async function imageFile(base64, name) {
+      const data = String(base64 || "").replace(/^data:[^,]+,/, "");
+      const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
+      if (!type) throw invalid("Use a JPEG, PNG or WebP photo");
+      if (data.length > MAX_IMAGE_BASE64) throw invalid("The photo is too large (500 KB at most)");
+      const extension = type.split("/")[1].replace("jpeg", "jpg");
+      const file = new Parse.File(`${name}.${extension}`, { base64: data }, type);
+      await file.save(MASTER);
+      return file;
+    }
     Parse.Cloud.define("adminSetMenuImage", async (request) => {
       const actor = await adminOnly(request);
       const item = await new Parse.Query("MenuItem").get(String(request.params.id || ""), MASTER);
       const before = { image: fileUrl(item.get("image")) };
       if (request.params.remove === true) {
         if (item.has("image")) item.unset("image");
-      } else {
-        const data = String(request.params.image || "").replace(/^data:[^,]+,/, "");
-        const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
-        if (!type) throw invalid("Use a JPEG, PNG or WebP photo");
-        if (data.length > MAX_IMAGE_BASE64) throw invalid("The photo is too large (500 KB at most)");
-        const extension = type.split("/")[1].replace("jpeg", "jpg");
-        const file = new Parse.File(`dish.${extension}`, { base64: data }, type);
-        await file.save(MASTER);
-        item.set("image", file);
-      }
+      } else item.set("image", await imageFile(request.params.image, "dish"));
       await item.save(null, MASTER);
       await audit(actor, "menu.image", item, before, { image: fileUrl(item.get("image")) });
       return { image: fileUrl(item.get("image")) };
+    });
+    Parse.Cloud.define("adminSetRestaurantLogo", async (request) => {
+      const actor = await adminOnly(request);
+      let { object: config } = await loadConfig();
+      if (!config) {
+        config = new Parse.Object("Configuration");
+        config.setACL(readAcl(null, ["admin"]));
+      }
+      const before = { logo: fileUrl(config.get("restaurantLogo")) };
+      if (request.params.remove === true) {
+        if (config.has("restaurantLogo")) config.unset("restaurantLogo");
+      } else config.set("restaurantLogo", await imageFile(request.params.image, "logo"));
+      await config.save(null, MASTER);
+      const logo = fileUrl(config.get("restaurantLogo"));
+      await audit(actor, "configuration.logo", config, before, { logo });
+      return { logo: logo || "" };
     });
     Parse.Cloud.define("adminSaveAccompaniment", async (request) => {
       const actor = await adminOnly(request);
@@ -13543,6 +13563,7 @@ var require_profile = __commonJS({
     function publicConfig(values) {
       return {
         restaurantName: values.restaurantName,
+        restaurantLogo: values.restaurantLogo,
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
         timezone: values.timezone,
@@ -13573,6 +13594,7 @@ var require_profile = __commonJS({
       const [{ values }, users] = await Promise.all([loadConfig(), countUsers()]);
       return {
         restaurantName: values.restaurantName,
+        restaurantLogo: values.restaurantLogo,
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
         timezone: values.timezone,

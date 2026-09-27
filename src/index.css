@@ -693,6 +693,29 @@ button {
   color: var(--ink);
   margin-top: 25px;
 }
+/* Buttons under "Order placed.": one column, spaced, dark text on light. */
+.success-actions {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 420px);
+  margin: 20px auto 0;
+}
+.success-actions .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 46px;
+  color: var(--ink);
+  background: #e5e7ec;
+}
+.success-actions .print-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.success-actions .primary-button {
+  margin-top: 8px;
+}
 .success-check {
   margin: auto;
   width: 70px;
@@ -1137,10 +1160,43 @@ button {
   display: flex;
   flex-direction: column;
 }
-.admin-side > p {
-  color: #8b93a4;
-  font-size: 11px;
-  margin: 8px 10px 35px;
+/* The restaurant's own logo and name (Settings → Logo). */
+.restaurant-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.restaurant-badge img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+  padding: 3px;
+  flex: none;
+}
+.restaurant-badge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-side > .admin-restaurant {
+  color: #c9ceda;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 14px 10px 30px;
+}
+.login-restaurant {
+  color: var(--muted, #5b6474);
+  font-size: 15px;
+  font-weight: 600;
+}
+.login-restaurant img {
+  width: 56px;
+  height: 56px;
+  background: transparent;
+  padding: 0;
 }
 .admin-side nav {
   display: grid;
@@ -1349,7 +1405,7 @@ button {
     flex-direction: row;
     align-items: center;
   }
-  .admin-side > p,
+  .admin-side > .admin-restaurant,
   .admin-side nav button:not(.active),
   .admin-logout {
     display: none;
@@ -3253,7 +3309,7 @@ svg {
     align-items: center;
     gap: 12px;
   }
-  .admin-side > p {
+  .admin-side > .admin-restaurant {
     display: none;
   }
   .admin-menu-toggle {
@@ -5434,6 +5490,12 @@ table.data.compact-table {
   width: 88px;
   height: 88px;
 }
+.dish-thumb.logo-thumb {
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--line);
+  padding: 4px;
+}
 .menu-actions {
   display: flex;
   gap: 6px;
@@ -5812,4 +5874,7 @@ img.food-art.photo {
   .order-head-side {
     justify-items: start;
   }
+}
+.logo-field {
+  margin-top: 12px;
 }

@@ -135,6 +135,8 @@ async function loadConfig() {
       if (value !== undefined && value !== null && value !== '') values[key] = value;
     }
   }
+  // The restaurant's own logo (Settings), as a public URL; '' when none.
+  values.restaurantLogo = fileUrl(object?.get('restaurantLogo')) || '';
   return { object, values };
 }
 
