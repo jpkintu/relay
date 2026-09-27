@@ -5386,6 +5386,9 @@ table.data.compact-table {
   gap: 22px;
   margin-bottom: 16px;
 }
+.z-sheet > * {
+  min-width: 0;
+}
 .z-sheet header h2 {
   font: 600 26px var(--font-display);
   margin: 2px 0;
@@ -5399,8 +5402,13 @@ table.data.compact-table {
 }
 .z-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 18px 28px;
+}
+/* On phones a section's table scrolls inside it instead of widening the page. */
+.z-grid > * {
+  min-width: 0;
+  overflow-x: auto;
 }
 .z-grid dl {
   margin: 0;
