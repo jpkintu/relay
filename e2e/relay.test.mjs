@@ -1452,7 +1452,8 @@ describe('Web Push to phones (lock screen)', () => {
       req.on('data', (chunk) => chunks.push(chunk));
       req.on('end', () => {
         received.push({ name: req.params.name, headers: req.headers, body: Buffer.concat(chunks) });
-        res.status(req.params.name === 'gone' ? 410 : 201).end();
+        const status = { gone: 410, stale: 403, broken: 500 }[req.params.name] || 201;
+        res.status(status).end(status === 403 ? 'VAPID credentials do not match' : '');
       });
     });
     pushServer = require('node:https')
@@ -1512,6 +1513,46 @@ describe('Web Push to phones (lock screen)', () => {
     assert.equal(payload.title, `New order ${order.orderCode}`);
     assert.equal(payload.tone, 'new');
     assert.equal(payload.link, '/cashier');
+  });
+
+  test('a test notification reports each device; stale registrations are dropped', async () => {
+    const M = { useMasterKey: true };
+    for (const name of ['stale', 'broken'])
+      await run(
+        'savePushSubscription',
+        {
+          subscription: {
+            endpoint: `https://localhost:${PUSH_PORT}/push/${name}`,
+            keys: device().keys,
+          },
+          userAgent: 'Mozilla/5.0 (Linux; Android 14) Chrome/128.0 Mobile',
+        },
+        s.cashier,
+      );
+    const result = await run('sendTestPush', {}, s.cashier);
+    assert.equal(result.sent, 1, 'the cashier phone got it');
+    assert.equal(result.failed, 2);
+    assert.ok(result.devices.every((d) => d.device));
+    assert.ok(
+      result.devices.some((d) => !d.ok && /403/.test(d.problem) && /removed/.test(d.problem)),
+    );
+    assert.ok(result.devices.some((d) => !d.ok && /500/.test(d.problem)));
+    const hit = await waitFor(() => received.find((r) => r.name === 'cashier' && r.body.length));
+    assert.ok(hit);
+    const stale = await new Parse.Query('PushSubscription')
+      .equalTo('endpoint', `https://localhost:${PUSH_PORT}/push/stale`)
+      .first(M);
+    assert.equal(stale, undefined, 'a 403 registration is removed');
+    const broken = await new Parse.Query('PushSubscription')
+      .equalTo('endpoint', `https://localhost:${PUSH_PORT}/push/broken`)
+      .first(M);
+    assert.match(broken.get('lastError'), /500/);
+    const ok = await new Parse.Query('PushSubscription')
+      .equalTo('endpoint', `https://localhost:${PUSH_PORT}/push/cashier`)
+      .first(M);
+    assert.ok(ok.get('lastSuccessAt'));
+    await broken.destroy(M);
+    assert.deepEqual(await run('sendTestPush', {}, s.nia), { sent: 0, failed: 0, devices: [] });
   });
 
   test('expired subscriptions are removed; devices can be unregistered', async () => {
@@ -1718,6 +1759,72 @@ describe('cashier shifts and till reconciliation', () => {
     const cashierRow = report.trend.cashiers.find((c) => c.cashier === row.cashier);
     assert.ok(cashierRow.short >= 1000);
     await rejects(run('getShiftReport', {}, s.cleo), /admin role required/);
+
+    // The owner settles it: 600 was a till payment nobody recorded, the rest is written off.
+    const M = { useMasterKey: true };
+    await rejects(
+      run(
+        'adminSettleTillDifference',
+        { shiftId: shift.id, mode: 'payout', amount: 600, note: 'Fees paid' },
+        s.cleo,
+      ),
+      /admin role required/,
+    );
+    await rejects(
+      run(
+        'adminSettleTillDifference',
+        { shiftId: shift.id, mode: 'payout', amount: 5000, note: 'Fees paid' },
+        s.owner,
+      ),
+      /amount from 1 to/,
+    );
+    await rejects(
+      run(
+        'adminSettleTillDifference',
+        { shiftId: shift.id, mode: 'payout', amount: 600, note: 'x' },
+        s.owner,
+      ),
+      /at least 5 characters/,
+    );
+    const part = await run(
+      'adminSettleTillDifference',
+      { shiftId: shift.id, mode: 'payout', amount: 600, note: 'Delivery fees paid to riders' },
+      s.owner,
+    );
+    assert.deepEqual([part.variance, part.settled], [-400, false]);
+    const payout = await new Parse.Query('TillPayout')
+      .equalTo('payoutCode', part.payoutCode)
+      .first(M);
+    assert.equal(payout.get('amount'), 600);
+    assert.equal(payout.get('shift').id, shift.id);
+    const closed = await new Parse.Query('Shift').get(shift.id, M);
+    assert.equal(
+      payout.get('paidAt').getTime(),
+      closed.get('endedAt').getTime(),
+      'dated in the shift',
+    );
+    assert.equal(closed.get('originalVariance'), -1000);
+    const done = await run(
+      'adminSettleTillDifference',
+      { shiftId: shift.id, mode: 'writeoff', note: 'Counting error, accepted' },
+      s.owner,
+    );
+    assert.equal(done.settled, true);
+    const settledRow = (await run('getShiftReport', {}, s.owner)).shifts.find(
+      (r) => r.id === shift.id,
+    );
+    assert.equal(settledRow.settled, true);
+    assert.equal(settledRow.variance, -400);
+    assert.equal(settledRow.originalVariance, -1000);
+    assert.match(settledRow.settlementNote, /Delivery fees paid to riders · Counting error/);
+    await rejects(
+      run(
+        'adminSettleTillDifference',
+        { shiftId: shift.id, mode: 'writeoff', note: 'Again please' },
+        s.owner,
+      ),
+      /no difference left/,
+    );
   });
 
   test('a till that matches closes without an explanation', async () => {

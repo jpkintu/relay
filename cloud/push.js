@@ -103,6 +103,84 @@ Parse.Cloud.define('removePushSubscription', async (request) => {
   return { ok: !!row };
 });
 
+// Push statuses that mean the subscription can never work again: gone (404,
+// 410), or made for another key (403 "VAPID credentials do not match").
+const DEAD = [403, 404, 410];
+
+// A short name for a device from its browser's user agent.
+function deviceName(userAgent = '') {
+  const os = /iPhone|iPad/.test(userAgent)
+    ? 'iPhone / iPad'
+    : /Android/.test(userAgent)
+      ? 'Android'
+      : /Windows/.test(userAgent)
+        ? 'Windows'
+        : /Mac OS/.test(userAgent)
+          ? 'Mac'
+          : 'Device';
+  const browser = /SamsungBrowser/.test(userAgent)
+    ? 'Samsung Internet'
+    : /Edg\//.test(userAgent)
+      ? 'Edge'
+      : /Firefox/.test(userAgent)
+        ? 'Firefox'
+        : /Chrome/.test(userAgent)
+          ? 'Chrome'
+          : /Safari/.test(userAgent)
+            ? 'Safari'
+            : 'browser';
+  return `${os} · ${browser}`;
+}
+
+// Sends one payload to each subscription, records how it went on the
+// subscription (lastSuccessAt / lastError) and drops dead ones. Never throws.
+async function sendToSubscriptions(subs, payloadFor) {
+  const keys = await vapidKeys();
+  const options = {
+    vapidDetails: { subject: CONTACT, publicKey: keys.publicKey, privateKey: keys.privateKey },
+    TTL: 6 * 3600,
+    timeout: SEND_TIMEOUT_MS,
+  };
+  return Promise.all(
+    subs.map(async (sub) => {
+      const payload = payloadFor(sub);
+      const device = deviceName(sub.get('userAgent'));
+      try {
+        await webpush.sendNotification(
+          {
+            endpoint: sub.get('endpoint'),
+            keys: { p256dh: sub.get('p256dh'), auth: sub.get('auth') },
+          },
+          JSON.stringify(payload),
+          // "high" wakes a sleeping phone straight away.
+          { ...options, urgency: payload.tone === 'update' ? 'normal' : 'high' },
+        );
+        sub.set({ lastSuccessAt: new Date(), lastError: '' });
+        await sub.save(null, MASTER).catch(() => undefined);
+        return { device, ok: true, problem: '' };
+      } catch (error) {
+        const status = error?.statusCode || 0;
+        const problem = status
+          ? `The push service answered ${status}${error.body ? `: ${String(error.body).slice(0, 120)}` : ''}`
+          : `Could not reach the push service (${error?.code || error?.message || 'network error'})`;
+        if (DEAD.includes(status)) await sub.destroy(MASTER).catch(() => undefined);
+        else {
+          sub.set({ lastError: problem.slice(0, 200), lastErrorAt: new Date() });
+          await sub.save(null, MASTER).catch(() => undefined);
+          console.error('push not delivered:', problem);
+        }
+        return {
+          device,
+          ok: false,
+          problem: DEAD.includes(status)
+            ? `${problem}. This device's registration was out of date and has been removed; opening Relay on it registers it again.`
+            : problem,
+        };
+      }
+    }),
+  );
+}
+
 // Sends each saved notification to its recipient's devices. Never throws.
 // rows: saved Notification objects.
 async function pushNotifications(rows) {
@@ -117,49 +195,43 @@ async function pushNotifications(rows) {
     );
     const subs = await findAll(query);
     if (!subs.length) return 0;
-    const keys = await vapidKeys();
-    const options = {
-      vapidDetails: { subject: CONTACT, publicKey: keys.publicKey, privateKey: keys.privateKey },
-      TTL: 6 * 3600,
-      timeout: SEND_TIMEOUT_MS,
-    };
-    const results = await Promise.allSettled(
-      subs.map(async (sub) => {
-        const row = byUser.get(sub.get('user').id);
-        const tone = row.get('tone');
-        const payload = JSON.stringify({
-          id: row.id,
-          title: row.get('title'),
-          body: row.get('body'),
-          link: row.get('link'),
-          tone,
-        });
-        try {
-          await webpush.sendNotification(
-            {
-              endpoint: sub.get('endpoint'),
-              keys: { p256dh: sub.get('p256dh'), auth: sub.get('auth') },
-            },
-            payload,
-            // "high" wakes a sleeping phone straight away.
-            { ...options, urgency: tone === 'update' ? 'normal' : 'high' },
-          );
-          return true;
-        } catch (error) {
-          // The browser unsubscribed or the subscription expired.
-          if ([404, 410].includes(error?.statusCode)) await sub.destroy(MASTER);
-          throw error;
-        }
-      }),
-    );
-    for (const result of results)
-      if (result.status === 'rejected' && ![404, 410].includes(result.reason?.statusCode))
-        console.error('push not delivered:', result.reason?.statusCode || result.reason?.message);
-    return results.filter((r) => r.status === 'fulfilled').length;
+    const results = await sendToSubscriptions(subs, (sub) => {
+      const row = byUser.get(sub.get('user').id);
+      return {
+        id: row.id,
+        title: row.get('title'),
+        body: row.get('body'),
+        link: row.get('link'),
+        tone: row.get('tone'),
+      };
+    });
+    return results.filter((r) => r.ok).length;
   } catch (error) {
     console.error('push failed', error);
     return 0;
   }
 }
 
-module.exports = { pushNotifications, allowedEndpoint };
+// Anyone signed in: send a test notification to their own devices and say,
+// per device, whether the push service accepted it.
+Parse.Cloud.define('sendTestPush', async (request) => {
+  const user = requireUser(request);
+  const subs = await findAll(new Parse.Query('PushSubscription').equalTo('user', user));
+  if (!subs.length) return { sent: 0, failed: 0, devices: [] };
+  const devices = await sendToSubscriptions(subs, () => ({
+    id: `test-${Date.now()}`,
+    title: 'Relay test notification',
+    body: 'Notifications work on this device.',
+    link: '/',
+    tone: 'new',
+    // Shown even while Relay is open on screen.
+    force: true,
+  }));
+  return {
+    sent: devices.filter((d) => d.ok).length,
+    failed: devices.filter((d) => !d.ok).length,
+    devices,
+  };
+});
+
+module.exports = { pushNotifications, allowedEndpoint, deviceName };

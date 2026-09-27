@@ -254,6 +254,12 @@ const SCHEMAS = {
     varianceNote: S,
     cashIn: N,
     paidOut: N,
+    // Owner's settlement of a till difference (adminSettleTillDifference).
+    originalVariance: N,
+    varianceSettled: B,
+    settledAt: D,
+    settledBy: user,
+    settlementNote: S,
   },
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
@@ -337,6 +343,10 @@ const SCHEMAS = {
     auth: S,
     userAgent: S,
     lastSeenAt: D,
+    // Last delivery: when a push was accepted, or why it was not.
+    lastSuccessAt: D,
+    lastError: S,
+    lastErrorAt: D,
   },
   Secret: { key: S, value: 'Object' },
   Notification: {

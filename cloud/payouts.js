@@ -16,6 +16,7 @@ const {
   personName,
   getRoleName,
   findAll,
+  adminOnly,
 } = require('./lib/core');
 const { sumBy, orderRiderPay } = require('./lib/money');
 const { money, notifyUser, notifyAdmins } = require('./notifications');
@@ -272,6 +273,75 @@ Parse.Cloud.define('getTillPayouts', async (request) => {
     .sort((a, b) => b.get('paidAt') - a.get('paidAt'))
     .map(payoutJSON);
   return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
+});
+
+// Owner: settle a closed till's difference.
+// { shiftId, mode: 'payout', amount, note }: the till was short because cash
+//   went out without being recorded (e.g. fees paid to riders). Records that
+//   till payment against the shift (dated when the shift ended), which lowers
+//   its expected till and so the difference.
+// { shiftId, mode: 'writeoff', note }: accept what is left as a loss / extra.
+// The difference is settled once it reaches zero or is written off.
+Parse.Cloud.define('adminSettleTillDifference', async (request) => {
+  const actor = await adminOnly(request);
+  const p = request.params;
+  const shift = await new Parse.Query('Shift')
+    .include('operator')
+    .get(String(p.shiftId || ''), MASTER)
+    .catch(() => null);
+  if (!shift || shift.get('kind') !== 'cashier' || shift.get('status') !== 'closed')
+    throw invalid('Only a closed cashier till can be settled');
+  const variance = Number(shift.get('variance') || 0);
+  if (!variance || shift.get('varianceSettled') === true)
+    throw invalid('This till has no difference left to settle');
+  const note = clean(p.note, 200);
+  if (note.length < 5) throw invalid('Say what the difference was (at least 5 characters)');
+  const { values: config } = await loadConfig();
+  const before = {
+    variance,
+    paidOut: Number(shift.get('paidOut') || 0),
+    expectedTill: Number(shift.get('expectedTill') || 0),
+  };
+  let payout = null;
+  if (p.mode === 'payout') {
+    if (variance > 0) throw invalid('Only a short till can be matched to a missing payment');
+    const amount = Math.round(Number(p.amount));
+    if (!Number.isFinite(amount) || amount <= 0 || amount > -variance)
+      throw invalid(`Enter an amount from 1 to ${money(config, -variance)}`);
+    payout = await newPayout(
+      { kind: 'expense', amount, note: `Till difference: ${note}`, paidBy: actor, shift },
+      config,
+    );
+    // The money left the till during the shift.
+    payout.set('paidAt', shift.get('endedAt') || new Date());
+    await payout.save(null, MASTER);
+    shift.set({
+      paidOut: before.paidOut + amount,
+      expectedTill: before.expectedTill - amount,
+      variance: variance + amount,
+    });
+  } else if (p.mode !== 'writeoff') {
+    throw invalid('Match a missing payment or write the difference off');
+  }
+  if (!shift.has('originalVariance')) shift.set('originalVariance', variance);
+  const settled = p.mode === 'writeoff' || shift.get('variance') === 0;
+  shift.set({
+    settlementNote: [shift.get('settlementNote'), note].filter(Boolean).join(' · ').slice(0, 500),
+    ...(settled && { varianceSettled: true, settledAt: new Date(), settledBy: actor }),
+  });
+  await shift.save(null, MASTER);
+  await audit(actor, 'till.difference_settled', shift, before, {
+    mode: p.mode,
+    variance: shift.get('variance'),
+    settled,
+    note,
+    ...(payout && { payout: payout.get('payoutCode'), amount: payout.get('amount') }),
+  });
+  return {
+    variance: shift.get('variance'),
+    settled,
+    payoutCode: payout?.get('payoutCode') || null,
+  };
 });
 
 module.exports = { riderPayState, payOut, payoutJSON, payOwed };
