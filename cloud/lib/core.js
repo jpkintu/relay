@@ -206,7 +206,10 @@ async function nextSequence(key) {
   const find = () => {
     const query = new Parse.Query('Counter');
     query.equalTo('key', key);
+    // Two rows created in the same millisecond must still resolve to the
+    // same "earliest" row for every caller, or both would win a claimOnce.
     query.ascending('createdAt');
+    query.addAscending('objectId');
     return query.first(MASTER);
   };
   if (!(await find())) {

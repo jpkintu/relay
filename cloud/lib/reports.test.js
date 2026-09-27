@@ -178,3 +178,53 @@ test('rider pay splits into commission and the delivery fee passed on', () => {
   expect(summary.riderCommission).toBe(925);
   expect(summary.net).toBe(25000 - 925);
 });
+
+describe('counter orders (eat in, pick up, call-in delivery)', () => {
+  const eatIn = fact({
+    orderType: 'eat_in',
+    source: 'counter',
+    riderId: '',
+    rider: '',
+    deliveryFee: 0,
+    deliveryPay: 0,
+    commission: 0,
+    total: 30000,
+    subtotal: 30000,
+    customerKey: '',
+    cashStatus: 'IN_TILL',
+    createdAt: at('2026-09-01T12:00:00Z'),
+    deliveredAt: at('2026-09-01T12:20:00Z'),
+  });
+  const rider = fact({ deliveryPay: 3000, commission: 5000 });
+  const callIn = fact({ source: 'counter', commission: 3000, deliveryPay: 3000 });
+
+  test('sales split by who took the order; till cash counts as confirmed', () => {
+    const s = summarize([rider, callIn, eatIn]);
+    expect(s.revenue).toBe(28000 + 28000 + 30000);
+    expect(s.counterSales).toBe(28000 + 30000);
+    expect(s.riderSales).toBe(28000);
+    expect(s.net).toBe(s.revenue - (5000 + 3000));
+    expect(s.riderCommission).toBe(2000);
+    expect(s.cashSales).toBe(s.revenue);
+  });
+  test('order-to-door time is for deliveries only', () => {
+    const s = summarize([rider, eatIn]);
+    expect(s.avgDeliveryMinutes).toBe(40);
+    expect(s.avgCounterMinutes).toBe(20);
+  });
+  test('walk-in guests are not counted as customers', () => {
+    const s = summarize([rider, eatIn, { ...eatIn }]);
+    expect(s.customers).toBe(1);
+    expect(s.repeatCustomers).toBe(0);
+  });
+  test('orders by kind', () => {
+    expect(summarize([rider, callIn, eatIn]).byType).toEqual([
+      { key: 'delivery', orders: 2, amount: 56000 },
+      { key: 'eat_in', orders: 1, amount: 30000 },
+      { key: 'pickup', orders: 0, amount: 0 },
+    ]);
+  });
+  test('riders are ranked on their own deliveries only', () => {
+    expect(riderStats([rider, eatIn]).map((r) => r.riderId)).toEqual(['r1']);
+  });
+});

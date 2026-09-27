@@ -72,6 +72,7 @@ type Ledger = {
       withRiders: number;
       handoverPending: number;
       reconciled: number;
+      inTill: number;
     };
     mobileMoney: {
       count: number;
@@ -100,6 +101,9 @@ export const STATUS_LABEL: Record<string, string> = {
   WITH_RIDER: 'With rider',
   HANDOVER_PENDING: 'Handover pending',
   RECONCILED: 'Reconciled',
+  IN_TILL: 'In the till (counter)',
+  REFUNDED: 'Refunded',
+  UNPAID: 'Not paid yet',
   PENDING_VERIFICATION: 'Waiting for check',
   VERIFIED: 'Verified',
   REJECTED: 'Not received',
@@ -110,6 +114,7 @@ export const STATUS_LABEL: Record<string, string> = {
 
 const STATUS_TONE: Record<string, string> = {
   RECONCILED: 'good',
+  IN_TILL: 'good',
   VERIFIED: 'good',
   confirmed: 'good',
   REJECTED: 'bad',
@@ -185,9 +190,9 @@ export function PaymentsLedger() {
             <Stat
               label="Cash collected"
               value={money(s.cash.collected)}
-              note={`${money(s.cash.reconciled)} reconciled · ${money(
-                s.cash.withRiders + s.cash.handoverPending,
-              )} not yet`}
+              note={`${money(s.cash.reconciled)} from riders, reconciled${
+                s.cash.inTill ? ` · ${money(s.cash.inTill)} taken at the counter` : ''
+              } · ${money(s.cash.withRiders + s.cash.handoverPending)} still with riders`}
             />
           )}
           {filters.method !== 'cash' && (

@@ -22,6 +22,8 @@ type OrderRow = {
   customer: string;
   riderId: string;
   rider: string;
+  orderType?: string;
+  source?: string;
   total: number;
   subtotal: number;
   deliveryFee: number;
@@ -147,7 +149,11 @@ export function AdminOrders() {
             note={`${s.delivered} delivered · ${s.cancelled} cancelled`}
           />
           <Stat label="Average order" value={money(s.avgOrder)} note="Delivered orders" />
-          <Stat label="Commission" value={money(s.commission)} note="Paid to riders" />
+          <Stat
+            label="Rider pay"
+            value={money(s.commission)}
+            note="Commission + delivery fees, delivered orders"
+          />
         </div>
       )}
       <section className="admin-panel recent-table admin-section-panel">
@@ -193,7 +199,15 @@ export function AdminOrders() {
                       <small>{o.customer}</small>
                     </td>
                     <td className="nowrap">{when(o.createdAt)}</td>
-                    <td>{o.rider}</td>
+                    <td>
+                      {o.rider ||
+                        (o.orderType === 'eat_in'
+                          ? 'Eat in'
+                          : o.orderType === 'pickup'
+                            ? 'Pick up'
+                            : 'No rider yet')}
+                      {o.source === 'counter' && <small>Taken at the counter</small>}
+                    </td>
                     <td>{payment(o)}</td>
                     <td>
                       <span className={`status-pill ${statusTone(o.status)}`}>
