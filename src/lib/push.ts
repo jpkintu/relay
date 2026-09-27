@@ -123,6 +123,7 @@ export async function forgetPush() {
 }
 
 export type TestResult = {
+  testId: string;
   sent: number;
   failed: number;
   devices: { device: string; ok: boolean; problem: string }[];
@@ -132,4 +133,32 @@ export type TestResult = {
 export async function sendTestPush(): Promise<TestResult> {
   await refreshPush();
   return Parse.Cloud.run('sendTestPush');
+}
+
+export type Arrival = 'shown' | 'error' | 'not-received';
+
+// Waits for the test push to reach this device's service worker, which
+// reports whether it handed the banner to the system (see public/sw.js).
+export function waitForArrival(
+  testId: string,
+  timeoutMs = 15000,
+): Promise<{ arrival: Arrival; message: string }> {
+  return new Promise((resolve) => {
+    if (!('serviceWorker' in navigator) || !testId)
+      return resolve({ arrival: 'not-received', message: '' });
+    let received = false;
+    const done = (arrival: Arrival, message = '') => {
+      navigator.serviceWorker.removeEventListener('message', onMessage);
+      window.clearTimeout(timer);
+      resolve({ arrival, message });
+    };
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data || {};
+      if (data.type === 'relay:push' && data.data?.id === testId) received = true;
+      if (data.type === 'relay:push-shown' && data.id === testId) done('shown');
+      if (data.type === 'relay:push-error' && data.id === testId) done('error', data.message);
+    };
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    const timer = window.setTimeout(() => done(received ? 'shown' : 'not-received'), timeoutMs);
+  });
 }

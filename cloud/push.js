@@ -217,9 +217,10 @@ async function pushNotifications(rows) {
 Parse.Cloud.define('sendTestPush', async (request) => {
   const user = requireUser(request);
   const subs = await findAll(new Parse.Query('PushSubscription').equalTo('user', user));
-  if (!subs.length) return { sent: 0, failed: 0, devices: [] };
+  if (!subs.length) return { testId: '', sent: 0, failed: 0, devices: [] };
+  const testId = `test-${Date.now()}`;
   const devices = await sendToSubscriptions(subs, () => ({
-    id: `test-${Date.now()}`,
+    id: testId,
     title: 'Relay test notification',
     body: 'Notifications work on this device.',
     link: '/',
@@ -228,6 +229,7 @@ Parse.Cloud.define('sendTestPush', async (request) => {
     force: true,
   }));
   return {
+    testId,
     sent: devices.filter((d) => d.ok).length,
     failed: devices.filter((d) => !d.ok).length,
     devices,

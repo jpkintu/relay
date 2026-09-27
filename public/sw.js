@@ -8,7 +8,7 @@
 // picked up on the next load; built assets have hashed names and never change.
 // Data (the Parse API) is never cached here.
 
-const SHELL = 'relay-shell-v2';
+const SHELL = 'relay-shell-v3';
 const PRECACHE = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
 
 // Caches the page and the scripts and styles it loads, so the very next
@@ -119,18 +119,25 @@ self.addEventListener('push', (event) => {
         windows.some((client) => client.focused && client.visibilityState === 'visible')
       )
         return;
-      await self.registration.showNotification(data.title || 'Relay', {
-        body: data.body || '',
-        tag: data.id || undefined,
-        renotify: Boolean(data.id),
-        icon: '/icons/icon-192.png',
-        badge: '/icons/badge-96.png',
-        vibrate: VIBRATE[tone] || VIBRATE.update,
-        requireInteraction: tone !== 'update',
-        silent: false,
-        timestamp: Date.now(),
-        data: { link: data.link || '/' },
-      });
+      try {
+        await self.registration.showNotification(data.title || 'Relay', {
+          body: data.body || '',
+          tag: data.id || undefined,
+          renotify: Boolean(data.id),
+          icon: '/icons/icon-192.png',
+          badge: '/icons/badge-96.png',
+          vibrate: VIBRATE[tone] || VIBRATE.update,
+          requireInteraction: tone !== 'update',
+          silent: false,
+          timestamp: Date.now(),
+          data: { link: data.link || '/' },
+        });
+        // Tell the app the banner was handed to the system (for the test button).
+        for (const client of windows) client.postMessage({ type: 'relay:push-shown', id: data.id });
+      } catch (error) {
+        for (const client of windows)
+          client.postMessage({ type: 'relay:push-error', id: data.id, message: String(error) });
+      }
     })(),
   );
 });
