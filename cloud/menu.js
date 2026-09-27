@@ -8,6 +8,7 @@ const {
   loadConfig,
   requireCashierShift,
   fileUrl,
+  findAll,
 } = require('./lib/core');
 const { availableGroups } = require('./lib/accompaniments');
 const { servableAccompaniments } = require('./orders');
@@ -21,30 +22,44 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
   query.equalTo('availableToday', true);
   query.ascending('sortOrder');
   query.limit(500);
-  const [menu, accompaniments, { values: config }] = await Promise.all([
+  const categoryQuery = new Parse.Query('MenuCategory');
+  const [menu, accompaniments, { values: config }, categoryRows] = await Promise.all([
     query.find(MASTER),
     servableAccompaniments(),
     loadConfig(),
+    findAll(categoryQuery),
   ]);
+  // Hidden categories take their dishes off the menu; tabs follow the owner's order.
+  const hidden = new Set(
+    categoryRows.filter((row) => row.get('active') === false).map((row) => row.get('title')),
+  );
+  const categories = categoryRows
+    .filter((row) => row.get('active') !== false)
+    .sort((a, b) => Number(a.get('sortOrder') || 0) - Number(b.get('sortOrder') || 0))
+    .map((row) => row.get('title'));
   return {
-    items: menu.map((item) => ({
-      id: item.id,
-      title: item.get('title'),
-      category: item.get('category') || 'Mains',
-      price: item.get('price'),
-      description: item.get('description') || '',
-      image: fileUrl(item.get('image')),
-      accompanimentGroups: availableGroups(item.get('accompanimentGroups') || [], (id) =>
-        accompaniments.has(id),
-      ).map((group) => ({
-        ...group,
-        options: group.options.map((id) => ({
-          id,
-          title: accompaniments.get(id).get('title'),
-          price: Number(accompaniments.get(id).get('price') || 0),
+    categories,
+    items: menu
+      .filter((item) => !hidden.has(item.get('category') || 'Mains'))
+      .map((item) => ({
+        id: item.id,
+        title: item.get('title'),
+        category: item.get('category') || 'Mains',
+        price: item.get('price'),
+        description: item.get('description') || '',
+        image: fileUrl(item.get('image')),
+        prepMinutes: Number(item.get('prepMinutes') || 0),
+        accompanimentGroups: availableGroups(item.get('accompanimentGroups') || [], (id) =>
+          accompaniments.has(id),
+        ).map((group) => ({
+          ...group,
+          options: group.options.map((id) => ({
+            id,
+            title: accompaniments.get(id).get('title'),
+            price: Number(accompaniments.get(id).get('price') || 0),
+          })),
         })),
       })),
-    })),
     deliveryFee: config.defaultDeliveryFee,
     currencySymbol: config.currencySymbol,
   };

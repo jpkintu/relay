@@ -1712,6 +1712,11 @@ describe('cashier shifts and till reconciliation', () => {
     assert.equal(row.varianceNote, 'Gave change twice to one customer');
     assert.equal(row.status, 'closed');
     assert.ok(report.shifts.some((r) => r.status === 'open')); // carl is still on shift
+    // Till differences across days: the short till counts on the day it closed.
+    assert.ok(report.trend.closedShifts >= 1);
+    assert.ok(report.trend.days.some((d) => d.short >= 1000 && d.net <= -1000));
+    const cashierRow = report.trend.cashiers.find((c) => c.cashier === row.cashier);
+    assert.ok(cashierRow.short >= 1000);
     await rejects(run('getShiftReport', {}, s.cleo), /admin role required/);
   });
 
@@ -2862,6 +2867,69 @@ describe('owner reporting and control', () => {
     assert.ok(note, 'the owner is told');
     assert.match(note.get('link'), /^\/admin\/reports\/z\//);
     await run('adminSaveSettings', settings, s.owner);
+  });
+
+  test('menu categories: order, rename moves dishes, hidden ones leave the menu; prep time', async () => {
+    const M = { useMasterKey: true };
+    const a = await run('adminSaveCategory', { title: 'Grills' }, s.owner);
+    const b = await run('adminSaveCategory', { title: 'Juices' }, s.owner);
+    await rejects(run('adminSaveCategory', { title: 'grills' }, s.owner), /already a category/);
+    await rejects(
+      run('adminSaveMenuItem', { title: 'Loose', price: 1000, category: 'Nowhere' }, s.owner),
+      /Choose one of the menu categories/,
+    );
+    await rejects(
+      run(
+        'adminSaveMenuItem',
+        { title: 'Slow', price: 1000, category: 'Grills', prepMinutes: 999 },
+        s.owner,
+      ),
+      /Prep time/,
+    );
+    const dish = await run(
+      'adminSaveMenuItem',
+      { title: 'Goat skewer', price: 7000, category: 'Grills', prepMinutes: 25 },
+      s.owner,
+    );
+    let menu = await run('getOperationalMenu', {}, s.val);
+    assert.deepEqual(menu.categories, ['Grills', 'Juices']);
+    assert.equal(menu.items.find((i) => i.id === dish.id).prepMinutes, 25);
+
+    await run('adminSortCategories', { ids: [b.id, a.id] }, s.owner);
+    assert.deepEqual((await run('getOperationalMenu', {}, s.val)).categories, ['Juices', 'Grills']);
+    // Saving a name keeps the position.
+    const renamed = await run('adminSaveCategory', { id: a.id, title: 'BBQ' }, s.owner);
+    assert.equal(renamed.dishesMoved, 1);
+    menu = await run('getOperationalMenu', {}, s.val);
+    assert.deepEqual(menu.categories, ['Juices', 'BBQ']);
+    assert.equal(menu.items.find((i) => i.id === dish.id).category, 'BBQ');
+
+    // The order remembers the longest prep time of its dishes.
+    const placed = await run(
+      'createOrder',
+      {
+        customerName: 'Prep Pat',
+        deliveryAddress: 'Kyanja',
+        paymentMethod: 'cash',
+        items: [{ id: dish.id, quantity: 1 }],
+      },
+      s.val,
+    );
+    assert.equal((await new Parse.Query('Order').get(placed.id, M)).get('prepMinutes'), 25);
+    await run('transitionOrder', { orderId: placed.id, action: 'cancel', reason: 'test' }, s.val);
+
+    await run('adminSaveCategory', { id: a.id, title: 'BBQ', active: false }, s.owner);
+    menu = await run('getOperationalMenu', {}, s.val);
+    assert.ok(!menu.items.some((i) => i.id === dish.id), 'a hidden category leaves the menu');
+    assert.deepEqual(menu.categories, ['Juices']);
+
+    // Leave the menu as the other tests expect it: no categories set up.
+    await run(
+      'adminSaveMenuItem',
+      { id: dish.id, title: 'Goat skewer', price: 7000, category: 'BBQ', archived: true },
+      s.owner,
+    );
+    await Parse.Object.destroyAll(await new Parse.Query('MenuCategory').find(M), M);
   });
 
   test('dishes get a description, a photo, an order and can be archived', async () => {

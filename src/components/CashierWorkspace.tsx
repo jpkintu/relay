@@ -37,6 +37,8 @@ type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
 type Ticket = {
   id: string;
+  // Longest prep time of its dishes (0 = not set: late after 20 min).
+  prepMinutes?: number;
   code: string;
   rider: string;
   customer: string;
@@ -125,6 +127,7 @@ async function loadLiveTickets(): Promise<Ticket[]> {
     riderId: order.get('createdBy')?.id || '',
     billOpen: order.get('billOpen') === true,
     table: order.get('tableLabel') || '',
+    prepMinutes: Number(order.get('prepMinutes') || 0),
   }));
 }
 
@@ -559,7 +562,17 @@ function KitchenBoard() {
                     </div>
                     <div className="ticket-meta">
                       {ticket.createdAt && (
-                        <span className={age >= 20 ? 'late' : ''}>{age} min</span>
+                        <span
+                          className={age >= (ticket.prepMinutes || 20) ? 'late' : ''}
+                          title={
+                            ticket.prepMinutes
+                              ? `Prep time ${ticket.prepMinutes} min`
+                              : 'Late after 20 min'
+                          }
+                        >
+                          {age} min
+                          {ticket.prepMinutes ? ` / ${ticket.prepMinutes}` : ''}
+                        </span>
                       )}
                       {TYPE_LABEL[ticket.orderType] && (
                         <span className="ticket-type">

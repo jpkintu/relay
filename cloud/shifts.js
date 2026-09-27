@@ -15,7 +15,8 @@ const {
   findAll,
 } = require('./lib/core');
 const { money, notifyAdmins } = require('./notifications');
-const { resolveRange } = require('./lib/dates');
+const { resolveRange, isoDay } = require('./lib/dates');
+const { tillTrend } = require('./lib/reports');
 const { sumBy } = require('./lib/money');
 
 // The till during a shift: the opening count, plus rider cash this cashier
@@ -306,6 +307,16 @@ Parse.Cloud.define('getShiftReport', async (request) => {
     range: { from: range.from, to: range.to },
     shifts,
     totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0),
+    // Differences per day (the day the till was closed) and per cashier.
+    trend: tillTrend(
+      shifts
+        .filter((s) => s.status === 'closed')
+        .map((s) => ({
+          day: isoDay(s.endedAt || s.startedAt, config.timezone),
+          cashier: s.cashier,
+          variance: s.variance,
+        })),
+    ),
   };
 });
 

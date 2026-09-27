@@ -9,6 +9,7 @@ import {
   series,
   summarize,
   timeOfDay,
+  tillTrend,
 } from './reports.js';
 
 const at = (iso) => new Date(iso);
@@ -243,5 +244,29 @@ describe('counter orders (eat in, pick up, call-in delivery)', () => {
   });
   test('riders are ranked on their own deliveries only', () => {
     expect(riderStats([rider, eatIn]).map((r) => r.riderId)).toEqual(['r1']);
+  });
+});
+
+test('till differences by day and by cashier', () => {
+  const trend = tillTrend([
+    { day: '2026-09-26', cashier: 'Carol', variance: -2000 },
+    { day: '2026-09-26', cashier: 'Dan', variance: 500 },
+    { day: '2026-09-27', cashier: 'Carol', variance: -5000 },
+    { day: '2026-09-27', cashier: 'Dan', variance: 0 },
+    { day: '2026-09-27', cashier: 'Eve', variance: null },
+  ]);
+  expect(trend.closedShifts).toBe(4);
+  expect(trend.shortShifts).toBe(2);
+  expect(trend.days).toEqual([
+    { day: '2026-09-26', shifts: 2, short: 2000, over: 500, net: -1500, worst: -2000 },
+    { day: '2026-09-27', shifts: 2, short: 5000, over: 0, net: -5000, worst: -5000 },
+  ]);
+  expect(trend.cashiers[0]).toEqual({
+    cashier: 'Carol',
+    shifts: 2,
+    short: 7000,
+    over: 0,
+    net: -7000,
+    worst: -5000,
   });
 });

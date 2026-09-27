@@ -6442,3 +6442,20 @@ a {
     flex: 1;
   }
 }
+/* Menu → Categories: move up / down. */
+.order-arrows {
+  display: inline-flex;
+  gap: 4px;
+}
+.order-arrows .setup-secondary {
+  padding: 6px 8px;
+  display: inline-flex;
+}
+.order-arrows svg {
+  width: 16px;
+  height: 16px;
+}
+.dish-prep {
+  font: 500 14px var(--font-body);
+  color: var(--muted);
+}

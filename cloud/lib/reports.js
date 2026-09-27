@@ -238,7 +238,40 @@ function channelMix(facts) {
   return [...byKey.values()].sort((a, b) => b.amount - a.amount);
 }
 
+// Till differences over time. `shifts`: closed cashier shifts
+// { day, cashier, variance } (variance < 0 = short, > 0 = over). Returns a row
+// per day (oldest first) and per cashier (most short first).
+function tillTrend(shifts) {
+  const closed = shifts.filter((s) => typeof s.variance === 'number');
+  const add = (map, key, s) => {
+    const row = map.get(key) || { shifts: 0, short: 0, over: 0, net: 0, worst: 0 };
+    row.shifts += 1;
+    if (s.variance < 0) row.short += -s.variance;
+    if (s.variance > 0) row.over += s.variance;
+    row.net += s.variance;
+    if (Math.abs(s.variance) > Math.abs(row.worst)) row.worst = s.variance;
+    map.set(key, row);
+  };
+  const days = new Map();
+  const cashiers = new Map();
+  for (const s of closed) {
+    add(days, s.day, s);
+    add(cashiers, s.cashier, s);
+  }
+  return {
+    days: [...days.entries()]
+      .map(([day, row]) => ({ day, ...row }))
+      .sort((a, b) => a.day.localeCompare(b.day)),
+    cashiers: [...cashiers.entries()]
+      .map(([cashier, row]) => ({ cashier, ...row }))
+      .sort((a, b) => b.short - a.short || a.cashier.localeCompare(b.cashier)),
+    closedShifts: closed.length,
+    shortShifts: closed.filter((s) => s.variance < 0).length,
+  };
+}
+
 module.exports = {
+  tillTrend,
   growth,
   summarize,
   series,
