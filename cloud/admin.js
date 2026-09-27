@@ -210,6 +210,7 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       description: item.get('description') || '',
       image: fileUrl(item.get('image')),
       sortOrder: Number(item.get('sortOrder') || 0),
+      prepMinutes: Number(item.get('prepMinutes') || 0),
       archived: !!item.get('archivedAt'),
     })),
     accompaniments: accompaniments.map((row) => ({
@@ -361,23 +362,57 @@ Parse.Cloud.define('adminChangeRole', async (request) => {
   return { role: next };
 });
 
+// Owner: add, rename or hide a menu category. Renaming moves every dish in
+// it to the new name; a hidden category's dishes are not offered for orders.
 Parse.Cloud.define('adminSaveCategory', async (request) => {
   const actor = await adminOnly(request);
   const p = request.params;
   const title = String(p.title || '').trim();
   if (!title || title.length > 80) throw invalid('Category title is required');
-  const category = p.id
-    ? await new Parse.Query('MenuCategory').get(p.id, MASTER)
-    : new Parse.Object('MenuCategory');
+  const all = await findAll(new Parse.Query('MenuCategory'));
+  if (all.some((row) => row.id !== p.id && row.get('title').toLowerCase() === title.toLowerCase()))
+    throw invalid(`There is already a category called "${title}"`);
+  const category = p.id ? all.find((row) => row.id === p.id) : new Parse.Object('MenuCategory');
+  if (!category) throw invalid('Unknown category');
   const before = p.id ? category.toJSON() : null;
-  category.set({ title, active: p.active !== false, sortOrder: Number(p.sortOrder) || 0 });
+  const oldTitle = category.get('title');
+  // New categories go to the end; saving keeps the position unless one is sent.
+  const sortOrder =
+    p.sortOrder !== undefined
+      ? Number(p.sortOrder) || 0
+      : p.id
+        ? Number(category.get('sortOrder') || 0)
+        : Math.max(0, ...all.map((row) => Number(row.get('sortOrder') || 0))) + 1;
+  category.set({ title, active: p.active !== false, sortOrder });
   category.setACL(readAcl(null, ['admin']));
   await category.save(null, MASTER);
+  let moved = 0;
+  if (oldTitle && oldTitle !== title) {
+    const dishes = await findAll(new Parse.Query('MenuItem').equalTo('category', oldTitle));
+    dishes.forEach((dish) => dish.set('category', title));
+    if (dishes.length) await Parse.Object.saveAll(dishes, MASTER);
+    moved = dishes.length;
+  }
   await audit(actor, 'menu.category_saved', category, before, {
     title,
     active: category.get('active'),
+    ...(moved && { dishesMoved: moved }),
   });
-  return { id: category.id };
+  return { id: category.id, dishesMoved: moved };
+});
+
+// Owner: the categories in their new order (the order-taking tabs follow it).
+Parse.Cloud.define('adminSortCategories', async (request) => {
+  const actor = await adminOnly(request);
+  const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+  if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length)
+    throw invalid('Send the categories in their new order');
+  const rows = await findAll(new Parse.Query('MenuCategory').containedIn('objectId', ids));
+  if (rows.length !== ids.length) throw invalid('Unknown category in the list');
+  for (const row of rows) row.set('sortOrder', ids.indexOf(row.id) + 1);
+  await Parse.Object.saveAll(rows, MASTER);
+  await audit(actor, 'menu.categories_sorted', rows[0], null, { count: rows.length });
+  return { ok: true };
 });
 
 Parse.Cloud.define('adminSaveMenuItem', async (request) => {
@@ -391,12 +426,24 @@ Parse.Cloud.define('adminSaveMenuItem', async (request) => {
   if (!title || !Number.isFinite(price) || price < 0)
     throw invalid('A title and nonnegative price are required');
   const before = p.id ? item.toJSON() : null;
+  const category = String(p.category || 'Mains').trim();
+  // With categories set up, a dish must use one of them.
+  const categories = await findAll(new Parse.Query('MenuCategory'));
+  if (categories.length && !categories.some((row) => row.get('title') === category))
+    throw invalid(`Choose one of the menu categories (not "${category}")`);
+  const prep =
+    p.prepMinutes === undefined || p.prepMinutes === null || p.prepMinutes === ''
+      ? undefined
+      : Number(p.prepMinutes);
+  if (prep !== undefined && (!Number.isInteger(prep) || prep < 0 || prep > 240))
+    throw invalid('Prep time must be whole minutes, 0 to 240');
   item.set({
     title,
     price,
-    category: String(p.category || 'Mains').trim(),
+    category,
     active: p.active !== false,
     availableToday: p.availableToday !== false,
+    ...(prep !== undefined && { prepMinutes: prep }),
   });
   if (p.description !== undefined) item.set('description', merchantField(p.description, 300));
   // A new dish goes to the end of the menu.

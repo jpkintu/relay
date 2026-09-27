@@ -18,6 +18,8 @@ export type MenuItem = {
   color?: string;
   description?: string;
   image?: string | null;
+  // Minutes the kitchen needs (0 or missing = not set).
+  prepMinutes?: number;
 };
 export type CartLine = {
   key: string;

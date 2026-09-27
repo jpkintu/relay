@@ -562,6 +562,8 @@ var require_security = __commonJS({
     var SCHEMAS = {
       Order: {
         orderCode: S,
+        // Longest prep time of its dishes when placed (minutes; 0 = not set).
+        prepMinutes: N,
         channel: S,
         createdBy: user,
         customerName: S,
@@ -744,7 +746,9 @@ var require_security = __commonJS({
         accompanimentGroups: "Array",
         description: S,
         image: "File",
-        archivedAt: D
+        archivedAt: D,
+        // Minutes the kitchen needs for the dish (optional; 0 = not set).
+        prepMinutes: N
       },
       ZReport: { day: S, data: "Object", generatedAt: D, auto: B },
       Accompaniment: { title: S, active: B, available: B, sortOrder: N, price: N },
@@ -9375,7 +9379,32 @@ var require_reports = __commonJS({
       }
       return [...byKey.values()].sort((a, b) => b.amount - a.amount);
     }
+    function tillTrend(shifts) {
+      const closed = shifts.filter((s) => typeof s.variance === "number");
+      const add = (map, key, s) => {
+        const row = map.get(key) || { shifts: 0, short: 0, over: 0, net: 0, worst: 0 };
+        row.shifts += 1;
+        if (s.variance < 0) row.short += -s.variance;
+        if (s.variance > 0) row.over += s.variance;
+        row.net += s.variance;
+        if (Math.abs(s.variance) > Math.abs(row.worst)) row.worst = s.variance;
+        map.set(key, row);
+      };
+      const days = /* @__PURE__ */ new Map();
+      const cashiers = /* @__PURE__ */ new Map();
+      for (const s of closed) {
+        add(days, s.day, s);
+        add(cashiers, s.cashier, s);
+      }
+      return {
+        days: [...days.entries()].map(([day, row]) => ({ day, ...row })).sort((a, b) => a.day.localeCompare(b.day)),
+        cashiers: [...cashiers.entries()].map(([cashier, row]) => ({ cashier, ...row })).sort((a, b) => b.short - a.short || a.cashier.localeCompare(b.cashier)),
+        closedShifts: closed.length,
+        shortShifts: closed.filter((s) => s.variance < 0).length
+      };
+    }
     module2.exports = {
+      tillTrend,
       growth,
       summarize,
       series,
@@ -11028,6 +11057,7 @@ var require_orders = __commonJS({
           menuItem: saved,
           name: title,
           price,
+          prepMinutes: Number(saved.get("prepMinutes") || 0),
           qty,
           extrasPerUnit,
           lineTotal: (price + extrasPerUnit) * qty,
@@ -11107,6 +11137,7 @@ var require_orders = __commonJS({
         deliveryAddress,
         deliveryNotes: clean(p.deliveryNotes, 200),
         subtotal,
+        prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
         deliveryFee: fee,
         total,
         paymentMethod,
@@ -11677,6 +11708,7 @@ var require_counter = __commonJS({
         ...!isDelivery && clean(p.table, 30) && { tableLabel: clean(p.table, 30) },
         ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
         subtotal,
+        prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
         deliveryFee: fee,
         total,
         paymentMethod: method,
@@ -11881,7 +11913,8 @@ var require_menu = __commonJS({
       audit,
       loadConfig,
       requireCashierShift,
-      fileUrl
+      fileUrl,
+      findAll
     } = require_core();
     var { availableGroups } = require_accompaniments();
     var { servableAccompaniments } = require_orders();
@@ -11892,19 +11925,27 @@ var require_menu = __commonJS({
       query.equalTo("availableToday", true);
       query.ascending("sortOrder");
       query.limit(500);
-      const [menu, accompaniments, { values: config }] = await Promise.all([
+      const categoryQuery = new Parse.Query("MenuCategory");
+      const [menu, accompaniments, { values: config }, categoryRows] = await Promise.all([
         query.find(MASTER),
         servableAccompaniments(),
-        loadConfig()
+        loadConfig(),
+        findAll(categoryQuery)
       ]);
+      const hidden = new Set(
+        categoryRows.filter((row) => row.get("active") === false).map((row) => row.get("title"))
+      );
+      const categories = categoryRows.filter((row) => row.get("active") !== false).sort((a, b) => Number(a.get("sortOrder") || 0) - Number(b.get("sortOrder") || 0)).map((row) => row.get("title"));
       return {
-        items: menu.map((item) => ({
+        categories,
+        items: menu.filter((item) => !hidden.has(item.get("category") || "Mains")).map((item) => ({
           id: item.id,
           title: item.get("title"),
           category: item.get("category") || "Mains",
           price: item.get("price"),
           description: item.get("description") || "",
           image: fileUrl(item.get("image")),
+          prepMinutes: Number(item.get("prepMinutes") || 0),
           accompanimentGroups: availableGroups(
             item.get("accompanimentGroups") || [],
             (id) => accompaniments.has(id)
@@ -12079,7 +12120,8 @@ var require_shifts = __commonJS({
       findAll
     } = require_core();
     var { money, notifyAdmins } = require_notifications();
-    var { resolveRange } = require_dates();
+    var { resolveRange, isoDay } = require_dates();
+    var { tillTrend } = require_reports();
     var { sumBy } = require_money();
     async function tillSummary(cashier, shift) {
       const start = shift.get("startedAt");
@@ -12332,7 +12374,15 @@ var require_shifts = __commonJS({
       return {
         range: { from: range.from, to: range.to },
         shifts,
-        totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0)
+        totalVariance: shifts.reduce((n, s) => n + (Number(s.variance) || 0), 0),
+        // Differences per day (the day the till was closed) and per cashier.
+        trend: tillTrend(
+          shifts.filter((s) => s.status === "closed").map((s) => ({
+            day: isoDay(s.endedAt || s.startedAt, config.timezone),
+            cashier: s.cashier,
+            variance: s.variance
+          }))
+        )
       };
     });
     module2.exports = { riderOutstanding };
@@ -12815,6 +12865,7 @@ var require_admin = __commonJS({
           description: item.get("description") || "",
           image: fileUrl(item.get("image")),
           sortOrder: Number(item.get("sortOrder") || 0),
+          prepMinutes: Number(item.get("prepMinutes") || 0),
           archived: !!item.get("archivedAt")
         })),
         accompaniments: accompaniments.map((row) => ({
@@ -12953,16 +13004,42 @@ var require_admin = __commonJS({
       const p = request.params;
       const title = String(p.title || "").trim();
       if (!title || title.length > 80) throw invalid("Category title is required");
-      const category = p.id ? await new Parse.Query("MenuCategory").get(p.id, MASTER) : new Parse.Object("MenuCategory");
+      const all = await findAll(new Parse.Query("MenuCategory"));
+      if (all.some((row) => row.id !== p.id && row.get("title").toLowerCase() === title.toLowerCase()))
+        throw invalid(`There is already a category called "${title}"`);
+      const category = p.id ? all.find((row) => row.id === p.id) : new Parse.Object("MenuCategory");
+      if (!category) throw invalid("Unknown category");
       const before = p.id ? category.toJSON() : null;
-      category.set({ title, active: p.active !== false, sortOrder: Number(p.sortOrder) || 0 });
+      const oldTitle = category.get("title");
+      const sortOrder = p.sortOrder !== void 0 ? Number(p.sortOrder) || 0 : p.id ? Number(category.get("sortOrder") || 0) : Math.max(0, ...all.map((row) => Number(row.get("sortOrder") || 0))) + 1;
+      category.set({ title, active: p.active !== false, sortOrder });
       category.setACL(readAcl(null, ["admin"]));
       await category.save(null, MASTER);
+      let moved = 0;
+      if (oldTitle && oldTitle !== title) {
+        const dishes = await findAll(new Parse.Query("MenuItem").equalTo("category", oldTitle));
+        dishes.forEach((dish) => dish.set("category", title));
+        if (dishes.length) await Parse.Object.saveAll(dishes, MASTER);
+        moved = dishes.length;
+      }
       await audit(actor, "menu.category_saved", category, before, {
         title,
-        active: category.get("active")
+        active: category.get("active"),
+        ...moved && { dishesMoved: moved }
       });
-      return { id: category.id };
+      return { id: category.id, dishesMoved: moved };
+    });
+    Parse.Cloud.define("adminSortCategories", async (request) => {
+      const actor = await adminOnly(request);
+      const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+      if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length)
+        throw invalid("Send the categories in their new order");
+      const rows = await findAll(new Parse.Query("MenuCategory").containedIn("objectId", ids));
+      if (rows.length !== ids.length) throw invalid("Unknown category in the list");
+      for (const row of rows) row.set("sortOrder", ids.indexOf(row.id) + 1);
+      await Parse.Object.saveAll(rows, MASTER);
+      await audit(actor, "menu.categories_sorted", rows[0], null, { count: rows.length });
+      return { ok: true };
     });
     Parse.Cloud.define("adminSaveMenuItem", async (request) => {
       const actor = await adminOnly(request);
@@ -12973,12 +13050,20 @@ var require_admin = __commonJS({
       if (!title || !Number.isFinite(price) || price < 0)
         throw invalid("A title and nonnegative price are required");
       const before = p.id ? item.toJSON() : null;
+      const category = String(p.category || "Mains").trim();
+      const categories = await findAll(new Parse.Query("MenuCategory"));
+      if (categories.length && !categories.some((row) => row.get("title") === category))
+        throw invalid(`Choose one of the menu categories (not "${category}")`);
+      const prep = p.prepMinutes === void 0 || p.prepMinutes === null || p.prepMinutes === "" ? void 0 : Number(p.prepMinutes);
+      if (prep !== void 0 && (!Number.isInteger(prep) || prep < 0 || prep > 240))
+        throw invalid("Prep time must be whole minutes, 0 to 240");
       item.set({
         title,
         price,
-        category: String(p.category || "Mains").trim(),
+        category,
         active: p.active !== false,
-        availableToday: p.availableToday !== false
+        availableToday: p.availableToday !== false,
+        ...prep !== void 0 && { prepMinutes: prep }
       });
       if (p.description !== void 0) item.set("description", merchantField(p.description, 300));
       if (!p.id && item.get("sortOrder") === void 0) {

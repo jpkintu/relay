@@ -115,6 +115,8 @@ const user = ['Pointer', '_User'];
 const SCHEMAS = {
   Order: {
     orderCode: S,
+    // Longest prep time of its dishes when placed (minutes; 0 = not set).
+    prepMinutes: N,
     channel: S,
     createdBy: user,
     customerName: S,
@@ -298,6 +300,8 @@ const SCHEMAS = {
     description: S,
     image: 'File',
     archivedAt: D,
+    // Minutes the kitchen needs for the dish (optional; 0 = not set).
+    prepMinutes: N,
   },
   ZReport: { day: S, data: 'Object', generatedAt: D, auto: B },
   Accompaniment: { title: S, active: B, available: B, sortOrder: N, price: N },

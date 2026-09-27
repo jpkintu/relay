@@ -177,6 +177,8 @@ export function NewOrder({
   const [items, setItems] = useState<MenuItem[]>(preview ? SAMPLE : []);
   const [menuFee, setMenuFee] = useState(preview ? 3000 : config.defaultDeliveryFee);
   const [category, setCategory] = useState('All');
+  // Tabs in the owner's order (Menu → Categories); others after, as found.
+  const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [sheet, setSheet] = useState<MenuItem | null>(null);
   const [pinning, setPinning] = useState(false);
@@ -209,8 +211,9 @@ export function NewOrder({
   useEffect(() => {
     if (preview) return;
     Parse.Cloud.run('getOperationalMenu')
-      .then((data: { items: MenuItem[]; deliveryFee: number }) => {
+      .then((data: { items: MenuItem[]; deliveryFee: number; categories?: string[] }) => {
         setItems(data.items);
+        setCategoryOrder(data.categories || []);
         setMenuFee(data.deliveryFee);
       })
       .catch(() => setError('Menu could not be loaded. Please reconnect.'));
@@ -234,7 +237,12 @@ export function NewOrder({
   const isCash = draft.payment === 'cash';
   // Riders earn their commission plus the delivery fee.
   const earn = previewCommission(profile?.commission, subtotal, config.commissionRounding) + fee;
-  const categories = ['All', ...new Set(items.map((i) => i.category))];
+  const present = new Set(items.map((i) => i.category));
+  const categories = [
+    'All',
+    ...categoryOrder.filter((c) => present.has(c)),
+    ...[...present].filter((c) => !categoryOrder.includes(c)),
+  ];
   const filtered = items.filter(
     (i) =>
       (category === 'All' || i.category === category) &&
@@ -913,7 +921,12 @@ function ItemSheet({
             </div>
           )}
           <h2>{item.title}</h2>
-          <p className="dish-price">{money(item.price)}</p>
+          <p className="dish-price">
+            {money(item.price)}
+            {item.prepMinutes ? (
+              <small className="dish-prep"> · ready in ~{item.prepMinutes} min</small>
+            ) : null}
+          </p>
           {item.description && <p className="dish-description">{item.description}</p>}
         </div>
         <div className="dish-options">

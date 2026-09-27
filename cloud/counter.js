@@ -200,6 +200,7 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
     ...(!isDelivery && clean(p.table, 30) && { tableLabel: clean(p.table, 30) }),
     ...(pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) }),
     subtotal,
+    prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
     deliveryFee: fee,
     total,
     paymentMethod: method,

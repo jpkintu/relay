@@ -37,6 +37,8 @@ type Item = {
   image: string | null;
   sortOrder: number;
   archived: boolean;
+  // Minutes the kitchen needs (0 = not set).
+  prepMinutes: number;
 };
 type Group = { label: string; options: string[]; min: number; max: number };
 // `price` 0 = free; otherwise charged on top of the dish, per unit.
@@ -402,6 +404,7 @@ export function AdminSetup({
     [role, setRole] = useState('rider');
   const [itemTitle, setItemTitle] = useState(''),
     [itemPrice, setItemPrice] = useState(''),
+    [itemPrep, setItemPrep] = useState(''),
     [itemCategory, setItemCategory] = useState('Mains'),
     [editingItem, setEditingItem] = useState<string | null>(null),
     [itemDescription, setItemDescription] = useState(''),
@@ -601,7 +604,11 @@ export function AdminSetup({
               />
               <button disabled={busy || preview}>Add category</button>
             </form>
-            {categories.map((category) => (
+            <p className="muted">
+              The order screen shows the tabs in this order. Renaming a category moves its dishes
+              with it; a hidden category's dishes are not offered for orders.
+            </p>
+            {categories.map((category, index) => (
               <CategoryEditor
                 key={`${category.id}-${category.title}-${category.active}`}
                 category={category}
@@ -609,6 +616,13 @@ export function AdminSetup({
                 save={(payload) =>
                   save('adminSaveCategory', { id: category.id, ...payload }, () => {})
                 }
+                move={(step) => {
+                  const ids = categories.map((c) => c.id);
+                  [ids[index], ids[index + step]] = [ids[index + step], ids[index]];
+                  void save('adminSortCategories', { ids }, () => {});
+                }}
+                first={index === 0}
+                last={index === categories.length - 1}
               />
             ))}
           </div>
@@ -674,6 +688,7 @@ export function AdminSetup({
                     id: editingItem || undefined,
                     title: itemTitle,
                     price: Number(itemPrice),
+                    prepMinutes: itemPrep.trim() === '' ? 0 : Number(itemPrep),
                     category: itemCategory,
                     description: itemDescription,
                     accompanimentGroups: itemGroups,
@@ -681,6 +696,7 @@ export function AdminSetup({
                   () => {
                     setItemTitle('');
                     setItemPrice('');
+                    setItemPrep('');
                     setItemDescription('');
                     setItemGroups([]);
                     setEditingItem(null);
@@ -690,14 +706,23 @@ export function AdminSetup({
             >
               {input('Item name', itemTitle, setItemTitle)}
               {input('Price', itemPrice, setItemPrice, 'number')}
+              {input('Prep time in minutes (optional)', itemPrep, setItemPrep, 'number')}
               <label className="setup-field">
                 Category
                 <select value={itemCategory} onChange={(e) => setItemCategory(e.target.value)}>
-                  {(categories.length
-                    ? categories.filter((c) => c.active).map((c) => c.title)
-                    : ['Breakfast', 'Mains', 'Drinks', 'Sides', 'Desserts']
-                  ).map((c) => (
-                    <option key={c}>{c}</option>
+                  {[
+                    ...new Set([
+                      ...(categories.length
+                        ? categories.map((c) => c.title)
+                        : ['Breakfast', 'Mains', 'Drinks', 'Sides', 'Desserts']),
+                      // Keep a dish's current category listed even if it is not set up.
+                      ...(itemCategory ? [itemCategory] : []),
+                    ]),
+                  ].map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                      {categories.find((row) => row.title === c && !row.active) ? ' (hidden)' : ''}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -735,6 +760,7 @@ export function AdminSetup({
                     setEditingItem(null);
                     setItemTitle('');
                     setItemPrice('');
+                    setItemPrep('');
                     setItemDescription('');
                     setItemGroups([]);
                   }}
@@ -778,9 +804,12 @@ export function AdminSetup({
                             )}
                             <span>
                               <b>{item.title}</b>
-                              {(item.description || item.accompanimentGroups?.length > 0) && (
+                              {(item.description ||
+                                item.prepMinutes > 0 ||
+                                item.accompanimentGroups?.length > 0) && (
                                 <small>
                                   {[
+                                    item.prepMinutes ? `~${item.prepMinutes} min` : '',
                                     item.description,
                                     item.accompanimentGroups?.map((g) => g.label).join(', '),
                                   ]
@@ -825,6 +854,7 @@ export function AdminSetup({
                                 setEditingItem(item.id);
                                 setItemTitle(item.title);
                                 setItemPrice(String(item.price));
+                                setItemPrep(item.prepMinutes ? String(item.prepMinutes) : '');
                                 setItemCategory(item.category);
                                 setItemDescription(item.description || '');
                                 setItemGroups(item.accompanimentGroups || []);
@@ -1315,14 +1345,40 @@ function CategoryEditor({
   category,
   disabled,
   save,
+  move,
+  first,
+  last,
 }: {
   category: Category;
   disabled: boolean;
   save: (payload: Record<string, unknown>) => Promise<void>;
+  move: (step: number) => void;
+  first: boolean;
+  last: boolean;
 }) {
   const [title, setTitle] = useState(category.title);
   return (
     <div className="setup-row">
+      <span className="order-arrows">
+        <button
+          type="button"
+          className="setup-secondary"
+          disabled={disabled || first}
+          onClick={() => move(-1)}
+          aria-label={`Move ${category.title} up`}
+        >
+          <ArrowUp />
+        </button>
+        <button
+          type="button"
+          className="setup-secondary"
+          disabled={disabled || last}
+          onClick={() => move(1)}
+          aria-label={`Move ${category.title} down`}
+        >
+          <ArrowDown />
+        </button>
+      </span>
       <input aria-label="Category name" value={title} onChange={(e) => setTitle(e.target.value)} />
       <span>{category.active ? 'Active' : 'Hidden'}</span>
       <button

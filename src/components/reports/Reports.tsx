@@ -8,6 +8,7 @@ import { bucketLabel, compactNumber, formatChange, rangeLabel, truncate } from '
 import { useDevice } from '../../lib/device';
 import type { Period } from '../../lib/range';
 import { Chart, DOWN, SERIES, UP } from './Chart';
+import { TillTrend } from './TillTrend';
 import {
   FilterBar,
   Stat,
@@ -696,6 +697,8 @@ export function Reports() {
               )}
               {!data.riders.length && <p className="empty-orders">No orders in these dates.</p>}
             </ReportPanel>
+
+            <TillTrend from={filters.from} to={filters.to} />
           </div>
         </>
       )}
