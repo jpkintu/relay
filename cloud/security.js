@@ -275,6 +275,10 @@ const SCHEMAS = {
     moduleRiderOrders: B,
     moduleCallIn: B,
     moduleCounter: B,
+    receiptWidth: N,
+    receiptHeader: S,
+    receiptFooter: S,
+    autoPrintKitchen: B,
   },
   MenuItem: {
     title: S,

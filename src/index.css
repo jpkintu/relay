@@ -5783,3 +5783,33 @@ img.food-art.photo {
     white-space: nowrap;
   }
 }
+
+/* Printing receipts */
+.print-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.print-actions .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  background: #e5e7ec;
+  color: var(--ink);
+}
+.print-actions svg {
+  width: 16px;
+  height: 16px;
+}
+.order-head-side {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+}
+@media (max-width: 650px) {
+  .order-head-side {
+    justify-items: start;
+  }
+}

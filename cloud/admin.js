@@ -572,6 +572,10 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     moduleRiderOrders: (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
     moduleCallIn: (p.moduleCallIn ?? current.moduleCallIn) === true,
     moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true,
+    receiptWidth: Number(p.receiptWidth ?? current.receiptWidth) === 58 ? 58 : 80,
+    receiptHeader: merchantField(p.receiptHeader ?? current.receiptHeader, 300),
+    receiptFooter: merchantField(p.receiptFooter ?? current.receiptFooter, 200),
+    autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

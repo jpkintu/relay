@@ -5,6 +5,7 @@ import {
   MapPin,
   Minus,
   Plus,
+  Printer,
   RotateCcw,
   Search,
   ShoppingBag,
@@ -26,6 +27,7 @@ import type { AccompanimentOption, CartLine, MenuItem } from '../lib/cart';
 import { MobileMoneyPanel, referenceProblem } from './MobileMoney';
 import { PinSheet } from './MapPin';
 import type { LatLng } from './MapPin';
+import { usePrint } from '../lib/print';
 
 const SAMPLE: MenuItem[] = [
   { id: '1', title: 'Smoky chicken bowl', category: 'Mains', price: 18500, color: '#f3b35b' },
@@ -194,6 +196,7 @@ export function NewOrder({
       .then(setRiders)
       .catch(() => undefined);
   }, [counter, preview]);
+  const { print, printError } = usePrint();
   const [placed, setPlaced] = useState<{
     id?: string;
     orderCode?: string;
@@ -329,6 +332,9 @@ export function NewOrder({
         // ignore
       }
       setPlaced(result || {});
+      // Counter orders: open the print dialog for the kitchen ticket at once.
+      if (counter && result?.id && config.receipt?.autoPrintKitchen && !preview)
+        void print(result.id, 'kitchen');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not place order');
     } finally {
@@ -366,6 +372,17 @@ export function NewOrder({
             View order
           </button>
         )}
+        {counter && placed.id && !preview && (
+          <div className="print-actions">
+            <button className="setup-secondary" onClick={() => void print(placed.id!, 'kitchen')}>
+              <Printer /> Kitchen ticket
+            </button>
+            <button className="setup-secondary" onClick={() => void print(placed.id!, 'receipt')}>
+              <Printer /> Receipt
+            </button>
+          </div>
+        )}
+        {printError && <p className="ops-error">{printError}</p>}
         {counter && (
           <button
             className="setup-secondary"

@@ -31,6 +31,7 @@ import { InstallPrompt } from './InstallPrompt';
 import { Stat } from './reports/common';
 import { useLiveRefresh } from '../lib/live';
 import { NewOrder } from './NewOrder';
+import { usePrint } from '../lib/print';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -494,11 +495,12 @@ function KitchenBoard() {
     await load();
   };
 
+  const { print, printError } = usePrint();
   const visible = tickets.filter((t) => !mineOnly || !t.holderId || t.holderId === me);
 
   return (
     <div className="ops-content">
-      {error && <div className="ops-error">{error}</div>}
+      {(error || printError) && <div className="ops-error">{error || printError}</div>}
       <div className="ops-title">
         <div>
           <h1>Kitchen board</h1>
@@ -864,6 +866,18 @@ function KitchenBoard() {
                                 {ticket.riderId ? 'Change rider' : 'Assign rider'}
                               </button>
                             )}
+                          <button
+                            className="link-button"
+                            onClick={() => void print(ticket.id, 'kitchen')}
+                          >
+                            Print ticket
+                          </button>
+                          <button
+                            className="link-button"
+                            onClick={() => void print(ticket.id, 'receipt')}
+                          >
+                            Receipt
+                          </button>
                           {canPass && (mine || !ticket.holderId || !isCashier) && (
                             <button className="link-button" onClick={() => void openPass(ticket)}>
                               Pass to a colleague

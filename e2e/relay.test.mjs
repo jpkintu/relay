@@ -3266,3 +3266,72 @@ describe('counter modules: call-in delivery, eat-in and pick-up', () => {
     await run('adminSaveSettings', settings, s.owner);
   });
 });
+
+describe('printed receipts', () => {
+  let item;
+  let settings;
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run(
+      'adminSaveSettings',
+      {
+        ...settings,
+        moduleCounter: true,
+        receiptWidth: 58,
+        receiptHeader: 'Plot 12 Kampala Road\nTel 0772 000000',
+        receiptFooter: 'Asante!',
+        autoPrintKitchen: true,
+      },
+      s.owner,
+    );
+  });
+  after(async () => run('adminSaveSettings', settings, s.owner));
+
+  test('staff get what to print; riders do not', async () => {
+    const profile = await run('getMyProfile', {}, s.dina);
+    assert.deepEqual(profile.config.receipt, {
+      width: 58,
+      header: 'Plot 12 Kampala Road\nTel 0772 000000',
+      footer: 'Asante!',
+      autoPrintKitchen: true,
+    });
+    const placed = await run(
+      'createCounterOrder',
+      {
+        orderType: 'eat_in',
+        table: 'Table 9',
+        items: [{ id: item.id, quantity: 2, notes: 'No onions' }],
+      },
+      s.dina,
+    );
+    const receipt = await run('getReceipt', { orderId: placed.id }, s.dina);
+    assert.equal(receipt.code, placed.orderCode);
+    assert.equal(receipt.width, 58);
+    assert.equal(receipt.table, 'Table 9');
+    assert.equal(receipt.type, 'eat_in');
+    assert.equal(receipt.lines[0].qty, 2);
+    assert.equal(receipt.lines[0].notes, 'No onions');
+    assert.equal(receipt.total, placed.total);
+    assert.equal(receipt.payment.state, 'paid');
+    assert.match(receipt.staff, /Dina/);
+    await rejects(
+      run('getReceipt', { orderId: placed.id }, s.pia),
+      /cashier or admin role required/,
+    );
+    const later = await run(
+      'createCounterOrder',
+      { orderType: 'pickup', payLater: true, items: [{ id: item.id, quantity: 1 }] },
+      s.dina,
+    );
+    assert.equal((await run('getReceipt', { orderId: later.id }, s.dina)).payment.state, 'unpaid');
+    for (const id of [placed.id, later.id])
+      await run(
+        'transitionOrder',
+        { orderId: id, action: 'cancel', reason: 'Receipt test' },
+        s.dina,
+      );
+  });
+});

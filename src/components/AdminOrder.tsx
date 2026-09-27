@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Printer } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
@@ -10,6 +10,7 @@ import { useCloud, useRiderOptions } from './reports/common';
 import { PAYMENT_STATUS_LABEL, providerLabel } from './MobileMoney';
 import { STATUS_LABEL } from './reports/PaymentsLedger';
 import { PinPreview } from './MapPin';
+import { usePrint } from '../lib/print';
 
 type OrderPage = {
   id: string;
@@ -137,6 +138,7 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState('');
+  const { print, printError } = usePrint();
 
   const when = (value: string | null) =>
     value ? formatDate(value, timezone, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
@@ -238,9 +240,20 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
             </p>
           )}
         </div>
-        <strong className="order-total">{money(o.total)}</strong>
+        <div className="order-head-side">
+          <strong className="order-total">{money(o.total)}</strong>
+          <div className="print-actions">
+            <button className="setup-secondary" onClick={() => void print(o.id, 'receipt')}>
+              <Printer /> Receipt
+            </button>
+            <button className="setup-secondary" onClick={() => void print(o.id, 'kitchen')}>
+              <Printer /> Kitchen ticket
+            </button>
+          </div>
+        </div>
       </section>
       {notice && <p className="setup-notice">{notice}</p>}
+      {printError && <p className="ops-error">{printError}</p>}
 
       {o.location && (
         <section className="admin-panel admin-section-panel">

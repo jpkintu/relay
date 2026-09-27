@@ -24,6 +24,8 @@ export type AppConfig = {
   mapCenter?: { lat: number; lng: number };
   // Which kinds of order this restaurant takes (Settings → Modules).
   modules?: { riderOrders: boolean; callIn: boolean; counter: boolean };
+  // Printed receipts (Settings → Receipts).
+  receipt?: { width: number; header: string; footer: string; autoPrintKitchen: boolean };
 };
 
 export type MerchantAccount = { provider: string; label: string; code: string; name: string };
