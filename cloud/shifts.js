@@ -12,6 +12,7 @@ const {
   personName,
   verifyPin,
   orNone,
+  findAll,
 } = require('./lib/core');
 const { money, notifyAdmins } = require('./notifications');
 const { resolveRange } = require('./lib/dates');
@@ -36,10 +37,8 @@ async function tillSummary(cashier, shift) {
   legacy.greaterThanOrEqualTo('confirmedAt', start);
   legacy.lessThan('confirmedAt', end);
   const handoverQuery = Parse.Query.or(counted, legacy);
-  handoverQuery.limit(1000);
   const payoutQuery = new Parse.Query('TillPayout');
   payoutQuery.equalTo('shift', shift);
-  payoutQuery.limit(1000);
   // Eat-in / pick-up cash this cashier took at the counter (still in the
   // till: not refunded by a cancel).
   const counterQuery = new Parse.Query('Order');
@@ -47,11 +46,10 @@ async function tillSummary(cashier, shift) {
   counterQuery.equalTo('cashStatus', 'IN_TILL');
   counterQuery.greaterThanOrEqualTo('paidAt', start);
   counterQuery.lessThan('paidAt', end);
-  counterQuery.limit(5000);
   const [handovers, payouts, counterOrders] = await Promise.all([
-    handoverQuery.find(MASTER),
-    payoutQuery.find(MASTER),
-    counterQuery.find(MASTER).catch(orNone([])),
+    findAll(handoverQuery),
+    findAll(payoutQuery),
+    findAll(counterQuery).catch(orNone([])),
   ]);
   const openingFloat = Number(shift.get('openingFloat') || 0);
   const riderCash = sumBy(handovers, (h) => h.get('countedAmount') ?? h.get('amount'));
@@ -87,7 +85,6 @@ async function riderOutstanding(rider) {
   cashQuery.equalTo('createdBy', rider);
   cashQuery.equalTo('status', 'DELIVERED');
   cashQuery.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
-  cashQuery.limit(1000);
   // Mobile money taken at the door that the cashier has not confirmed yet.
   const momoQuery = new Parse.Query('Order');
   momoQuery.equalTo('createdBy', rider);
@@ -95,7 +92,7 @@ async function riderOutstanding(rider) {
   momoQuery.equalTo('paymentStatus', 'PENDING_VERIFICATION');
   const [openOrders, cashOrders, momoPending] = await Promise.all([
     openQuery.count(MASTER),
-    cashQuery.find(MASTER),
+    findAll(cashQuery),
     momoQuery.count(MASTER),
   ]);
   const sum = (status) =>
@@ -284,9 +281,7 @@ Parse.Cloud.define('getShiftReport', async (request) => {
   query.greaterThanOrEqualTo('startedAt', range.start);
   query.lessThan('startedAt', range.end);
   query.include('operator');
-  query.descending('startedAt');
-  query.limit(500);
-  const rows = await query.find(MASTER);
+  const rows = (await findAll(query)).sort((a, b) => b.get('startedAt') - a.get('startedAt'));
   const shifts = await Promise.all(
     rows.map(async (shift) => {
       const open = shift.get('status') === 'open';

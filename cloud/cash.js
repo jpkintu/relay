@@ -11,6 +11,7 @@ const {
   claimOnce,
   verifyPin,
   personName,
+  findAll,
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
 const { money, notifyUser, notifyStaff, notifyAdmins } = require('./notifications');
@@ -378,8 +379,7 @@ Parse.Cloud.define('adminReceiveCash', async (request) => {
   query.equalTo('status', 'DELIVERED');
   query.equalTo('cashStatus', 'WITH_RIDER');
   if (Array.isArray(p.orderIds)) query.containedIn('objectId', p.orderIds.map(String));
-  query.limit(500);
-  const [orders, { values: config }] = await Promise.all([query.find(MASTER), loadConfig()]);
+  const [orders, { values: config }] = await Promise.all([findAll(query), loadConfig()]);
   if (!orders.length) throw invalid('This rider holds no cash to receive');
   await claimOrders(orders);
   const row = await newHandover({ rider, orders, config, notes: note, cashier: actor });
@@ -441,9 +441,7 @@ async function pendingHandovers() {
   const query = new Parse.Query('CashHandover');
   query.equalTo('status', 'pending');
   query.include('rider');
-  query.ascending('handedOverAt');
-  query.limit(200);
-  return query.find(MASTER);
+  return (await findAll(query)).sort((a, b) => a.get('handedOverAt') - b.get('handedOverAt'));
 }
 
 // Tells cashiers and the owner once about each handover that has waited

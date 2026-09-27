@@ -5465,28 +5465,6 @@ table.data.compact-table {
   background: #fff1d6;
   color: #7a5200 !important;
 }
-.ask-pay {
-  margin-top: 12px;
-  border: 0;
-  border-radius: 10px;
-  padding: 11px 16px;
-  font-weight: 700;
-  background: var(--accent);
-  color: var(--on-dark);
-  min-height: 44px;
-}
-.ask-pay:disabled {
-  opacity: 0.6;
-}
-.pay-requested {
-  margin: 10px 0 0;
-  font-size: 13px;
-}
-.pay-asked {
-  color: #a3372a !important;
-  font-weight: 700;
-}
-
 .dish-cell {
   display: flex;
   align-items: center;

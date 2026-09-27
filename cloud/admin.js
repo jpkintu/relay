@@ -13,6 +13,7 @@ const {
   nextStaffCode,
   endSessions,
   fileUrl,
+  findAll,
 } = require('./lib/core');
 const { COMMISSION_TYPES, ROUNDING_STEPS } = require('./lib/money');
 const { isValidTimeZone } = require('./lib/dates');
@@ -126,7 +127,7 @@ async function roleMembership() {
   query.containedIn('name', ROLE_NAMES);
   const held = {};
   for (const role of await query.find(MASTER)) {
-    const users = await role.getUsers().query().limit(1000).find(MASTER);
+    const users = await findAll(role.getUsers().query());
     for (const user of users) (held[user.id] ||= []).push(role.getName());
   }
   // Report the highest-privilege role when someone holds several.
@@ -139,8 +140,6 @@ async function roleMembership() {
 Parse.Cloud.define('adminListSetup', async (request) => {
   await adminOnly(request);
   const userQuery = new Parse.Query(Parse.User);
-  userQuery.ascending('createdAt');
-  userQuery.limit(1000);
   const menuQuery = new Parse.Query('MenuItem');
   menuQuery.ascending('sortOrder');
   menuQuery.limit(1000);
@@ -155,11 +154,9 @@ Parse.Cloud.define('adminListSetup', async (request) => {
   cashQuery.equalTo('status', 'DELIVERED');
   cashQuery.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
   cashQuery.select('createdBy', 'amountCollected');
-  cashQuery.limit(5000);
   const shiftQuery = new Parse.Query('Shift');
   shiftQuery.equalTo('status', 'open');
   shiftQuery.select('operator');
-  shiftQuery.limit(1000);
   const [
     users,
     menu,
@@ -170,14 +167,14 @@ Parse.Cloud.define('adminListSetup', async (request) => {
     cashOrders,
     openShifts,
   ] = await Promise.all([
-    userQuery.find(MASTER),
+    findAll(userQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
     menuQuery.find(MASTER),
     categoryQuery.find(MASTER),
     roleMembership(),
     loadConfig(),
     accompanimentQuery.find(MASTER),
-    cashQuery.find(MASTER),
-    shiftQuery.find(MASTER),
+    findAll(cashQuery),
+    findAll(shiftQuery),
   ]);
   const cashHeld = {};
   for (const order of cashOrders) {

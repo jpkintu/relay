@@ -18,6 +18,7 @@ const {
   riderFloat,
   withRiderLimit,
   personName,
+  findAll,
 } = require('./lib/core');
 const { floatLevel, handoverReminderDue } = require('./lib/alerts');
 const { dateKey, localClock } = require('./lib/dates');
@@ -30,9 +31,7 @@ async function roleUsers(names) {
   const query = new Parse.Query(Parse.Role);
   query.containedIn('name', names);
   const roles = await query.find(MASTER);
-  const lists = await Promise.all(
-    roles.map((role) => role.getUsers().query().limit(1000).find(MASTER)),
-  );
+  const lists = await Promise.all(roles.map((role) => findAll(role.getUsers().query())));
   const byId = new Map();
   for (const user of lists.flat()) if (user.get('active') !== false) byId.set(user.id, user);
   return [...byId.values()];
@@ -178,8 +177,7 @@ Parse.Cloud.define('markNotificationsRead', async (request) => {
     if (!ids.length) return { updated: 0 };
     query.containedIn('objectId', ids.slice(0, 200));
   }
-  query.limit(500);
-  const rows = await query.find(MASTER);
+  const rows = await findAll(query);
   const now = new Date();
   rows.forEach((row) => row.set('readAt', now));
   if (rows.length) await Parse.Object.saveAll(rows, MASTER);

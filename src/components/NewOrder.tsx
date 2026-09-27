@@ -244,7 +244,7 @@ export function NewOrder({
   const payLater = !!counter && !isDelivery && !!draft.payLater;
   const problems = [
     isDelivery && !draft.name.trim() && 'customer name',
-    isDelivery && !draft.address.trim() && 'delivery address',
+    isDelivery && !draft.address.trim() && !draft.location && 'delivery address or map pin',
     !draft.cart.length && 'at least one item',
     !payLater && !isCash && !draft.provider && 'Airtel or MTN',
     !payLater && !isCash && draft.provider && referenceProblem(draft.reference),
@@ -516,7 +516,11 @@ export function NewOrder({
             <div className="pin-row full-row">
               <button type="button" className="pin-button" onClick={() => setPinning(true)}>
                 <MapPin />
-                {draft.location ? 'Pinned on the map · change' : 'Pin on the map (optional)'}
+                {draft.location
+                  ? 'Pinned on the map · change'
+                  : draft.address.trim()
+                    ? 'Pin on the map (optional)'
+                    : 'Or pin it on the map'}
               </button>
               {draft.location && (
                 <button

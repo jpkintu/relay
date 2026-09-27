@@ -25,13 +25,14 @@ const {
   personName,
   requireCashierShift,
   orNone,
+  findAll,
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
 const { cleanLocation } = require('./lib/geo');
 const { recordCustomerOrder } = require('./customers');
 const { checkMobileMoney, PENDING } = require('./payments');
 const { money, notifyUser, notifyStaff } = require('./notifications');
-const { priceLines, saveLines, clean, cleanPhone, CHANNELS } = require('./orders');
+const { priceLines, saveLines, clean, cleanPhone, CHANNELS, PINNED_ONLY } = require('./orders');
 
 const ORDER_TYPES = ['delivery', 'eat_in', 'pickup'];
 const COUNTER_TYPES = ['eat_in', 'pickup'];
@@ -154,13 +155,16 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
   const isDelivery = type === 'delivery';
   const customerName =
     clean(p.customerName, 80) || (isDelivery ? '' : type === 'eat_in' ? 'Eat-in guest' : 'Pick-up');
-  const deliveryAddress = isDelivery ? clean(p.deliveryAddress, 200) : '';
-  if (!customerName || (isDelivery && !deliveryAddress))
-    throw invalid('Customer and address are required');
-  const channel = p.channel || (isDelivery ? 'phone' : 'walkin');
-  if (!CHANNELS.includes(channel)) throw invalid('Invalid channel');
   const pin = isDelivery ? cleanLocation(p.location) : { location: null };
   if (pin.error) throw invalid(pin.error);
+  // A delivery needs a written address or a pin on the map (either is enough).
+  const deliveryAddress = isDelivery
+    ? clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : '')
+    : '';
+  if (!customerName) throw invalid('Customer name is required');
+  if (isDelivery && !deliveryAddress) throw invalid('Add a delivery address or pin it on the map');
+  const channel = p.channel || (isDelivery ? 'phone' : 'walkin');
+  if (!CHANNELS.includes(channel)) throw invalid('Invalid channel');
   const method = p.paymentMethod || 'cash';
   if (!['cash', 'mobile_money'].includes(method)) throw invalid('Choose cash or mobile money');
   const payLater = !isDelivery && p.payLater === true;
@@ -332,12 +336,10 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
 Parse.Cloud.define('getAssignableRiders', async (request) => {
   await requireRole(request, ['cashier', 'admin']);
   const role = await new Parse.Query(Parse.Role).equalTo('name', 'rider').first(MASTER);
-  const riders = role ? await role.getUsers().query().limit(500).find(MASTER) : [];
-  const shifts = await new Parse.Query('Shift')
-    .equalTo('kind', 'rider')
-    .equalTo('status', 'open')
-    .limit(500)
-    .find(MASTER);
+  const riders = role ? await findAll(role.getUsers().query()) : [];
+  const shifts = await findAll(
+    new Parse.Query('Shift').equalTo('kind', 'rider').equalTo('status', 'open'),
+  );
   const onShift = new Set(shifts.map((s) => s.get('operator')?.id));
   return riders
     .filter((rider) => rider.get('active') !== false)

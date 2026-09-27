@@ -511,7 +511,7 @@ Priority: **P0** = release blocker, **P1** = before first paying client, **P2** 
       same time, and a rider can double-submit the same orders. Add an idempotency
       key param + a `beforeSave` guard (`status` must equal the expected previous
       value), and disable buttons while a request is in flight (partly done already).
-- [ ] **B6 P2 — Row limits.** Several queries use `limit(100)` / `limit(1000)`
+- [x] **B6 P2 — Row limits.** _Fixed 2026-09-27: every money total and full list (rider cash, expected till, rider pay owed, payouts, team cash, pending payments and handovers, notification recipients, push devices, reports) now reads all rows in batches (`findAll` in lib/core.js). Only recent-item lists (last 15 handovers, 40 notifications) and per-order lines stay capped._ Several queries use `limit(100)` / `limit(1000)`
       (float, admin lists, `adminListSetup` users). Paginate, or use aggregates on
       the server.
 - [x] **B7 P2 — "Today" is computed on the client** _Fixed 2026-09-27: the Overview uses the server `getDashboard`._
@@ -520,7 +520,7 @@ Priority: **P0** = release blocker, **P1** = before first paying client, **P2** 
       shortage) under the cash still in hand._ counts WITH_RIDER + HANDOVER_PENDING,
       while the Cash screen lists WITH_RIDER only. Show pending handovers as a
       separate section so the numbers reconcile on screen.
-- [ ] **B9 P2 — `NewOrder` requires an address**, while the brief only requires a
+- [x] **B9 P2 — `NewOrder` requires an address** _Decided 2026-09-27: a delivery needs a written address **or** a map pin (stored as "Pinned on the map"); eat-in and pick-up need neither._, while the brief only requires a
       name (address is expected for delivery). Decide: required for delivery, optional
       for walk-in pickup.
 
@@ -675,7 +675,7 @@ starts.
 - [x] Rider cash reminders: warning at `floatWarningPercent` (default 80 %) of the limit, "limit reached" at 100 % (new orders of any payment type are blocked), and an end-of-day handover reminder from `cashReminderHour` (default 20:00); each at most once a day
 - [x] Web Push to the lock screen, even with the app closed (`cloud/push.js`, `public/sw.js`): VAPID keys are generated on first use and kept in the private `Secret` class; each device registers a `PushSubscription` (only real browser push services are accepted); every notification is pushed with high urgency for new/alert, vibration, and "stay until tapped" for alerts; dead subscriptions are dropped. Relay is installable (manifest + icons); on iPhone/iPad push works once Relay is added to the Home Screen (iOS 16.4+). Riders and cashiers get a "Turn on phone notifications" card; signing out unregisters the device
 - [x] Stale-handover alert: handovers waiting over 4 h are highlighted on the cashier's list and notified once to cashiers and the owner
-- [x] Rider pay from the till: rider pay = commission + delivery fee (owner's decision 2026-09-26); the cashier pays everything owed (less shortages charged to the rider) with a PIN; `commissionPaid` flags; the rider sees "Owed to you" and recent pay. Riders can ask to be paid (`requestPayout`, done 2026-09-27)
+- [x] Rider pay from the till: rider pay = commission + delivery fee (owner's decision 2026-09-26); the cashier pays everything owed (less shortages charged to the rider) with a PIN; `commissionPaid` flags; the rider sees "Owed to you" and recent pay. ~~Riders can ask to be paid (`requestPayout`)~~ removed 2026-09-27 at the owner's request: the cashier pays from the Payouts page
 - [x] Rider earnings: Week / Month summaries with date presets and custom dates, count, average, change, chart, list (`getRiderEarnings`)
 - [x] PWA basics: manifest, icons, service worker (for push)
 - [x] Delivery map pin on OpenStreetMap (Leaflet; owner's decision 2026-09-27): pin when taking the order or later / at the door (`setOrderLocation`), saved on the order (`location`) and the customer's address for repeat orders, map preview + Directions for the rider and on the owner's order page; restaurant location in Settings sets where maps open
@@ -732,8 +732,6 @@ Everything not built yet, from the sections above, in suggested order.
 
 **Small gaps in built features**
 
-- B6 row limits: some server queries still stop at 100–1,000 rows (lists, stats); page or aggregate
-- B9: address is required for every rider order (fine for deliveries; counter orders already skip it). Confirm with the owner (§9 Q1)
 - Reports: till variance across days (per-shift differences are in the Z-report and ledger)
 - Menu: prep time per dish; categories as their own records (now free text)
 
@@ -753,7 +751,7 @@ Everything not built yet, from the sections above, in suggested order.
 - Customer QR menu, live rider GPS, native app wrapper, email reports (owner chose in-app + phone)
 - Multi-restaurant (multi-tenant) build vs. one Back4App app per restaurant
 
-**Open questions for the owner (§9)**: Q1 address for walk-ins, Q2 commission base (subtotal only?), Q5 keep Google sign-in?
+**Open questions for the owner (§9)**: Q2 commission base (subtotal only?), Q5 keep Google sign-in?
 
 ### Next up (reviewed 2026-09-26)
 
@@ -799,7 +797,7 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 
 ## 9. Open questions for the client
 
-1. Is an address required for walk-in orders collected at the counter, or are they always delivered?
+1. ~~Is an address required for walk-in orders?~~ Answered 2026-09-27: deliveries need an address or a map pin; eat-in / pick-up need neither.
 2. Is commission on subtotal only (current) or subtotal + delivery fee? Does the rider keep the delivery fee?
 3. ~~Shortfalls allowed with a note — keep or block?~~ Answered 2026-09-26: **blocked**; customers pay the full total.
 4. ~~Are commissions paid out of the till?~~ Answered 2026-09-26: **yes**, and the delivery fee is paid to the rider too (rider pay = commission + delivery fee).
@@ -859,3 +857,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-27 | Open-list items 3–6: rider cash screen groups cash by day (select a whole day; earlier days flagged) and shows the limit bar with near / over-limit states; cashier handovers search by rider code, name or handover code; payments ledger highlights money waiting over 4 h (with a summary line); orders table filters by channel and cash status and pages beyond 2,000 rows (`adminSearchOrders` `channel`, `cashStatus`, `page`; e2e tested).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 2026-09-27 | Fix: the Z-report page no longer widens past the screen on phones (its sections can shrink; wide tables scroll inside their box).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-09-27 | Charged accompaniments: Menu → Accompaniments has "Charged extra" + price (free by default); `adminSaveAccompaniment` takes `price`; `priceLines` adds the sides' prices to each portion (`extrasPerUnit`, `accompanimentPrices` on `OrderItem`), so the bill, commission and reports include them; prices show on the dish sheet, cart, order pages, receipts and the Reports accompaniments chart. Run "Apply security rules" after deploying (new fields).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 2026-09-27 | B6: money totals and full lists no longer stop at a row limit (`findAll` batches in lib/core.js, used for rider cash, expected till, rider pay owed, payouts, team cash, pending payments / handovers, recipients, push devices, reports). B9: a delivery needs a written address or a map pin ("Pinned on the map"). Removed the rider's "Ask to be paid" (`requestPayout`, its notification and the Payouts "asked" note); old audit entries keep their label.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
