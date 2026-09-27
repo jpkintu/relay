@@ -130,7 +130,7 @@ export function AdminOverview({ version }: { version: number }) {
     <div className={loading ? 'overview busy' : 'overview'}>
       <div className="admin-metrics">
         <article>
-          <span>Kept by the restaurant today</span>
+          <span>Net revenue today</span>
           <strong>{money(t.kept)}</strong>
           <small>
             Sales {money(t.sales)} · less {money(t.riderPay)} rider pay
