@@ -131,13 +131,19 @@ function itemSales(lines) {
     .sort((a, b) => b.revenue - a.revenue || b.qty - a.qty || a.name.localeCompare(b.name));
 }
 
+// Servings per accompaniment, and what charged ones brought in
+// (`accompanimentPrices` lines up with `accompaniments`; missing = free).
 function accompanimentCounts(lines) {
   const counts = new Map();
   for (const line of lines)
-    for (const name of line.accompaniments || [])
-      counts.set(name, (counts.get(name) || 0) + round(line.qty));
+    (line.accompaniments || []).forEach((name, i) => {
+      const row = counts.get(name) || { servings: 0, revenue: 0 };
+      row.servings += round(line.qty);
+      row.revenue += round(line.qty) * Number(line.accompanimentPrices?.[i] || 0);
+      counts.set(name, row);
+    });
   return [...counts.entries()]
-    .map(([name, servings]) => ({ name, servings }))
+    .map(([name, row]) => ({ name, ...row }))
     .sort((a, b) => b.servings - a.servings || a.name.localeCompare(b.name));
 }
 

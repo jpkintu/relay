@@ -115,6 +115,7 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
       total: item.get('lineTotal'),
       notes: item.get('notes') || '',
       accompaniments: item.get('accompanimentNames') || [],
+      accompanimentPrices: item.get('accompanimentPrices') || [],
     })),
     subtotal: order.get('subtotal') || 0,
     deliveryFee: order.get('deliveryFee') || 0,

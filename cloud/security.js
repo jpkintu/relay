@@ -188,6 +188,10 @@ const SCHEMAS = {
     menuItem: ['Pointer', 'MenuItem'],
     accompanimentIds: 'Array',
     accompanimentNames: 'Array',
+    // Charged sides: price of each chosen accompaniment (0 = free) and their
+    // sum per unit; lineTotal = (unitPriceSnapshot + extrasPerUnit) × quantity.
+    accompanimentPrices: 'Array',
+    extrasPerUnit: N,
   },
   CashHandover: {
     handoverCode: S,
@@ -296,7 +300,7 @@ const SCHEMAS = {
     archivedAt: D,
   },
   ZReport: { day: S, data: 'Object', generatedAt: D, auto: B },
-  Accompaniment: { title: S, active: B, available: B, sortOrder: N },
+  Accompaniment: { title: S, active: B, available: B, sortOrder: N, price: N },
   Customer: {
     key: S,
     name: S,

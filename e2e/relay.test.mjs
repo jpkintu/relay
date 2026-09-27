@@ -546,6 +546,67 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
     );
   });
 
+  test('a charged accompaniment adds its price to each portion on the bill', async () => {
+    const M = { useMasterKey: true };
+    await rejects(
+      run('adminSaveAccompaniment', { title: 'Chips', price: -500 }, s.owner),
+      /whole amount/,
+    );
+    ids.chips = (await run('adminSaveAccompaniment', { title: 'Chips', price: 2500 }, s.owner)).id;
+    const listed = (await run('adminListSetup', {}, s.owner)).accompaniments;
+    assert.equal(listed.find((a) => a.id === ids.chips).price, 2500);
+    assert.equal(listed.find((a) => a.id === ids.matooke).price, 0, 'others stay free');
+    const groups = [
+      { label: 'Rice', options: [ids.vegrice, ids.friedrice], min: 0, max: 1 },
+      { label: 'Sides', options: [ids.matooke, ids.pumpkin, ids.yams, ids.chips], min: 0, max: 4 },
+    ];
+    await run(
+      'adminSaveMenuItem',
+      {
+        id: ids.stew,
+        title: 'Chicken stew',
+        price: 25000,
+        category: 'Mains',
+        accompanimentGroups: groups,
+      },
+      s.owner,
+    );
+    const menu = await run('getOperationalMenu', {}, s.rider2);
+    const sides = menu.items
+      .find((item) => item.id === ids.stew)
+      .accompanimentGroups.find((g) => g.label === 'Sides');
+    assert.equal(sides.options.find((o) => o.id === ids.chips).price, 2500);
+    assert.equal(sides.options.find((o) => o.id === ids.matooke).price, 0);
+
+    const placed = await order({
+      items: [{ id: ids.stew, quantity: 2, accompaniments: [ids.chips, ids.matooke] }],
+    });
+    const saved = await new Parse.Query('Order').get(placed.id, M);
+    assert.equal(saved.get('subtotal'), 2 * (25000 + 2500), 'the side is charged per portion');
+    assert.equal(saved.get('total'), saved.get('subtotal') + saved.get('deliveryFee'));
+    const [line] = await new Parse.Query('OrderItem').equalTo('order', saved).find(M);
+    assert.equal(line.get('unitPriceSnapshot'), 25000);
+    assert.equal(line.get('extrasPerUnit'), 2500);
+    assert.equal(line.get('lineTotal'), 55000);
+    assert.deepEqual(line.get('accompanimentNames'), ['Chips', 'Matooke']);
+    assert.deepEqual(line.get('accompanimentPrices'), [2500, 0]);
+    const receipt = await run('getReceipt', { orderId: placed.id }, s.owner);
+    assert.deepEqual(receipt.lines[0].accompanimentPrices, [2500, 0]);
+    const detail = await run('adminGetOrder', { id: placed.id }, s.owner);
+    assert.deepEqual(detail.items[0].accompanimentPrices, [2500, 0]);
+
+    // A price change applies to new orders only; the placed order keeps its bill.
+    await run('adminSaveAccompaniment', { id: ids.chips, title: 'Chips', price: 3000 }, s.owner);
+    assert.equal((await new Parse.Query('Order').get(placed.id, M)).get('subtotal'), 55000);
+    await run('adminSaveAccompaniment', { id: ids.chips, title: 'Chips', price: 0 }, s.owner);
+    const free = await order({
+      items: [{ id: ids.stew, quantity: 1, accompaniments: [ids.chips] }],
+    });
+    assert.equal((await new Parse.Query('Order').get(free.id, M)).get('subtotal'), 25000);
+    for (const id of [placed.id, free.id])
+      await run('transitionOrder', { orderId: id, action: 'cancel', reason: 'test' }, s.rider2);
+  });
+
   test('a full order records channel, phone, notes and accompaniments, once', async () => {
     const placed = await order({
       clientId: 'draft-1',

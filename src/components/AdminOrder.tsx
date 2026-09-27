@@ -4,6 +4,7 @@ import { ArrowLeft, Printer } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
+import { sidesLabel } from '../lib/cart';
 import { statusLabel, statusTone } from '../lib/labels';
 import { actionLabel, changedFields } from '../lib/audit';
 import { useCloud, useRiderOptions } from './reports/common';
@@ -29,6 +30,7 @@ type OrderPage = {
     total: number;
     notes: string;
     accompaniments: string[];
+    accompanimentPrices?: number[];
   }[];
   subtotal: number;
   deliveryFee: number;
@@ -285,7 +287,12 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
                       {item.name}
                       {(item.accompaniments.length > 0 || item.notes) && (
                         <small>
-                          {[item.accompaniments.join(', '), item.notes].filter(Boolean).join(' · ')}
+                          {[
+                            sidesLabel(item.accompaniments, item.accompanimentPrices, money),
+                            item.notes,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
                         </small>
                       )}
                     </td>

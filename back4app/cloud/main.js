@@ -629,7 +629,11 @@ var require_security = __commonJS({
         notes: S,
         menuItem: ["Pointer", "MenuItem"],
         accompanimentIds: "Array",
-        accompanimentNames: "Array"
+        accompanimentNames: "Array",
+        // Charged sides: price of each chosen accompaniment (0 = free) and their
+        // sum per unit; lineTotal = (unitPriceSnapshot + extrasPerUnit) × quantity.
+        accompanimentPrices: "Array",
+        extrasPerUnit: N
       },
       CashHandover: {
         handoverCode: S,
@@ -738,7 +742,7 @@ var require_security = __commonJS({
         archivedAt: D
       },
       ZReport: { day: S, data: "Object", generatedAt: D, auto: B },
-      Accompaniment: { title: S, active: B, available: B, sortOrder: N },
+      Accompaniment: { title: S, active: B, available: B, sortOrder: N, price: N },
       Customer: {
         key: S,
         name: S,
@@ -9319,9 +9323,13 @@ var require_reports = __commonJS({
     function accompanimentCounts(lines) {
       const counts = /* @__PURE__ */ new Map();
       for (const line of lines)
-        for (const name of line.accompaniments || [])
-          counts.set(name, (counts.get(name) || 0) + round(line.qty));
-      return [...counts.entries()].map(([name, servings]) => ({ name, servings })).sort((a, b) => b.servings - a.servings || a.name.localeCompare(b.name));
+        (line.accompaniments || []).forEach((name, i) => {
+          const row = counts.get(name) || { servings: 0, revenue: 0 };
+          row.servings += round(line.qty);
+          row.revenue += round(line.qty) * Number(line.accompanimentPrices?.[i] || 0);
+          counts.set(name, row);
+        });
+      return [...counts.entries()].map(([name, row]) => ({ name, ...row })).sort((a, b) => b.servings - a.servings || a.name.localeCompare(b.name));
     }
     function riderStats(facts) {
       const byRider = /* @__PURE__ */ new Map();
@@ -9860,7 +9868,8 @@ var require_reports2 = __commonJS({
             name: item.get("itemNameSnapshot") || "Item",
             qty: Number(item.get("quantity") || 0),
             total: Number(item.get("lineTotal") || 0),
-            accompaniments: item.get("accompanimentNames") || []
+            accompaniments: item.get("accompanimentNames") || [],
+            accompanimentPrices: item.get("accompanimentPrices") || []
           });
       }
       return lines;
@@ -11009,10 +11018,12 @@ var require_orders = __commonJS({
           itemNameSnapshot: line.name,
           unitPriceSnapshot: line.price,
           quantity: line.qty,
-          lineTotal: line.price * line.qty,
+          lineTotal: line.lineTotal,
           notes: line.notes,
           accompanimentIds: line.accompanimentIds,
-          accompanimentNames: line.accompanimentNames
+          accompanimentNames: line.accompanimentNames,
+          accompanimentPrices: line.accompanimentPrices,
+          extrasPerUnit: line.extrasPerUnit
         });
         item.setACL(readAcl(rider));
         return item;
@@ -11046,14 +11057,22 @@ var require_orders = __commonJS({
         const chosen = (Array.isArray(line.accompaniments) ? line.accompaniments : []).map(String);
         const problem = selectionError(groups, chosen);
         if (problem) throw invalid(`${title}: ${problem}`);
+        const accompanimentPrices = chosen.map(
+          (id) => Number(accompaniments.get(id).get("price") || 0)
+        );
+        const extrasPerUnit = accompanimentPrices.reduce((n, price2) => n + price2, 0);
+        const price = Number(saved.get("price"));
         return {
           menuItem: saved,
           name: title,
-          price: Number(saved.get("price")),
+          price,
           qty,
+          extrasPerUnit,
+          lineTotal: (price + extrasPerUnit) * qty,
           notes: clean(line.notes, 140),
           accompanimentIds: chosen,
-          accompanimentNames: chosen.map((id) => accompaniments.get(id).get("title"))
+          accompanimentNames: chosen.map((id) => accompaniments.get(id).get("title")),
+          accompanimentPrices
         };
       });
     }
@@ -11104,7 +11123,7 @@ var require_orders = __commonJS({
       const toCollect = cashToCollect(active);
       if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
         throw invalid(cashLimitMessage(config, float, toCollect));
-      const subtotal = sumBy(lines, (line) => line.price * line.qty);
+      const subtotal = sumBy(lines, (line) => line.lineTotal);
       const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
       const total = subtotal + fee;
       const isCash = paymentMethod === "cash";
@@ -11671,7 +11690,7 @@ var require_counter = __commonJS({
       const payLater = !isDelivery && p.payLater === true;
       const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
       const lines = await priceLines(p.items);
-      const subtotal = sumBy(lines, (line) => line.price * line.qty);
+      const subtotal = sumBy(lines, (line) => line.lineTotal);
       const fee = isDelivery ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0)) : 0;
       const total = subtotal + fee;
       const momo = method === "mobile_money" && !payLater ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
@@ -11866,7 +11885,8 @@ var require_counter = __commonJS({
           price: item.get("unitPriceSnapshot"),
           total: item.get("lineTotal"),
           notes: item.get("notes") || "",
-          accompaniments: item.get("accompanimentNames") || []
+          accompaniments: item.get("accompanimentNames") || [],
+          accompanimentPrices: item.get("accompanimentPrices") || []
         })),
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
@@ -11924,7 +11944,11 @@ var require_menu = __commonJS({
             (id) => accompaniments.has(id)
           ).map((group) => ({
             ...group,
-            options: group.options.map((id) => ({ id, title: accompaniments.get(id).get("title") }))
+            options: group.options.map((id) => ({
+              id,
+              title: accompaniments.get(id).get("title"),
+              price: Number(accompaniments.get(id).get("price") || 0)
+            }))
           }))
         })),
         deliveryFee: config.defaultDeliveryFee,
@@ -11952,7 +11976,8 @@ var require_menu = __commonJS({
         accompaniments: accompaniments.map((row) => ({
           id: row.id,
           title: row.get("title"),
-          available: row.get("available") !== false
+          available: row.get("available") !== false,
+          price: Number(row.get("price") || 0)
         }))
       };
     });
@@ -12842,7 +12867,8 @@ var require_admin = __commonJS({
           id: row.id,
           title: row.get("title"),
           active: row.get("active") !== false,
-          available: row.get("available") !== false
+          available: row.get("available") !== false,
+          price: Number(row.get("price") || 0)
         })),
         categories: categories.map((category) => ({
           id: category.id,
@@ -13089,20 +13115,25 @@ var require_admin = __commonJS({
       const p = request.params;
       const title = String(p.title || "").trim();
       if (!title || title.length > 60) throw invalid("An accompaniment name is required");
+      const price = p.price === void 0 || p.price === null || p.price === "" ? 0 : Number(p.price);
+      if (!Number.isInteger(price) || price < 0 || price > 1e6)
+        throw invalid("An accompaniment price must be a whole amount from 0");
       const row = p.id ? await new Parse.Query("Accompaniment").get(p.id, MASTER) : new Parse.Object("Accompaniment");
       const before = p.id ? row.toJSON() : null;
       row.set({
         title,
         active: p.active !== false,
         available: p.available !== false,
-        sortOrder: Number(p.sortOrder) || 0
+        sortOrder: Number(p.sortOrder) || 0,
+        price
       });
       row.setACL(readAcl(null, ["admin"]));
       await row.save(null, MASTER);
       await audit(actor, "menu.accompaniment_saved", row, before, {
         title,
         active: row.get("active"),
-        available: row.get("available")
+        available: row.get("available"),
+        price
       });
       return { id: row.id };
     });
@@ -13405,7 +13436,8 @@ var require_overrides = __commonJS({
           price: item.get("unitPriceSnapshot"),
           total: item.get("lineTotal"),
           notes: item.get("notes") || "",
-          accompaniments: item.get("accompanimentNames") || []
+          accompaniments: item.get("accompanimentNames") || [],
+          accompanimentPrices: item.get("accompanimentPrices") || []
         })),
         subtotal: order.get("subtotal") || 0,
         deliveryFee: order.get("deliveryFee") || 0,

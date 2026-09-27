@@ -167,7 +167,7 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
   const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
 
   const lines = await priceLines(p.items);
-  const subtotal = sumBy(lines, (line) => line.price * line.qty);
+  const subtotal = sumBy(lines, (line) => line.lineTotal);
   const fee = isDelivery
     ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0))
     : 0;
@@ -398,6 +398,7 @@ Parse.Cloud.define('getReceipt', async (request) => {
       total: item.get('lineTotal'),
       notes: item.get('notes') || '',
       accompaniments: item.get('accompanimentNames') || [],
+      accompanimentPrices: item.get('accompanimentPrices') || [],
     })),
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),

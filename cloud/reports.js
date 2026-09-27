@@ -477,6 +477,7 @@ async function orderLines(orderIds) {
         qty: Number(item.get('quantity') || 0),
         total: Number(item.get('lineTotal') || 0),
         accompaniments: item.get('accompanimentNames') || [],
+        accompanimentPrices: item.get('accompanimentPrices') || [],
       });
   }
   return lines;
