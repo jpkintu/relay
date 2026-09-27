@@ -890,60 +890,80 @@ function ItemSheet({
   const options = item.accompanimentGroups.flatMap((g) => g.options);
   // Charged sides add to each unit of the dish.
   const unit = item.price + extrasOf(options.filter((o) => selected.includes(o.id)));
+  const toggle = (group: (typeof item.accompanimentGroups)[number], id: string) =>
+    setSelected((s) => toggleOption(group, s, id));
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
+    <div className="dish-backdrop" onClick={onClose}>
       <section
-        className="sheet"
+        className={`dish-modal${item.accompanimentGroups.length ? '' : ' no-options'}`}
         role="dialog"
         aria-modal="true"
         aria-label={item.title}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sheet-head">
-          <div>
-            <h2>{item.title}</h2>
-            <p>{money(item.price)}</p>
-            {item.description && <p className="sheet-description">{item.description}</p>}
-          </div>
-          <button className="icon-button" onClick={onClose} aria-label="Close">
-            <X />
-          </button>
-        </div>
-        {item.accompanimentGroups.map((group) => (
-          <div className="sheet-group" key={group.label}>
-            <p>
-              <b>{group.label}</b>{' '}
-              <small>
-                {group.max === 1 ? 'Pick one' : `Pick up to ${group.max}`}
-                {group.min > 0 ? ' · required' : ' · optional'}
-                {group.options.every((o) => !o.price) ? ' · free' : ''}
-              </small>
-            </p>
-            <div className="choices">
-              {group.options.map((option) => (
-                <button
-                  key={option.id}
-                  className={selected.includes(option.id) ? 'choice active' : 'choice'}
-                  onClick={() => setSelected((s) => toggleOption(group, s, option.id))}
-                  aria-pressed={selected.includes(option.id)}
-                >
-                  {selected.includes(option.id) && <Check size={14} />} {option.title}
-                  {!!option.price && <small className="choice-price">+{money(option.price)}</small>}
-                </button>
-              ))}
+        <button className="icon-button dish-close" onClick={onClose} aria-label="Close">
+          <X />
+        </button>
+        <div className="dish-info">
+          {item.image ? (
+            <img className="dish-photo-large" src={item.image} alt="" />
+          ) : (
+            <div className="dish-photo-large empty" style={{ background: item.color || '#819c72' }}>
+              {item.title[0]}
             </div>
-          </div>
-        ))}
-        <label className="setup-field">
-          Notes for the kitchen
-          <input
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="e.g. no onions, extra soup"
-            maxLength={140}
-          />
-        </label>
-        <div className="sheet-actions">
+          )}
+          <h2>{item.title}</h2>
+          <p className="dish-price">{money(item.price)}</p>
+          {item.description && <p className="dish-description">{item.description}</p>}
+        </div>
+        <div className="dish-options">
+          {item.accompanimentGroups.map((group, index) => {
+            const single = group.max === 1;
+            return (
+              <fieldset className="dish-group" key={group.label}>
+                <legend className="dish-group-head">
+                  <span>
+                    <b>{group.label}</b>
+                    <small>
+                      {single ? 'Choose 1 item' : `Choose a maximum of ${group.max} items`}
+                      {group.min > 1 ? ` (at least ${group.min})` : ''}
+                    </small>
+                  </span>
+                  {group.min > 0 && <span className="required-tag">Required</span>}
+                </legend>
+                {group.options.map((option) => {
+                  const on = selected.includes(option.id);
+                  return (
+                    <label className={on ? 'option-row active' : 'option-row'} key={option.id}>
+                      <span>
+                        {option.title}
+                        {!!option.price && <small>+{money(option.price)}</small>}
+                      </span>
+                      <input
+                        type={single ? 'radio' : 'checkbox'}
+                        name={`group-${index}`}
+                        checked={on}
+                        // Radios toggle off too: optional single choices can be cleared.
+                        onChange={() => undefined}
+                        onClick={() => toggle(group, option.id)}
+                      />
+                    </label>
+                  );
+                })}
+              </fieldset>
+            );
+          })}
+          <label className="setup-field dish-notes">
+            Notes for the kitchen
+            <input
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. no onions, extra soup"
+              maxLength={140}
+            />
+          </label>
+        </div>
+        <div className="dish-actions">
           <div className="qty">
             <button aria-label="Fewer" onClick={() => setQuantity((q) => Math.max(1, q - 1))}>
               <Minus />
@@ -954,7 +974,7 @@ function ItemSheet({
             </button>
           </div>
           <button
-            className="primary-button"
+            className="primary-button dish-add"
             disabled={!!problem}
             onClick={() =>
               onAdd(
@@ -964,7 +984,7 @@ function ItemSheet({
               )
             }
           >
-            {problem || `Add ${quantity} · ${money(unit * quantity)}`}
+            {problem || `Add ${quantity} for ${money(unit * quantity)}`}
           </button>
         </div>
       </section>
