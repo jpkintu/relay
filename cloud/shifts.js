@@ -11,6 +11,7 @@ const {
   loadConfig,
   personName,
   verifyPin,
+  orNone,
 } = require('./lib/core');
 const { money, notifyAdmins } = require('./notifications');
 const { resolveRange } = require('./lib/dates');
@@ -39,14 +40,32 @@ async function tillSummary(cashier, shift) {
   const payoutQuery = new Parse.Query('TillPayout');
   payoutQuery.equalTo('shift', shift);
   payoutQuery.limit(1000);
-  const [handovers, payouts] = await Promise.all([
+  // Eat-in / pick-up cash this cashier took at the counter (still in the
+  // till: not refunded by a cancel).
+  const counterQuery = new Parse.Query('Order');
+  counterQuery.equalTo('tillCashier', cashier);
+  counterQuery.equalTo('cashStatus', 'IN_TILL');
+  counterQuery.greaterThanOrEqualTo('paidAt', start);
+  counterQuery.lessThan('paidAt', end);
+  counterQuery.limit(5000);
+  const [handovers, payouts, counterOrders] = await Promise.all([
     handoverQuery.find(MASTER),
     payoutQuery.find(MASTER),
+    counterQuery.find(MASTER).catch(orNone([])),
   ]);
   const openingFloat = Number(shift.get('openingFloat') || 0);
-  const cashIn = sumBy(handovers, (h) => h.get('countedAmount') ?? h.get('amount'));
+  const riderCash = sumBy(handovers, (h) => h.get('countedAmount') ?? h.get('amount'));
+  const counterCash = sumBy(counterOrders, (o) => o.get('amountCollected'));
+  const cashIn = riderCash + counterCash;
   const paidOut = sumBy(payouts, (row) => row.get('amount'));
-  return { openingFloat, cashIn, paidOut, expected: openingFloat + cashIn - paidOut };
+  return {
+    openingFloat,
+    cashIn,
+    riderCash,
+    counterCash,
+    paidOut,
+    expected: openingFloat + cashIn - paidOut,
+  };
 }
 
 // Kitchen orders this cashier still holds.
@@ -133,6 +152,7 @@ Parse.Cloud.define('getMyShift', async (request) => {
       openingFloat: shift.get('openingFloat'),
       expectedTill: till ? till.expected : null,
       cashIn: till ? till.cashIn : null,
+      counterCash: till ? till.counterCash : null,
       paidOut: till ? till.paidOut : null,
       heldOrders: isCashier ? await heldOrdersQuery(user).count(MASTER) : null,
       float: isCashier ? null : await riderFloat(user),
@@ -181,6 +201,16 @@ Parse.Cloud.define('endShift', async (request) => {
     const problem = outstandingProblem(await riderOutstanding(user));
     if (problem) throw invalid(problem);
   } else {
+    const bills = await new Parse.Query('Order')
+      .equalTo('placedBy', user)
+      .equalTo('billOpen', true)
+      .notEqualTo('status', 'CANCELLED')
+      .count(MASTER)
+      .catch(orNone(0));
+    if (bills)
+      throw invalid(
+        `${bills} eat-in / pick-up bill${bills === 1 ? ' is' : 's are'} not paid yet. Take payment or cancel before ending your shift`,
+      );
     const held = await heldOrdersQuery(user).count(MASTER);
     if (held)
       throw invalid(

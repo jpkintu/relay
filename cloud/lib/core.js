@@ -31,6 +31,11 @@ const DEFAULT_CONFIG = {
   defaultCommissionPercent: 0,
   // Hour of the day (restaurant time) after which the daily Z-report is saved.
   zReportHour: 23,
+  // Modules (Settings → Modules): riders take orders themselves; cashiers take
+  // call-in deliveries and assign a rider; cashiers take eat-in / pick-up.
+  moduleRiderOrders: true,
+  moduleCallIn: false,
+  moduleCounter: false,
   // Where the map opens (the restaurant); Kampala until the owner pins it.
   restaurantLat: 0.3476,
   restaurantLng: 32.5825,
@@ -244,6 +249,18 @@ const codeTakenIn = (className, field) => async (code) => {
   }
 };
 
+// Postgres: a query on a field no row has ever had (a column that does not
+// exist until "Apply security rules" or the first save) fails. Such a query
+// simply matches nothing.
+function missingColumn(error) {
+  const detail = error?.message && typeof error.message === 'object' ? error.message : error;
+  return detail?.code === '42703' || /column .* does not exist/.test(String(detail?.message));
+}
+const orNone = (fallback) => (error) => {
+  if (missingColumn(error)) return fallback;
+  throw error;
+};
+
 // e.g. ORD-20260925-0001, restarting each day in the restaurant timezone.
 // `className`/`field` name where the code is stored, to guarantee it is unused;
 // `date` picks the day (defaults to now).
@@ -380,4 +397,5 @@ module.exports = {
   withRiderLimit,
   endSessions,
   fileUrl,
+  orNone,
 };

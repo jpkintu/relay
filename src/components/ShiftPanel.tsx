@@ -12,6 +12,7 @@ type Shift = {
   openingFloat: number;
   expectedTill: number | null;
   cashIn: number | null;
+  counterCash?: number | null;
   paidOut: number | null;
   heldOrders: number | null;
   float: number | null;
@@ -130,6 +131,9 @@ export function ShiftPanel({
                 </span>
                 <span>
                   Cash in <strong>+ {money(shift.cashIn ?? 0)}</strong>
+                  {!!shift.counterCash && (
+                    <small>incl. {money(shift.counterCash)} counter sales</small>
+                  )}
                 </span>
                 <span>
                   Paid out <strong>− {money(shift.paidOut ?? 0)}</strong>

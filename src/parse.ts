@@ -28,6 +28,20 @@ if (env.VITE_PARSE_LIVEQUERY_URL) {
   Parse.liveQueryServerURL = `${wsProto}//${window.location.host}${Parse.serverURL}`;
 }
 
+// A database error can arrive with an object as its message (e.g. Postgres
+// details); screens show `error.message` as text, so make it readable.
+const runCloud = Parse.Cloud.run.bind(Parse.Cloud);
+Parse.Cloud.run = (async (...args: Parameters<typeof runCloud>) => {
+  try {
+    return await runCloud(...args);
+  } catch (error) {
+    if (error && typeof (error as { message?: unknown }).message !== 'string')
+      (error as { message: string }).message =
+        'The server could not complete this. Try again; if it keeps happening, ask the owner to run Apply security rules.';
+    throw error;
+  }
+}) as typeof Parse.Cloud.run;
+
 export const LIVE_ENABLED = Boolean(
   env.VITE_PARSE_LIVEQUERY_URL ||
   (typeof window !== 'undefined' && Parse.serverURL.startsWith('/')),

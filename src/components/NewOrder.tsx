@@ -59,7 +59,22 @@ export type OrderPayload = {
   paymentProvider?: string;
   paymentReference?: string;
   items: { id: string; quantity: number; notes: string; accompaniments: string[] }[];
+  // Counter orders (a cashier taking the order) only:
+  orderType?: OrderType;
+  riderId?: string;
+  table?: string;
+  payLater?: boolean;
 };
+
+export type OrderType = 'delivery' | 'eat_in' | 'pickup';
+// Counter mode: which kinds of order this restaurant takes at the counter.
+export type CounterModes = { callIn: boolean; counter: boolean };
+type RiderChoice = { id: string; name: string; onShift: boolean; available: boolean };
+const TYPES: [OrderType, string][] = [
+  ['delivery', 'Delivery'],
+  ['eat_in', 'Eat in'],
+  ['pickup', 'Pick up'],
+];
 
 type Customer = {
   id: string;
@@ -90,6 +105,10 @@ type Draft = {
   payment: string;
   provider: string;
   reference: string;
+  orderType?: OrderType;
+  riderId?: string;
+  table?: string;
+  payLater?: boolean;
 };
 
 const newClientId = () =>
@@ -128,6 +147,7 @@ export function NewOrder({
   onOpenOrder,
   preview,
   cashBlocked = '',
+  counter,
 }: {
   onBack: () => void;
   onPlaced: (
@@ -138,11 +158,13 @@ export function NewOrder({
   cashBlocked?: string;
   onOpenOrder: (id: string) => void;
   preview: boolean;
+  // Set when a cashier takes the order at the counter.
+  counter?: CounterModes;
 }) {
   const config = useConfig();
   const money = useMoney();
   const { profile, user } = useSession();
-  const draftKey = `relay:draft:${user?.id || 'preview'}`;
+  const draftKey = `relay:${counter ? 'counter-draft' : 'draft'}:${user?.id || 'preview'}`;
   const restored = useMemo(() => (preview ? null : loadDraft(draftKey)), [draftKey, preview]);
   const [draft, setDraft] = useState<Draft>(() => restored ?? emptyDraft());
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -156,6 +178,22 @@ export function NewOrder({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const types = counter
+    ? TYPES.filter(([type]) => (type === 'delivery' ? counter.callIn : counter.counter))
+    : [];
+  const orderType: OrderType = counter
+    ? types.some(([t]) => t === draft.orderType)
+      ? draft.orderType!
+      : (types[0]?.[0] ?? 'delivery')
+    : 'delivery';
+  const isDelivery = orderType === 'delivery';
+  const [riders, setRiders] = useState<RiderChoice[]>([]);
+  useEffect(() => {
+    if (!counter || preview) return;
+    Parse.Cloud.run('getAssignableRiders')
+      .then(setRiders)
+      .catch(() => undefined);
+  }, [counter, preview]);
   const [placed, setPlaced] = useState<{
     id?: string;
     orderCode?: string;
@@ -184,7 +222,7 @@ export function NewOrder({
     }
   }, [draft, draftKey, hasContent, preview]);
 
-  const fee = draft.fee ?? menuFee;
+  const fee = isDelivery ? (draft.fee ?? menuFee) : 0;
   const subtotal = cartSubtotal(draft.cart);
   const total = subtotal + fee;
   const isCash = draft.payment === 'cash';
@@ -196,12 +234,14 @@ export function NewOrder({
       (category === 'All' || i.category === category) &&
       i.title.toLowerCase().includes(query.toLowerCase()),
   );
+  // Counter orders can be paid later (eat-in / pick-up only).
+  const payLater = !!counter && !isDelivery && !!draft.payLater;
   const problems = [
-    !draft.name.trim() && 'customer name',
-    !draft.address.trim() && 'delivery address',
+    isDelivery && !draft.name.trim() && 'customer name',
+    isDelivery && !draft.address.trim() && 'delivery address',
     !draft.cart.length && 'at least one item',
-    !isCash && !draft.provider && 'Airtel or MTN',
-    !isCash && draft.provider && referenceProblem(draft.reference),
+    !payLater && !isCash && !draft.provider && 'Airtel or MTN',
+    !payLater && !isCash && draft.provider && referenceProblem(draft.reference),
   ].filter(Boolean) as string[];
 
   const quickAdd = (item: MenuItem) => {
@@ -264,13 +304,18 @@ export function NewOrder({
         customerName: draft.name.trim(),
         customerPhone: draft.phone.trim(),
         channel: draft.channel,
-        deliveryAddress: draft.address.trim(),
-        deliveryNotes: draft.addressNotes.trim(),
-        ...(draft.location && { location: draft.location }),
+        deliveryAddress: isDelivery ? draft.address.trim() : '',
+        deliveryNotes: isDelivery ? draft.addressNotes.trim() : '',
+        ...(isDelivery && draft.location && { location: draft.location }),
+        ...(counter && {
+          orderType,
+          ...(isDelivery && draft.riderId && { riderId: draft.riderId }),
+          ...(!isDelivery && { table: (draft.table || '').trim(), payLater }),
+        }),
         deliveryFee: fee,
         paymentMethod: draft.payment,
-        paymentProvider: isCash ? undefined : draft.provider,
-        paymentReference: isCash ? undefined : draft.reference.trim(),
+        paymentProvider: isCash || payLater ? undefined : draft.provider,
+        paymentReference: isCash || payLater ? undefined : draft.reference.trim(),
         items: draft.cart.map((line) => ({
           id: line.itemId,
           quantity: line.quantity,
@@ -299,7 +344,17 @@ export function NewOrder({
         </div>
         <p className="eyebrow">Ticket sent{placed.orderCode ? ` · ${placed.orderCode}` : ''}</p>
         <h2>Order placed.</h2>
-        <p>The kitchen has received your order.</p>
+        <p>
+          {counter
+            ? isDelivery
+              ? draft.riderId
+                ? 'The kitchen has it and the rider has been told.'
+                : 'The kitchen has it. Assign a rider from the kitchen board.'
+              : payLater
+                ? 'The kitchen has it. Take payment from the board before it is served.'
+                : 'The kitchen has it.'
+            : 'The kitchen has received your order.'}
+        </p>
         {placed.cashLimitReached && (
           <p className="limit-banner" role="status">
             This order takes you to your cash limit. Deliver it and hand over the cash before taking
@@ -311,8 +366,19 @@ export function NewOrder({
             View order
           </button>
         )}
+        {counter && (
+          <button
+            className="setup-secondary"
+            onClick={() => {
+              setDraft({ ...emptyDraft(), orderType });
+              setPlaced(null);
+            }}
+          >
+            Take another order
+          </button>
+        )}
         <button className="primary-button" onClick={onBack}>
-          Back to dashboard <ArrowLeft />
+          {counter ? 'Back to the kitchen board' : 'Back to dashboard'} <ArrowLeft />
         </button>
       </div>
     );
@@ -350,8 +416,25 @@ export function NewOrder({
         </div>
       )}
 
+      {counter && (
+        <div className="order-type-row">
+          <div className="filter-toggle order-type" role="group" aria-label="Kind of order">
+            {types.map(([type, label]) => (
+              <button
+                key={type}
+                className={orderType === type ? 'active' : ''}
+                aria-pressed={orderType === type}
+                onClick={() => update({ orderType: type })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <section className="customer-grid">
         <CustomerField
+          optional={!isDelivery}
           value={draft.name}
           onChange={(name) => update({ name })}
           onPick={applyCustomer}
@@ -379,37 +462,72 @@ export function NewOrder({
             </button>
           ))}
         </div>
-        <label>
-          Delivery address
-          <input
-            value={draft.address}
-            onChange={(e) => update({ address: e.target.value })}
-            placeholder="Street, area or building"
-          />
-        </label>
-        <label>
-          Landmark / notes
-          <input
-            value={draft.addressNotes}
-            onChange={(e) => update({ addressNotes: e.target.value })}
-            placeholder="e.g. blue gate, call on arrival"
-          />
-        </label>
-        <div className="pin-row full-row">
-          <button type="button" className="pin-button" onClick={() => setPinning(true)}>
-            <MapPin />
-            {draft.location ? 'Pinned on the map · change' : 'Pin on the map (optional)'}
-          </button>
-          {draft.location && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => update({ location: null })}
-            >
-              Remove pin
-            </button>
-          )}
-        </div>
+        {!isDelivery && orderType === 'eat_in' && (
+          <label>
+            Table (optional)
+            <input
+              value={draft.table || ''}
+              onChange={(e) => update({ table: e.target.value })}
+              placeholder="e.g. Table 4, terrace"
+              maxLength={30}
+            />
+          </label>
+        )}
+        {isDelivery && (
+          <>
+            <label>
+              Delivery address
+              <input
+                value={draft.address}
+                onChange={(e) => update({ address: e.target.value })}
+                placeholder="Street, area or building"
+              />
+            </label>
+            <label>
+              Landmark / notes
+              <input
+                value={draft.addressNotes}
+                onChange={(e) => update({ addressNotes: e.target.value })}
+                placeholder="e.g. blue gate, call on arrival"
+              />
+            </label>
+            <div className="pin-row full-row">
+              <button type="button" className="pin-button" onClick={() => setPinning(true)}>
+                <MapPin />
+                {draft.location ? 'Pinned on the map · change' : 'Pin on the map (optional)'}
+              </button>
+              {draft.location && (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => update({ location: null })}
+                >
+                  Remove pin
+                </button>
+              )}
+            </div>
+            {counter && (
+              <label className="full-row">
+                Rider
+                <select
+                  value={draft.riderId || ''}
+                  onChange={(e) => update({ riderId: e.target.value })}
+                >
+                  <option value="">Assign later (from the kitchen board)</option>
+                  {riders.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                      {!r.onShift ? ' (off shift)' : !r.available ? ' (on a break)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <small className="muted">
+                  The rider earns the delivery fee only, no commission.
+                </small>
+              </label>
+            )}
+          </>
+        )}
         {notice && <p className="setup-notice full-row">{notice}</p>}
       </section>
 
@@ -505,16 +623,18 @@ export function NewOrder({
               <span>Subtotal</span>
               <b>{money(subtotal)}</b>
             </div>
-            <label>
-              <span>Delivery fee</span>
-              <input
-                type="number"
-                min="0"
-                inputMode="numeric"
-                value={fee}
-                onChange={(e) => update({ fee: Math.max(0, Number(e.target.value) || 0) })}
-              />
-            </label>
+            {isDelivery && (
+              <label>
+                <span>Delivery fee</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={fee}
+                  onChange={(e) => update({ fee: Math.max(0, Number(e.target.value) || 0) })}
+                />
+              </label>
+            )}
             <div className="bill-total">
               <span>Total</span>
               <b>{money(total)}</b>
@@ -524,14 +644,27 @@ export function NewOrder({
               {PAYMENTS.map(([value, label]) => (
                 <button
                   key={value}
-                  className={draft.payment === value ? 'active' : ''}
-                  onClick={() => update({ payment: value })}
+                  className={!payLater && draft.payment === value ? 'active' : ''}
+                  onClick={() => update({ payment: value, payLater: false })}
                 >
                   {label}
                 </button>
               ))}
+              {counter && !isDelivery && (
+                <button
+                  className={payLater ? 'active' : ''}
+                  onClick={() => update({ payLater: true })}
+                >
+                  Pay later
+                </button>
+              )}
             </div>
-            {!isCash && (
+            {payLater && (
+              <p className="collect-note full-row">
+                An open bill: take payment from the kitchen board before it is served.
+              </p>
+            )}
+            {!payLater && !isCash && (
               <MobileMoneyPanel
                 provider={draft.provider}
                 reference={draft.reference}
@@ -541,9 +674,21 @@ export function NewOrder({
                 onReference={(reference) => update({ reference })}
               />
             )}
-            {isCash && (
+            {!payLater && isCash && (
               <p className="collect-note full-row">
-                Collect the full <b>{money(total)}</b> in cash at the door.
+                {counter && !isDelivery ? (
+                  <>
+                    Take <b>{money(total)}</b> in cash now; it goes into your till.
+                  </>
+                ) : counter ? (
+                  <>
+                    The rider collects the full <b>{money(total)}</b> in cash at the door.
+                  </>
+                ) : (
+                  <>
+                    Collect the full <b>{money(total)}</b> in cash at the door.
+                  </>
+                )}
               </p>
             )}
           </div>
@@ -557,7 +702,7 @@ export function NewOrder({
           <strong>{money(total)}</strong>
         </div>
         <div className="commission">
-          {profile?.commission && draft.cart.length > 0 && (
+          {!counter && profile?.commission && draft.cart.length > 0 && (
             <>
               You'll earn <b>{money(earn)}</b> ·{' '}
             </>
@@ -611,11 +756,13 @@ function CustomerField({
   onChange,
   onPick,
   disabled,
+  optional = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   onPick: (customer: Customer, repeat: boolean) => void;
   disabled: boolean;
+  optional?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [matches, setMatches] = useState<Customer[]>([]);
@@ -637,7 +784,7 @@ function CustomerField({
 
   return (
     <label className="typeahead">
-      Customer name
+      {optional ? 'Customer name (optional)' : 'Customer name'}
       <input
         value={value}
         onChange={(e) => {

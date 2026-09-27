@@ -10,6 +10,7 @@ const {
   audit,
   loadConfig,
   personName,
+  orNone,
 } = require('./lib/core');
 const {
   resolveRange,
@@ -75,6 +76,16 @@ async function cashReceived(range) {
   }));
 }
 
+// Eat-in / pick-up cash taken into tills during the range.
+async function counterCash(range) {
+  const query = new Parse.Query('Order');
+  query.equalTo('cashStatus', 'IN_TILL');
+  query.greaterThanOrEqualTo('paidAt', range.start);
+  query.lessThan('paidAt', range.end);
+  query.select('amountCollected');
+  return sumBy(await findAll(query).catch(orNone([])), (o) => o.get('amountCollected'));
+}
+
 // Rider pay still owed (commission + unpaid delivery fees, less shortages).
 async function riderPayOwed() {
   const orders = new Parse.Query('Order');
@@ -114,7 +125,10 @@ Parse.Cloud.define('getDashboard', async (request) => {
       ),
       findAll(ordersIn(monthRange, 'createdAt')).then((rows) => rows.map(factOf)),
       cashWithRiders(),
-      cashReceived(todayRange),
+      cashReceived(todayRange).then(async (rows) => [
+        ...rows,
+        { riderId: '', amount: await counterCash(todayRange), status: 'counter' },
+      ]),
       riderPayOwed(),
       Promise.all([
         pendingMomo.count(MASTER),
@@ -323,7 +337,10 @@ async function buildZReport(day, config) {
       cancelledQuery.count(MASTER),
       findAll(payoutQuery),
       findAll(shiftQuery),
-      cashReceived(range),
+      cashReceived(range).then(async (rows) => [
+        ...rows,
+        { riderId: '', amount: await counterCash(range), status: 'counter' },
+      ]),
       disputeQuery.count(MASTER),
       cashWithRiders(),
     ]);
@@ -362,6 +379,10 @@ async function buildZReport(day, config) {
     },
     till: {
       cashReceived: sumBy(received, (r) => r.amount),
+      counterCash: sumBy(
+        received.filter((r) => r.status === 'counter'),
+        (r) => r.amount,
+      ),
       riderPay: sumBy(riderPayouts, (row) => row.get('amount')),
       otherPayouts: sumBy(
         payouts.filter((row) => row.get('kind') !== 'rider'),

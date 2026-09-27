@@ -69,7 +69,11 @@ Parse.Cloud.define('verifyPayment', async (request) => {
   // A delivered order whose mobile money did not arrive: the rider collected
   // nothing we can see, so they owe the total as cash (it goes back on their
   // cash list) until they hand it over or send a correct transaction ID.
-  const owedByRider = !received && order.get('status') === 'DELIVERED';
+  const owedByRider = !received && order.get('status') === 'DELIVERED' && !!order.get('createdBy');
+  // Eat-in / pick-up paid by mobile money that did not arrive: the bill is
+  // open again; the cashier takes payment another way.
+  if (!received && ['eat_in', 'pickup'].includes(order.get('orderType')))
+    order.set({ billOpen: true, cashStatus: 'UNPAID', amountToCollect: order.get('total') });
   if (owedByRider)
     order.set({
       paymentMethod: 'cash',
@@ -92,20 +96,21 @@ Parse.Cloud.define('verifyPayment', async (request) => {
   );
   const code = order.get('orderCode');
   const { values: config } = await loadConfig();
-  await notifyUser(order.get('createdBy'), {
-    kind: received ? 'payment.verified' : 'payment.rejected',
-    tone: received ? 'update' : 'alert',
-    title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
-    body: received
-      ? order.get('status') === 'DELIVERED'
-        ? 'It is off your list.'
-        : 'The kitchen can start on it.'
-      : owedByRider
-        ? `${reason}. You owe ${money(config, order.get('total'))}: hand it over in cash, or send the correct transaction ID.`
-        : `${reason}. Correct the transaction ID or cancel the order.`,
-    link: `/rider/order/${order.id}`,
-    order,
-  });
+  if (order.get('createdBy'))
+    await notifyUser(order.get('createdBy'), {
+      kind: received ? 'payment.verified' : 'payment.rejected',
+      tone: received ? 'update' : 'alert',
+      title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
+      body: received
+        ? order.get('status') === 'DELIVERED'
+          ? 'It is off your list.'
+          : 'The kitchen can start on it.'
+        : owedByRider
+          ? `${reason}. You owe ${money(config, order.get('total'))}: hand it over in cash, or send the correct transaction ID.`
+          : `${reason}. Correct the transaction ID or cancel the order.`,
+      link: `/rider/order/${order.id}`,
+      order,
+    });
   return { paymentStatus: order.get('paymentStatus') };
 });
 

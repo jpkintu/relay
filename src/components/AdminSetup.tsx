@@ -61,6 +61,9 @@ type Settings = {
   zReportHour?: number;
   restaurantLat?: number;
   restaurantLng?: number;
+  moduleRiderOrders?: boolean;
+  moduleCallIn?: boolean;
+  moduleCounter?: boolean;
 };
 const input = (
   label: string,
@@ -724,6 +727,48 @@ export function AdminSetup({
               (v) => setSettings((p) => ({ ...p, zReportHour: Number(v) })),
               'number',
             )}
+            <div className="full-row merchant-settings modules">
+              <p className="setup-field-label">How this restaurant takes orders</p>
+              <p className="muted">Switch on the ways orders come in. At least one must stay on.</p>
+              {(
+                [
+                  [
+                    'moduleRiderOrders',
+                    'Riders take orders',
+                    'Riders create orders for their own customers and earn commission plus the delivery fee.',
+                  ],
+                  [
+                    'moduleCallIn',
+                    'Call-in delivery',
+                    'Customers phone or message the restaurant; the cashier creates the order and assigns a rider, who earns the delivery fee only.',
+                  ],
+                  [
+                    'moduleCounter',
+                    'Eat in and pick up',
+                    'The cashier takes orders for walk-in guests who eat in or collect. Paid now or on an open bill; cash goes into the till.',
+                  ],
+                ] as const
+              ).map(([key, label, help]) => {
+                const on = key === 'moduleRiderOrders' ? settings[key] !== false : !!settings[key];
+                const others = (['moduleRiderOrders', 'moduleCallIn', 'moduleCounter'] as const)
+                  .filter((k) => k !== key)
+                  .some((k) => (k === 'moduleRiderOrders' ? settings[k] !== false : !!settings[k]));
+                return (
+                  <label className="setup-checkbox module-toggle" key={key}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      disabled={on && !others}
+                      onChange={(e) => setSettings((p) => ({ ...p, [key]: e.target.checked }))}
+                    />
+                    <span>
+                      <b>{label}</b>
+                      <small>{help}</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
             <div className="full-row merchant-settings">
               <p className="setup-field-label">Rider commission</p>
               <p className="muted">
