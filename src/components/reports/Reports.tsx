@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ReceiptText } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Data, Layout } from 'plotly.js';
 import { useConfig, useMoney } from '../../lib/session';
@@ -104,6 +106,7 @@ const pct = (part: number, whole: number) => (whole ? Math.round((part / whole) 
 
 export function Reports() {
   const money = useMoney();
+  const navigate = useNavigate();
   const { currencySymbol } = useConfig();
   const [filters, setFilters] = useFilters('last6months');
   const [period, setPeriod] = useState<'' | Period>('');
@@ -306,6 +309,12 @@ export function Reports() {
 
   return (
     <div className={loading ? 'report busy' : 'report'}>
+      <div className="z-link">
+        <button className="setup-secondary" onClick={() => navigate('/admin/reports/z/today')}>
+          <ReceiptText /> Daily Z-report
+        </button>
+        <span className="muted small">End-of-day summary, saved every night.</span>
+      </div>
       <FilterBar filters={filters} onChange={setFilters} riders={riders}>
         <label>
           <span>Group by</span>

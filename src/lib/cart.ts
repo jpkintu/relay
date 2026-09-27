@@ -15,6 +15,8 @@ export type MenuItem = {
   price: number;
   accompanimentGroups: AccompanimentGroup[];
   color?: string;
+  description?: string;
+  image?: string | null;
 };
 export type CartLine = {
   key: string;

@@ -150,7 +150,9 @@ Parse.Cloud.define('getNotifications', async (request) => {
   } else if (role === 'cashier' || role === 'admin') {
     // Loaded here: cash.js itself sends notifications.
     const { staleHandoverAlerts } = require('./cash');
-    await staleHandoverAlerts((await loadConfig()).values);
+    const { values: config } = await loadConfig();
+    await staleHandoverAlerts(config);
+    if (role === 'admin') await require('./owner').zReportDue(config);
   }
   // The bell lists unread notifications only; reading one clears it.
   const listQuery = new Parse.Query('Notification');

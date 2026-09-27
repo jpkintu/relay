@@ -165,7 +165,9 @@ var require_core = __commonJS({
       // Commission rule given to new riders (each rider's rule can be changed).
       defaultCommissionType: "per_order",
       defaultCommissionPerOrder: 0,
-      defaultCommissionPercent: 0
+      defaultCommissionPercent: 0,
+      // Hour of the day (restaurant time) after which the daily Z-report is saved.
+      zReportHour: 23
     };
     var forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
     var invalid = (message) => new Parse.Error(Parse.Error.SCRIPT_FAILED, message);
@@ -390,6 +392,15 @@ var require_core = __commonJS({
       const me = await actor.fetch(MASTER);
       order.set({ cashier: me, cashierName: personName(me), assignedAt: /* @__PURE__ */ new Date() });
     }
+    function fileUrl(file) {
+      const url = file?.url?.() || null;
+      if (!url || /^https?:\/\//.test(url)) return url;
+      const base = String(process.env.PARSE_PUBLIC_SERVER_URL || Parse.serverURL || "").replace(
+        /\/$/,
+        ""
+      );
+      return `${base}${url.replace(/^(undefined|null)/, "")}`;
+    }
     var isBrokenCode = (code) => typeof code === "string" && /object|undefined|NaN/.test(code);
     module2.exports = {
       MASTER,
@@ -419,7 +430,8 @@ var require_core = __commonJS({
       verifyPin,
       takeOrder,
       withRiderLimit,
-      endSessions
+      endSessions,
+      fileUrl
     };
   }
 });
@@ -458,9 +470,17 @@ var require_security = __commonJS({
       "DemoOrder",
       "Notification",
       "PushSubscription",
-      "Secret"
+      "Secret",
+      "ZReport"
     ];
-    var PRIVATE_CLASSES = ["Counter", "DemoOrder", "Configuration", "PushSubscription", "Secret"];
+    var PRIVATE_CLASSES = [
+      "Counter",
+      "DemoOrder",
+      "Configuration",
+      "PushSubscription",
+      "Secret",
+      "ZReport"
+    ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
       Parse.Cloud.beforeSave(className, (request) => {
@@ -653,7 +673,8 @@ var require_security = __commonJS({
         floatWarningPercent: N,
         defaultCommissionType: S,
         defaultCommissionPerOrder: N,
-        defaultCommissionPercent: N
+        defaultCommissionPercent: N,
+        zReportHour: N
       },
       MenuItem: {
         title: S,
@@ -662,8 +683,12 @@ var require_security = __commonJS({
         active: B,
         availableToday: B,
         sortOrder: N,
-        accompanimentGroups: "Array"
+        accompanimentGroups: "Array",
+        description: S,
+        image: "File",
+        archivedAt: D
       },
+      ZReport: { day: S, data: "Object", generatedAt: D, auto: B },
       Accompaniment: { title: S, active: B, available: B, sortOrder: N },
       Customer: {
         key: S,
@@ -716,7 +741,8 @@ var require_security = __commonJS({
       pinLockedUntil: D,
       payRound: N,
       available: B,
-      maxFloat: N
+      maxFloat: N,
+      payoutRequestedAt: D
     };
     async function applySchemas() {
       const existing = new Map((await Parse.Schema.all()).map((schema) => [schema.className, schema]));
@@ -8499,7 +8525,7 @@ var require_payouts = __commonJS({
       getRoleName
     } = require_core();
     var { sumBy, orderRiderPay } = require_money();
-    var { money, notifyUser, notifyAdmins } = require_notifications();
+    var { money, notifyUser, notifyAdmins, notifyStaff } = require_notifications();
     var { resolveRange } = require_dates();
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var feeOf = (order) => order.get("deliveryPay") ?? order.get("deliveryFee") ?? 0;
@@ -8563,7 +8589,8 @@ var require_payouts = __commonJS({
             commission: state.earned - state.deliveryFees,
             deliveryFees: state.deliveryFees,
             deductions: state.deductions,
-            owed: state.owed
+            owed: state.owed,
+            requestedAt: rider.get("payoutRequestedAt") || null
           };
         })
       );
@@ -8579,8 +8606,31 @@ var require_payouts = __commonJS({
         deliveryFees: state.deliveryFees,
         deductions: state.deductions,
         owed: state.owed,
+        requestedAt: (await rider.fetch(MASTER)).get("payoutRequestedAt") || null,
         payouts: payouts.map(payoutJSON)
       };
+    });
+    var REQUEST_GAP_MS = 30 * 6e4;
+    Parse.Cloud.define("requestPayout", async (request) => {
+      const { user } = await requireRole(request, ["rider"]);
+      const rider = await new Parse.Query(Parse.User).get(user.id, MASTER);
+      const state = await riderPayState(rider);
+      if (state.owed <= 0) throw invalid("Nothing is owed to you right now");
+      const last = rider.get("payoutRequestedAt");
+      if (last && Date.now() - last.getTime() < REQUEST_GAP_MS)
+        throw invalid("You already asked. The cashier has been told");
+      const { values: config } = await loadConfig();
+      rider.set("payoutRequestedAt", /* @__PURE__ */ new Date());
+      await rider.save(null, MASTER);
+      await audit(rider, "payout.requested", rider, null, { owed: state.owed });
+      await notifyStaff({
+        kind: "payout.requested",
+        tone: "alert",
+        title: `${personName(rider)} asks to be paid`,
+        body: `${money(config, state.owed)} owed for ${state.orders.length} ${state.orders.length === 1 ? "delivery" : "deliveries"}. Pay from Payouts.`,
+        link: "/cashier/payouts"
+      });
+      return { requestedAt: rider.get("payoutRequestedAt"), owed: state.owed };
     });
     async function newPayout(fields, config) {
       const row = new Parse.Object("TillPayout");
@@ -8599,6 +8649,7 @@ var require_payouts = __commonJS({
       const round = Number(rider.get("payRound") || 0);
       if (!await claimOnce(`pay-rider:${rider.id}:${round}`))
         throw invalid("This rider is already being paid. Refresh in a moment");
+      let paid = false;
       try {
         const state = await riderPayState(rider);
         const orders = (orderIds ? state.orders.filter((order) => orderIds.includes(order.id)) : state.orders).filter((order) => !feesOnly || feeOwed(order) > 0);
@@ -8654,8 +8705,10 @@ var require_payouts = __commonJS({
           )} delivery fees)${deductions ? ` less ${money(config, deductions)} shortage` : ""}`} \xB7 paid by ${personName(await actor.fetch(MASTER))}`,
           link: "/rider/earnings"
         });
+        paid = true;
         return { id: row.id, amount, deliveries: orders.length };
       } finally {
+        if (paid && !feesOnly && rider.has("payoutRequestedAt")) rider.unset("payoutRequestedAt");
         rider.increment("payRound");
         await rider.save(null, MASTER);
       }
@@ -8710,7 +8763,7 @@ var require_payouts = __commonJS({
       const payouts = (await query.find(MASTER)).map(payoutJSON);
       return { payouts, total: payouts.reduce((n, p) => n + p.amount, 0) };
     });
-    module2.exports = { riderPayState, payOut, payoutJSON };
+    module2.exports = { riderPayState, payOut, payoutJSON, payOwed };
   }
 });
 
@@ -9117,6 +9170,1096 @@ var require_cash = __commonJS({
   }
 });
 
+// cloud/lib/reports.js
+var require_reports = __commonJS({
+  "cloud/lib/reports.js"(exports2, module2) {
+    "use strict";
+    var round = (value) => Math.round(Number(value) || 0);
+    var isDelivered = (fact) => fact.status === "DELIVERED";
+    var isConfirmed = (fact) => fact.method === "cash" ? fact.cashStatus === "RECONCILED" : fact.method === "mobile_money" ? fact.paymentStatus === "VERIFIED" : true;
+    var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
+    function growth(current, previous) {
+      if (!previous) return null;
+      return Math.round((current - previous) / previous * 1e3) / 10;
+    }
+    function summarize(facts) {
+      const delivered = facts.filter(isDelivered);
+      const revenue = delivered.reduce((n, f) => n + round(f.total), 0);
+      const commission = delivered.reduce((n, f) => n + round(f.commission), 0);
+      const deliveryPay = delivered.reduce((n, f) => n + round(f.deliveryPay ?? f.deliveryFee), 0);
+      const confirmed = delivered.filter(isConfirmed);
+      const perCustomer = /* @__PURE__ */ new Map();
+      for (const fact of delivered) {
+        if (!fact.customerKey) continue;
+        perCustomer.set(fact.customerKey, (perCustomer.get(fact.customerKey) || 0) + 1);
+      }
+      const minutes = delivered.filter((f) => f.deliveredAt && f.createdAt).map((f) => (f.deliveredAt - f.createdAt) / 6e4);
+      return {
+        orders: facts.length,
+        delivered: delivered.length,
+        cancelled: facts.filter((f) => f.status === "CANCELLED").length,
+        rejected: facts.filter((f) => f.restaurantStatus === "rejected").length,
+        open: facts.filter((f) => OPEN.includes(f.status)).length,
+        revenue,
+        foodSales: delivered.reduce((n, f) => n + round(f.subtotal), 0),
+        deliveryFees: delivered.reduce((n, f) => n + round(f.deliveryFee), 0),
+        commission,
+        riderCommission: commission - deliveryPay,
+        net: revenue - commission,
+        avgOrder: delivered.length ? Math.round(revenue / delivered.length) : 0,
+        // Confirmed money only; the rest is still with riders or waiting for a check.
+        cashSales: confirmed.filter((f) => f.method === "cash").reduce((n, f) => n + round(f.total), 0),
+        mobileMoneySales: confirmed.filter((f) => f.method === "mobile_money").reduce((n, f) => n + round(f.total), 0),
+        unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + round(f.total), 0),
+        customers: perCustomer.size,
+        repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
+        avgDeliveryMinutes: minutes.length ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length) : null
+      };
+    }
+    function series(facts, keys, keyOf) {
+      const rows = new Map(
+        keys.map((key) => [key, { key, orders: 0, delivered: 0, revenue: 0, commission: 0 }])
+      );
+      for (const fact of facts) {
+        const row = rows.get(keyOf(fact));
+        if (!row) continue;
+        row.orders += 1;
+        if (!isDelivered(fact)) continue;
+        row.delivered += 1;
+        row.revenue += round(fact.total);
+        row.commission += round(fact.commission);
+      }
+      let previous = null;
+      return [...rows.values()].map((row) => {
+        const out = {
+          ...row,
+          avgOrder: row.delivered ? Math.round(row.revenue / row.delivered) : 0,
+          revenueChange: previous ? growth(row.revenue, previous.revenue) : null,
+          commissionChange: previous ? growth(row.commission, previous.commission) : null
+        };
+        previous = row;
+        return out;
+      });
+    }
+    function itemSales(lines) {
+      const byName = /* @__PURE__ */ new Map();
+      for (const line of lines) {
+        const row = byName.get(line.name) || { name: line.name, qty: 0, revenue: 0, orders: 0 };
+        row.qty += round(line.qty);
+        row.revenue += round(line.total);
+        row.orders += 1;
+        byName.set(line.name, row);
+      }
+      const revenue = [...byName.values()].reduce((n, row) => n + row.revenue, 0);
+      return [...byName.values()].map((row) => ({
+        ...row,
+        share: revenue ? Math.round(row.revenue / revenue * 1e3) / 10 : 0,
+        avgPrice: row.qty ? Math.round(row.revenue / row.qty) : 0
+      })).sort((a, b) => b.revenue - a.revenue || b.qty - a.qty || a.name.localeCompare(b.name));
+    }
+    function accompanimentCounts(lines) {
+      const counts = /* @__PURE__ */ new Map();
+      for (const line of lines)
+        for (const name of line.accompaniments || [])
+          counts.set(name, (counts.get(name) || 0) + round(line.qty));
+      return [...counts.entries()].map(([name, servings]) => ({ name, servings })).sort((a, b) => b.servings - a.servings || a.name.localeCompare(b.name));
+    }
+    function riderStats(facts) {
+      const byRider = /* @__PURE__ */ new Map();
+      for (const fact of facts) {
+        if (!fact.riderId) continue;
+        const row = byRider.get(fact.riderId) || {
+          riderId: fact.riderId,
+          rider: fact.rider,
+          orders: 0,
+          delivered: 0,
+          cancelled: 0,
+          revenue: 0,
+          commission: 0,
+          minutes: []
+        };
+        row.orders += 1;
+        if (fact.status === "CANCELLED") row.cancelled += 1;
+        if (isDelivered(fact)) {
+          row.delivered += 1;
+          row.revenue += round(fact.total);
+          row.commission += round(fact.commission);
+          if (fact.deliveredAt && fact.createdAt)
+            row.minutes.push((fact.deliveredAt - fact.createdAt) / 6e4);
+        }
+        byRider.set(fact.riderId, row);
+      }
+      return [...byRider.values()].map(({ minutes, ...row }) => ({
+        ...row,
+        avgDeliveryMinutes: minutes.length ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length) : null
+      })).sort((a, b) => b.revenue - a.revenue || b.orders - a.orders);
+    }
+    function timeOfDay(facts, clockOf) {
+      const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, orders: 0, revenue: 0 }));
+      const weekdays = Array.from({ length: 7 }, (_, weekday) => ({ weekday, orders: 0, revenue: 0 }));
+      for (const fact of facts) {
+        const { hour, weekday } = clockOf(fact);
+        hours[hour].orders += 1;
+        weekdays[weekday].orders += 1;
+        if (isDelivered(fact)) {
+          hours[hour].revenue += round(fact.total);
+          weekdays[weekday].revenue += round(fact.total);
+        }
+      }
+      return { hours, weekdays };
+    }
+    function paymentMix(facts) {
+      const byKey = /* @__PURE__ */ new Map();
+      for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
+        const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : "cash";
+        const row = byKey.get(key) || { key, orders: 0, amount: 0 };
+        row.orders += 1;
+        row.amount += round(fact.total);
+        byKey.set(key, row);
+      }
+      return [...byKey.values()].sort((a, b) => b.amount - a.amount);
+    }
+    function channelMix(facts) {
+      const byKey = /* @__PURE__ */ new Map();
+      for (const fact of facts.filter(isDelivered)) {
+        const key = fact.channel || "unknown";
+        const row = byKey.get(key) || { key, orders: 0, amount: 0 };
+        row.orders += 1;
+        row.amount += round(fact.total);
+        byKey.set(key, row);
+      }
+      return [...byKey.values()].sort((a, b) => b.amount - a.amount);
+    }
+    module2.exports = {
+      growth,
+      summarize,
+      series,
+      itemSales,
+      accompanimentCounts,
+      riderStats,
+      timeOfDay,
+      paymentMix,
+      channelMix
+    };
+  }
+});
+
+// cloud/lib/mobileMoney.js
+var require_mobileMoney = __commonJS({
+  "cloud/lib/mobileMoney.js"(exports2, module2) {
+    "use strict";
+    var PROVIDERS = [
+      {
+        provider: "airtel",
+        label: "Airtel Money",
+        codeField: "airtelMerchantCode",
+        nameField: "airtelMerchantName"
+      },
+      {
+        provider: "mtn",
+        label: "MTN MoMo",
+        codeField: "mtnMerchantCode",
+        nameField: "mtnMerchantName"
+      }
+    ];
+    function merchantAccounts(config) {
+      return PROVIDERS.filter((p) => String(config[p.codeField] || "").trim()).map((p) => ({
+        provider: p.provider,
+        label: p.label,
+        code: String(config[p.codeField]).trim(),
+        name: String(config[p.nameField] || "").trim()
+      }));
+    }
+    function cleanReference(value) {
+      return String(value ?? "").replace(/\s+/g, "").toUpperCase().slice(0, 40);
+    }
+    function referenceProblem(reference) {
+      if (!reference) return "Enter the transaction ID from the customer\u2019s payment message";
+      if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
+        return "A transaction ID has 4 to 40 letters or digits";
+      return "";
+    }
+    module2.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
+  }
+});
+
+// cloud/reports.js
+var require_reports2 = __commonJS({
+  "cloud/reports.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, invalid, requireRole, loadConfig } = require_core();
+    var { merchantAccounts } = require_mobileMoney();
+    var { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require_dates();
+    var R = require_reports();
+    var { orderRiderPay } = require_money();
+    var { payOwed } = require_payouts();
+    var MAX_ROWS = 2e3;
+    var PERIODS = ["day", "week", "month"];
+    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
+    async function findAll(query) {
+      const rows = [];
+      await query.eachBatch((batch) => void rows.push(...batch), { ...MASTER, batchSize: 1e3 });
+      return rows;
+    }
+    function rangeOf(params, config, options) {
+      const range = resolveRange(params, config.timezone, options);
+      if (range.error) throw invalid(range.error);
+      return range;
+    }
+    var riderPointer = (id) => {
+      if (!id) return null;
+      if (typeof id !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown rider");
+      return Parse.User.createWithoutData(id);
+    };
+    var METHODS = ["all", "cash", "mobile_money"];
+    function methodOf(params) {
+      const method = params.method || "all";
+      if (!METHODS.includes(method)) throw invalid("Payment type must be cash or mobile_money");
+      return method;
+    }
+    function periodOf(params, range) {
+      if (params.period) {
+        if (!PERIODS.includes(params.period)) throw invalid("Group by day, week or month");
+        return params.period;
+      }
+      return range.days <= 31 ? "day" : range.days <= 120 ? "week" : "month";
+    }
+    function ordersIn(range, field, riderId) {
+      const query = new Parse.Query("Order");
+      query.greaterThanOrEqualTo(field, range.start);
+      query.lessThan(field, range.end);
+      const rider = riderPointer(riderId);
+      if (rider) query.equalTo("createdBy", rider);
+      query.include("createdBy");
+      return query;
+    }
+    function factOf(order) {
+      const rider = order.get("createdBy");
+      const phone = order.get("customerPhone");
+      const name = String(order.get("customerName") || "").toLowerCase();
+      return {
+        id: order.id,
+        code: order.get("orderCode"),
+        status: order.get("status"),
+        restaurantStatus: order.get("restaurantStatus"),
+        channel: order.get("channel"),
+        customer: order.get("customerName") || "",
+        customerKey: order.get("customer")?.id || (phone ? `tel:${phone}` : name && `name:${name}`),
+        riderId: rider?.id || "",
+        rider: nameOf(rider),
+        total: Number(order.get("total") || 0),
+        subtotal: Number(order.get("subtotal") || 0),
+        deliveryFee: Number(order.get("deliveryFee") || 0),
+        deliveryPay: Number(order.get("deliveryPay") ?? order.get("deliveryFee") ?? 0),
+        // Rider pay: commission + delivery fee, taken off revenue like commission.
+        commission: order.get("status") === "DELIVERED" ? orderRiderPay(order) : 0,
+        method: order.get("paymentMethod"),
+        provider: order.get("paymentProvider") || "",
+        reference: order.get("paymentReference") || "",
+        paymentStatus: order.get("paymentStatus") || "",
+        amountCollected: Number(order.get("amountCollected") || 0),
+        cashStatus: order.get("cashStatus") || "",
+        createdAt: order.createdAt,
+        deliveredAt: order.get("deliveredAt") || null
+      };
+    }
+    var byNewest = (field) => (a, b) => (b[field] || 0) - (a[field] || 0);
+    var rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days });
+    Parse.Cloud.define("getReportOptions", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const query = new Parse.Query(Parse.User);
+      query.exists("riderCode");
+      query.ascending("riderCode");
+      query.limit(1e3);
+      const riders = await query.find(MASTER);
+      return {
+        riders: riders.map((user) => ({
+          id: user.id,
+          label: nameOf(user),
+          active: user.get("active") !== false
+        }))
+      };
+    });
+    Parse.Cloud.define("getPaymentsLedger", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const range = rangeOf(p, config, { defaultDays: 7 });
+      const method = methodOf(p);
+      const wantCash = method !== "mobile_money";
+      const wantMomo = method !== "cash";
+      const cashQuery = ordersIn(range, "deliveredAt", p.riderId);
+      cashQuery.equalTo("paymentMethod", "cash");
+      cashQuery.equalTo("status", "DELIVERED");
+      const momoQuery = ordersIn(range, "createdAt", p.riderId);
+      momoQuery.equalTo("paymentMethod", "mobile_money");
+      momoQuery.include("paymentCheckedBy");
+      const handoverQuery = new Parse.Query("CashHandover");
+      handoverQuery.greaterThanOrEqualTo("createdAt", new Date(range.start.getTime() - 7 * 864e5));
+      handoverQuery.lessThan("createdAt", new Date(range.end.getTime() + 7 * 864e5));
+      if (p.riderId) handoverQuery.equalTo("rider", riderPointer(p.riderId));
+      handoverQuery.include(["rider", "cashier"]);
+      const [cashOrders, momoOrders, handovers] = await Promise.all([
+        wantCash ? findAll(cashQuery) : [],
+        wantMomo ? findAll(momoQuery) : [],
+        wantCash ? findAll(handoverQuery) : []
+      ]);
+      const handoverOf = /* @__PURE__ */ new Map();
+      for (const handover of handovers)
+        for (const order of handover.get("orders") || [])
+          if (handover.get("status") !== "disputed" || !handoverOf.has(order.id))
+            handoverOf.set(order.id, handover.get("handoverCode"));
+      const cashRows = cashOrders.map((order) => {
+        const f = factOf(order);
+        return {
+          id: f.id,
+          kind: "cash",
+          at: f.deliveredAt,
+          code: f.code,
+          riderId: f.riderId,
+          rider: f.rider,
+          customer: f.customer,
+          amount: f.amountCollected,
+          orderTotal: f.total,
+          status: f.cashStatus,
+          provider: "",
+          reference: handoverOf.get(order.id) || "",
+          note: order.get("shortfallNote") || ""
+        };
+      });
+      const momoRows = momoOrders.map((order) => {
+        const f = factOf(order);
+        return {
+          id: f.id,
+          kind: "mobile_money",
+          at: f.createdAt,
+          code: f.code,
+          riderId: f.riderId,
+          rider: f.rider,
+          customer: f.customer,
+          amount: f.total,
+          orderTotal: f.total,
+          orderStatus: f.status,
+          status: f.paymentStatus,
+          provider: f.provider,
+          reference: f.reference,
+          note: order.get("paymentRejectReason") || (f.status === "CANCELLED" ? "Order cancelled" : nameOf(order.get("paymentCheckedBy")))
+        };
+      });
+      const sum = (rows, test) => rows.filter(test).reduce((n, row) => n + row.amount, 0);
+      const count = (rows, test) => rows.filter(test).length;
+      const liveMomo = momoRows.filter((r) => r.orderStatus !== "CANCELLED" || r.status === "VERIFIED");
+      const handoverRows = handovers.filter((h) => h.createdAt >= range.start && h.createdAt < range.end).sort((a, b) => b.createdAt - a.createdAt).map((h) => ({
+        id: h.id,
+        code: h.get("handoverCode"),
+        riderId: h.get("rider")?.id || "",
+        rider: nameOf(h.get("rider")),
+        cashier: nameOf(h.get("cashier")),
+        amount: Number(h.get("amount") || 0),
+        countedAmount: h.get("countedAmount") ?? null,
+        orderCount: h.get("orderCount") || 0,
+        status: h.get("status"),
+        reason: h.get("disputeReason") || "",
+        createdAt: h.createdAt,
+        confirmedAt: h.get("confirmedAt") || null,
+        returnedAmount: Number(h.get("returnedAmount") || 0),
+        shortage: Number(h.get("shortage") || 0),
+        shortageStatus: h.get("shortageStatus") || "",
+        resolutionNote: h.get("resolutionNote") || "",
+        receivedByOwner: h.get("receivedByOwner") === true
+      }));
+      const transactions = [...cashRows, ...momoRows].sort(byNewest("at"));
+      return {
+        range: rangeInfo(range),
+        method,
+        summary: {
+          total: sum(cashRows, () => true) + sum(liveMomo, (r) => r.status === "VERIFIED"),
+          cash: {
+            count: cashRows.length,
+            collected: sum(cashRows, () => true),
+            withRiders: sum(cashRows, (r) => r.status === "WITH_RIDER"),
+            handoverPending: sum(cashRows, (r) => r.status === "HANDOVER_PENDING"),
+            reconciled: sum(cashRows, (r) => r.status === "RECONCILED")
+          },
+          mobileMoney: {
+            count: momoRows.length,
+            verified: sum(momoRows, (r) => r.status === "VERIFIED"),
+            verifiedCount: count(momoRows, (r) => r.status === "VERIFIED"),
+            pending: sum(liveMomo, (r) => r.status === "PENDING_VERIFICATION"),
+            pendingCount: count(liveMomo, (r) => r.status === "PENDING_VERIFICATION"),
+            rejected: sum(momoRows, (r) => r.status === "REJECTED"),
+            rejectedCount: count(momoRows, (r) => r.status === "REJECTED"),
+            byProvider: merchantAccounts(config).map((account) => {
+              const rows = momoRows.filter(
+                (r) => r.provider === account.provider && r.status === "VERIFIED"
+              );
+              return { ...account, count: rows.length, amount: sum(rows, () => true) };
+            })
+          },
+          handovers: {
+            count: handoverRows.length,
+            confirmed: handoverRows.filter((h) => h.status === "confirmed").reduce((n, h) => n + h.amount, 0),
+            pending: handoverRows.filter((h) => h.status === "pending").reduce((n, h) => n + h.amount, 0),
+            disputed: handoverRows.filter((h) => h.status === "disputed").length
+          }
+        },
+        transactions: transactions.slice(0, MAX_ROWS),
+        truncated: transactions.length > MAX_ROWS,
+        handovers: handoverRows
+      };
+    });
+    var ORDER_STATUSES = ["open", "DELIVERED", "CANCELLED", "PICKED_UP"];
+    Parse.Cloud.define("adminSearchOrders", async (request) => {
+      await requireRole(request, ["admin"]);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const range = rangeOf(p, config, { defaultDays: 7 });
+      const method = methodOf(p);
+      const query = ordersIn(range, "createdAt", p.riderId);
+      if (method !== "all") query.equalTo("paymentMethod", method);
+      if (p.status) {
+        if (!ORDER_STATUSES.includes(p.status)) throw invalid("Unknown status filter");
+        if (p.status === "open")
+          query.containedIn("status", ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"]);
+        else query.equalTo("status", p.status);
+      }
+      const facts = (await findAll(query)).map(factOf).sort(byNewest("createdAt"));
+      return {
+        range: rangeInfo(range),
+        summary: R.summarize(facts),
+        rows: facts.slice(0, MAX_ROWS).map(({ customerKey: _key, ...row }) => row),
+        truncated: facts.length > MAX_ROWS
+      };
+    });
+    var PAID_FILTERS = ["all", "paid", "owed"];
+    Parse.Cloud.define("getCommissionLedger", async (request) => {
+      await requireRole(request, ["admin"]);
+      const p = request.params;
+      const paidFilter = p.paid || "all";
+      if (!PAID_FILTERS.includes(paidFilter)) throw invalid("Show all, paid or owed");
+      const { values: config } = await loadConfig();
+      const range = rangeOf(p, config, { defaultDays: 7 });
+      const query = ordersIn(range, "deliveredAt", p.riderId);
+      query.equalTo("status", "DELIVERED");
+      const all = (await findAll(query)).map((order) => {
+        const fact = factOf(order);
+        const owed2 = order.get("commissionPaid") === true ? 0 : payOwed(order);
+        return {
+          ...fact,
+          owed: owed2,
+          payState: owed2 === 0 ? "paid" : owed2 < fact.commission ? "part" : "owed"
+        };
+      }).sort(byNewest("deliveredAt"));
+      const facts = paidFilter === "all" ? all : all.filter((f) => paidFilter === "paid" ? f.payState === "paid" : f.owed > 0);
+      const owedBy = /* @__PURE__ */ new Map();
+      for (const f of facts) owedBy.set(f.riderId, (owedBy.get(f.riderId) || 0) + f.owed);
+      const riders = R.riderStats(facts).sort((a, b) => b.commission - a.commission);
+      const total = facts.reduce((n, f) => n + f.commission, 0);
+      const owed = facts.reduce((n, f) => n + f.owed, 0);
+      return {
+        range: rangeInfo(range),
+        paid: paidFilter,
+        total,
+        owed,
+        paidOut: total - owed,
+        deliveries: facts.length,
+        riders: riders.map(({ riderId, rider, delivered, revenue, commission }) => ({
+          riderId,
+          rider,
+          deliveries: delivered,
+          sales: revenue,
+          commission,
+          owed: owedBy.get(riderId) || 0
+        })),
+        rows: facts.slice(0, MAX_ROWS).map((f) => ({
+          id: f.id,
+          code: f.code,
+          riderId: f.riderId,
+          rider: f.rider,
+          customer: f.customer,
+          total: f.total,
+          subtotal: f.subtotal,
+          commission: f.commission,
+          owed: f.owed,
+          payState: f.payState,
+          method: f.method,
+          deliveredAt: f.deliveredAt
+        })),
+        truncated: facts.length > MAX_ROWS
+      };
+    });
+    async function earningsFacts(range, riderId) {
+      const query = ordersIn(range, "deliveredAt", riderId);
+      query.equalTo("status", "DELIVERED");
+      return (await findAll(query)).map(factOf);
+    }
+    Parse.Cloud.define("getRiderEarnings", async (request) => {
+      const { user, role } = await requireRole(request, ["rider", "admin"]);
+      const p = request.params;
+      const riderId = role === "admin" ? p.riderId || user.id : user.id;
+      const { values: config } = await loadConfig();
+      const range = rangeOf(p, config, { defaultDays: 56 });
+      const period = periodOf(p, range);
+      const before = previousRange(range, config.timezone);
+      const [facts, previousFacts] = await Promise.all([
+        earningsFacts(range, riderId),
+        earningsFacts(before, riderId)
+      ]);
+      const totals = (rows) => ({
+        deliveries: rows.length,
+        earnings: rows.reduce((n, f) => n + f.commission, 0),
+        sales: rows.reduce((n, f) => n + f.total, 0),
+        cash: rows.filter((f) => f.method === "cash").reduce((n, f) => n + f.amountCollected, 0)
+      });
+      const current = totals(facts);
+      const previous = totals(previousFacts);
+      const keyOf = (f) => bucketOf(f.deliveredAt, config.timezone, period);
+      return {
+        range: rangeInfo(range),
+        previousRange: rangeInfo(before),
+        period,
+        summary: {
+          ...current,
+          avgPerDelivery: current.deliveries ? Math.round(current.earnings / current.deliveries) : 0,
+          earningsChange: R.growth(current.earnings, previous.earnings),
+          deliveriesChange: R.growth(current.deliveries, previous.deliveries)
+        },
+        previous,
+        series: R.series(facts, bucketKeys(range.from, range.to, period), keyOf).map((row) => ({
+          key: row.key,
+          deliveries: row.delivered,
+          earnings: row.commission,
+          sales: row.revenue,
+          change: row.commissionChange
+        })),
+        deliveries: facts.sort(byNewest("deliveredAt")).slice(0, 300).map((f) => ({
+          id: f.id,
+          code: f.code,
+          customer: f.customer,
+          total: f.total,
+          commission: f.commission,
+          method: f.method,
+          deliveredAt: f.deliveredAt
+        }))
+      };
+    });
+    async function orderLines(orderIds) {
+      const lines = [];
+      for (let i = 0; i < orderIds.length; i += 500) {
+        const query = new Parse.Query("OrderItem");
+        query.containedIn(
+          "order",
+          orderIds.slice(i, i + 500).map((id) => Parse.Object.extend("Order").createWithoutData(id))
+        );
+        for (const item of await findAll(query))
+          lines.push({
+            name: item.get("itemNameSnapshot") || "Item",
+            qty: Number(item.get("quantity") || 0),
+            total: Number(item.get("lineTotal") || 0),
+            accompaniments: item.get("accompanimentNames") || []
+          });
+      }
+      return lines;
+    }
+    Parse.Cloud.define("getOperationsReport", async (request) => {
+      await requireRole(request, ["admin"]);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const tz = config.timezone;
+      const range = rangeOf(p, config, { defaultDays: 30 });
+      const period = periodOf(p, range);
+      const before = previousRange(range, tz);
+      const [facts, previousFacts] = await Promise.all([
+        findAll(ordersIn(range, "createdAt", p.riderId)).then((rows) => rows.map(factOf)),
+        findAll(ordersIn(before, "createdAt", p.riderId)).then((rows) => rows.map(factOf))
+      ]);
+      const delivered = facts.filter((f) => f.status === "DELIVERED");
+      const lines = await orderLines(delivered.map((f) => f.id));
+      const summary = R.summarize(facts);
+      const previous = R.summarize(previousFacts);
+      const change = {};
+      for (const key of [
+        "revenue",
+        "orders",
+        "delivered",
+        "avgOrder",
+        "commission",
+        "net",
+        "customers"
+      ])
+        change[key] = R.growth(summary[key], previous[key]);
+      const keyOf = (bucket) => (f) => bucketOf(f.createdAt, tz, bucket);
+      return {
+        range: rangeInfo(range),
+        previousRange: rangeInfo(before),
+        period,
+        summary,
+        previous,
+        change,
+        series: R.series(facts, bucketKeys(range.from, range.to, period), keyOf(period)),
+        monthly: R.series(facts, bucketKeys(range.from, range.to, "month"), keyOf("month")),
+        items: R.itemSales(lines),
+        accompaniments: R.accompanimentCounts(lines).slice(0, 30),
+        riders: R.riderStats(facts),
+        payments: R.paymentMix(facts),
+        channels: R.channelMix(facts),
+        ...R.timeOfDay(facts, (f) => localClock(f.createdAt, tz))
+      };
+    });
+    module2.exports = { factOf, findAll, ordersIn, orderLines };
+  }
+});
+
+// cloud/owner.js
+var require_owner = __commonJS({
+  "cloud/owner.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      adminOnly,
+      readAcl,
+      audit,
+      loadConfig,
+      personName
+    } = require_core();
+    var {
+      resolveRange,
+      bucketKeys,
+      bucketOf,
+      isoDay,
+      localClock,
+      addDays,
+      isDay
+    } = require_dates();
+    var R = require_reports();
+    var { sumBy } = require_money();
+    var { factOf, findAll, ordersIn, orderLines } = require_reports2();
+    var { payOwed } = require_payouts();
+    var { money, notifyAdmins } = require_notifications();
+    var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
+    var dayRange = (day, timezone) => {
+      const range = resolveRange({ from: day, to: day }, timezone);
+      if (range.error) throw invalid(range.error);
+      return range;
+    };
+    async function cashWithRiders() {
+      const query = new Parse.Query("Order");
+      query.equalTo("status", "DELIVERED");
+      query.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
+      query.select("amountCollected", "cashStatus", "createdBy");
+      const orders = await findAll(query);
+      return {
+        total: sumBy(orders, (o) => o.get("amountCollected")),
+        withRiders: sumBy(
+          orders.filter((o) => o.get("cashStatus") === "WITH_RIDER"),
+          (o) => o.get("amountCollected")
+        ),
+        handedOver: sumBy(
+          orders.filter((o) => o.get("cashStatus") === "HANDOVER_PENDING"),
+          (o) => o.get("amountCollected")
+        ),
+        riders: new Set(orders.map((o) => o.get("createdBy")?.id)).size
+      };
+    }
+    async function cashReceived(range) {
+      const counted = new Parse.Query("CashHandover");
+      counted.greaterThanOrEqualTo("tillAt", range.start);
+      counted.lessThan("tillAt", range.end);
+      const legacy = new Parse.Query("CashHandover");
+      legacy.containedIn("status", ["confirmed", "disputed"]);
+      legacy.doesNotExist("tillAt");
+      legacy.greaterThanOrEqualTo("confirmedAt", range.start);
+      legacy.lessThan("confirmedAt", range.end);
+      const query = Parse.Query.or(counted, legacy);
+      query.include(["rider", "cashier"]);
+      const rows = await findAll(query);
+      return rows.map((h) => ({
+        riderId: h.get("rider")?.id || "",
+        amount: Number(h.get("countedAmount") ?? h.get("amount") ?? 0),
+        status: h.get("status")
+      }));
+    }
+    async function riderPayOwed() {
+      const orders = new Parse.Query("Order");
+      orders.equalTo("status", "DELIVERED");
+      orders.notEqualTo("commissionPaid", true);
+      const shortages = new Parse.Query("CashHandover");
+      shortages.equalTo("shortageStatus", "owed");
+      const [unpaid, owed] = await Promise.all([findAll(orders), findAll(shortages)]);
+      return sumBy(unpaid, payOwed) - sumBy(owed, (h) => h.get("shortage"));
+    }
+    Parse.Cloud.define("getDashboard", async (request) => {
+      await adminOnly(request);
+      const { values: config } = await loadConfig();
+      const tz = config.timezone;
+      const today = isoDay(/* @__PURE__ */ new Date(), tz);
+      const todayRange = dayRange(today, tz);
+      const monthRange = resolveRange({ from: addDays(today, -29), to: today }, tz);
+      const pendingMomo = new Parse.Query("Order");
+      pendingMomo.equalTo("paymentStatus", "PENDING_VERIFICATION");
+      pendingMomo.notEqualTo("status", "CANCELLED");
+      const pendingHandovers = new Parse.Query("CashHandover").equalTo("status", "pending");
+      const disputed = new Parse.Query("CashHandover").equalTo("status", "disputed");
+      const issues = new Parse.Query("Order").equalTo("disputeFlag", true);
+      const recent = new Parse.Query("Order");
+      recent.include("createdBy");
+      recent.descending("createdAt");
+      recent.limit(15);
+      const onShift = new Parse.Query("Shift").equalTo("status", "open").include("operator");
+      onShift.limit(200);
+      const [todayFacts, deliveredToday, monthFacts, cash, received, owed, counts, recentRows, shifts] = await Promise.all([
+        findAll(ordersIn(todayRange, "createdAt")).then((rows) => rows.map(factOf)),
+        findAll(ordersIn(todayRange, "deliveredAt").equalTo("status", "DELIVERED")).then(
+          (rows) => rows.map(factOf)
+        ),
+        findAll(ordersIn(monthRange, "createdAt")).then((rows) => rows.map(factOf)),
+        cashWithRiders(),
+        cashReceived(todayRange),
+        riderPayOwed(),
+        Promise.all([
+          pendingMomo.count(MASTER),
+          pendingHandovers.count(MASTER),
+          disputed.count(MASTER),
+          issues.count(MASTER)
+        ]),
+        recent.find(MASTER),
+        onShift.find(MASTER)
+      ]);
+      const [momoPending, handoversPending, handoversDisputed, openIssues] = counts;
+      const sales = R.summarize(deliveredToday);
+      const riders = R.riderStats(deliveredToday).sort(
+        (a, b) => b.delivered - a.delivered || b.revenue - a.revenue
+      );
+      const hours = R.timeOfDay(todayFacts, (f) => localClock(f.createdAt, tz)).hours;
+      const people = shifts.map((s) => s.get("operator")).filter(Boolean);
+      return {
+        day: today,
+        today: {
+          orders: todayFacts.length,
+          open: todayFacts.filter((f) => OPEN.includes(f.status)).length,
+          cancelled: todayFacts.filter((f) => f.status === "CANCELLED").length,
+          delivered: sales.delivered,
+          sales: sales.revenue,
+          riderPay: sales.commission,
+          kept: sales.net,
+          avgOrder: sales.avgOrder,
+          avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null,
+          cashReceived: sumBy(received, (r) => r.amount)
+        },
+        topRider: riders[0] ? {
+          rider: riders[0].rider,
+          delivered: riders[0].delivered,
+          sales: riders[0].revenue
+        } : null,
+        cash,
+        riderPayOwed: owed,
+        attention: { momoPending, handoversPending, handoversDisputed, openIssues },
+        onShift: {
+          riders: people.filter((u) => u.get("riderCode")).length,
+          cashiers: people.filter((u) => !u.get("riderCode")).length,
+          onBreak: people.filter((u) => u.get("riderCode") && u.get("available") === false).length
+        },
+        hours: hours.map((h) => ({ hour: h.hour, orders: h.orders, sales: h.revenue })),
+        days: R.series(
+          monthFacts,
+          bucketKeys(monthRange.from, monthRange.to, "day"),
+          (f) => bucketOf(f.createdAt, tz, "day")
+        ).map((row) => ({ day: row.key, orders: row.orders, sales: row.revenue })),
+        recent: recentRows.map((o) => {
+          const f = factOf(o);
+          return {
+            id: f.id,
+            code: f.code,
+            rider: f.rider,
+            customer: f.customer,
+            status: f.status,
+            total: f.total,
+            method: f.method,
+            createdAt: f.createdAt
+          };
+        })
+      };
+    });
+    var AUDIT_GROUPS = [
+      "order",
+      "payment",
+      "cash",
+      "payout",
+      "shift",
+      "team",
+      "rider",
+      "menu",
+      "stock",
+      "configuration",
+      "security",
+      "owner",
+      "report"
+    ];
+    var PAGE = 100;
+    var parseJson = (json) => {
+      try {
+        return JSON.parse(json || "{}");
+      } catch {
+        return {};
+      }
+    };
+    async function entityLabels(rows) {
+      const byType = /* @__PURE__ */ new Map();
+      for (const row of rows) {
+        const type = row.get("entityType");
+        if (!byType.has(type)) byType.set(type, /* @__PURE__ */ new Set());
+        byType.get(type).add(row.get("entityId"));
+      }
+      const fields = {
+        Order: (o) => o.get("orderCode"),
+        CashHandover: (o) => o.get("handoverCode"),
+        TillPayout: (o) => o.get("payoutCode"),
+        MenuItem: (o) => o.get("title"),
+        MenuCategory: (o) => o.get("title"),
+        Accompaniment: (o) => o.get("title"),
+        _User: (o) => personName(o),
+        ZReport: (o) => `Z-report ${o.get("day")}`
+      };
+      const labels = /* @__PURE__ */ new Map();
+      await Promise.all(
+        [...byType].map(async ([type, ids]) => {
+          if (!fields[type]) return;
+          const query = new Parse.Query(type === "_User" ? Parse.User : type);
+          query.containedIn("objectId", [...ids].filter(Boolean));
+          query.limit(ids.size);
+          for (const object of await query.find(MASTER))
+            labels.set(`${type}:${object.id}`, fields[type](object));
+        })
+      );
+      return labels;
+    }
+    Parse.Cloud.define("adminGetAuditLog", async (request) => {
+      await adminOnly(request);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const range = resolveRange(p, config.timezone, { defaultDays: 7, maxDays: 366 });
+      if (range.error) throw invalid(range.error);
+      const query = new Parse.Query("AuditLog");
+      query.greaterThanOrEqualTo("createdAt", range.start);
+      query.lessThan("createdAt", range.end);
+      if (p.before) {
+        const before = new Date(p.before);
+        if (Number.isNaN(before.getTime())) throw invalid("Bad page");
+        query.lessThan("createdAt", before < range.end ? before : range.end);
+      }
+      if (p.actorId) {
+        if (!/^[A-Za-z0-9]{1,32}$/.test(String(p.actorId))) throw invalid("Unknown person");
+        query.equalTo("actor", Parse.User.createWithoutData(String(p.actorId)));
+      }
+      if (p.group) {
+        if (!AUDIT_GROUPS.includes(p.group)) throw invalid("Unknown kind of action");
+        query.startsWith("action", `${p.group}.`);
+      }
+      if (p.entityId) {
+        if (!/^[A-Za-z0-9]{1,32}$/.test(String(p.entityId))) throw invalid("Unknown record");
+        query.equalTo("entityId", String(p.entityId));
+      }
+      query.include("actor");
+      query.descending("createdAt");
+      query.limit(PAGE + 1);
+      const found = await query.find(MASTER);
+      const rows = found.slice(0, PAGE);
+      const labels = await entityLabels(rows);
+      return {
+        range: { from: range.from, to: range.to },
+        groups: AUDIT_GROUPS,
+        rows: rows.map((row) => ({
+          id: row.id,
+          at: row.createdAt,
+          action: row.get("action"),
+          actorId: row.get("actor")?.id || "",
+          actor: personName(row.get("actor")) || "System",
+          entityType: row.get("entityType"),
+          entityId: row.get("entityId"),
+          entity: labels.get(`${row.get("entityType")}:${row.get("entityId")}`) || "",
+          before: parseJson(row.get("beforeJson")),
+          after: parseJson(row.get("afterJson"))
+        })),
+        next: found.length > PAGE ? rows[rows.length - 1].createdAt : null
+      };
+    });
+    async function buildZReport(day, config) {
+      const tz = config.timezone;
+      const range = dayRange(day, tz);
+      const placedQuery = ordersIn(range, "createdAt");
+      const deliveredQuery = ordersIn(range, "deliveredAt").equalTo("status", "DELIVERED");
+      const cancelledQuery = ordersIn(range, "cancelledAt").equalTo("status", "CANCELLED");
+      const payoutQuery = new Parse.Query("TillPayout");
+      payoutQuery.greaterThanOrEqualTo("paidAt", range.start);
+      payoutQuery.lessThan("paidAt", range.end);
+      const shiftQuery = new Parse.Query("Shift");
+      shiftQuery.equalTo("kind", "cashier");
+      shiftQuery.equalTo("status", "closed");
+      shiftQuery.greaterThanOrEqualTo("endedAt", range.start);
+      shiftQuery.lessThan("endedAt", range.end);
+      shiftQuery.include("operator");
+      const disputeQuery = new Parse.Query("CashHandover");
+      disputeQuery.equalTo("status", "disputed");
+      disputeQuery.greaterThanOrEqualTo("handedOverAt", range.start);
+      disputeQuery.lessThan("handedOverAt", range.end);
+      const [placed, delivered, cancelled, payouts, shifts, received, disputes, stillWithRiders] = await Promise.all([
+        placedQuery.count(MASTER),
+        findAll(deliveredQuery).then((rows) => rows.map(factOf)),
+        cancelledQuery.count(MASTER),
+        findAll(payoutQuery),
+        findAll(shiftQuery),
+        cashReceived(range),
+        disputeQuery.count(MASTER),
+        cashWithRiders()
+      ]);
+      const sales = R.summarize(delivered);
+      const lines = await orderLines(delivered.map((f) => f.id));
+      const cash = delivered.filter((f) => f.method === "cash");
+      const momo = delivered.filter((f) => f.method === "mobile_money");
+      const momoBy = (status) => momo.filter((f) => f.paymentStatus === status);
+      const riderPayouts = payouts.filter((row) => row.get("kind") === "rider");
+      const receivedBy = /* @__PURE__ */ new Map();
+      for (const row of received)
+        receivedBy.set(row.riderId, (receivedBy.get(row.riderId) || 0) + row.amount);
+      return {
+        day,
+        orders: {
+          placed,
+          delivered: sales.delivered,
+          cancelled,
+          avgOrder: sales.avgOrder,
+          avgDeliveryMinutes: sales.avgDeliveryMinutes ?? null
+        },
+        sales: {
+          total: sales.revenue,
+          food: sales.foodSales,
+          deliveryFees: sales.deliveryFees,
+          riderCommission: sales.riderCommission,
+          riderPay: sales.commission,
+          kept: sales.net
+        },
+        payments: {
+          cash: sumBy(cash, (f) => f.amountCollected),
+          cashOrders: cash.length,
+          mobileMoneyVerified: sumBy(momoBy("VERIFIED"), (f) => f.total),
+          mobileMoneyPending: sumBy(momoBy("PENDING_VERIFICATION"), (f) => f.total),
+          mobileMoneyRejected: momoBy("REJECTED").length
+        },
+        till: {
+          cashReceived: sumBy(received, (r) => r.amount),
+          riderPay: sumBy(riderPayouts, (row) => row.get("amount")),
+          otherPayouts: sumBy(
+            payouts.filter((row) => row.get("kind") !== "rider"),
+            (row) => row.get("amount")
+          ),
+          disputes,
+          cashWithRidersNow: stillWithRiders.total
+        },
+        shifts: shifts.map((s) => ({
+          cashier: personName(s.get("operator")),
+          opening: Number(s.get("openingFloat") || 0),
+          cashIn: s.get("cashIn") ?? null,
+          paidOut: s.get("paidOut") ?? null,
+          expected: s.get("expectedTill") ?? null,
+          counted: s.get("physicalCount") ?? null,
+          variance: s.get("variance") ?? 0,
+          note: s.get("varianceNote") || ""
+        })),
+        riders: R.riderStats(delivered).sort((a, b) => b.revenue - a.revenue).map((row) => ({
+          rider: row.rider,
+          delivered: row.delivered,
+          sales: row.revenue,
+          cash: sumBy(
+            cash.filter((f) => f.riderId === row.riderId),
+            (f) => f.amountCollected
+          ),
+          handedOver: receivedBy.get(row.riderId) || 0,
+          riderPay: row.commission
+        })),
+        items: R.itemSales(lines).slice(0, 10).map(({ name, qty, revenue }) => ({ name, qty, revenue }))
+      };
+    }
+    async function storedZReport(day) {
+      return new Parse.Query("ZReport").equalTo("day", day).first(MASTER);
+    }
+    async function saveZReport(day, data, actor) {
+      const row = await storedZReport(day) || new Parse.Object("ZReport");
+      row.set({ day, data, generatedAt: /* @__PURE__ */ new Date(), auto: !actor });
+      row.setACL(readAcl(null, ["admin"]));
+      await row.save(null, MASTER);
+      await audit(actor || null, "report.z_saved", row, null, {
+        day,
+        sales: data.sales.total,
+        kept: data.sales.kept
+      });
+      return row;
+    }
+    var zSummary = (config, data) => [
+      `${data.orders.delivered} delivered`,
+      `sales ${money(config, data.sales.total)}`,
+      `kept ${money(config, data.sales.kept)}`,
+      data.till.cashWithRidersNow ? `${money(config, data.till.cashWithRidersNow)} still with riders` : "",
+      data.shifts.some((s) => s.variance) ? `till off by ${money(
+        config,
+        data.shifts.reduce((n, s) => n + Math.abs(s.variance || 0), 0)
+      )}` : ""
+    ].filter(Boolean).join(" \xB7 ");
+    var Z_CHECK_MS = Number(process.env.RELAY_Z_CHECK_MS ?? 6e5);
+    var lastZCheck = 0;
+    async function zReportDue(config, { force = false } = {}) {
+      if (!force && (Z_CHECK_MS < 0 || Date.now() - lastZCheck < Z_CHECK_MS)) return null;
+      lastZCheck = Date.now();
+      const now = /* @__PURE__ */ new Date();
+      if (localClock(now, config.timezone).hour < Number(config.zReportHour ?? 23)) return null;
+      const day = isoDay(now, config.timezone);
+      if (await storedZReport(day)) return null;
+      const data = await buildZReport(day, config);
+      const row = await saveZReport(day, data, null);
+      await notifyAdmins({
+        kind: "report.z",
+        tone: "update",
+        key: `z-report:${day}`,
+        title: `Z-report for ${day}`,
+        body: zSummary(config, data),
+        link: `/admin/reports/z/${day}`
+      });
+      return row;
+    }
+    Parse.Cloud.job("dailyZReport", async () => {
+      const { values: config } = await loadConfig();
+      const row = await zReportDue(config, { force: true });
+      return row ? `Z-report saved for ${row.get("day")}` : "Not due yet (or already saved)";
+    });
+    Parse.Cloud.define("adminGetZReport", async (request) => {
+      const actor = await adminOnly(request);
+      const { values: config } = await loadConfig();
+      const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
+      const day = request.params.day || today;
+      if (!isDay(day) || day > today) throw invalid("Choose a day up to today");
+      if (day === today)
+        return { day, live: true, savedAt: null, report: await buildZReport(day, config) };
+      let row = await storedZReport(day);
+      if (!row) row = await saveZReport(day, await buildZReport(day, config), actor);
+      return { day, live: false, savedAt: row.get("generatedAt"), report: row.get("data") };
+    });
+    Parse.Cloud.define("adminListZReports", async (request) => {
+      await adminOnly(request);
+      const query = new Parse.Query("ZReport");
+      query.descending("day");
+      query.limit(62);
+      return (await query.find(MASTER)).map((row) => ({
+        day: row.get("day"),
+        savedAt: row.get("generatedAt"),
+        delivered: row.get("data")?.orders?.delivered ?? 0,
+        sales: row.get("data")?.sales?.total ?? 0,
+        kept: row.get("data")?.sales?.kept ?? 0
+      }));
+    });
+    module2.exports = { zReportDue, buildZReport };
+  }
+});
+
 // cloud/notifications.js
 var require_notifications = __commonJS({
   "cloud/notifications.js"(exports2, module2) {
@@ -9245,7 +10388,9 @@ var require_notifications = __commonJS({
         await handoverReminder(user, config, float);
       } else if (role === "cashier" || role === "admin") {
         const { staleHandoverAlerts } = require_cash();
-        await staleHandoverAlerts((await loadConfig()).values);
+        const { values: config } = await loadConfig();
+        await staleHandoverAlerts(config);
+        if (role === "admin") await require_owner().zReportDue(config);
       }
       const listQuery = new Parse.Query("Notification");
       listQuery.equalTo("recipient", user);
@@ -9367,45 +10512,6 @@ var require_customers = __commonJS({
       });
     });
     module2.exports = { recordCustomerOrder };
-  }
-});
-
-// cloud/lib/mobileMoney.js
-var require_mobileMoney = __commonJS({
-  "cloud/lib/mobileMoney.js"(exports2, module2) {
-    "use strict";
-    var PROVIDERS = [
-      {
-        provider: "airtel",
-        label: "Airtel Money",
-        codeField: "airtelMerchantCode",
-        nameField: "airtelMerchantName"
-      },
-      {
-        provider: "mtn",
-        label: "MTN MoMo",
-        codeField: "mtnMerchantCode",
-        nameField: "mtnMerchantName"
-      }
-    ];
-    function merchantAccounts(config) {
-      return PROVIDERS.filter((p) => String(config[p.codeField] || "").trim()).map((p) => ({
-        provider: p.provider,
-        label: p.label,
-        code: String(config[p.codeField]).trim(),
-        name: String(config[p.nameField] || "").trim()
-      }));
-    }
-    function cleanReference(value) {
-      return String(value ?? "").replace(/\s+/g, "").toUpperCase().slice(0, 40);
-    }
-    function referenceProblem(reference) {
-      if (!reference) return "Enter the transaction ID from the customer\u2019s payment message";
-      if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
-        return "A transaction ID has 4 to 40 letters or digits";
-      return "";
-    }
-    module2.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
   }
 });
 
@@ -9899,6 +11005,47 @@ var require_orders = __commonJS({
         who: "owner"
       }
     };
+    async function applyDelivery(order, { method: wanted, provider, reference, amount: given, actor, config, now = /* @__PURE__ */ new Date() }) {
+      const method = wanted || order.get("paymentMethod");
+      if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
+      const paidByMomo = order.get("paymentMethod") === "mobile_money";
+      if (paidByMomo && method !== "mobile_money") throw invalid("This order was paid by mobile money");
+      if (!paidByMomo && method === "mobile_money") {
+        const momo = await checkMobileMoney(config, provider, reference, order.id);
+        order.set({
+          paymentProvider: momo.provider,
+          paymentReference: momo.reference,
+          paymentStatus: PENDING,
+          // Paid at the door: until the cashier confirms it, the order stays on
+          // the rider's list; if it is not received, the rider owes it as cash.
+          paidAtDoor: true
+        });
+      }
+      const isCash = method === "cash";
+      const due = Number(order.get("amountToCollect") || order.get("total"));
+      const amount = isCash ? Number(given ?? due) : 0;
+      if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
+      const rider = await order.get("createdBy").fetch(MASTER);
+      const commission = computeCommission({
+        type: rider.get("commissionType") || "per_order",
+        perOrder: rider.get("commissionPerOrder"),
+        percent: rider.get("commissionPercent"),
+        subtotal: order.get("subtotal"),
+        rounding: config.commissionRounding
+      });
+      const deliveryPay = Number(order.get("deliveryFee") || 0);
+      order.set({
+        paymentMethod: method,
+        deliveredAt: now,
+        amountCollected: Math.round(amount),
+        paymentCollectedBy: actor,
+        commissionBase: commission,
+        deliveryPay,
+        commissionAmount: commission + deliveryPay,
+        commissionPaid: false,
+        cashStatus: isCash ? "WITH_RIDER" : "NOT_APPLICABLE"
+      });
+    }
     Parse.Cloud.define("transitionOrder", async (request) => {
       const actor = requireUser(request);
       const p = request.params;
@@ -9938,48 +11085,16 @@ var require_orders = __commonJS({
           cashStatus: "NOT_APPLICABLE"
         });
       }
-      if (p.action === "deliver") {
-        const method = p.paymentMethod || order.get("paymentMethod");
-        if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
-        const paidByMomo = order.get("paymentMethod") === "mobile_money";
-        if (paidByMomo && method !== "mobile_money")
-          throw invalid("This order was paid by mobile money");
-        if (!paidByMomo && method === "mobile_money") {
-          const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
-          order.set({
-            paymentProvider: momo.provider,
-            paymentReference: momo.reference,
-            paymentStatus: PENDING,
-            // Paid at the door: until the cashier confirms it, the order stays on
-            // the rider's list; if it is not received, the rider owes it as cash.
-            paidAtDoor: true
-          });
-        }
-        const isCash = method === "cash";
-        const due = Number(order.get("amountToCollect") || order.get("total"));
-        const amount = isCash ? Number(p.amountCollected ?? due) : 0;
-        if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
-        const rider = await order.get("createdBy").fetch(MASTER);
-        const commission = computeCommission({
-          type: rider.get("commissionType") || "per_order",
-          perOrder: rider.get("commissionPerOrder"),
-          percent: rider.get("commissionPercent"),
-          subtotal: order.get("subtotal"),
-          rounding: config.commissionRounding
+      if (p.action === "deliver")
+        await applyDelivery(order, {
+          method: p.paymentMethod,
+          provider: p.paymentProvider,
+          reference: p.paymentReference,
+          amount: p.amountCollected,
+          actor,
+          config,
+          now
         });
-        const deliveryPay = Number(order.get("deliveryFee") || 0);
-        order.set({
-          paymentMethod: method,
-          deliveredAt: now,
-          amountCollected: Math.round(amount),
-          paymentCollectedBy: actor,
-          commissionBase: commission,
-          deliveryPay,
-          commissionAmount: commission + deliveryPay,
-          commissionPaid: false,
-          cashStatus: isCash ? "WITH_RIDER" : "NOT_APPLICABLE"
-        });
-      }
       if (staff && !owner) await takeOrder(order, actor, role);
       await order.save(null, MASTER);
       await audit(actor, `order.${p.action}`, order, before, {
@@ -10179,7 +11294,14 @@ var require_orders = __commonJS({
         });
       return { cashier: order.get("cashierName") || "" };
     });
-    module2.exports = { riderFloat, servableAccompaniments, KITCHEN_OPEN };
+    module2.exports = {
+      riderFloat,
+      servableAccompaniments,
+      KITCHEN_OPEN,
+      PAYMENT_METHODS,
+      applyDelivery,
+      notifyTransition
+    };
   }
 });
 
@@ -10193,7 +11315,8 @@ var require_menu = __commonJS({
       requireRole,
       audit,
       loadConfig,
-      requireCashierShift
+      requireCashierShift,
+      fileUrl
     } = require_core();
     var { availableGroups } = require_accompaniments();
     var { servableAccompaniments } = require_orders();
@@ -10215,6 +11338,8 @@ var require_menu = __commonJS({
           title: item.get("title"),
           category: item.get("category") || "Mains",
           price: item.get("price"),
+          description: item.get("description") || "",
+          image: fileUrl(item.get("image")),
           accompanimentGroups: availableGroups(
             item.get("accompanimentGroups") || [],
             (id) => accompaniments.has(id)
@@ -10892,7 +12017,8 @@ var require_admin = __commonJS({
       loadConfig,
       countUsers,
       nextStaffCode,
-      endSessions
+      endSessions,
+      fileUrl
     } = require_core();
     var { COMMISSION_TYPES, ROUNDING_STEPS } = require_money();
     var { isValidTimeZone } = require_dates();
@@ -11060,7 +12186,11 @@ var require_admin = __commonJS({
           category: item.get("category"),
           active: item.get("active") !== false,
           availableToday: item.get("availableToday") !== false,
-          accompanimentGroups: item.get("accompanimentGroups") || []
+          accompanimentGroups: item.get("accompanimentGroups") || [],
+          description: item.get("description") || "",
+          image: fileUrl(item.get("image")),
+          sortOrder: Number(item.get("sortOrder") || 0),
+          archived: !!item.get("archivedAt")
         })),
         accompaniments: accompaniments.map((row) => ({
           id: row.id,
@@ -11224,6 +12354,16 @@ var require_admin = __commonJS({
         active: p.active !== false,
         availableToday: p.availableToday !== false
       });
+      if (p.description !== void 0) item.set("description", merchantField(p.description, 300));
+      if (!p.id && item.get("sortOrder") === void 0) {
+        const last = await new Parse.Query("MenuItem").descending("sortOrder").first(MASTER);
+        item.set("sortOrder", (Number(last?.get("sortOrder")) || 0) + 1);
+      }
+      if (p.archived === true) item.set({ active: false, archivedAt: /* @__PURE__ */ new Date() });
+      if (p.archived === false) {
+        item.set("active", true);
+        if (item.has("archivedAt")) item.unset("archivedAt");
+      }
       if (p.accompanimentGroups !== void 0) {
         const known = new Parse.Query("Accompaniment");
         known.limit(1e3);
@@ -11236,8 +12376,50 @@ var require_admin = __commonJS({
       }
       item.setACL(readAcl(null, ["admin"]));
       await item.save(null, MASTER);
-      await audit(actor, "menu.saved", item, before, { title, price });
+      await audit(actor, p.archived === true ? "menu.archived" : "menu.saved", item, before, {
+        title,
+        price,
+        description: item.get("description") || "",
+        active: item.get("active")
+      });
       return { id: item.id };
+    });
+    Parse.Cloud.define("adminSortMenu", async (request) => {
+      const actor = await adminOnly(request);
+      const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+      if (!ids.length || ids.length > 1e3 || new Set(ids).size !== ids.length)
+        throw invalid("Send the dishes in their new order");
+      const query = new Parse.Query("MenuItem");
+      query.containedIn("objectId", ids);
+      query.limit(ids.length);
+      const items = await query.find(MASTER);
+      if (items.length !== ids.length) throw invalid("Unknown dish in the list");
+      for (const item of items) item.set("sortOrder", ids.indexOf(item.id) + 1);
+      await Parse.Object.saveAll(items, MASTER);
+      await audit(actor, "menu.sorted", items[0], null, { count: items.length });
+      return { ok: true };
+    });
+    var IMAGE_TYPES = { "/9j/": "image/jpeg", iVBOR: "image/png", UklGR: "image/webp" };
+    var MAX_IMAGE_BASE64 = 7e5;
+    Parse.Cloud.define("adminSetMenuImage", async (request) => {
+      const actor = await adminOnly(request);
+      const item = await new Parse.Query("MenuItem").get(String(request.params.id || ""), MASTER);
+      const before = { image: fileUrl(item.get("image")) };
+      if (request.params.remove === true) {
+        if (item.has("image")) item.unset("image");
+      } else {
+        const data = String(request.params.image || "").replace(/^data:[^,]+,/, "");
+        const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
+        if (!type) throw invalid("Use a JPEG, PNG or WebP photo");
+        if (data.length > MAX_IMAGE_BASE64) throw invalid("The photo is too large (500 KB at most)");
+        const extension = type.split("/")[1].replace("jpeg", "jpg");
+        const file = new Parse.File(`dish.${extension}`, { base64: data }, type);
+        await file.save(MASTER);
+        item.set("image", file);
+      }
+      await item.save(null, MASTER);
+      await audit(actor, "menu.image", item, before, { image: fileUrl(item.get("image")) });
+      return { image: fileUrl(item.get("image")) };
     });
     Parse.Cloud.define("adminSaveAccompaniment", async (request) => {
       const actor = await adminOnly(request);
@@ -11279,6 +12461,9 @@ var require_admin = __commonJS({
       const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
       if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
         throw invalid("Cash warning must be between 50% and 99% of the limit");
+      const zHour = Number(p.zReportHour ?? current.zReportHour);
+      if (!Number.isInteger(zHour) || zHour < 0 || zHour > 23)
+        throw invalid("Z-report hour must be 0-23");
       const rounding = String(p.commissionRounding ?? current.commissionRounding);
       if (!Object.hasOwn(ROUNDING_STEPS, rounding)) throw invalid("Invalid commission rounding");
       const commissionType = String(p.defaultCommissionType ?? current.defaultCommissionType);
@@ -11307,7 +12492,8 @@ var require_admin = __commonJS({
         commissionRounding: rounding,
         defaultCommissionType: commissionType,
         defaultCommissionPerOrder: perOrder,
-        defaultCommissionPercent: percent
+        defaultCommissionPercent: percent,
+        zReportHour: zHour
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -11421,580 +12607,334 @@ var require_preview = __commonJS({
   }
 });
 
-// cloud/lib/reports.js
-var require_reports = __commonJS({
-  "cloud/lib/reports.js"(exports2, module2) {
+// cloud/overrides.js
+var require_overrides = __commonJS({
+  "cloud/overrides.js"(exports2, module2) {
     "use strict";
-    var round = (value) => Math.round(Number(value) || 0);
-    var isDelivered = (fact) => fact.status === "DELIVERED";
-    var isConfirmed = (fact) => fact.method === "cash" ? fact.cashStatus === "RECONCILED" : fact.method === "mobile_money" ? fact.paymentStatus === "VERIFIED" : true;
-    var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
-    function growth(current, previous) {
-      if (!previous) return null;
-      return Math.round((current - previous) / previous * 1e3) / 10;
-    }
-    function summarize(facts) {
-      const delivered = facts.filter(isDelivered);
-      const revenue = delivered.reduce((n, f) => n + round(f.total), 0);
-      const commission = delivered.reduce((n, f) => n + round(f.commission), 0);
-      const deliveryPay = delivered.reduce((n, f) => n + round(f.deliveryPay ?? f.deliveryFee), 0);
-      const confirmed = delivered.filter(isConfirmed);
-      const perCustomer = /* @__PURE__ */ new Map();
-      for (const fact of delivered) {
-        if (!fact.customerKey) continue;
-        perCustomer.set(fact.customerKey, (perCustomer.get(fact.customerKey) || 0) + 1);
-      }
-      const minutes = delivered.filter((f) => f.deliveredAt && f.createdAt).map((f) => (f.deliveredAt - f.createdAt) / 6e4);
-      return {
-        orders: facts.length,
-        delivered: delivered.length,
-        cancelled: facts.filter((f) => f.status === "CANCELLED").length,
-        rejected: facts.filter((f) => f.restaurantStatus === "rejected").length,
-        open: facts.filter((f) => OPEN.includes(f.status)).length,
-        revenue,
-        foodSales: delivered.reduce((n, f) => n + round(f.subtotal), 0),
-        deliveryFees: delivered.reduce((n, f) => n + round(f.deliveryFee), 0),
-        commission,
-        riderCommission: commission - deliveryPay,
-        net: revenue - commission,
-        avgOrder: delivered.length ? Math.round(revenue / delivered.length) : 0,
-        // Confirmed money only; the rest is still with riders or waiting for a check.
-        cashSales: confirmed.filter((f) => f.method === "cash").reduce((n, f) => n + round(f.total), 0),
-        mobileMoneySales: confirmed.filter((f) => f.method === "mobile_money").reduce((n, f) => n + round(f.total), 0),
-        unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + round(f.total), 0),
-        customers: perCustomer.size,
-        repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
-        avgDeliveryMinutes: minutes.length ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length) : null
-      };
-    }
-    function series(facts, keys, keyOf) {
-      const rows = new Map(
-        keys.map((key) => [key, { key, orders: 0, delivered: 0, revenue: 0, commission: 0 }])
-      );
-      for (const fact of facts) {
-        const row = rows.get(keyOf(fact));
-        if (!row) continue;
-        row.orders += 1;
-        if (!isDelivered(fact)) continue;
-        row.delivered += 1;
-        row.revenue += round(fact.total);
-        row.commission += round(fact.commission);
-      }
-      let previous = null;
-      return [...rows.values()].map((row) => {
-        const out = {
-          ...row,
-          avgOrder: row.delivered ? Math.round(row.revenue / row.delivered) : 0,
-          revenueChange: previous ? growth(row.revenue, previous.revenue) : null,
-          commissionChange: previous ? growth(row.commission, previous.commission) : null
-        };
-        previous = row;
-        return out;
-      });
-    }
-    function itemSales(lines) {
-      const byName = /* @__PURE__ */ new Map();
-      for (const line of lines) {
-        const row = byName.get(line.name) || { name: line.name, qty: 0, revenue: 0, orders: 0 };
-        row.qty += round(line.qty);
-        row.revenue += round(line.total);
-        row.orders += 1;
-        byName.set(line.name, row);
-      }
-      const revenue = [...byName.values()].reduce((n, row) => n + row.revenue, 0);
-      return [...byName.values()].map((row) => ({
-        ...row,
-        share: revenue ? Math.round(row.revenue / revenue * 1e3) / 10 : 0,
-        avgPrice: row.qty ? Math.round(row.revenue / row.qty) : 0
-      })).sort((a, b) => b.revenue - a.revenue || b.qty - a.qty || a.name.localeCompare(b.name));
-    }
-    function accompanimentCounts(lines) {
-      const counts = /* @__PURE__ */ new Map();
-      for (const line of lines)
-        for (const name of line.accompaniments || [])
-          counts.set(name, (counts.get(name) || 0) + round(line.qty));
-      return [...counts.entries()].map(([name, servings]) => ({ name, servings })).sort((a, b) => b.servings - a.servings || a.name.localeCompare(b.name));
-    }
-    function riderStats(facts) {
-      const byRider = /* @__PURE__ */ new Map();
-      for (const fact of facts) {
-        if (!fact.riderId) continue;
-        const row = byRider.get(fact.riderId) || {
-          riderId: fact.riderId,
-          rider: fact.rider,
-          orders: 0,
-          delivered: 0,
-          cancelled: 0,
-          revenue: 0,
-          commission: 0,
-          minutes: []
-        };
-        row.orders += 1;
-        if (fact.status === "CANCELLED") row.cancelled += 1;
-        if (isDelivered(fact)) {
-          row.delivered += 1;
-          row.revenue += round(fact.total);
-          row.commission += round(fact.commission);
-          if (fact.deliveredAt && fact.createdAt)
-            row.minutes.push((fact.deliveredAt - fact.createdAt) / 6e4);
-        }
-        byRider.set(fact.riderId, row);
-      }
-      return [...byRider.values()].map(({ minutes, ...row }) => ({
-        ...row,
-        avgDeliveryMinutes: minutes.length ? Math.round(minutes.reduce((n, m) => n + m, 0) / minutes.length) : null
-      })).sort((a, b) => b.revenue - a.revenue || b.orders - a.orders);
-    }
-    function timeOfDay(facts, clockOf) {
-      const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, orders: 0, revenue: 0 }));
-      const weekdays = Array.from({ length: 7 }, (_, weekday) => ({ weekday, orders: 0, revenue: 0 }));
-      for (const fact of facts) {
-        const { hour, weekday } = clockOf(fact);
-        hours[hour].orders += 1;
-        weekdays[weekday].orders += 1;
-        if (isDelivered(fact)) {
-          hours[hour].revenue += round(fact.total);
-          weekdays[weekday].revenue += round(fact.total);
-        }
-      }
-      return { hours, weekdays };
-    }
-    function paymentMix(facts) {
-      const byKey = /* @__PURE__ */ new Map();
-      for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
-        const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : "cash";
-        const row = byKey.get(key) || { key, orders: 0, amount: 0 };
-        row.orders += 1;
-        row.amount += round(fact.total);
-        byKey.set(key, row);
-      }
-      return [...byKey.values()].sort((a, b) => b.amount - a.amount);
-    }
-    function channelMix(facts) {
-      const byKey = /* @__PURE__ */ new Map();
-      for (const fact of facts.filter(isDelivered)) {
-        const key = fact.channel || "unknown";
-        const row = byKey.get(key) || { key, orders: 0, amount: 0 };
-        row.orders += 1;
-        row.amount += round(fact.total);
-        byKey.set(key, row);
-      }
-      return [...byKey.values()].sort((a, b) => b.amount - a.amount);
-    }
-    module2.exports = {
-      growth,
-      summarize,
-      series,
-      itemSales,
-      accompanimentCounts,
-      riderStats,
-      timeOfDay,
-      paymentMix,
-      channelMix
-    };
-  }
-});
-
-// cloud/reports.js
-var require_reports2 = __commonJS({
-  "cloud/reports.js"() {
-    "use strict";
-    var { MASTER, invalid, requireRole, loadConfig } = require_core();
-    var { merchantAccounts } = require_mobileMoney();
-    var { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require_dates();
-    var R = require_reports();
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      adminOnly,
+      getRoleName,
+      readAcl,
+      audit,
+      loadConfig,
+      personName
+    } = require_core();
     var { orderRiderPay } = require_money();
-    var MAX_ROWS = 2e3;
-    var PERIODS = ["day", "week", "month"];
-    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
-    async function findAll(query) {
-      const rows = [];
-      await query.eachBatch((batch) => void rows.push(...batch), { ...MASTER, batchSize: 1e3 });
-      return rows;
+    var { applyDelivery } = require_orders();
+    var { checkMobileMoney, PENDING } = require_payments();
+    var { money, notifyUser, notifyStaff } = require_notifications();
+    var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
+    var ACTIONS = ["cancel", "payment", "deliver", "reopen", "move"];
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var unsetIfSet = (object, ...keys) => keys.forEach((key) => object.has(key) && object.unset(key));
+    var snapshot = (order) => ({
+      status: order.get("status"),
+      riderId: order.get("createdBy")?.id,
+      paymentMethod: order.get("paymentMethod"),
+      paymentStatus: order.get("paymentStatus") || null,
+      cashStatus: order.get("cashStatus"),
+      amountCollected: order.get("amountCollected") || 0,
+      commissionAmount: order.get("commissionAmount") || 0
+    });
+    var idOf = (value) => typeof value === "string" && /^[A-Za-z0-9]{1,32}$/.test(value) ? value : "";
+    async function orderAudit(order) {
+      const query = new Parse.Query("AuditLog");
+      query.equalTo("entityType", "Order");
+      query.equalTo("entityId", order.id);
+      query.include("actor");
+      query.ascending("createdAt");
+      query.limit(200);
+      const parse = (json) => {
+        try {
+          return JSON.parse(json || "{}");
+        } catch {
+          return {};
+        }
+      };
+      return (await query.find(MASTER)).map((row) => ({
+        id: row.id,
+        at: row.createdAt,
+        action: row.get("action"),
+        actor: personName(row.get("actor")) || "System",
+        before: parse(row.get("beforeJson")),
+        after: parse(row.get("afterJson"))
+      }));
     }
-    function rangeOf(params, config, options) {
-      const range = resolveRange(params, config.timezone, options);
-      if (range.error) throw invalid(range.error);
-      return range;
-    }
-    var riderPointer = (id) => {
-      if (!id) return null;
-      if (typeof id !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown rider");
-      return Parse.User.createWithoutData(id);
-    };
-    var METHODS = ["all", "cash", "mobile_money"];
-    function methodOf(params) {
-      const method = params.method || "all";
-      if (!METHODS.includes(method)) throw invalid("Payment type must be cash or mobile_money");
-      return method;
-    }
-    function periodOf(params, range) {
-      if (params.period) {
-        if (!PERIODS.includes(params.period)) throw invalid("Group by day, week or month");
-        return params.period;
-      }
-      return range.days <= 31 ? "day" : range.days <= 120 ? "week" : "month";
-    }
-    function ordersIn(range, field, riderId) {
+    Parse.Cloud.define("adminGetOrder", async (request) => {
+      await adminOnly(request);
+      const id = idOf(request.params.id);
+      if (!id) throw invalid("Unknown order");
       const query = new Parse.Query("Order");
-      query.greaterThanOrEqualTo(field, range.start);
-      query.lessThan(field, range.end);
-      const rider = riderPointer(riderId);
-      if (rider) query.equalTo("createdBy", rider);
-      query.include("createdBy");
-      return query;
-    }
-    function factOf(order) {
+      query.include(["createdBy", "cashier", "cancelledBy", "paymentCheckedBy", "customer"]);
+      const order = await query.get(id, MASTER);
+      const itemQuery = new Parse.Query("OrderItem");
+      itemQuery.equalTo("order", order);
+      itemQuery.limit(200);
+      const handoverQuery = new Parse.Query("CashHandover");
+      handoverQuery.equalTo("orders", order);
+      handoverQuery.include("cashier");
+      handoverQuery.descending("createdAt");
+      const [items, history, handovers] = await Promise.all([
+        itemQuery.find(MASTER),
+        orderAudit(order),
+        handoverQuery.find(MASTER)
+      ]);
       const rider = order.get("createdBy");
-      const phone = order.get("customerPhone");
-      const name = String(order.get("customerName") || "").toLowerCase();
+      const status = order.get("status");
+      const at = (key) => order.get(key) || null;
       return {
         id: order.id,
         code: order.get("orderCode"),
-        status: order.get("status"),
+        status,
         restaurantStatus: order.get("restaurantStatus"),
         channel: order.get("channel"),
-        customer: order.get("customerName") || "",
-        customerKey: order.get("customer")?.id || (phone ? `tel:${phone}` : name && `name:${name}`),
-        riderId: rider?.id || "",
-        rider: nameOf(rider),
-        total: Number(order.get("total") || 0),
-        subtotal: Number(order.get("subtotal") || 0),
-        deliveryFee: Number(order.get("deliveryFee") || 0),
-        deliveryPay: Number(order.get("deliveryPay") ?? order.get("deliveryFee") ?? 0),
-        // Rider pay: commission + delivery fee, taken off revenue like commission.
-        commission: order.get("status") === "DELIVERED" ? orderRiderPay(order) : 0,
-        method: order.get("paymentMethod"),
-        provider: order.get("paymentProvider") || "",
-        reference: order.get("paymentReference") || "",
-        paymentStatus: order.get("paymentStatus") || "",
-        amountCollected: Number(order.get("amountCollected") || 0),
-        cashStatus: order.get("cashStatus") || "",
-        createdAt: order.createdAt,
-        deliveredAt: order.get("deliveredAt") || null
+        rider: { id: rider?.id || "", name: personName(rider) },
+        cashier: personName(order.get("cashier")),
+        customer: {
+          name: order.get("customerName") || "",
+          phone: order.get("customerPhone") || "",
+          address: order.get("deliveryAddress") || "",
+          notes: order.get("deliveryNotes") || ""
+        },
+        items: items.map((item) => ({
+          id: item.id,
+          name: item.get("itemNameSnapshot"),
+          qty: item.get("quantity"),
+          price: item.get("unitPriceSnapshot"),
+          total: item.get("lineTotal"),
+          notes: item.get("notes") || "",
+          accompaniments: item.get("accompanimentNames") || []
+        })),
+        subtotal: order.get("subtotal") || 0,
+        deliveryFee: order.get("deliveryFee") || 0,
+        total: order.get("total") || 0,
+        payment: {
+          method: order.get("paymentMethod"),
+          provider: order.get("paymentProvider") || "",
+          reference: order.get("paymentReference") || "",
+          status: order.get("paymentStatus") || "",
+          checkedBy: personName(order.get("paymentCheckedBy")),
+          rejectReason: order.get("paymentRejectReason") || "",
+          paidAtDoor: order.get("paidAtDoor") === true,
+          amountCollected: order.get("amountCollected") || 0,
+          cashStatus: order.get("cashStatus") || ""
+        },
+        riderPay: status === "DELIVERED" ? {
+          total: orderRiderPay(order),
+          commission: order.get("commissionBase") ?? null,
+          deliveryFee: order.get("deliveryPay") ?? null,
+          paid: order.get("commissionPaid") === true,
+          feePaid: order.get("deliveryFeePaid") === true
+        } : null,
+        times: {
+          placed: order.createdAt,
+          accepted: at("acceptedAt"),
+          ready: at("readyAt"),
+          pickedUp: at("pickedUpAt"),
+          delivered: at("deliveredAt"),
+          cancelled: at("cancelledAt")
+        },
+        cancelledReason: order.get("cancelledReason") || "",
+        cancelledBy: personName(order.get("cancelledBy")),
+        handovers: handovers.map((h) => ({
+          id: h.id,
+          code: h.get("handoverCode"),
+          status: h.get("status"),
+          cashier: personName(h.get("cashier")),
+          at: h.get("handedOverAt") || h.createdAt
+        })),
+        history,
+        // What the owner may do now (see adminOverrideOrder).
+        can: overrideOptions(order)
+      };
+    });
+    function overrideOptions(order) {
+      const status = order.get("status");
+      const method = order.get("paymentMethod");
+      const delivered = status === "DELIVERED";
+      const riderPaid = order.get("commissionPaid") === true || order.get("deliveryFeePaid") === true;
+      const cashWithRider = method === "cash" && order.get("cashStatus") === "WITH_RIDER";
+      const momoUnverified = method === "mobile_money" && order.get("paymentStatus") !== "VERIFIED";
+      return {
+        cancel: OPEN.includes(status),
+        deliver: ["READY", "PICKED_UP"].includes(status),
+        move: OPEN.includes(status),
+        reopen: delivered && !riderPaid && (cashWithRider || momoUnverified),
+        paymentToMobileMoney: delivered && cashWithRider,
+        paymentToCash: delivered && momoUnverified
       };
     }
-    var byNewest = (field) => (a, b) => (b[field] || 0) - (a[field] || 0);
-    var rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days });
-    Parse.Cloud.define("getReportOptions", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
-      const query = new Parse.Query(Parse.User);
-      query.exists("riderCode");
-      query.ascending("riderCode");
-      query.limit(1e3);
-      const riders = await query.find(MASTER);
-      return {
-        riders: riders.map((user) => ({
-          id: user.id,
-          label: nameOf(user),
-          active: user.get("active") !== false
-        }))
-      };
-    });
-    Parse.Cloud.define("getPaymentsLedger", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
+    Parse.Cloud.define("adminOverrideOrder", async (request) => {
+      const actor = await adminOnly(request);
       const p = request.params;
+      if (!ACTIONS.includes(p.action)) throw invalid("Unknown override");
+      const reason = clean(p.reason, 300);
+      if (reason.length < 5) throw invalid("Say why (at least 5 characters)");
+      const id = idOf(p.id);
+      if (!id) throw invalid("Unknown order");
+      const order = await new Parse.Query("Order").get(id, MASTER);
+      const can = overrideOptions(order);
+      const before = snapshot(order);
       const { values: config } = await loadConfig();
-      const range = rangeOf(p, config, { defaultDays: 7 });
-      const method = methodOf(p);
-      const wantCash = method !== "mobile_money";
-      const wantMomo = method !== "cash";
-      const cashQuery = ordersIn(range, "deliveredAt", p.riderId);
-      cashQuery.equalTo("paymentMethod", "cash");
-      cashQuery.equalTo("status", "DELIVERED");
-      const momoQuery = ordersIn(range, "createdAt", p.riderId);
-      momoQuery.equalTo("paymentMethod", "mobile_money");
-      momoQuery.include("paymentCheckedBy");
-      const handoverQuery = new Parse.Query("CashHandover");
-      handoverQuery.greaterThanOrEqualTo("createdAt", new Date(range.start.getTime() - 7 * 864e5));
-      handoverQuery.lessThan("createdAt", new Date(range.end.getTime() + 7 * 864e5));
-      if (p.riderId) handoverQuery.equalTo("rider", riderPointer(p.riderId));
-      handoverQuery.include(["rider", "cashier"]);
-      const [cashOrders, momoOrders, handovers] = await Promise.all([
-        wantCash ? findAll(cashQuery) : [],
-        wantMomo ? findAll(momoQuery) : [],
-        wantCash ? findAll(handoverQuery) : []
-      ]);
-      const handoverOf = /* @__PURE__ */ new Map();
-      for (const handover of handovers)
-        for (const order of handover.get("orders") || [])
-          if (handover.get("status") !== "disputed" || !handoverOf.has(order.id))
-            handoverOf.set(order.id, handover.get("handoverCode"));
-      const cashRows = cashOrders.map((order) => {
-        const f = factOf(order);
-        return {
-          id: f.id,
-          kind: "cash",
-          at: f.deliveredAt,
-          code: f.code,
-          riderId: f.riderId,
-          rider: f.rider,
-          customer: f.customer,
-          amount: f.amountCollected,
-          orderTotal: f.total,
-          status: f.cashStatus,
-          provider: "",
-          reference: handoverOf.get(order.id) || "",
-          note: order.get("shortfallNote") || ""
-        };
-      });
-      const momoRows = momoOrders.map((order) => {
-        const f = factOf(order);
-        return {
-          id: f.id,
-          kind: "mobile_money",
-          at: f.createdAt,
-          code: f.code,
-          riderId: f.riderId,
-          rider: f.rider,
-          customer: f.customer,
-          amount: f.total,
-          orderTotal: f.total,
-          orderStatus: f.status,
-          status: f.paymentStatus,
-          provider: f.provider,
-          reference: f.reference,
-          note: order.get("paymentRejectReason") || (f.status === "CANCELLED" ? "Order cancelled" : nameOf(order.get("paymentCheckedBy")))
-        };
-      });
-      const sum = (rows, test) => rows.filter(test).reduce((n, row) => n + row.amount, 0);
-      const count = (rows, test) => rows.filter(test).length;
-      const liveMomo = momoRows.filter((r) => r.orderStatus !== "CANCELLED" || r.status === "VERIFIED");
-      const handoverRows = handovers.filter((h) => h.createdAt >= range.start && h.createdAt < range.end).sort((a, b) => b.createdAt - a.createdAt).map((h) => ({
-        id: h.id,
-        code: h.get("handoverCode"),
-        riderId: h.get("rider")?.id || "",
-        rider: nameOf(h.get("rider")),
-        cashier: nameOf(h.get("cashier")),
-        amount: Number(h.get("amount") || 0),
-        countedAmount: h.get("countedAmount") ?? null,
-        orderCount: h.get("orderCount") || 0,
-        status: h.get("status"),
-        reason: h.get("disputeReason") || "",
-        createdAt: h.createdAt,
-        confirmedAt: h.get("confirmedAt") || null,
-        returnedAmount: Number(h.get("returnedAmount") || 0),
-        shortage: Number(h.get("shortage") || 0),
-        shortageStatus: h.get("shortageStatus") || "",
-        resolutionNote: h.get("resolutionNote") || "",
-        receivedByOwner: h.get("receivedByOwner") === true
-      }));
-      const transactions = [...cashRows, ...momoRows].sort(byNewest("at"));
-      return {
-        range: rangeInfo(range),
-        method,
-        summary: {
-          total: sum(cashRows, () => true) + sum(liveMomo, (r) => r.status === "VERIFIED"),
-          cash: {
-            count: cashRows.length,
-            collected: sum(cashRows, () => true),
-            withRiders: sum(cashRows, (r) => r.status === "WITH_RIDER"),
-            handoverPending: sum(cashRows, (r) => r.status === "HANDOVER_PENDING"),
-            reconciled: sum(cashRows, (r) => r.status === "RECONCILED")
-          },
-          mobileMoney: {
-            count: momoRows.length,
-            verified: sum(momoRows, (r) => r.status === "VERIFIED"),
-            verifiedCount: count(momoRows, (r) => r.status === "VERIFIED"),
-            pending: sum(liveMomo, (r) => r.status === "PENDING_VERIFICATION"),
-            pendingCount: count(liveMomo, (r) => r.status === "PENDING_VERIFICATION"),
-            rejected: sum(momoRows, (r) => r.status === "REJECTED"),
-            rejectedCount: count(momoRows, (r) => r.status === "REJECTED"),
-            byProvider: merchantAccounts(config).map((account) => {
-              const rows = momoRows.filter(
-                (r) => r.provider === account.provider && r.status === "VERIFIED"
-              );
-              return { ...account, count: rows.length, amount: sum(rows, () => true) };
-            })
-          },
-          handovers: {
-            count: handoverRows.length,
-            confirmed: handoverRows.filter((h) => h.status === "confirmed").reduce((n, h) => n + h.amount, 0),
-            pending: handoverRows.filter((h) => h.status === "pending").reduce((n, h) => n + h.amount, 0),
-            disputed: handoverRows.filter((h) => h.status === "disputed").length
-          }
-        },
-        transactions: transactions.slice(0, MAX_ROWS),
-        truncated: transactions.length > MAX_ROWS,
-        handovers: handoverRows
-      };
-    });
-    var ORDER_STATUSES = ["open", "DELIVERED", "CANCELLED", "PICKED_UP"];
-    Parse.Cloud.define("adminSearchOrders", async (request) => {
-      await requireRole(request, ["admin"]);
-      const p = request.params;
-      const { values: config } = await loadConfig();
-      const range = rangeOf(p, config, { defaultDays: 7 });
-      const method = methodOf(p);
-      const query = ordersIn(range, "createdAt", p.riderId);
-      if (method !== "all") query.equalTo("paymentMethod", method);
-      if (p.status) {
-        if (!ORDER_STATUSES.includes(p.status)) throw invalid("Unknown status filter");
-        if (p.status === "open")
-          query.containedIn("status", ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"]);
-        else query.equalTo("status", p.status);
+      const code = order.get("orderCode");
+      const rider = order.get("createdBy");
+      const notices = [];
+      const now = /* @__PURE__ */ new Date();
+      if (p.action === "cancel") {
+        if (!can.cancel) throw invalid("Only orders not yet delivered can be cancelled");
+        order.set({
+          status: "CANCELLED",
+          restaurantStatus: "cancelled",
+          cancelledReason: reason,
+          cancelledBy: actor,
+          cancelledAt: now,
+          cashStatus: "NOT_APPLICABLE"
+        });
+        notices.push([rider, `${code} was cancelled by the owner`, reason, "alert"]);
+        if (order.get("paymentStatus") === "VERIFIED")
+          notices.push(["staff", `${code} was cancelled after payment`, "Refund the customer."]);
       }
-      const facts = (await findAll(query)).map(factOf).sort(byNewest("createdAt"));
-      return {
-        range: rangeInfo(range),
-        summary: R.summarize(facts),
-        rows: facts.slice(0, MAX_ROWS).map(({ customerKey: _key, ...row }) => row),
-        truncated: facts.length > MAX_ROWS
-      };
-    });
-    Parse.Cloud.define("getCommissionLedger", async (request) => {
-      await requireRole(request, ["admin"]);
-      const p = request.params;
-      const { values: config } = await loadConfig();
-      const range = rangeOf(p, config, { defaultDays: 7 });
-      const query = ordersIn(range, "deliveredAt", p.riderId);
-      query.equalTo("status", "DELIVERED");
-      const facts = (await findAll(query)).map(factOf).sort(byNewest("deliveredAt"));
-      const riders = R.riderStats(facts).sort((a, b) => b.commission - a.commission);
-      return {
-        range: rangeInfo(range),
-        total: facts.reduce((n, f) => n + f.commission, 0),
-        deliveries: facts.length,
-        riders: riders.map(({ riderId, rider, delivered, revenue, commission }) => ({
-          riderId,
-          rider,
-          deliveries: delivered,
-          sales: revenue,
-          commission
-        })),
-        rows: facts.slice(0, MAX_ROWS).map((f) => ({
-          id: f.id,
-          code: f.code,
-          riderId: f.riderId,
-          rider: f.rider,
-          customer: f.customer,
-          total: f.total,
-          subtotal: f.subtotal,
-          commission: f.commission,
-          method: f.method,
-          deliveredAt: f.deliveredAt
-        })),
-        truncated: facts.length > MAX_ROWS
-      };
-    });
-    async function earningsFacts(range, riderId) {
-      const query = ordersIn(range, "deliveredAt", riderId);
-      query.equalTo("status", "DELIVERED");
-      return (await findAll(query)).map(factOf);
-    }
-    Parse.Cloud.define("getRiderEarnings", async (request) => {
-      const { user, role } = await requireRole(request, ["rider", "admin"]);
-      const p = request.params;
-      const riderId = role === "admin" ? p.riderId || user.id : user.id;
-      const { values: config } = await loadConfig();
-      const range = rangeOf(p, config, { defaultDays: 56 });
-      const period = periodOf(p, range);
-      const before = previousRange(range, config.timezone);
-      const [facts, previousFacts] = await Promise.all([
-        earningsFacts(range, riderId),
-        earningsFacts(before, riderId)
-      ]);
-      const totals = (rows) => ({
-        deliveries: rows.length,
-        earnings: rows.reduce((n, f) => n + f.commission, 0),
-        sales: rows.reduce((n, f) => n + f.total, 0),
-        cash: rows.filter((f) => f.method === "cash").reduce((n, f) => n + f.amountCollected, 0)
-      });
-      const current = totals(facts);
-      const previous = totals(previousFacts);
-      const keyOf = (f) => bucketOf(f.deliveredAt, config.timezone, period);
-      return {
-        range: rangeInfo(range),
-        previousRange: rangeInfo(before),
-        period,
-        summary: {
-          ...current,
-          avgPerDelivery: current.deliveries ? Math.round(current.earnings / current.deliveries) : 0,
-          earningsChange: R.growth(current.earnings, previous.earnings),
-          deliveriesChange: R.growth(current.deliveries, previous.deliveries)
-        },
-        previous,
-        series: R.series(facts, bucketKeys(range.from, range.to, period), keyOf).map((row) => ({
-          key: row.key,
-          deliveries: row.delivered,
-          earnings: row.commission,
-          sales: row.revenue,
-          change: row.commissionChange
-        })),
-        deliveries: facts.sort(byNewest("deliveredAt")).slice(0, 300).map((f) => ({
-          id: f.id,
-          code: f.code,
-          customer: f.customer,
-          total: f.total,
-          commission: f.commission,
-          method: f.method,
-          deliveredAt: f.deliveredAt
-        }))
-      };
-    });
-    async function orderLines(orderIds) {
-      const lines = [];
-      for (let i = 0; i < orderIds.length; i += 500) {
-        const query = new Parse.Query("OrderItem");
-        query.containedIn(
-          "order",
-          orderIds.slice(i, i + 500).map((id) => Parse.Object.extend("Order").createWithoutData(id))
-        );
-        for (const item of await findAll(query))
-          lines.push({
-            name: item.get("itemNameSnapshot") || "Item",
-            qty: Number(item.get("quantity") || 0),
-            total: Number(item.get("lineTotal") || 0),
-            accompaniments: item.get("accompanimentNames") || []
+      if (p.action === "payment") {
+        if (p.method === "mobile_money") {
+          if (!can.paymentToMobileMoney)
+            throw invalid("Only a delivered cash order whose cash is still with the rider can switch");
+          const momo = await checkMobileMoney(config, p.provider, p.reference, order.id);
+          order.set({
+            paymentMethod: "mobile_money",
+            paymentProvider: momo.provider,
+            paymentReference: momo.reference,
+            paymentStatus: PENDING,
+            paidAtDoor: true,
+            amountCollected: 0,
+            cashStatus: "NOT_APPLICABLE"
           });
+          unsetIfSet(order, "paymentRejectReason", "paymentCheckedBy", "paymentCheckedAt");
+          notices.push([
+            rider,
+            `${code} changed to mobile money`,
+            `${reason}. It is off your cash; a cashier checks the payment.`
+          ]);
+          notices.push(["staff", `${code}: mobile money to check`, `Changed by the owner: ${reason}`]);
+        } else if (p.method === "cash") {
+          if (!can.paymentToCash)
+            throw invalid("Only a delivered mobile money order that is not verified can switch");
+          order.set({
+            paymentMethod: "cash",
+            amountCollected: Number(order.get("amountToCollect") || order.get("total") || 0),
+            cashStatus: "WITH_RIDER"
+          });
+          unsetIfSet(
+            order,
+            "paymentProvider",
+            "paymentReference",
+            "paymentStatus",
+            "paidAtDoor",
+            "paymentRejectReason",
+            "paymentCheckedBy",
+            "paymentCheckedAt"
+          );
+          notices.push([
+            rider,
+            `${code} changed to cash`,
+            `${reason}. Hand over ${money(config, order.get("amountCollected"))}.`,
+            "alert"
+          ]);
+        } else throw invalid("Choose cash or mobile money");
       }
-      return lines;
-    }
-    Parse.Cloud.define("getOperationsReport", async (request) => {
-      await requireRole(request, ["admin"]);
-      const p = request.params;
-      const { values: config } = await loadConfig();
-      const tz = config.timezone;
-      const range = rangeOf(p, config, { defaultDays: 30 });
-      const period = periodOf(p, range);
-      const before = previousRange(range, tz);
-      const [facts, previousFacts] = await Promise.all([
-        findAll(ordersIn(range, "createdAt", p.riderId)).then((rows) => rows.map(factOf)),
-        findAll(ordersIn(before, "createdAt", p.riderId)).then((rows) => rows.map(factOf))
-      ]);
-      const delivered = facts.filter((f) => f.status === "DELIVERED");
-      const lines = await orderLines(delivered.map((f) => f.id));
-      const summary = R.summarize(facts);
-      const previous = R.summarize(previousFacts);
-      const change = {};
-      for (const key of [
-        "revenue",
-        "orders",
-        "delivered",
-        "avgOrder",
-        "commission",
-        "net",
-        "customers"
-      ])
-        change[key] = R.growth(summary[key], previous[key]);
-      const keyOf = (bucket) => (f) => bucketOf(f.createdAt, tz, bucket);
-      return {
-        range: rangeInfo(range),
-        previousRange: rangeInfo(before),
-        period,
-        summary,
-        previous,
-        change,
-        series: R.series(facts, bucketKeys(range.from, range.to, period), keyOf(period)),
-        monthly: R.series(facts, bucketKeys(range.from, range.to, "month"), keyOf("month")),
-        items: R.itemSales(lines),
-        accompaniments: R.accompanimentCounts(lines).slice(0, 30),
-        riders: R.riderStats(facts),
-        payments: R.paymentMix(facts),
-        channels: R.channelMix(facts),
-        ...R.timeOfDay(facts, (f) => localClock(f.createdAt, tz))
-      };
+      if (p.action === "deliver") {
+        if (!can.deliver) throw invalid("Only a ready or picked-up order can be marked delivered");
+        if (!order.get("pickedUpAt")) order.set("pickedUpAt", now);
+        order.set({ status: "DELIVERED", restaurantStatus: "picked_up" });
+        await applyDelivery(order, {
+          method: p.method,
+          provider: p.provider,
+          reference: p.reference,
+          actor,
+          config,
+          now
+        });
+        notices.push([
+          rider,
+          `${code} marked delivered by the owner`,
+          order.get("paymentMethod") === "cash" ? `${reason}. You hold ${money(config, order.get("amountCollected"))} for it.` : reason
+        ]);
+      }
+      if (p.action === "reopen") {
+        if (!can.reopen)
+          throw invalid(
+            "Only a delivery whose money is still with the rider (not handed over or verified) and whose rider pay is unpaid can be undone"
+          );
+        const doorMomo = order.get("paidAtDoor") === true && order.get("paymentMethod") === "mobile_money";
+        const wasCash = order.get("paymentMethod") === "cash" || doorMomo;
+        order.set({
+          status: "PICKED_UP",
+          restaurantStatus: "picked_up",
+          amountCollected: 0,
+          commissionAmount: 0,
+          commissionPaid: false,
+          cashStatus: wasCash ? "NOT_COLLECTED" : "NOT_APPLICABLE"
+        });
+        if (wasCash) order.set("paymentMethod", "cash");
+        unsetIfSet(order, "deliveredAt", "commissionBase", "deliveryPay", "paymentCollectedBy");
+        if (doorMomo || order.get("paidAtDoor"))
+          unsetIfSet(
+            order,
+            "paymentProvider",
+            "paymentReference",
+            "paymentStatus",
+            "paidAtDoor",
+            "paymentRejectReason",
+            "paymentCheckedBy",
+            "paymentCheckedAt"
+          );
+        notices.push([
+          rider,
+          `${code} is open again`,
+          `${reason}. Deliver it when it reaches the customer.`,
+          "alert"
+        ]);
+      }
+      if (p.action === "move") {
+        if (!can.move) throw invalid("Only orders not yet delivered can move to another rider");
+        const next = await new Parse.Query(Parse.User).get(idOf(p.riderId) || "none", MASTER).catch(() => null);
+        if (!next || await getRoleName(next) !== "rider") throw invalid("Choose a rider");
+        if (next.get("active") === false) throw forbidden("That rider is deactivated");
+        if (next.id === rider?.id) throw invalid("The order is already with that rider");
+        order.set("createdBy", next);
+        order.setACL(readAcl(next));
+        const items = await new Parse.Query("OrderItem").equalTo("order", order).limit(200).find(MASTER);
+        items.forEach((item) => item.setACL(readAcl(next)));
+        if (items.length) await Parse.Object.saveAll(items, MASTER);
+        const fresh = await next.fetch(MASTER);
+        notices.push([rider, `${code} moved to ${personName(fresh)}`, reason, "alert"]);
+        notices.push([
+          next,
+          `${code} is now yours`,
+          `${reason} \xB7 ${order.get("customerName")}`,
+          "alert"
+        ]);
+      }
+      await order.save(null, MASTER);
+      const after = { ...snapshot(order), reason };
+      if (p.method) after.method = p.method;
+      await audit(actor, `order.override_${p.action}`, order, before, after);
+      for (const [to, title, body, tone = "update"] of notices) {
+        const payload = {
+          kind: `order.override_${p.action}`,
+          tone,
+          title,
+          body,
+          order
+        };
+        if (to === "staff") await notifyStaff({ ...payload, link: "/cashier", except: actor });
+        else if (to) await notifyUser(to, { ...payload, link: `/rider/order/${order.id}` });
+      }
+      return { ok: true, status: order.get("status") };
     });
+    module2.exports = { overrideOptions };
   }
 });
 
@@ -12083,4 +13023,6 @@ require_people();
 require_admin();
 require_preview();
 require_reports2();
+require_owner();
+require_overrides();
 require_profile();

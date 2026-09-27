@@ -263,6 +263,59 @@ const TRANSITIONS = {
   },
 };
 
+// Records a delivery on `order` (the caller saves it): how the customer paid,
+// the full amount collected, and the rider's pay (commission + delivery fee).
+// Used by the rider's "Delivered" step and the owner's override.
+async function applyDelivery(
+  order,
+  { method: wanted, provider, reference, amount: given, actor, config, now = new Date() },
+) {
+  const method = wanted || order.get('paymentMethod');
+  if (!PAYMENT_METHODS.includes(method)) throw invalid('Invalid payment method');
+  const paidByMomo = order.get('paymentMethod') === 'mobile_money';
+  if (paidByMomo && method !== 'mobile_money') throw invalid('This order was paid by mobile money');
+  // Paying by mobile money at the door instead of cash: record the
+  // transaction for the cashier to confirm.
+  if (!paidByMomo && method === 'mobile_money') {
+    const momo = await checkMobileMoney(config, provider, reference, order.id);
+    order.set({
+      paymentProvider: momo.provider,
+      paymentReference: momo.reference,
+      paymentStatus: PENDING,
+      // Paid at the door: until the cashier confirms it, the order stays on
+      // the rider's list; if it is not received, the rider owes it as cash.
+      paidAtDoor: true,
+    });
+  }
+  const isCash = method === 'cash';
+  // The full amount is collected at the door; orders placed before part
+  // payments were stopped keep the amount agreed then.
+  const due = Number(order.get('amountToCollect') || order.get('total'));
+  const amount = isCash ? Number(given ?? due) : 0;
+  if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
+  const rider = await order.get('createdBy').fetch(MASTER);
+  // The rider is paid their commission plus the delivery fee, from the till.
+  const commission = computeCommission({
+    type: rider.get('commissionType') || 'per_order',
+    perOrder: rider.get('commissionPerOrder'),
+    percent: rider.get('commissionPercent'),
+    subtotal: order.get('subtotal'),
+    rounding: config.commissionRounding,
+  });
+  const deliveryPay = Number(order.get('deliveryFee') || 0);
+  order.set({
+    paymentMethod: method,
+    deliveredAt: now,
+    amountCollected: Math.round(amount),
+    paymentCollectedBy: actor,
+    commissionBase: commission,
+    deliveryPay,
+    commissionAmount: commission + deliveryPay,
+    commissionPaid: false,
+    cashStatus: isCash ? 'WITH_RIDER' : 'NOT_APPLICABLE',
+  });
+}
+
 Parse.Cloud.define('transitionOrder', async (request) => {
   const actor = requireUser(request);
   const p = request.params;
@@ -303,53 +356,16 @@ Parse.Cloud.define('transitionOrder', async (request) => {
       cashStatus: 'NOT_APPLICABLE',
     });
   }
-  if (p.action === 'deliver') {
-    const method = p.paymentMethod || order.get('paymentMethod');
-    if (!PAYMENT_METHODS.includes(method)) throw invalid('Invalid payment method');
-    const paidByMomo = order.get('paymentMethod') === 'mobile_money';
-    if (paidByMomo && method !== 'mobile_money')
-      throw invalid('This order was paid by mobile money');
-    // Paying by mobile money at the door instead of cash: record the
-    // transaction for the cashier to confirm.
-    if (!paidByMomo && method === 'mobile_money') {
-      const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
-      order.set({
-        paymentProvider: momo.provider,
-        paymentReference: momo.reference,
-        paymentStatus: PENDING,
-        // Paid at the door: until the cashier confirms it, the order stays on
-        // the rider's list; if it is not received, the rider owes it as cash.
-        paidAtDoor: true,
-      });
-    }
-    const isCash = method === 'cash';
-    // The full amount is collected at the door; orders placed before part
-    // payments were stopped keep the amount agreed then.
-    const due = Number(order.get('amountToCollect') || order.get('total'));
-    const amount = isCash ? Number(p.amountCollected ?? due) : 0;
-    if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
-    const rider = await order.get('createdBy').fetch(MASTER);
-    // The rider is paid their commission plus the delivery fee, from the till.
-    const commission = computeCommission({
-      type: rider.get('commissionType') || 'per_order',
-      perOrder: rider.get('commissionPerOrder'),
-      percent: rider.get('commissionPercent'),
-      subtotal: order.get('subtotal'),
-      rounding: config.commissionRounding,
+  if (p.action === 'deliver')
+    await applyDelivery(order, {
+      method: p.paymentMethod,
+      provider: p.paymentProvider,
+      reference: p.paymentReference,
+      amount: p.amountCollected,
+      actor,
+      config,
+      now,
     });
-    const deliveryPay = Number(order.get('deliveryFee') || 0);
-    order.set({
-      paymentMethod: method,
-      deliveredAt: now,
-      amountCollected: Math.round(amount),
-      paymentCollectedBy: actor,
-      commissionBase: commission,
-      deliveryPay,
-      commissionAmount: commission + deliveryPay,
-      commissionPaid: false,
-      cashStatus: isCash ? 'WITH_RIDER' : 'NOT_APPLICABLE',
-    });
-  }
   // Taken last, once every check has passed, so a refused request never
   // leaves the order half-claimed.
   if (staff && !owner) await takeOrder(order, actor, role);
@@ -571,4 +587,11 @@ Parse.Cloud.define('transferOrder', async (request) => {
   return { cashier: order.get('cashierName') || '' };
 });
 
-module.exports = { riderFloat, servableAccompaniments, KITCHEN_OPEN };
+module.exports = {
+  riderFloat,
+  servableAccompaniments,
+  KITCHEN_OPEN,
+  PAYMENT_METHODS,
+  applyDelivery,
+  notifyTransition,
+};

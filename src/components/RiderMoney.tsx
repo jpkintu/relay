@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { useCloud } from './reports/common';
@@ -82,6 +83,7 @@ type MyPayData = {
   deliveryFees: number;
   deductions: number;
   owed: number;
+  requestedAt: string | null;
   payouts: { id: string; code: string; amount: number; paidBy: string; paidAt: string }[];
 };
 
@@ -90,8 +92,22 @@ type MyPayData = {
 export function MyPay() {
   const money = useMoney();
   const { timezone } = useConfig();
-  const { data } = useCloud<MyPayData>('getMyPay', {});
+  const { data, reload } = useCloud<MyPayData>('getMyPay', {});
+  const [asking, setAsking] = useState(false);
+  const [message, setMessage] = useState('');
   if (!data) return null;
+  const ask = async () => {
+    setAsking(true);
+    setMessage('');
+    try {
+      await Parse.Cloud.run('requestPayout');
+      reload();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'Could not send your request');
+    } finally {
+      setAsking(false);
+    }
+  };
   return (
     <section className="my-pay">
       <div className="cash-balance earnings owed">
@@ -104,6 +120,19 @@ export function MyPay() {
           {data.deductions > 0 && ` · less ${money(data.deductions)} cash shortage`}
         </span>
         <small>The cashier pays you from the till.</small>
+        {data.owed > 0 &&
+          (data.requestedAt ? (
+            <p className="pay-requested">
+              You asked to be paid at{' '}
+              {formatDate(data.requestedAt, timezone, { timeStyle: 'short' })}. The cashier has been
+              told.
+            </p>
+          ) : (
+            <button className="ask-pay" disabled={asking} onClick={() => void ask()}>
+              {asking ? 'Sending…' : 'Ask to be paid'}
+            </button>
+          ))}
+        {message && <p className="ops-error">{message}</p>}
       </div>
       {data.payouts.length > 0 && (
         <div className="my-payouts">

@@ -12,6 +12,7 @@ const {
   countUsers,
   nextStaffCode,
   endSessions,
+  fileUrl,
 } = require('./lib/core');
 const { COMMISSION_TYPES, ROUNDING_STEPS } = require('./lib/money');
 const { isValidTimeZone } = require('./lib/dates');
@@ -207,6 +208,10 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       active: item.get('active') !== false,
       availableToday: item.get('availableToday') !== false,
       accompanimentGroups: item.get('accompanimentGroups') || [],
+      description: item.get('description') || '',
+      image: fileUrl(item.get('image')),
+      sortOrder: Number(item.get('sortOrder') || 0),
+      archived: !!item.get('archivedAt'),
     })),
     accompaniments: accompaniments.map((row) => ({
       id: row.id,
@@ -393,6 +398,19 @@ Parse.Cloud.define('adminSaveMenuItem', async (request) => {
     active: p.active !== false,
     availableToday: p.availableToday !== false,
   });
+  if (p.description !== undefined) item.set('description', merchantField(p.description, 300));
+  // A new dish goes to the end of the menu.
+  if (!p.id && item.get('sortOrder') === undefined) {
+    const last = await new Parse.Query('MenuItem').descending('sortOrder').first(MASTER);
+    item.set('sortOrder', (Number(last?.get('sortOrder')) || 0) + 1);
+  }
+  // Archived dishes leave the menu and the owner's list but keep their
+  // history (order lines keep their own name and price).
+  if (p.archived === true) item.set({ active: false, archivedAt: new Date() });
+  if (p.archived === false) {
+    item.set('active', true);
+    if (item.has('archivedAt')) item.unset('archivedAt');
+  }
   if (p.accompanimentGroups !== undefined) {
     const known = new Parse.Query('Accompaniment');
     known.limit(1000);
@@ -405,8 +423,55 @@ Parse.Cloud.define('adminSaveMenuItem', async (request) => {
   }
   item.setACL(readAcl(null, ['admin']));
   await item.save(null, MASTER);
-  await audit(actor, 'menu.saved', item, before, { title, price });
+  await audit(actor, p.archived === true ? 'menu.archived' : 'menu.saved', item, before, {
+    title,
+    price,
+    description: item.get('description') || '',
+    active: item.get('active'),
+  });
   return { id: item.id };
+});
+
+// Owner: the order dishes appear in. { ids } lists dishes top to bottom.
+Parse.Cloud.define('adminSortMenu', async (request) => {
+  const actor = await adminOnly(request);
+  const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+  if (!ids.length || ids.length > 1000 || new Set(ids).size !== ids.length)
+    throw invalid('Send the dishes in their new order');
+  const query = new Parse.Query('MenuItem');
+  query.containedIn('objectId', ids);
+  query.limit(ids.length);
+  const items = await query.find(MASTER);
+  if (items.length !== ids.length) throw invalid('Unknown dish in the list');
+  for (const item of items) item.set('sortOrder', ids.indexOf(item.id) + 1);
+  await Parse.Object.saveAll(items, MASTER);
+  await audit(actor, 'menu.sorted', items[0], null, { count: items.length });
+  return { ok: true };
+});
+
+// Owner: a dish photo. { id, image: base64 JPEG/PNG/WebP (the app shrinks it
+// first) } or { id, remove: true }.
+const IMAGE_TYPES = { '/9j/': 'image/jpeg', iVBOR: 'image/png', UklGR: 'image/webp' };
+const MAX_IMAGE_BASE64 = 700000; // about 500 KB
+Parse.Cloud.define('adminSetMenuImage', async (request) => {
+  const actor = await adminOnly(request);
+  const item = await new Parse.Query('MenuItem').get(String(request.params.id || ''), MASTER);
+  const before = { image: fileUrl(item.get('image')) };
+  if (request.params.remove === true) {
+    if (item.has('image')) item.unset('image');
+  } else {
+    const data = String(request.params.image || '').replace(/^data:[^,]+,/, '');
+    const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
+    if (!type) throw invalid('Use a JPEG, PNG or WebP photo');
+    if (data.length > MAX_IMAGE_BASE64) throw invalid('The photo is too large (500 KB at most)');
+    const extension = type.split('/')[1].replace('jpeg', 'jpg');
+    const file = new Parse.File(`dish.${extension}`, { base64: data }, type);
+    await file.save(MASTER);
+    item.set('image', file);
+  }
+  await item.save(null, MASTER);
+  await audit(actor, 'menu.image', item, before, { image: fileUrl(item.get('image')) });
+  return { image: fileUrl(item.get('image')) };
 });
 
 // Accompaniments are free sides (matooke, rice, ...) attached to dishes in
@@ -454,6 +519,9 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
   const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
   if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
     throw invalid('Cash warning must be between 50% and 99% of the limit');
+  const zHour = Number(p.zReportHour ?? current.zReportHour);
+  if (!Number.isInteger(zHour) || zHour < 0 || zHour > 23)
+    throw invalid('Z-report hour must be 0-23');
   const rounding = String(p.commissionRounding ?? current.commissionRounding);
   if (!Object.hasOwn(ROUNDING_STEPS, rounding)) throw invalid('Invalid commission rounding');
   const commissionType = String(p.defaultCommissionType ?? current.defaultCommissionType);
@@ -485,6 +553,7 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     defaultCommissionType: commissionType,
     defaultCommissionPerOrder: perOrder,
     defaultCommissionPercent: percent,
+    zReportHour: zHour,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

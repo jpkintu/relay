@@ -15,9 +15,12 @@ import { ParseServer } from 'parse-server';
 
 const require = createRequire(import.meta.url);
 const Parse = require('parse/node');
+const FileSystemAdapter = require('@parse/fs-files-adapter');
 
 // Check for stale handovers on every staff poll (the app throttles it).
 process.env.RELAY_STALE_CHECK_MS = '0';
+// The nightly Z-report is tested directly, not from the owner's polling.
+process.env.RELAY_Z_CHECK_MS = '-1';
 
 const PORT = 1338;
 const APP_ID = 'relay-e2e';
@@ -56,6 +59,8 @@ before(async () => {
     // Back4App runs Cloud Code with direct access (no HTTP round trip), which
     // changes what save() returns. RELAY_DIRECT_ACCESS=true reproduces it.
     directAccess: process.env.RELAY_DIRECT_ACCESS === 'true',
+    // Dish photos: stored on disk (e2e/files/), so Postgres runs need no GridFS.
+    filesAdapter: new FileSystemAdapter(),
   });
   await parseServer.start();
   const app = express();
@@ -2458,5 +2463,357 @@ describe("people: PINs, availability, cash limits and the owner's member page", 
     const page = await run('adminGetMember', { id: quinn.id }, s.owner);
     assert.deepEqual(page.commission, { type: 'hybrid', perOrder: 700, percent: 5 });
     await run('adminSaveSettings', current, s.owner);
+  });
+});
+
+describe('owner reporting and control', () => {
+  const M = { useMasterKey: true };
+  let item;
+  let val;
+  const orderBy = (rider, name) =>
+    run(
+      'createOrder',
+      { customerName: name, deliveryAddress: 'Bukoto', items: [{ id: item.id, quantity: 1 }] },
+      rider,
+    );
+  const toReady = async (id) => {
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: id, action }, s.dina);
+  };
+  const override = (params) => run('adminOverrideOrder', params, s.owner);
+  const fetchOrder = (id) => new Parse.Query('Order').get(id, M);
+
+  before(async () => {
+    val = await run(
+      'adminCreateTeamMember',
+      { name: 'Val Wheels', username: 'val', pin: '5151', role: 'rider' },
+      s.owner,
+    );
+    await run(
+      'adminUpdateMember',
+      { id: val.id, commissionType: 'per_order', commissionPerOrder: 1500 },
+      s.owner,
+    );
+    PINS.val = '5151';
+    s.val = await login('val', '5151');
+    item = (await run('getOperationalMenu', {}, s.val)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+
+  test('the dashboard is computed on the server, for the owner only', async () => {
+    await rejects(run('getDashboard', {}, s.dina), /admin role required/);
+    const d = await run('getDashboard', {}, s.owner);
+    assert.match(d.day, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(d.days.length, 30);
+    assert.equal(d.hours.length, 24);
+    assert.ok(d.recent.length > 0 && d.recent.length <= 15);
+    assert.equal(d.today.kept, d.today.sales - d.today.riderPay);
+    const held = await new Parse.Query('Order')
+      .equalTo('status', 'DELIVERED')
+      .containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING'])
+      .limit(1000)
+      .find(M);
+    assert.equal(
+      d.cash.total,
+      held.reduce((n, o) => n + (o.get('amountCollected') || 0), 0),
+    );
+    assert.equal(typeof d.attention.momoPending, 'number');
+  });
+
+  test('the owner can cancel an order the kitchen already accepted, with a reason', async () => {
+    const placed = await orderBy(s.val, 'Cancel me');
+    await run('transitionOrder', { orderId: placed.id, action: 'accept' }, s.dina);
+    await rejects(
+      run('transitionOrder', { orderId: placed.id, action: 'cancel', reason: 'No' }, s.val),
+      /kitchen has accepted/,
+    );
+    await rejects(override({ id: placed.id, action: 'cancel', reason: 'no' }), /Say why/);
+    await rejects(
+      override({ id: placed.id, action: 'refund', reason: 'Because' }),
+      /Unknown override/,
+    );
+    await rejects(
+      run(
+        'adminOverrideOrder',
+        { id: placed.id, action: 'cancel', reason: 'Customer left' },
+        s.dina,
+      ),
+      /admin role required/,
+    );
+    await override({ id: placed.id, action: 'cancel', reason: 'Customer left' });
+    const order = await fetchOrder(placed.id);
+    assert.equal(order.get('status'), 'CANCELLED');
+    assert.equal(order.get('cancelledReason'), 'Customer left');
+    const note = await new Parse.Query('Notification')
+      .equalTo('recipient', Parse.User.createWithoutData(val.id))
+      .equalTo('kind', 'order.override_cancel')
+      .first(M);
+    assert.ok(note, 'the rider is told');
+    await rejects(
+      override({ id: placed.id, action: 'cancel', reason: 'Again please' }),
+      /not yet delivered/,
+    );
+  });
+
+  test('the owner can move an open order to another rider', async () => {
+    const placed = await orderBy(s.val, 'Move me');
+    await rejects(
+      override({ id: placed.id, action: 'move', reason: 'Bike broke', riderId: s.dina.id }),
+      /Choose a rider/,
+    );
+    await override({ id: placed.id, action: 'move', reason: 'Bike broke down', riderId: s.pat.id });
+    const order = await fetchOrder(placed.id);
+    assert.equal(order.get('createdBy').id, s.pat.id);
+    assert.equal(
+      await new Parse.Query('Order').equalTo('objectId', placed.id).first(as(s.val)),
+      undefined,
+    );
+    assert.ok(await new Parse.Query('Order').equalTo('objectId', placed.id).first(as(s.pat)));
+    const lines = await new Parse.Query('OrderItem').equalTo('order', order).find(as(s.pat));
+    assert.equal(lines.length, 1);
+    await override({ id: placed.id, action: 'cancel', reason: 'Clean up test' });
+  });
+
+  test('mark delivered, switch the payment, and undo the delivery', async () => {
+    const placed = await orderBy(s.val, 'Stuck order');
+    await rejects(
+      override({ id: placed.id, action: 'deliver', reason: 'Rider phone died' }),
+      /ready or picked-up/,
+    );
+    await toReady(placed.id);
+    await override({ id: placed.id, action: 'deliver', reason: 'Rider phone died' });
+    let order = await fetchOrder(placed.id);
+    assert.equal(order.get('status'), 'DELIVERED');
+    assert.equal(order.get('cashStatus'), 'WITH_RIDER');
+    assert.equal(order.get('amountCollected'), placed.total);
+    assert.equal(order.get('commissionAmount'), 1500 + order.get('deliveryFee'));
+
+    await rejects(
+      override({
+        id: placed.id,
+        action: 'payment',
+        method: 'mobile_money',
+        reason: 'Paid by MoMo',
+        provider: 'mtn',
+        reference: '',
+      }),
+      /transaction ID/,
+    );
+    await override({
+      id: placed.id,
+      action: 'payment',
+      method: 'mobile_money',
+      reason: 'Customer paid by MoMo',
+      provider: 'mtn',
+      reference: 'OVR12345',
+    });
+    order = await fetchOrder(placed.id);
+    assert.equal(order.get('paymentMethod'), 'mobile_money');
+    assert.equal(order.get('paymentStatus'), 'PENDING_VERIFICATION');
+    assert.equal(order.get('cashStatus'), 'NOT_APPLICABLE');
+    assert.equal(order.get('amountCollected'), 0);
+
+    await override({
+      id: placed.id,
+      action: 'payment',
+      method: 'cash',
+      reason: 'It was cash after all',
+    });
+    order = await fetchOrder(placed.id);
+    assert.equal(order.get('paymentMethod'), 'cash');
+    assert.equal(order.get('paymentStatus'), undefined);
+    assert.equal(order.get('cashStatus'), 'WITH_RIDER');
+
+    await override({ id: placed.id, action: 'reopen', reason: 'Marked delivered by mistake' });
+    order = await fetchOrder(placed.id);
+    assert.equal(order.get('status'), 'PICKED_UP');
+    assert.equal(order.get('deliveredAt'), undefined);
+    assert.equal(order.get('commissionAmount'), 0);
+    assert.equal(order.get('cashStatus'), 'NOT_COLLECTED');
+    // The rider delivers it for real, then hands the cash over: no more undo.
+    await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.val);
+    await run('createHandover', { orderIds: [placed.id] }, s.val);
+    await rejects(
+      override({ id: placed.id, action: 'reopen', reason: 'Try to undo' }),
+      /still with the rider/,
+    );
+    await rejects(
+      override({
+        id: placed.id,
+        action: 'payment',
+        method: 'mobile_money',
+        reason: 'Try to switch',
+        provider: 'mtn',
+        reference: 'OVR99999',
+      }),
+      /still with the rider/,
+    );
+    s.valHandedOver = placed.id;
+
+    const page = await run('adminGetOrder', { id: placed.id }, s.owner);
+    assert.equal(page.code, order.get('orderCode'));
+    assert.equal(page.items.length, 1);
+    assert.equal(page.handovers.length, 1);
+    assert.equal(page.can.reopen, false);
+    const actions = page.history.map((h) => h.action);
+    for (const action of [
+      'order.placed',
+      'order.override_deliver',
+      'order.override_payment',
+      'order.override_reopen',
+      'order.deliver',
+    ])
+      assert.ok(actions.includes(action), action);
+    await rejects(run('adminGetOrder', { id: placed.id }, s.val), /admin role required/);
+  });
+
+  test('the audit log filters by kind, person and record', async () => {
+    await rejects(run('adminGetAuditLog', {}, s.dina), /admin role required/);
+    const all = await run('adminGetAuditLog', {}, s.owner);
+    assert.ok(all.rows.length > 0 && all.rows.length <= 100);
+    assert.ok(all.next, 'more than one page');
+    const second = await run('adminGetAuditLog', { before: all.next }, s.owner);
+    assert.ok(new Date(second.rows[0].at) <= new Date(all.rows.at(-1).at));
+    const orders = await run('adminGetAuditLog', { group: 'order' }, s.owner);
+    assert.ok(orders.rows.every((r) => r.action.startsWith('order.')));
+    const mine = await run('adminGetAuditLog', { actorId: val.id }, s.owner);
+    assert.ok(mine.rows.length && mine.rows.every((r) => r.actorId === val.id));
+    const one = await run('adminGetAuditLog', { entityId: s.valHandedOver }, s.owner);
+    assert.ok(one.rows.some((r) => r.action === 'order.override_reopen'));
+    assert.match(one.rows[0].entity, /^ORD-/);
+    const reopen = one.rows.find((r) => r.action === 'order.override_reopen');
+    assert.equal(reopen.before.status, 'DELIVERED');
+    assert.equal(reopen.after.status, 'PICKED_UP');
+    assert.equal(reopen.after.reason, 'Marked delivered by mistake');
+    await rejects(run('adminGetAuditLog', { group: 'nope' }, s.owner), /kind of action/);
+  });
+
+  test('a rider can ask to be paid; the commission ledger shows paid and owed', async () => {
+    await rejects(run('requestPayout', {}, s.dina), /rider role required/);
+    const placed = await orderBy(s.val, 'Pay me');
+    await toReady(placed.id);
+    await run('transitionOrder', { orderId: placed.id, action: 'pickup' }, s.val);
+    await run('transitionOrder', { orderId: placed.id, action: 'deliver' }, s.val);
+    const asked = await run('requestPayout', {}, s.val);
+    assert.ok(asked.owed > 0);
+    await rejects(run('requestPayout', {}, s.val), /already asked/);
+    const row = (await run('getRiderPay', {}, s.owner)).find((r) => r.riderId === val.id);
+    assert.ok(row.requestedAt);
+    assert.ok((await run('getMyPay', {}, s.val)).requestedAt);
+    const told = await new Parse.Query('Notification')
+      .equalTo('recipient', s.owner)
+      .equalTo('kind', 'payout.requested')
+      .first(M);
+    assert.ok(told);
+
+    const ledger = await run('getCommissionLedger', { riderId: val.id }, s.owner);
+    assert.equal(ledger.owed, ledger.total);
+    assert.ok(ledger.rows.every((r) => r.payState === 'owed'));
+    await run('payRider', { riderId: val.id }, s.owner);
+    const paid = await run('getCommissionLedger', { riderId: val.id, paid: 'paid' }, s.owner);
+    assert.equal(paid.owed, 0);
+    assert.equal(paid.rows.length, ledger.rows.length);
+    const owed = await run('getCommissionLedger', { riderId: val.id, paid: 'owed' }, s.owner);
+    assert.equal(owed.rows.length, 0);
+    assert.equal((await run('getMyPay', {}, s.val)).requestedAt, null);
+    await rejects(run('requestPayout', {}, s.val), /Nothing is owed/);
+    await rejects(run('getCommissionLedger', { paid: 'maybe' }, s.owner), /all, paid or owed/);
+  });
+
+  test('the Z-report sums the day; past days are saved; the nightly job tells the owner', async () => {
+    const today = await run('adminGetZReport', {}, s.owner);
+    assert.equal(today.live, true);
+    const z = today.report;
+    assert.ok(z.orders.delivered >= 2);
+    assert.equal(z.sales.kept, z.sales.total - z.sales.riderPay);
+    assert.equal(z.sales.total, z.sales.food + z.sales.deliveryFees);
+    assert.ok(z.riders.some((r) => r.rider.includes('Val')));
+    assert.ok(z.items.length >= 1);
+    await rejects(run('adminGetZReport', {}, s.dina), /admin role required/);
+    await rejects(run('adminGetZReport', { day: '2999-01-01' }, s.owner), /up to today/);
+    const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+    const past = await run('adminGetZReport', { day: yesterday }, s.owner);
+    assert.equal(past.live, false);
+    assert.ok(past.savedAt);
+    assert.ok((await run('adminListZReports', {}, s.owner)).some((r) => r.day === yesterday));
+    await rejects(new Parse.Query('ZReport').find(as(s.owner)), /Permission denied|unauthorized/i);
+
+    const { settings } = await run('adminListSetup', {}, s.owner);
+    await rejects(run('adminSaveSettings', { ...settings, zReportHour: 24 }, s.owner), /0-23/);
+    await run('adminSaveSettings', { ...settings, zReportHour: 0 }, s.owner);
+    const jobId = await Parse.Cloud.startJob('dailyZReport', {});
+    let status;
+    for (let i = 0; i < 50; i += 1) {
+      status = await new Parse.Query('_JobStatus').get(jobId, M);
+      if (['succeeded', 'failed'].includes(status.get('status'))) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.equal(status.get('status'), 'succeeded', status.get('message'));
+    const note = await new Parse.Query('Notification')
+      .equalTo('recipient', s.owner)
+      .equalTo('kind', 'report.z')
+      .first(M);
+    assert.ok(note, 'the owner is told');
+    assert.match(note.get('link'), /^\/admin\/reports\/z\//);
+    await run('adminSaveSettings', settings, s.owner);
+  });
+
+  test('dishes get a description, a photo, an order and can be archived', async () => {
+    const PNG =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const dish = await run(
+      'adminSaveMenuItem',
+      {
+        title: 'Rolex Special',
+        price: 6000,
+        category: 'Snacks',
+        description: 'Eggs rolled in chapati',
+      },
+      s.owner,
+    );
+    let menu = (await run('getOperationalMenu', {}, s.val)).items;
+    assert.equal(menu.at(-1).id, dish.id, 'a new dish goes to the end');
+    assert.equal(menu.at(-1).description, 'Eggs rolled in chapati');
+    await rejects(
+      run('adminSetMenuImage', { id: dish.id, image: 'aGVsbG8=' }, s.owner),
+      /JPEG, PNG or WebP/,
+    );
+    await rejects(
+      run('adminSetMenuImage', { id: dish.id, image: PNG }, s.dina),
+      /admin role required/,
+    );
+    const { image } = await run('adminSetMenuImage', { id: dish.id, image: PNG }, s.owner);
+    assert.match(image, /^https?:\/\/.+dish\.png$/);
+    menu = (await run('getOperationalMenu', {}, s.val)).items;
+    assert.equal(menu.find((i) => i.id === dish.id).image, image);
+
+    const ids = menu.map((i) => i.id);
+    await run('adminSortMenu', { ids: [dish.id, ...ids.filter((id) => id !== dish.id)] }, s.owner);
+    menu = (await run('getOperationalMenu', {}, s.val)).items;
+    assert.equal(menu[0].id, dish.id);
+    await rejects(run('adminSortMenu', { ids: [dish.id, dish.id] }, s.owner), /new order/);
+
+    await run(
+      'adminSaveMenuItem',
+      { id: dish.id, title: 'Rolex Special', price: 6000, category: 'Snacks', archived: true },
+      s.owner,
+    );
+    menu = (await run('getOperationalMenu', {}, s.val)).items;
+    assert.ok(!menu.some((i) => i.id === dish.id));
+    const listed = (await run('adminListSetup', {}, s.owner)).menu.find((i) => i.id === dish.id);
+    assert.equal(listed.archived, true);
+    assert.equal(listed.description, 'Eggs rolled in chapati');
+    await run(
+      'adminSaveMenuItem',
+      { id: dish.id, title: 'Rolex Special', price: 6000, category: 'Snacks', archived: false },
+      s.owner,
+    );
+    assert.ok((await run('getOperationalMenu', {}, s.val)).items.some((i) => i.id === dish.id));
+    await run('adminSetMenuImage', { id: dish.id, remove: true }, s.owner);
+    assert.equal(
+      (await run('adminListSetup', {}, s.owner)).menu.find((i) => i.id === dish.id).image,
+      null,
+    );
   });
 });

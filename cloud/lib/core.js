@@ -29,6 +29,8 @@ const DEFAULT_CONFIG = {
   defaultCommissionType: 'per_order',
   defaultCommissionPerOrder: 0,
   defaultCommissionPercent: 0,
+  // Hour of the day (restaurant time) after which the daily Z-report is saved.
+  zReportHour: 23,
 };
 
 const forbidden = (message) => new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, message);
@@ -329,6 +331,18 @@ async function takeOrder(order, actor, role) {
   order.set({ cashier: me, cashierName: personName(me), assignedAt: new Date() });
 }
 
+// A file's public URL. With direct access and no publicServerURL, Parse
+// Server can build "undefined/files/…"; fall back to the server URL.
+function fileUrl(file) {
+  const url = file?.url?.() || null;
+  if (!url || /^https?:\/\//.test(url)) return url;
+  const base = String(process.env.PARSE_PUBLIC_SERVER_URL || Parse.serverURL || '').replace(
+    /\/$/,
+    '',
+  );
+  return `${base}${url.replace(/^(undefined|null)/, '')}`;
+}
+
 // A code produced by the old bug ("…[object Object]") or otherwise not in the
 // expected shape.
 const isBrokenCode = (code) => typeof code === 'string' && /object|undefined|NaN/.test(code);
@@ -362,4 +376,5 @@ module.exports = {
   takeOrder,
   withRiderLimit,
   endSessions,
+  fileUrl,
 };
