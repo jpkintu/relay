@@ -83,6 +83,7 @@ function styles(width: number) {
     .qty { width: 1%; white-space: nowrap; padding-right: 2mm; font-weight: 700; }
     .note { font-weight: 700; }
     .sub { font-size: 0.9em; padding-left: 2mm; }
+    tr.side td { padding-top: 0; }
     .total td { font-weight: 700; font-size: 1.15em; padding-top: 1mm; }
     .logo { display: block; margin: 0 auto; max-width: 60%; max-height: 24mm;
       object-fit: contain; filter: grayscale(1) contrast(1.2); }
@@ -106,7 +107,7 @@ function kitchenTicket(r: Receipt, timezone: string) {
         .map(
           (line) => `
         <tr><td class="qty">${line.qty}×</td><td><b>${escape(line.name)}</b>
-          ${line.accompaniments.length ? `<div class="sub">+ ${escape(line.accompaniments.join(', '))}</div>` : ''}
+          ${line.accompaniments.map((name) => `<div class="sub">+ ${escape(name)}</div>`).join('')}
           ${line.notes ? `<div class="sub note">! ${escape(line.notes)}</div>` : ''}
         </td></tr>`,
         )
@@ -115,6 +116,13 @@ function kitchenTicket(r: Receipt, timezone: string) {
     ${r.notes && r.notes !== r.table ? `<hr><div class="note">${escape(r.notes)}</div>` : ''}
     <hr>
     <div class="center muted">Printed ${escape(formatDate(new Date(), timezone, { timeStyle: 'short' }))}</div>`;
+}
+
+// The dish alone on a receipt line; each side is listed under it with its own
+// amount (0 when free), so the amounts add up to the line total.
+function dishAmount(line: Receipt['lines'][number]) {
+  const sides = (line.accompanimentPrices || []).reduce((n, price) => n + (price || 0), 0);
+  return line.total - sides * line.qty;
 }
 
 function customerReceipt(r: Receipt, timezone: string, symbol: string) {
@@ -150,21 +158,15 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string) {
       ${r.lines
         .map(
           (line) => `
-        <tr><td class="qty">${line.qty}×</td><td>${escape(line.name)}
-          ${
-            line.accompaniments.length
-              ? `<div class="sub">+ ${escape(
-                  line.accompaniments
-                    .map((name, i) =>
-                      line.accompanimentPrices?.[i]
-                        ? `${name} (${formatMoney(line.accompanimentPrices[i], symbol)})`
-                        : name,
-                    )
-                    .join(', '),
-                )}</div>`
-              : ''
-          }
-        </td><td class="num">${money(line.total)}</td></tr>`,
+        <tr><td class="qty">${line.qty}×</td><td>${escape(line.name)}</td>
+          <td class="num">${money(dishAmount(line))}</td></tr>
+        ${line.accompaniments
+          .map(
+            (name, i) => `
+        <tr class="side"><td></td><td class="sub">+ ${escape(name)}</td>
+          <td class="num sub">${money((line.accompanimentPrices?.[i] || 0) * line.qty)}</td></tr>`,
+          )
+          .join('')}`,
         )
         .join('')}
     </table>

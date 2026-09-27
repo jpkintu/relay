@@ -58,6 +58,40 @@ describe('printed receipts', () => {
     );
     expect(unpaid).toContain('NOT PAID');
   });
+  test('each side has its own line and amount under its dish; the amounts add up', () => {
+    const fish = {
+      ...receipt,
+      lines: [
+        {
+          name: 'Whole Fish',
+          qty: 1,
+          price: 27000,
+          total: 29000,
+          notes: '',
+          accompaniments: ['Deep Fried', 'Fresh Vegetables', 'Chips'],
+          accompanimentPrices: [0, 0, 2000],
+        },
+      ],
+    };
+    const html = receiptHtml.customerReceipt(fish, 'Africa/Kampala', 'UGX');
+    expect(html).toContain('Whole Fish</td>');
+    expect(html).toContain('UGX 27,000');
+    expect(html.match(/<tr class="side">/g)).toHaveLength(3);
+    expect(html).toMatch(/\+ Deep Fried<\/td>\s*<td class="num sub">UGX 0</);
+    expect(html).toMatch(/\+ Chips<\/td>\s*<td class="num sub">UGX 2,000</);
+    // Two portions: each side's amount is per portion × quantity.
+    const two = receiptHtml.customerReceipt(
+      { ...fish, lines: [{ ...fish.lines[0], qty: 2, total: 58000 }] },
+      'Africa/Kampala',
+      'UGX',
+    );
+    expect(two).toContain('UGX 54,000');
+    expect(two).toMatch(/\+ Chips<\/td>\s*<td class="num sub">UGX 4,000</);
+    const ticket = receiptHtml.kitchenTicket(fish, 'Africa/Kampala');
+    expect(ticket.match(/<div class="sub">\+ /g)).toHaveLength(3);
+    expect(ticket).not.toContain('2,000');
+  });
+
   test('the receipt shows the restaurant logo only when there is one', () => {
     expect(receiptHtml.customerReceipt(receipt, 'Africa/Kampala', 'UGX')).not.toContain('<img');
     const html = receiptHtml.customerReceipt(
