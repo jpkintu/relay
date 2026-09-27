@@ -1163,19 +1163,17 @@ button {
   display: flex;
   flex-direction: column;
 }
-/* The restaurant's own logo (Settings → Restaurant logo), when there is one. */
-.admin-side > .admin-restaurant {
-  margin: 16px 10px 28px;
+/* The restaurant's logo in place of the Relay mark in the owner's menu. */
+.admin-side > .brand-mark.restaurant-mark {
+  margin: 0 10px 28px;
   align-self: flex-start;
   background: #fff;
   border-radius: 12px;
   padding: 8px;
 }
-.admin-side > .admin-restaurant img {
-  display: block;
+.admin-side > .brand-mark.restaurant-mark img {
   max-width: 150px;
   max-height: 76px;
-  object-fit: contain;
 }
 /* Sign-in: the logo (or the Relay mark) large and centred, the name under it. */
 .login-identity {
@@ -1415,7 +1413,6 @@ button {
     flex-direction: row;
     align-items: center;
   }
-  .admin-side > .admin-restaurant,
   .admin-side nav button:not(.active),
   .admin-logout {
     display: none;
@@ -3319,8 +3316,15 @@ svg {
     align-items: center;
     gap: 12px;
   }
-  .admin-side > .admin-restaurant {
-    display: none;
+  /* In the top bar the restaurant logo is small, like the Relay mark. */
+  .admin-side > .brand-mark.restaurant-mark {
+    margin: 0;
+    padding: 4px;
+    border-radius: 8px;
+  }
+  .admin-side > .brand-mark.restaurant-mark img {
+    max-height: 40px;
+    max-width: 120px;
   }
   .admin-menu-toggle {
     margin-left: auto;
