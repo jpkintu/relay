@@ -38,6 +38,8 @@ type LiveOrder = {
   paymentMethod?: string;
   paymentStatus?: string;
   amountToCollect?: number;
+  // Taken by the cashier (call-in delivery): the rider earns the fee only.
+  fromCounter?: boolean;
 };
 
 type SubScreen = 'active' | 'cash' | 'earnings' | 'profile';
@@ -79,6 +81,7 @@ export function RiderWorkspace() {
           paymentMethod: row.get('paymentMethod'),
           paymentStatus: row.get('paymentStatus') || '',
           amountToCollect: row.get('amountToCollect') ?? row.get('total'),
+          fromCounter: row.get('source') === 'counter',
         })),
       );
       setLoadError('');
@@ -101,35 +104,39 @@ export function RiderWorkspace() {
       <Route
         path="new"
         element={
-          <NewOrder
-            preview={preview}
-            cashBlocked={
-              !preview &&
-              cashLevel(
-                cashHeld(orders) + cashToCollect(orders),
-                config.maxRiderFloat,
-                config.floatWarningPercent,
-              ) === 'reached'
-                ? cashLimitMessage(
-                    cashHeld(orders),
-                    cashToCollect(orders),
-                    config.maxRiderFloat,
-                    money,
-                  )
-                : ''
-            }
-            onBack={() => navigate('/rider')}
-            onGoToCash={() => navigate('/rider/cash')}
-            onOpenOrder={(id) => navigate(`/rider/order/${id}`)}
-            onPlaced={async (payload) => {
-              const result = await Parse.Cloud.run(
-                preview ? 'createPreviewOrder' : 'createOrder',
-                payload,
-              );
-              await loadOrders();
-              return result;
-            }}
-          />
+          config.modules?.riderOrders === false ? (
+            <Navigate to="/rider" replace />
+          ) : (
+            <NewOrder
+              preview={preview}
+              cashBlocked={
+                !preview &&
+                cashLevel(
+                  cashHeld(orders) + cashToCollect(orders),
+                  config.maxRiderFloat,
+                  config.floatWarningPercent,
+                ) === 'reached'
+                  ? cashLimitMessage(
+                      cashHeld(orders),
+                      cashToCollect(orders),
+                      config.maxRiderFloat,
+                      money,
+                    )
+                  : ''
+              }
+              onBack={() => navigate('/rider')}
+              onGoToCash={() => navigate('/rider/cash')}
+              onOpenOrder={(id) => navigate(`/rider/order/${id}`)}
+              onPlaced={async (payload) => {
+                const result = await Parse.Cloud.run(
+                  preview ? 'createPreviewOrder' : 'createOrder',
+                  payload,
+                );
+                await loadOrders();
+                return result;
+              }}
+            />
+          )
         }
       />
       <Route path="order/:orderId" element={<OrderRoute refresh={loadOrders} />} />
@@ -248,14 +255,16 @@ function RiderHome({ orders, loadError }: { orders: LiveOrder[]; loadError: stri
                   You hold {money(cashOnMe)} of your {money(limit)} limit. Hand over cash soon.
                 </p>
               )}
-              <button className="new-order-hero" onClick={() => navigate('/rider/new')}>
-                <span>
-                  <Plus />
-                </span>
-                <b>New order</b>
-                <small>Start a delivery ticket</small>
-                <ChevronRight />
-              </button>
+              {config.modules?.riderOrders !== false && (
+                <button className="new-order-hero" onClick={() => navigate('/rider/new')}>
+                  <span>
+                    <Plus />
+                  </span>
+                  <b>New order</b>
+                  <small>Start a delivery ticket</small>
+                  <ChevronRight />
+                </button>
+              )}
             </>
           )}
         </section>
@@ -350,9 +359,14 @@ const NAV_ITEMS = [
 function RiderNav() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { config } = useSession();
+  // Riders who do not take orders themselves (only counter deliveries).
+  const items = NAV_ITEMS.filter(
+    ([, , target]) => target !== '/rider/new' || config.modules?.riderOrders !== false,
+  );
   return (
-    <nav className="bottom-nav">
-      {NAV_ITEMS.map(([Icon, label, target]) => (
+    <nav className={`bottom-nav ${items.length === 4 ? 'four' : ''}`}>
+      {items.map(([Icon, label, target]) => (
         <button
           key={label}
           className={
@@ -493,7 +507,10 @@ function RiderSubPage({
                   <div className={`status-dot ${o.status.toLowerCase()}`} />
                   <div>
                     <b>{o.code}</b>
-                    <span>{o.customer}</span>
+                    <span>
+                      {o.customer}
+                      {o.fromCounter && ' · from the counter, delivery fee only'}
+                    </span>
                   </div>
                   <span className="status-pill">{o.status}</span>
                   <strong>{money(o.total)}</strong>

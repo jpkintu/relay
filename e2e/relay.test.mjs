@@ -3044,3 +3044,225 @@ describe('delivery map pins', () => {
     await run('adminSaveSettings', settings, s.owner);
   });
 });
+
+describe('counter modules: call-in delivery, eat-in and pick-up', () => {
+  const M = { useMasterKey: true };
+  let item;
+  let settings;
+  const counter = (params, user = s.dina) =>
+    run(
+      'createCounterOrder',
+      { items: [{ id: item.id, quantity: 1 }], customerPhone: '', ...params },
+      user,
+    );
+  const move = async (id, actions, user = s.dina) => {
+    for (const action of actions) await run('transitionOrder', { orderId: id, action }, user);
+  };
+  const till = async () => (await run('getMyShift', {}, s.dina)).shift;
+  const fetch = (id) => new Parse.Query('Order').get(id, M);
+
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+  });
+  after(async () => run('adminSaveSettings', settings, s.owner));
+
+  test('the modules are off until the owner switches them on', async () => {
+    assert.deepEqual((await run('getMyProfile', {}, s.dina)).config.modules, {
+      riderOrders: true,
+      callIn: false,
+      counter: false,
+    });
+    await rejects(
+      counter({ orderType: 'delivery', customerName: 'Off', deliveryAddress: 'Ntinda' }),
+      /switched off/,
+    );
+    await rejects(counter({ orderType: 'eat_in' }), /switched off/);
+    await run(
+      'adminSaveSettings',
+      { ...settings, moduleCallIn: true, moduleCounter: true },
+      s.owner,
+    );
+    assert.deepEqual((await run('getMyProfile', {}, s.dina)).config.modules, {
+      riderOrders: true,
+      callIn: true,
+      counter: true,
+    });
+    await rejects(counter({ orderType: 'eat_in' }, s.pia), /cashier or admin role required/);
+    const riders = await run('getAssignableRiders', {}, s.dina);
+    assert.ok(riders.some((r) => r.id === s.val.id));
+  });
+
+  test('a call-in delivery assigned to a rider pays the rider the delivery fee only', async () => {
+    const placed = await counter({
+      orderType: 'delivery',
+      customerName: 'Caller Carla',
+      customerPhone: '0772123999',
+      deliveryAddress: 'Naguru',
+      deliveryFee: 4000,
+      riderId: s.val.id,
+      channel: 'phone',
+    });
+    let order = await fetch(placed.id);
+    assert.equal(order.get('source'), 'counter');
+    assert.equal(order.get('orderType'), 'delivery');
+    assert.equal(order.get('createdBy').id, s.val.id);
+    assert.equal(order.get('cashier').id, s.dina.id);
+    assert.equal(order.get('cashStatus'), 'NOT_COLLECTED');
+    assert.ok(
+      await new Parse.Query('Notification')
+        .equalTo('recipient', s.val)
+        .equalTo('kind', 'order.assigned')
+        .first(M),
+    );
+    assert.ok(await new Parse.Query('Order').equalTo('objectId', placed.id).first(as(s.val)));
+    await move(placed.id, ['accept', 'ready']);
+    await move(placed.id, ['pickup', 'deliver'], s.val);
+    order = await fetch(placed.id);
+    assert.equal(order.get('commissionBase'), 0);
+    assert.equal(order.get('commissionAmount'), 4000);
+    assert.equal(order.get('cashStatus'), 'WITH_RIDER');
+    assert.equal(order.get('amountCollected'), placed.total);
+    await run('createHandover', { orderIds: [placed.id] }, s.val);
+  });
+
+  test('a prepaid call-in delivery waits for the check and for a rider', async () => {
+    const placed = await counter({
+      orderType: 'delivery',
+      customerName: 'Prepaid Pat',
+      deliveryAddress: 'Bugolobi',
+      paymentMethod: 'mobile_money',
+      paymentProvider: 'mtn',
+      paymentReference: 'CNT55501',
+    });
+    let order = await fetch(placed.id);
+    assert.equal(order.get('createdBy'), undefined);
+    assert.equal(order.get('paymentStatus'), 'PENDING_VERIFICATION');
+    await rejects(move(placed.id, ['accept']), /Confirm the mobile money/);
+    await run('verifyPayment', { orderId: placed.id, received: true }, s.dina);
+    await move(placed.id, ['accept', 'ready']);
+    await rejects(move(placed.id, ['pickup']), /Assign a rider/);
+    await run('assignOrderRider', { orderId: placed.id, riderId: s.pia.id }, s.dina);
+    await rejects(
+      run('assignOrderRider', { orderId: placed.id, riderId: s.pia.id }, s.dina),
+      /already has/,
+    );
+    await run('assignOrderRider', { orderId: placed.id, riderId: s.val.id }, s.dina);
+    assert.equal(
+      await new Parse.Query('Order').equalTo('objectId', placed.id).first(as(s.pia)),
+      undefined,
+    );
+    assert.ok(
+      await new Parse.Query('Notification')
+        .equalTo('recipient', s.pia)
+        .equalTo('kind', 'order.unassigned')
+        .first(M),
+    );
+    await move(placed.id, ['pickup', 'deliver'], s.val);
+    order = await fetch(placed.id);
+    assert.equal(order.get('cashStatus'), 'NOT_APPLICABLE');
+    assert.equal(order.get('commissionAmount'), order.get('deliveryFee'));
+    await rejects(
+      run('assignOrderRider', { orderId: placed.id, riderId: s.pia.id }, s.dina),
+      /left the kitchen/,
+    );
+  });
+
+  test('eat-in paid in cash goes into the till and is served', async () => {
+    const before = await till();
+    const placed = await counter({ orderType: 'eat_in', table: 'Table 4' });
+    let order = await fetch(placed.id);
+    assert.equal(order.get('customerName'), 'Eat-in guest');
+    assert.equal(order.get('tableLabel'), 'Table 4');
+    assert.equal(order.get('deliveryFee'), 0);
+    assert.equal(order.get('cashStatus'), 'IN_TILL');
+    assert.equal(order.get('tillCashier').id, s.dina.id);
+    const after = await till();
+    assert.equal(after.expectedTill - before.expectedTill, placed.total);
+    assert.equal(after.counterCash - (before.counterCash || 0), placed.total);
+    await rejects(move(placed.id, ['complete']), /Invalid status transition/);
+    await move(placed.id, ['accept', 'ready']);
+    await rejects(move(placed.id, ['pickup']), /Served \/ Collected/);
+    await move(placed.id, ['complete']);
+    order = await fetch(placed.id);
+    assert.equal(order.get('status'), 'DELIVERED');
+    assert.equal(order.get('restaurantStatus'), 'served');
+    assert.equal(order.get('commissionAmount'), 0);
+    const report = await run('getOperationsReport', {}, s.owner);
+    assert.ok(report.summary.cashSales >= placed.total, 'counts as confirmed cash');
+  });
+
+  test('pick-up paid later: the bill must be paid before it is collected or the shift ends', async () => {
+    const placed = await counter({
+      orderType: 'pickup',
+      customerName: 'Later Lou',
+      payLater: true,
+    });
+    let order = await fetch(placed.id);
+    assert.equal(order.get('billOpen'), true);
+    assert.equal(order.get('cashStatus'), 'UNPAID');
+    await move(placed.id, ['accept', 'ready']);
+    await rejects(move(placed.id, ['complete']), /Take payment/);
+    await rejects(
+      run('endShift', { shiftId: (await till()).id, physicalCount: 0 }, s.dina),
+      /not paid yet/,
+    );
+    await run(
+      'takeCounterPayment',
+      {
+        orderId: placed.id,
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'airtel',
+        paymentReference: 'CNT77702',
+      },
+      s.dina,
+    );
+    await rejects(move(placed.id, ['complete']), /mobile money check/);
+    await run(
+      'verifyPayment',
+      { orderId: placed.id, received: false, reason: 'Not in the account' },
+      s.dina,
+    );
+    order = await fetch(placed.id);
+    assert.equal(order.get('billOpen'), true, 'a rejected payment reopens the bill');
+    await run('takeCounterPayment', { orderId: placed.id, paymentMethod: 'cash' }, s.dina);
+    await rejects(
+      run('takeCounterPayment', { orderId: placed.id, paymentMethod: 'cash' }, s.dina),
+      /already paid/,
+    );
+    await move(placed.id, ['complete']);
+    order = await fetch(placed.id);
+    assert.equal(order.get('restaurantStatus'), 'collected');
+  });
+
+  test('cancelling a paid eat-in order takes the cash back out of the till', async () => {
+    const before = await till();
+    const placed = await counter({ orderType: 'eat_in' });
+    await run(
+      'transitionOrder',
+      { orderId: placed.id, action: 'cancel', reason: 'Guest left' },
+      s.dina,
+    );
+    assert.equal((await fetch(placed.id)).get('cashStatus'), 'REFUNDED');
+    assert.equal((await till()).expectedTill, before.expectedTill);
+  });
+
+  test('the owner can stop riders from creating their own orders', async () => {
+    await run(
+      'adminSaveSettings',
+      { ...settings, moduleCallIn: true, moduleCounter: true, moduleRiderOrders: false },
+      s.owner,
+    );
+    await rejects(
+      run(
+        'createOrder',
+        { customerName: 'Nope', deliveryAddress: 'Kira', items: [{ id: item.id, quantity: 1 }] },
+        s.pia,
+      ),
+      /counter creates them/,
+    );
+    await run('adminSaveSettings', settings, s.owner);
+  });
+});

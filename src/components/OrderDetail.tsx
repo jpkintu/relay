@@ -25,6 +25,7 @@ type Detail = {
   address: string;
   addressNotes: string;
   location: { lat: number; lng: number } | null;
+  fromCounter: boolean;
   subtotal: number;
   fee: number;
   total: number;
@@ -73,6 +74,7 @@ async function loadDetail(orderId: string): Promise<Detail> {
     customerPhone: order.get('customerPhone') || '',
     address: order.get('deliveryAddress'),
     addressNotes: order.get('deliveryNotes') || '',
+    fromCounter: order.get('source') === 'counter',
     location: order.get('location')
       ? { lat: order.get('location').latitude, lng: order.get('location').longitude }
       : null,
@@ -188,7 +190,15 @@ export function OrderDetail({
         {order && (
           <>
             <section className="detail-card">
-              <p className="eyebrow">Customer · {CHANNEL_LABEL[order.channel] || order.channel}</p>
+              <p className="eyebrow">
+                Customer · {CHANNEL_LABEL[order.channel] || order.channel}
+                {order.fromCounter && ' · taken by the counter'}
+              </p>
+              {order.fromCounter && (
+                <p className="counter-note">
+                  The restaurant took this order: you earn the delivery fee, no commission.
+                </p>
+              )}
               <h3>{order.customerName}</h3>
               {order.customerPhone && (
                 <a className="detail-link" href={`tel:${order.customerPhone}`}>

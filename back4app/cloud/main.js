@@ -168,6 +168,11 @@ var require_core = __commonJS({
       defaultCommissionPercent: 0,
       // Hour of the day (restaurant time) after which the daily Z-report is saved.
       zReportHour: 23,
+      // Modules (Settings → Modules): riders take orders themselves; cashiers take
+      // call-in deliveries and assign a rider; cashiers take eat-in / pick-up.
+      moduleRiderOrders: true,
+      moduleCallIn: false,
+      moduleCounter: false,
       // Where the map opens (the restaurant); Kampala until the owner pins it.
       restaurantLat: 0.3476,
       restaurantLng: 32.5825
@@ -328,6 +333,14 @@ var require_core = __commonJS({
         throw error;
       }
     };
+    function missingColumn(error) {
+      const detail = error?.message && typeof error.message === "object" ? error.message : error;
+      return detail?.code === "42703" || /column .* does not exist/.test(String(detail?.message));
+    }
+    var orNone = (fallback) => (error) => {
+      if (missingColumn(error)) return fallback;
+      throw error;
+    };
     async function nextDailyCode(prefix, digits, timezone, { className, field, date } = {}) {
       const day = dateKey(date || /* @__PURE__ */ new Date(), timezone);
       const taken = className ? codeTakenIn(className, field) : async () => false;
@@ -434,7 +447,8 @@ var require_core = __commonJS({
       takeOrder,
       withRiderLimit,
       endSessions,
-      fileUrl
+      fileUrl,
+      orNone
     };
   }
 });
@@ -537,6 +551,14 @@ var require_security = __commonJS({
         customerName: S,
         customerPhone: S,
         location: "GeoPoint",
+        orderType: S,
+        source: S,
+        placedBy: user,
+        tableLabel: S,
+        billOpen: B,
+        tillCashier: user,
+        tillShift: ["Pointer", "Shift"],
+        paidAt: D,
         deliveryAddress: S,
         subtotal: N,
         deliveryFee: N,
@@ -680,7 +702,10 @@ var require_security = __commonJS({
         defaultCommissionPercent: N,
         zReportHour: N,
         restaurantLat: N,
-        restaurantLng: N
+        restaurantLng: N,
+        moduleRiderOrders: B,
+        moduleCallIn: B,
+        moduleCounter: B
       },
       MenuItem: {
         title: S,
@@ -9182,7 +9207,7 @@ var require_reports = __commonJS({
     "use strict";
     var round = (value) => Math.round(Number(value) || 0);
     var isDelivered = (fact) => fact.status === "DELIVERED";
-    var isConfirmed = (fact) => fact.method === "cash" ? fact.cashStatus === "RECONCILED" : fact.method === "mobile_money" ? fact.paymentStatus === "VERIFIED" : true;
+    var isConfirmed = (fact) => fact.method === "cash" ? ["RECONCILED", "IN_TILL"].includes(fact.cashStatus) : fact.method === "mobile_money" ? fact.paymentStatus === "VERIFIED" : true;
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
     function growth(current, previous) {
       if (!previous) return null;
@@ -9449,6 +9474,8 @@ var require_reports2 = __commonJS({
         status: order.get("status"),
         restaurantStatus: order.get("restaurantStatus"),
         channel: order.get("channel"),
+        orderType: order.get("orderType") || "delivery",
+        source: order.get("source") || "rider",
         customer: order.get("customerName") || "",
         customerKey: order.get("customer")?.id || (phone ? `tel:${phone}` : name && `name:${name}`),
         riderId: rider?.id || "",
@@ -9827,7 +9854,8 @@ var require_owner = __commonJS({
       readAcl,
       audit,
       loadConfig,
-      personName
+      personName,
+      orNone
     } = require_core();
     var {
       resolveRange,
@@ -9886,6 +9914,14 @@ var require_owner = __commonJS({
         status: h.get("status")
       }));
     }
+    async function counterCash(range) {
+      const query = new Parse.Query("Order");
+      query.equalTo("cashStatus", "IN_TILL");
+      query.greaterThanOrEqualTo("paidAt", range.start);
+      query.lessThan("paidAt", range.end);
+      query.select("amountCollected");
+      return sumBy(await findAll(query).catch(orNone([])), (o) => o.get("amountCollected"));
+    }
     async function riderPayOwed() {
       const orders = new Parse.Query("Order");
       orders.equalTo("status", "DELIVERED");
@@ -9921,7 +9957,10 @@ var require_owner = __commonJS({
         ),
         findAll(ordersIn(monthRange, "createdAt")).then((rows) => rows.map(factOf)),
         cashWithRiders(),
-        cashReceived(todayRange),
+        cashReceived(todayRange).then(async (rows) => [
+          ...rows,
+          { riderId: "", amount: await counterCash(todayRange), status: "counter" }
+        ]),
         riderPayOwed(),
         Promise.all([
           pendingMomo.count(MASTER),
@@ -10115,7 +10154,10 @@ var require_owner = __commonJS({
         cancelledQuery.count(MASTER),
         findAll(payoutQuery),
         findAll(shiftQuery),
-        cashReceived(range),
+        cashReceived(range).then(async (rows) => [
+          ...rows,
+          { riderId: "", amount: await counterCash(range), status: "counter" }
+        ]),
         disputeQuery.count(MASTER),
         cashWithRiders()
       ]);
@@ -10154,6 +10196,10 @@ var require_owner = __commonJS({
         },
         till: {
           cashReceived: sumBy(received, (r) => r.amount),
+          counterCash: sumBy(
+            received.filter((r) => r.status === "counter"),
+            (r) => r.amount
+          ),
           riderPay: sumBy(riderPayouts, (row) => row.get("amount")),
           otherPayouts: sumBy(
             payouts.filter((row) => row.get("kind") !== "rider"),
@@ -10599,7 +10645,9 @@ var require_payments = __commonJS({
         paymentCheckedAt: /* @__PURE__ */ new Date(),
         paymentRejectReason: received ? "" : reason
       });
-      const owedByRider = !received && order.get("status") === "DELIVERED";
+      const owedByRider = !received && order.get("status") === "DELIVERED" && !!order.get("createdBy");
+      if (!received && ["eat_in", "pickup"].includes(order.get("orderType")))
+        order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: order.get("total") });
       if (owedByRider)
         order.set({
           paymentMethod: "cash",
@@ -10622,14 +10670,15 @@ var require_payments = __commonJS({
       );
       const code = order.get("orderCode");
       const { values: config } = await loadConfig();
-      await notifyUser(order.get("createdBy"), {
-        kind: received ? "payment.verified" : "payment.rejected",
-        tone: received ? "update" : "alert",
-        title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
-        body: received ? order.get("status") === "DELIVERED" ? "It is off your list." : "The kitchen can start on it." : owedByRider ? `${reason}. You owe ${money(config, order.get("total"))}: hand it over in cash, or send the correct transaction ID.` : `${reason}. Correct the transaction ID or cancel the order.`,
-        link: `/rider/order/${order.id}`,
-        order
-      });
+      if (order.get("createdBy"))
+        await notifyUser(order.get("createdBy"), {
+          kind: received ? "payment.verified" : "payment.rejected",
+          tone: received ? "update" : "alert",
+          title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
+          body: received ? order.get("status") === "DELIVERED" ? "It is off your list." : "The kitchen can start on it." : owedByRider ? `${reason}. You owe ${money(config, order.get("total"))}: hand it over in cash, or send the correct transaction ID.` : `${reason}. Correct the transaction ID or cancel the order.`,
+          link: `/rider/order/${order.id}`,
+          order
+        });
       return { paymentStatus: order.get("paymentStatus") };
     });
     Parse.Cloud.define("resubmitPayment", async (request) => {
@@ -10860,6 +10909,25 @@ var require_orders = __commonJS({
       query.limit(1e3);
       return new Map((await query.find(MASTER)).map((row) => [row.id, row]));
     }
+    async function saveLines(order, lines, rider) {
+      const children = lines.map((line) => {
+        const item = new Parse.Object("OrderItem");
+        item.set({
+          order,
+          menuItem: line.menuItem,
+          itemNameSnapshot: line.name,
+          unitPriceSnapshot: line.price,
+          quantity: line.qty,
+          lineTotal: line.price * line.qty,
+          notes: line.notes,
+          accompanimentIds: line.accompanimentIds,
+          accompanimentNames: line.accompanimentNames
+        });
+        item.setACL(readAcl(rider));
+        return item;
+      });
+      await Parse.Object.saveAll(children, MASTER);
+    }
     async function priceLines(items) {
       if (!Array.isArray(items) || !items.length) throw invalid("Add at least one item");
       if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
@@ -10935,6 +11003,8 @@ var require_orders = __commonJS({
         riderFloat(rider),
         new Parse.Query(Parse.User).get(rider.id, MASTER)
       ]);
+      if (settings.moduleRiderOrders === false)
+        throw forbidden("Riders do not take orders here: the counter creates them");
       if (me.get("available") === false)
         throw invalid("You are on a break. Switch to Available to take orders");
       const config = withRiderLimit(settings, me);
@@ -10985,23 +11055,7 @@ var require_orders = __commonJS({
       });
       order.setACL(readAcl(rider));
       await order.save(null, MASTER);
-      const children = lines.map((line) => {
-        const item = new Parse.Object("OrderItem");
-        item.set({
-          order,
-          menuItem: line.menuItem,
-          itemNameSnapshot: line.name,
-          unitPriceSnapshot: line.price,
-          quantity: line.qty,
-          lineTotal: line.price * line.qty,
-          notes: line.notes,
-          accompanimentIds: line.accompanimentIds,
-          accompanimentNames: line.accompanimentNames
-        });
-        item.setACL(readAcl(rider));
-        return item;
-      });
-      await Parse.Object.saveAll(children, MASTER);
+      await saveLines(order, lines, rider);
       const customer = await recordCustomerOrder(order);
       if (customer) {
         order.set("customer", customer);
@@ -11053,8 +11107,12 @@ var require_orders = __commonJS({
         to: "CANCELLED",
         kitchen: "cancelled",
         who: "owner"
-      }
+      },
+      // Eat-in / pick-up: the guest has it (served at the table or collected).
+      complete: { from: ["READY"], to: "DELIVERED", kitchen: "served", who: "staff" }
     };
+    var COUNTER_TYPES = ["eat_in", "pickup"];
+    var counterPaid = (order) => !order.get("billOpen") && (order.get("paymentMethod") === "cash" ? order.get("cashStatus") === "IN_TILL" : order.get("paymentStatus") === "VERIFIED");
     async function applyDelivery(order, { method: wanted, provider, reference, amount: given, actor, config, now = /* @__PURE__ */ new Date() }) {
       const method = wanted || order.get("paymentMethod");
       if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
@@ -11076,7 +11134,7 @@ var require_orders = __commonJS({
       const amount = isCash ? Number(given ?? due) : 0;
       if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
       const rider = await order.get("createdBy").fetch(MASTER);
-      const commission = computeCommission({
+      const commission = order.get("source") === "counter" ? 0 : computeCommission({
         type: rider.get("commissionType") || "per_order",
         perOrder: rider.get("commissionPerOrder"),
         percent: rider.get("commissionPercent"),
@@ -11115,6 +11173,15 @@ var require_orders = __commonJS({
         throw invalid("Confirm the mobile money payment before accepting this order");
       if (p.action === "cancel" && !staff && order.get("status") !== "PLACED")
         throw forbidden("The kitchen has accepted this order. Ask the cashier to cancel it");
+      const atCounter = COUNTER_TYPES.includes(order.get("orderType"));
+      if (p.action === "complete" && !atCounter)
+        throw invalid("Only eat-in and pick-up orders are served or collected");
+      if (["pickup", "deliver"].includes(p.action) && atCounter)
+        throw invalid("Eat-in and pick-up orders are finished with Served / Collected");
+      if (p.action === "pickup" && !order.get("createdBy"))
+        throw invalid("Assign a rider before handing the order over");
+      if (p.action === "complete" && !counterPaid(order))
+        throw invalid("Take payment (or wait for the mobile money check) first");
       const before = {
         status: order.get("status"),
         restaurantStatus: order.get("restaurantStatus"),
@@ -11132,9 +11199,20 @@ var require_orders = __commonJS({
           cancelledReason: reason,
           cancelledBy: actor,
           cancelledAt: now,
-          cashStatus: "NOT_APPLICABLE"
+          // Cash already in a till goes back to the guest.
+          cashStatus: order.get("cashStatus") === "IN_TILL" ? "REFUNDED" : "NOT_APPLICABLE",
+          billOpen: false
         });
       }
+      if (p.action === "complete")
+        order.set({
+          restaurantStatus: order.get("orderType") === "pickup" ? "collected" : "served",
+          deliveredAt: now,
+          commissionBase: 0,
+          deliveryPay: 0,
+          commissionAmount: 0,
+          commissionPaid: true
+        });
       if (p.action === "deliver")
         await applyDelivery(order, {
           method: p.paymentMethod,
@@ -11167,7 +11245,7 @@ var require_orders = __commonJS({
     async function notifyTransition(order, action, { staff, owner, actor, config }) {
       const code = order.get("orderCode");
       const rider = order.get("createdBy");
-      if (staff && !owner && RIDER_MESSAGES[action]) {
+      if (rider && staff && !owner && RIDER_MESSAGES[action]) {
         const [title, detail] = RIDER_MESSAGES[action](code, order.get("cancelledReason") || "");
         await notifyUser(rider, {
           kind: `order.${action}`,
@@ -11369,12 +11447,297 @@ var require_orders = __commonJS({
     });
     module2.exports = {
       riderFloat,
+      priceLines,
+      saveLines,
+      clean,
+      cleanPhone,
+      CHANNELS,
       servableAccompaniments,
       KITCHEN_OPEN,
       PAYMENT_METHODS,
       applyDelivery,
       notifyTransition
     };
+  }
+});
+
+// cloud/counter.js
+var require_counter = __commonJS({
+  "cloud/counter.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireRole,
+      getRoleName,
+      readAcl,
+      audit,
+      loadConfig,
+      nextDailyCode,
+      personName,
+      requireCashierShift,
+      orNone
+    } = require_core();
+    var { sumBy } = require_money();
+    var { cleanLocation } = require_geo();
+    var { recordCustomerOrder } = require_customers();
+    var { checkMobileMoney, PENDING } = require_payments();
+    var { money, notifyUser, notifyStaff } = require_notifications();
+    var { priceLines, saveLines, clean, cleanPhone, CHANNELS } = require_orders();
+    var ORDER_TYPES = ["delivery", "eat_in", "pickup"];
+    var COUNTER_TYPES = ["eat_in", "pickup"];
+    var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
+    var TYPE_LABEL = { delivery: "Delivery", eat_in: "Eat in", pickup: "Pick up" };
+    var idOf = (value) => typeof value === "string" && /^[A-Za-z0-9]{1,32}$/.test(value) ? value : "";
+    var modulesOf = (config) => ({
+      riderOrders: config.moduleRiderOrders !== false,
+      callIn: config.moduleCallIn === true,
+      counter: config.moduleCounter === true
+    });
+    async function openShiftOf(user) {
+      return new Parse.Query("Shift").equalTo("operator", user).equalTo("kind", "cashier").equalTo("status", "open").first(MASTER);
+    }
+    async function activeRider(riderId) {
+      const id = idOf(riderId);
+      const rider = id ? await new Parse.Query(Parse.User).get(id, MASTER).catch(() => null) : null;
+      if (!rider || await getRoleName(rider) !== "rider") throw invalid("Choose a rider");
+      if (rider.get("active") === false) throw forbidden("That rider is deactivated");
+      return rider;
+    }
+    async function cashIntoTill(order, actor, role) {
+      const shift = role === "cashier" ? await openShiftOf(actor) : null;
+      order.set({
+        paymentMethod: "cash",
+        cashStatus: "IN_TILL",
+        amountCollected: Number(order.get("total") || 0),
+        paidAt: /* @__PURE__ */ new Date(),
+        tillCashier: actor,
+        billOpen: false,
+        ...shift && { tillShift: shift }
+      });
+    }
+    async function assign(order, rider) {
+      order.set("createdBy", rider);
+      order.setACL(readAcl(rider));
+      const items = await new Parse.Query("OrderItem").equalTo("order", order).limit(200).find(MASTER);
+      items.forEach((item) => item.setACL(readAcl(rider)));
+      if (items.length) await Parse.Object.saveAll(items, MASTER);
+    }
+    async function tellRider(rider, order, config) {
+      await notifyUser(rider, {
+        kind: "order.assigned",
+        tone: "new",
+        title: `New delivery ${order.get("orderCode")}`,
+        body: [
+          order.get("customerName"),
+          order.get("deliveryAddress"),
+          order.get("paymentMethod") === "cash" ? `collect ${money(config, order.get("total"))}` : "paid by mobile money",
+          `you earn the ${money(config, order.get("deliveryFee"))} delivery fee`
+        ].filter(Boolean).join(" \xB7 "),
+        link: `/rider/order/${order.id}`,
+        order
+      });
+    }
+    Parse.Cloud.define("createCounterOrder", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const modules = modulesOf(config);
+      const type = p.orderType;
+      if (!ORDER_TYPES.includes(type)) throw invalid("Choose delivery, eat in or pick up");
+      if (type === "delivery" && !modules.callIn)
+        throw forbidden("Call-in delivery orders are switched off in Settings");
+      if (type !== "delivery" && !modules.counter)
+        throw forbidden("Eat-in and pick-up orders are switched off in Settings");
+      const clientId = clean(p.clientId, 64);
+      if (clientId) {
+        const existing = await new Parse.Query("Order").equalTo("placedBy", actor).equalTo("clientId", clientId).first(MASTER).catch(orNone(void 0));
+        if (existing)
+          return {
+            id: existing.id,
+            orderCode: existing.get("orderCode"),
+            total: existing.get("total"),
+            duplicate: true
+          };
+      }
+      const isDelivery = type === "delivery";
+      const customerName = clean(p.customerName, 80) || (isDelivery ? "" : type === "eat_in" ? "Eat-in guest" : "Pick-up");
+      const deliveryAddress = isDelivery ? clean(p.deliveryAddress, 200) : "";
+      if (!customerName || isDelivery && !deliveryAddress)
+        throw invalid("Customer and address are required");
+      const channel = p.channel || (isDelivery ? "phone" : "walkin");
+      if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
+      const pin = isDelivery ? cleanLocation(p.location) : { location: null };
+      if (pin.error) throw invalid(pin.error);
+      const method = p.paymentMethod || "cash";
+      if (!["cash", "mobile_money"].includes(method)) throw invalid("Choose cash or mobile money");
+      const payLater = !isDelivery && p.payLater === true;
+      const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
+      const lines = await priceLines(p.items);
+      const subtotal = sumBy(lines, (line) => line.price * line.qty);
+      const fee = isDelivery ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0)) : 0;
+      const total = subtotal + fee;
+      const momo = method === "mobile_money" && !payLater ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
+      const me = await actor.fetch(MASTER);
+      const order = new Parse.Object("Order");
+      order.set({
+        orderCode: await nextDailyCode("ORD", 4, config.timezone, {
+          className: "Order",
+          field: "orderCode"
+        }),
+        clientId,
+        channel,
+        orderType: type,
+        source: "counter",
+        placedBy: actor,
+        customerName,
+        customerPhone: cleanPhone(p.customerPhone),
+        deliveryAddress: isDelivery ? deliveryAddress : TYPE_LABEL[type],
+        deliveryNotes: clean(isDelivery ? p.deliveryNotes : p.table, 200),
+        ...!isDelivery && clean(p.table, 30) && { tableLabel: clean(p.table, 30) },
+        ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
+        subtotal,
+        deliveryFee: fee,
+        total,
+        paymentMethod: method,
+        amountToCollect: isDelivery && method === "cash" ? total : 0,
+        amountCollected: 0,
+        status: "PLACED",
+        restaurantStatus: "pending",
+        cashStatus: isDelivery && method === "cash" ? "NOT_COLLECTED" : "NOT_APPLICABLE",
+        commissionAmount: 0,
+        commissionPaid: false,
+        disputeFlag: false,
+        // The cashier who took it holds it on the kitchen board.
+        cashier: me,
+        cashierName: personName(me),
+        assignedAt: /* @__PURE__ */ new Date(),
+        ...rider && { createdBy: rider },
+        ...momo && {
+          paymentProvider: momo.provider,
+          paymentReference: momo.reference,
+          paymentStatus: PENDING
+        }
+      });
+      if (payLater) order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: total });
+      else if (!isDelivery && method === "cash") await cashIntoTill(order, actor, role);
+      order.setACL(readAcl(rider));
+      await order.save(null, MASTER);
+      await saveLines(order, lines, rider);
+      if (isDelivery || order.get("customerPhone")) {
+        const customer = await recordCustomerOrder(order);
+        if (customer) {
+          order.set("customer", customer);
+          await order.save(null, MASTER);
+        }
+      }
+      await audit(actor, "order.placed", order, null, {
+        status: "PLACED",
+        total,
+        orderType: type,
+        source: "counter",
+        riderId: rider?.id || null,
+        payment: payLater ? "later" : method
+      });
+      await notifyStaff({
+        kind: "order.new",
+        tone: "new",
+        title: `New ${TYPE_LABEL[type].toLowerCase()} order ${order.get("orderCode")}`,
+        body: [personName(me), customerName, money(config, total)].join(" \xB7 "),
+        link: "/cashier",
+        order,
+        except: actor
+      });
+      if (rider) await tellRider(rider, order, config);
+      return { id: order.id, orderCode: order.get("orderCode"), total };
+    });
+    Parse.Cloud.define("assignOrderRider", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      const order = await new Parse.Query("Order").get(idOf(request.params.orderId) || "none", MASTER);
+      if (order.get("source") !== "counter" || order.get("orderType") !== "delivery")
+        throw invalid("Only deliveries taken at the counter are assigned here");
+      if (!OPEN.includes(order.get("status"))) throw invalid("This order has already left the kitchen");
+      const rider = await activeRider(request.params.riderId);
+      const before = order.get("createdBy");
+      if (before?.id === rider.id) throw invalid("That rider already has this order");
+      await assign(order, rider);
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        "order.rider_assigned",
+        order,
+        { riderId: before?.id || null },
+        { riderId: rider.id }
+      );
+      const { values: config } = await loadConfig();
+      await tellRider(rider, order, config);
+      if (before)
+        await notifyUser(before, {
+          kind: "order.unassigned",
+          tone: "alert",
+          title: `${order.get("orderCode")} moved to another rider`,
+          body: order.get("customerName"),
+          link: "/rider/active",
+          order
+        });
+      return { riderId: rider.id, rider: personName(rider) };
+    });
+    Parse.Cloud.define("takeCounterPayment", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      const p = request.params;
+      const order = await new Parse.Query("Order").get(idOf(p.orderId) || "none", MASTER);
+      if (!order.get("billOpen")) throw invalid("This bill is already paid");
+      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
+      const { values: config } = await loadConfig();
+      if (p.paymentMethod === "cash") await cashIntoTill(order, actor, role);
+      else if (p.paymentMethod === "mobile_money") {
+        const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
+        order.set({
+          paymentMethod: "mobile_money",
+          paymentProvider: momo.provider,
+          paymentReference: momo.reference,
+          paymentStatus: PENDING,
+          cashStatus: "NOT_APPLICABLE",
+          amountToCollect: 0,
+          billOpen: false
+        });
+      } else throw invalid("Choose cash or mobile money");
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        "payment.counter",
+        order,
+        { billOpen: true },
+        {
+          paymentMethod: order.get("paymentMethod"),
+          amount: order.get("total")
+        }
+      );
+      return {
+        paymentMethod: order.get("paymentMethod"),
+        paymentStatus: order.get("paymentStatus") || null
+      };
+    });
+    Parse.Cloud.define("getAssignableRiders", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      const role = await new Parse.Query(Parse.Role).equalTo("name", "rider").first(MASTER);
+      const riders = role ? await role.getUsers().query().limit(500).find(MASTER) : [];
+      const shifts = await new Parse.Query("Shift").equalTo("kind", "rider").equalTo("status", "open").limit(500).find(MASTER);
+      const onShift = new Set(shifts.map((s) => s.get("operator")?.id));
+      return riders.filter((rider) => rider.get("active") !== false).map((rider) => ({
+        id: rider.id,
+        name: personName(rider),
+        onShift: onShift.has(rider.id),
+        available: rider.get("available") !== false
+      })).sort(
+        (a, b) => Number(b.onShift && b.available) - Number(a.onShift && a.available) || a.name.localeCompare(b.name)
+      );
+    });
+    module2.exports = { modulesOf, COUNTER_TYPES };
   }
 });
 
@@ -11581,7 +11944,8 @@ var require_shifts = __commonJS({
       adminOnly,
       loadConfig,
       personName,
-      verifyPin
+      verifyPin,
+      orNone
     } = require_core();
     var { money, notifyAdmins } = require_notifications();
     var { resolveRange } = require_dates();
@@ -11605,14 +11969,30 @@ var require_shifts = __commonJS({
       const payoutQuery = new Parse.Query("TillPayout");
       payoutQuery.equalTo("shift", shift);
       payoutQuery.limit(1e3);
-      const [handovers, payouts] = await Promise.all([
+      const counterQuery = new Parse.Query("Order");
+      counterQuery.equalTo("tillCashier", cashier);
+      counterQuery.equalTo("cashStatus", "IN_TILL");
+      counterQuery.greaterThanOrEqualTo("paidAt", start);
+      counterQuery.lessThan("paidAt", end);
+      counterQuery.limit(5e3);
+      const [handovers, payouts, counterOrders] = await Promise.all([
         handoverQuery.find(MASTER),
-        payoutQuery.find(MASTER)
+        payoutQuery.find(MASTER),
+        counterQuery.find(MASTER).catch(orNone([]))
       ]);
       const openingFloat = Number(shift.get("openingFloat") || 0);
-      const cashIn = sumBy(handovers, (h) => h.get("countedAmount") ?? h.get("amount"));
+      const riderCash = sumBy(handovers, (h) => h.get("countedAmount") ?? h.get("amount"));
+      const counterCash = sumBy(counterOrders, (o) => o.get("amountCollected"));
+      const cashIn = riderCash + counterCash;
       const paidOut = sumBy(payouts, (row) => row.get("amount"));
-      return { openingFloat, cashIn, paidOut, expected: openingFloat + cashIn - paidOut };
+      return {
+        openingFloat,
+        cashIn,
+        riderCash,
+        counterCash,
+        paidOut,
+        expected: openingFloat + cashIn - paidOut
+      };
     }
     function heldOrdersQuery(cashier) {
       const query = new Parse.Query("Order");
@@ -11686,6 +12066,7 @@ var require_shifts = __commonJS({
           openingFloat: shift.get("openingFloat"),
           expectedTill: till ? till.expected : null,
           cashIn: till ? till.cashIn : null,
+          counterCash: till ? till.counterCash : null,
           paidOut: till ? till.paidOut : null,
           heldOrders: isCashier ? await heldOrdersQuery(user).count(MASTER) : null,
           float: isCashier ? null : await riderFloat(user),
@@ -11729,6 +12110,11 @@ var require_shifts = __commonJS({
         const problem = outstandingProblem(await riderOutstanding(user));
         if (problem) throw invalid(problem);
       } else {
+        const bills = await new Parse.Query("Order").equalTo("placedBy", user).equalTo("billOpen", true).notEqualTo("status", "CANCELLED").count(MASTER).catch(orNone(0));
+        if (bills)
+          throw invalid(
+            `${bills} eat-in / pick-up bill${bills === 1 ? " is" : "s are"} not paid yet. Take payment or cancel before ending your shift`
+          );
         const held = await heldOrdersQuery(user).count(MASTER);
         if (held)
           throw invalid(
@@ -12552,6 +12938,12 @@ var require_admin = __commonJS({
         throw invalid("Invalid default commission amount");
       if (!Number.isFinite(percent) || percent < 0 || percent > 100)
         throw invalid("Default commission percent must be 0-100");
+      const modules = [
+        (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
+        (p.moduleCallIn ?? current.moduleCallIn) === true,
+        (p.moduleCounter ?? current.moduleCounter) === true
+      ];
+      if (!modules.some(Boolean)) throw invalid("Keep at least one way of taking orders switched on");
       config.set({
         restaurantName: String(p.restaurantName || current.restaurantName).trim(),
         currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
@@ -12573,7 +12965,10 @@ var require_admin = __commonJS({
         defaultCommissionPercent: percent,
         zReportHour: zHour,
         restaurantLat: place.location.lat,
-        restaurantLng: place.location.lng
+        restaurantLng: place.location.lng,
+        moduleRiderOrders: (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
+        moduleCallIn: (p.moduleCallIn ?? current.moduleCallIn) === true,
+        moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -12839,10 +13234,11 @@ var require_overrides = __commonJS({
       const riderPaid = order.get("commissionPaid") === true || order.get("deliveryFeePaid") === true;
       const cashWithRider = method === "cash" && order.get("cashStatus") === "WITH_RIDER";
       const momoUnverified = method === "mobile_money" && order.get("paymentStatus") !== "VERIFIED";
+      const withRider = !["eat_in", "pickup"].includes(order.get("orderType")) && !!order.get("createdBy");
       return {
         cancel: OPEN.includes(status),
-        deliver: ["READY", "PICKED_UP"].includes(status),
-        move: OPEN.includes(status),
+        deliver: withRider && ["READY", "PICKED_UP"].includes(status),
+        move: withRider && OPEN.includes(status),
         reopen: delivered && !riderPaid && (cashWithRider || momoUnverified),
         paymentToMobileMoney: delivered && cashWithRider,
         paymentToCash: delivered && momoUnverified
@@ -13047,6 +13443,11 @@ var require_profile = __commonJS({
         commissionRounding: values.commissionRounding,
         requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
         floatWarningPercent: values.floatWarningPercent,
+        modules: {
+          riderOrders: values.moduleRiderOrders !== false,
+          callIn: values.moduleCallIn === true,
+          counter: values.moduleCounter === true
+        },
         mapCenter: { lat: Number(values.restaurantLat), lng: Number(values.restaurantLng) },
         mobileMoney: merchantAccounts(values),
         // False until the owner saves a restaurant name in Settings.
@@ -13096,6 +13497,7 @@ require_notifications();
 require_customers();
 require_payments();
 require_orders();
+require_counter();
 require_menu();
 require_cash();
 require_payouts();

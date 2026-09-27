@@ -539,6 +539,12 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     throw invalid('Invalid default commission amount');
   if (!Number.isFinite(percent) || percent < 0 || percent > 100)
     throw invalid('Default commission percent must be 0-100');
+  const modules = [
+    (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
+    (p.moduleCallIn ?? current.moduleCallIn) === true,
+    (p.moduleCounter ?? current.moduleCounter) === true,
+  ];
+  if (!modules.some(Boolean)) throw invalid('Keep at least one way of taking orders switched on');
   config.set({
     restaurantName: String(p.restaurantName || current.restaurantName).trim(),
     currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
@@ -563,6 +569,9 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     zReportHour: zHour,
     restaurantLat: place.location.lat,
     restaurantLng: place.location.lng,
+    moduleRiderOrders: (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
+    moduleCallIn: (p.moduleCallIn ?? current.moduleCallIn) === true,
+    moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

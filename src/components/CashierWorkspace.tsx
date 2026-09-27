@@ -13,6 +13,7 @@ import {
   UtensilsCrossed,
   X,
   Banknote,
+  Plus,
 } from 'lucide-react';
 import Parse from '../parse';
 import { CashierHandovers } from './CashierHandovers';
@@ -29,6 +30,7 @@ import { PushPrompt } from './PushPrompt';
 import { InstallPrompt } from './InstallPrompt';
 import { Stat } from './reports/common';
 import { useLiveRefresh } from '../lib/live';
+import { NewOrder } from './NewOrder';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
 type TicketLine = { text: string; details: string };
@@ -51,7 +53,16 @@ type Ticket = {
   // The cashier handling this order (empty until someone takes it).
   holderId: string;
   holderName: string;
+  // delivery (default), eat_in or pickup; source 'counter' when a cashier
+  // took the order.
+  orderType: string;
+  fromCounter: boolean;
+  riderId: string;
+  billOpen: boolean;
+  table: string;
 };
+
+const TYPE_LABEL: Record<string, string> = { eat_in: 'Eat in', pickup: 'Pick up' };
 
 const stageOf = (status: string): Stage =>
   status === 'PLACED' ? 'Incoming' : status === 'READY' ? 'Ready' : 'Preparing';
@@ -108,6 +119,11 @@ async function loadLiveTickets(): Promise<Ticket[]> {
     paymentReference: order.get('paymentReference') || '',
     holderId: order.get('cashier')?.id || '',
     holderName: order.get('cashierName') || '',
+    orderType: order.get('orderType') || 'delivery',
+    fromCounter: order.get('source') === 'counter',
+    riderId: order.get('createdBy')?.id || '',
+    billOpen: order.get('billOpen') === true,
+    table: order.get('tableLabel') || '',
   }));
 }
 
@@ -166,17 +182,21 @@ export function CashierWorkspace() {
     void refresh();
   }, [preview, pathname, liveTick]);
 
-  const tab = pathname.startsWith('/cashier/handovers')
-    ? 'handovers'
-    : pathname.startsWith('/cashier/shift')
-      ? 'shift'
-      : pathname.startsWith('/cashier/stock')
-        ? 'stock'
-        : pathname.startsWith('/cashier/payments')
-          ? 'payments'
-          : pathname.startsWith('/cashier/payouts')
-            ? 'payouts'
-            : 'orders';
+  const modules = profile?.config.modules;
+  const takesOrders = !!(modules?.callIn || modules?.counter);
+  const tab = pathname.startsWith('/cashier/new')
+    ? 'new'
+    : pathname.startsWith('/cashier/handovers')
+      ? 'handovers'
+      : pathname.startsWith('/cashier/shift')
+        ? 'shift'
+        : pathname.startsWith('/cashier/stock')
+          ? 'stock'
+          : pathname.startsWith('/cashier/payments')
+            ? 'payments'
+            : pathname.startsWith('/cashier/payouts')
+              ? 'payouts'
+              : 'orders';
   return (
     <main className="ops-shell">
       <header className="ops-header">
@@ -186,6 +206,15 @@ export function CashierWorkspace() {
             <UtensilsCrossed />
             Kitchen board
           </button>
+          {takesOrders && (
+            <button
+              className={tab === 'new' ? 'active' : ''}
+              onClick={() => navigate('/cashier/new')}
+            >
+              <Plus />
+              New order
+            </button>
+          )}
           <button
             className={tab === 'handovers' ? 'active' : ''}
             onClick={() => navigate('/cashier/handovers')}
@@ -260,6 +289,23 @@ export function CashierWorkspace() {
       ) : (
         <Routes>
           <Route index element={<KitchenBoard />} />
+          {takesOrders && (
+            <Route
+              path="new"
+              element={
+                <div className="counter-order">
+                  <NewOrder
+                    preview={preview}
+                    counter={{ callIn: !!modules?.callIn, counter: !!modules?.counter }}
+                    onBack={() => navigate('/cashier')}
+                    onGoToCash={() => navigate('/cashier')}
+                    onOpenOrder={() => navigate('/cashier')}
+                    onPlaced={(payload) => Parse.Cloud.run('createCounterOrder', payload)}
+                  />
+                </div>
+              }
+            />
+          )}
           <Route path="handovers" element={<CashierHandovers preview={preview} />} />
           <Route path="stock" element={<StockPanel />} />
           <Route path="payments" element={<MobileMoneyLedger />} />
@@ -295,6 +341,16 @@ function KitchenBoard() {
     action: 'reject' | 'cancel' | 'payment';
   } | null>(null);
   const [reason, setReason] = useState('');
+  // Assigning a rider to a call-in delivery, or taking payment for a bill.
+  const [assigning, setAssigning] = useState<string | null>(null);
+  const [riders, setRiders] = useState<
+    { id: string; name: string; onShift: boolean; available: boolean }[] | null
+  >(null);
+  const [riderPick, setRiderPick] = useState('');
+  const [paying, setPaying] = useState<string | null>(null);
+  const [payMethod, setPayMethod] = useState<'cash' | 'mobile_money'>('cash');
+  const [payProvider, setPayProvider] = useState('');
+  const [payRef, setPayRef] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -322,6 +378,11 @@ function KitchenBoard() {
             paymentReference: '',
             holderId: '',
             holderName: '',
+            orderType: 'delivery',
+            fromCounter: false,
+            riderId: '',
+            billOpen: false,
+            table: '',
           })),
         );
       } else {
@@ -389,6 +450,50 @@ function KitchenBoard() {
     await load();
   };
 
+  const openAssign = async (ticket: Ticket) => {
+    setAssigning(ticket.id);
+    setRiderPick('');
+    setRiders(null);
+    try {
+      setRiders(await Parse.Cloud.run('getAssignableRiders'));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load riders');
+      setRiders([]);
+    }
+  };
+
+  const assignRider = async (ticket: Ticket) => {
+    try {
+      await Parse.Cloud.run('assignOrderRider', { orderId: ticket.id, riderId: riderPick });
+      setAssigning(null);
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not assign the rider');
+      return;
+    }
+    await load();
+  };
+
+  const takePayment = async (ticket: Ticket) => {
+    try {
+      await Parse.Cloud.run('takeCounterPayment', {
+        orderId: ticket.id,
+        paymentMethod: payMethod,
+        ...(payMethod === 'mobile_money' && {
+          paymentProvider: payProvider,
+          paymentReference: payRef.trim(),
+        }),
+      });
+      setPaying(null);
+      setPayRef('');
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not record the payment');
+      return;
+    }
+    await load();
+  };
+
   const visible = tickets.filter((t) => !mineOnly || !t.holderId || t.holderId === me);
 
   return (
@@ -399,7 +504,7 @@ function KitchenBoard() {
           <h1>Kitchen board</h1>
         </div>
         <span>
-          <Clock3 /> Refreshes every 10 seconds
+          <Clock3 /> Updates live
         </span>
       </div>
       {isCashier && !preview && (
@@ -438,8 +543,18 @@ function KitchenBoard() {
                       {ticket.createdAt && (
                         <span className={age >= 20 ? 'late' : ''}>{age} min</span>
                       )}
+                      {TYPE_LABEL[ticket.orderType] && (
+                        <span className="ticket-type">
+                          {TYPE_LABEL[ticket.orderType]}
+                          {ticket.table ? ` · ${ticket.table}` : ''}
+                        </span>
+                      )}
                       {ticket.channel && <span>{CHANNEL[ticket.channel] || ticket.channel}</span>}
-                      {ticket.payment && <span>{PAYMENT[ticket.payment] || ticket.payment}</span>}
+                      {ticket.billOpen ? (
+                        <span className="ticket-unpaid">Not paid</span>
+                      ) : (
+                        ticket.payment && <span>{PAYMENT[ticket.payment] || ticket.payment}</span>
+                      )}
                     </div>
                     <h3>{ticket.customer}</h3>
                     <ul className="ticket-lines">
@@ -457,11 +572,18 @@ function KitchenBoard() {
                         {ticket.paymentStatus === 'VERIFIED'
                           ? 'paid ✓'
                           : ticket.paymentStatus === 'REJECTED'
-                            ? 'not received: waiting for rider'
+                            ? ticket.billOpen
+                              ? 'not received: take payment again'
+                              : 'not received: waiting for rider'
                             : 'check payment'}
                       </p>
                     )}
-                    <small>{ticket.rider}</small>
+                    {ticket.orderType === 'delivery' && (
+                      <small className={ticket.riderId ? '' : 'ticket-norider'}>
+                        {ticket.riderId ? ticket.rider : 'No rider yet'}
+                        {ticket.fromCounter && ' · counter order'}
+                      </small>
+                    )}
                     {!preview && (
                       <p className={mine ? 'ticket-holder mine' : 'ticket-holder'}>
                         {mine
@@ -471,7 +593,87 @@ function KitchenBoard() {
                             : 'Not taken yet'}
                       </p>
                     )}
-                    {passing === ticket.id ? (
+                    {assigning === ticket.id ? (
+                      <div className="ticket-close">
+                        <select
+                          aria-label="Rider"
+                          value={riderPick}
+                          onChange={(e) => setRiderPick(e.target.value)}
+                        >
+                          <option value="">Choose a rider</option>
+                          {(riders || [])
+                            .filter((r) => r.id !== ticket.riderId)
+                            .map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {r.name}
+                                {!r.onShift ? ' (off shift)' : !r.available ? ' (on a break)' : ''}
+                              </option>
+                            ))}
+                        </select>
+                        <small>
+                          The rider earns the delivery fee on this order, no commission.
+                        </small>
+                        <div className="ticket-actions">
+                          <button onClick={() => setAssigning(null)}>Back</button>
+                          <button disabled={!riderPick} onClick={() => void assignRider(ticket)}>
+                            Assign
+                          </button>
+                        </div>
+                      </div>
+                    ) : paying === ticket.id ? (
+                      <div className="ticket-close">
+                        <div className="filter-toggle" role="group" aria-label="Paid by">
+                          {(
+                            [
+                              ['cash', 'Cash'],
+                              ['mobile_money', 'Mobile money'],
+                            ] as const
+                          ).map(([value, label]) => (
+                            <button
+                              key={value}
+                              className={payMethod === value ? 'active' : ''}
+                              onClick={() => setPayMethod(value)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        {payMethod === 'mobile_money' ? (
+                          <>
+                            <select
+                              aria-label="Network"
+                              value={payProvider}
+                              onChange={(e) => setPayProvider(e.target.value)}
+                            >
+                              <option value="">Choose the network</option>
+                              {(config.mobileMoney || []).map((m) => (
+                                <option key={m.provider} value={m.provider}>
+                                  {m.label}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              value={payRef}
+                              onChange={(e) => setPayRef(e.target.value.toUpperCase())}
+                              placeholder="Transaction ID"
+                            />
+                          </>
+                        ) : (
+                          <small>Put {money(ticket.total)} in the till.</small>
+                        )}
+                        <div className="ticket-actions">
+                          <button onClick={() => setPaying(null)}>Back</button>
+                          <button
+                            disabled={
+                              payMethod === 'mobile_money' && (!payProvider || !payRef.trim())
+                            }
+                            onClick={() => void takePayment(ticket)}
+                          >
+                            <Check /> Paid
+                          </button>
+                        </div>
+                      </div>
+                    ) : passing === ticket.id ? (
                       <div className="ticket-close">
                         <select
                           aria-label="Pass to"
@@ -597,34 +799,78 @@ function KitchenBoard() {
                             Mark ready <ChevronRight />
                           </button>
                         )}
-                        {stage === 'Ready' && (
-                          <button onClick={() => void run(ticket, 'pickup')}>
-                            <ClipboardCheck />
-                            Hand to rider
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {!isClosing && passing !== ticket.id && !heldByOther && !preview && (
-                      <div className="ticket-links">
-                        {stage !== 'Incoming' && (
+                        {ticket.billOpen && (
                           <button
-                            className="link-button"
+                            className="pay-button"
                             onClick={() => {
-                              setClosing({ id: ticket.id, action: 'cancel' });
-                              setReason('');
+                              setPaying(ticket.id);
+                              setPayMethod('cash');
+                              setPayProvider('');
+                              setPayRef('');
                             }}
                           >
-                            Cancel order
+                            <Banknote /> Take payment
                           </button>
                         )}
-                        {canPass && (mine || !ticket.holderId || !isCashier) && (
-                          <button className="link-button" onClick={() => void openPass(ticket)}>
-                            Pass to a colleague
+                        {stage === 'Ready' && TYPE_LABEL[ticket.orderType] && (
+                          <button
+                            disabled={
+                              ticket.billOpen || ticket.paymentStatus === 'PENDING_VERIFICATION'
+                            }
+                            title={ticket.billOpen ? 'Take payment first' : undefined}
+                            onClick={() => void run(ticket, 'complete')}
+                          >
+                            <ClipboardCheck />
+                            {ticket.orderType === 'pickup' ? 'Collected' : 'Served'}
                           </button>
                         )}
+                        {stage === 'Ready' &&
+                          ticket.orderType === 'delivery' &&
+                          (ticket.riderId ? (
+                            <button onClick={() => void run(ticket, 'pickup')}>
+                              <ClipboardCheck />
+                              Hand to rider
+                            </button>
+                          ) : (
+                            <button onClick={() => void openAssign(ticket)}>Assign rider</button>
+                          ))}
                       </div>
                     )}
+                    {!isClosing &&
+                      passing !== ticket.id &&
+                      assigning !== ticket.id &&
+                      paying !== ticket.id &&
+                      !heldByOther &&
+                      !preview && (
+                        <div className="ticket-links">
+                          {stage !== 'Incoming' && (
+                            <button
+                              className="link-button"
+                              onClick={() => {
+                                setClosing({ id: ticket.id, action: 'cancel' });
+                                setReason('');
+                              }}
+                            >
+                              Cancel order
+                            </button>
+                          )}
+                          {ticket.fromCounter &&
+                            ticket.orderType === 'delivery' &&
+                            (stage !== 'Ready' || ticket.riderId) && (
+                              <button
+                                className="link-button"
+                                onClick={() => void openAssign(ticket)}
+                              >
+                                {ticket.riderId ? 'Change rider' : 'Assign rider'}
+                              </button>
+                            )}
+                          {canPass && (mine || !ticket.holderId || !isCashier) && (
+                            <button className="link-button" onClick={() => void openPass(ticket)}>
+                              Pass to a colleague
+                            </button>
+                          )}
+                        </div>
+                      )}
                   </article>
                 );
               })}

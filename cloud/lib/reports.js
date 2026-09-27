@@ -10,7 +10,7 @@ const isDelivered = (fact) => fact.status === 'DELIVERED';
 // money a cashier found on the merchant statement.
 const isConfirmed = (fact) =>
   fact.method === 'cash'
-    ? fact.cashStatus === 'RECONCILED'
+    ? ['RECONCILED', 'IN_TILL'].includes(fact.cashStatus)
     : fact.method === 'mobile_money'
       ? fact.paymentStatus === 'VERIFIED'
       : true;

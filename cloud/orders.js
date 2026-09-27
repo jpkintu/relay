@@ -41,7 +41,29 @@ async function servableAccompaniments() {
   return new Map((await query.find(MASTER)).map((row) => [row.id, row]));
 }
 
-// Validates the rider's cart against the live menu and returns priced lines.
+// Saves the order's priced lines (OrderItem), readable by `rider` (if any),
+// cashiers and admins.
+async function saveLines(order, lines, rider) {
+  const children = lines.map((line) => {
+    const item = new Parse.Object('OrderItem');
+    item.set({
+      order,
+      menuItem: line.menuItem,
+      itemNameSnapshot: line.name,
+      unitPriceSnapshot: line.price,
+      quantity: line.qty,
+      lineTotal: line.price * line.qty,
+      notes: line.notes,
+      accompanimentIds: line.accompanimentIds,
+      accompanimentNames: line.accompanimentNames,
+    });
+    item.setACL(readAcl(rider));
+    return item;
+  });
+  await Parse.Object.saveAll(children, MASTER);
+}
+
+// Validates a cart against the live menu and returns priced lines.
 async function priceLines(items) {
   if (!Array.isArray(items) || !items.length) throw invalid('Add at least one item');
   if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
@@ -122,6 +144,8 @@ Parse.Cloud.define('createOrder', async (request) => {
     riderFloat(rider),
     new Parse.Query(Parse.User).get(rider.id, MASTER),
   ]);
+  if (settings.moduleRiderOrders === false)
+    throw forbidden('Riders do not take orders here: the counter creates them');
   if (me.get('available') === false)
     throw invalid('You are on a break. Switch to Available to take orders');
   const config = withRiderLimit(settings, me);
@@ -186,23 +210,7 @@ Parse.Cloud.define('createOrder', async (request) => {
   order.setACL(readAcl(rider));
   await order.save(null, MASTER);
 
-  const children = lines.map((line) => {
-    const item = new Parse.Object('OrderItem');
-    item.set({
-      order,
-      menuItem: line.menuItem,
-      itemNameSnapshot: line.name,
-      unitPriceSnapshot: line.price,
-      quantity: line.qty,
-      lineTotal: line.price * line.qty,
-      notes: line.notes,
-      accompanimentIds: line.accompanimentIds,
-      accompanimentNames: line.accompanimentNames,
-    });
-    item.setACL(readAcl(rider));
-    return item;
-  });
-  await Parse.Object.saveAll(children, MASTER);
+  await saveLines(order, lines, rider);
   const customer = await recordCustomerOrder(order);
   if (customer) {
     order.set('customer', customer);
@@ -265,7 +273,18 @@ const TRANSITIONS = {
     kitchen: 'cancelled',
     who: 'owner',
   },
+  // Eat-in / pick-up: the guest has it (served at the table or collected).
+  complete: { from: ['READY'], to: 'DELIVERED', kitchen: 'served', who: 'staff' },
 };
+
+// Eat-in and pick-up orders never go out with a rider.
+const COUNTER_TYPES = ['eat_in', 'pickup'];
+// Paid, for an eat-in / pick-up order: cash in a till, or mobile money verified.
+const counterPaid = (order) =>
+  !order.get('billOpen') &&
+  (order.get('paymentMethod') === 'cash'
+    ? order.get('cashStatus') === 'IN_TILL'
+    : order.get('paymentStatus') === 'VERIFIED');
 
 // Records a delivery on `order` (the caller saves it): how the customer paid,
 // the full amount collected, and the rider's pay (commission + delivery fee).
@@ -299,13 +318,17 @@ async function applyDelivery(
   if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
   const rider = await order.get('createdBy').fetch(MASTER);
   // The rider is paid their commission plus the delivery fee, from the till.
-  const commission = computeCommission({
-    type: rider.get('commissionType') || 'per_order',
-    perOrder: rider.get('commissionPerOrder'),
-    percent: rider.get('commissionPercent'),
-    subtotal: order.get('subtotal'),
-    rounding: config.commissionRounding,
-  });
+  // On deliveries taken at the counter they earn the delivery fee only.
+  const commission =
+    order.get('source') === 'counter'
+      ? 0
+      : computeCommission({
+          type: rider.get('commissionType') || 'per_order',
+          perOrder: rider.get('commissionPerOrder'),
+          percent: rider.get('commissionPercent'),
+          subtotal: order.get('subtotal'),
+          rounding: config.commissionRounding,
+        });
   const deliveryPay = Number(order.get('deliveryFee') || 0);
   order.set({
     paymentMethod: method,
@@ -339,6 +362,15 @@ Parse.Cloud.define('transitionOrder', async (request) => {
     throw invalid('Confirm the mobile money payment before accepting this order');
   if (p.action === 'cancel' && !staff && order.get('status') !== 'PLACED')
     throw forbidden('The kitchen has accepted this order. Ask the cashier to cancel it');
+  const atCounter = COUNTER_TYPES.includes(order.get('orderType'));
+  if (p.action === 'complete' && !atCounter)
+    throw invalid('Only eat-in and pick-up orders are served or collected');
+  if (['pickup', 'deliver'].includes(p.action) && atCounter)
+    throw invalid('Eat-in and pick-up orders are finished with Served / Collected');
+  if (p.action === 'pickup' && !order.get('createdBy'))
+    throw invalid('Assign a rider before handing the order over');
+  if (p.action === 'complete' && !counterPaid(order))
+    throw invalid('Take payment (or wait for the mobile money check) first');
 
   const before = {
     status: order.get('status'),
@@ -357,9 +389,20 @@ Parse.Cloud.define('transitionOrder', async (request) => {
       cancelledReason: reason,
       cancelledBy: actor,
       cancelledAt: now,
-      cashStatus: 'NOT_APPLICABLE',
+      // Cash already in a till goes back to the guest.
+      cashStatus: order.get('cashStatus') === 'IN_TILL' ? 'REFUNDED' : 'NOT_APPLICABLE',
+      billOpen: false,
     });
   }
+  if (p.action === 'complete')
+    order.set({
+      restaurantStatus: order.get('orderType') === 'pickup' ? 'collected' : 'served',
+      deliveredAt: now,
+      commissionBase: 0,
+      deliveryPay: 0,
+      commissionAmount: 0,
+      commissionPaid: true,
+    });
   if (p.action === 'deliver')
     await applyDelivery(order, {
       method: p.paymentMethod,
@@ -398,7 +441,7 @@ const RIDER_MESSAGES = {
 async function notifyTransition(order, action, { staff, owner, actor, config }) {
   const code = order.get('orderCode');
   const rider = order.get('createdBy');
-  if (staff && !owner && RIDER_MESSAGES[action]) {
+  if (rider && staff && !owner && RIDER_MESSAGES[action]) {
     const [title, detail] = RIDER_MESSAGES[action](code, order.get('cancelledReason') || '');
     await notifyUser(rider, {
       kind: `order.${action}`,
@@ -620,6 +663,11 @@ Parse.Cloud.define('transferOrder', async (request) => {
 
 module.exports = {
   riderFloat,
+  priceLines,
+  saveLines,
+  clean,
+  cleanPhone,
+  CHANNELS,
   servableAccompaniments,
   KITCHEN_OPEN,
   PAYMENT_METHODS,

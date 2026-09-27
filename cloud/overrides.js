@@ -170,10 +170,13 @@ function overrideOptions(order) {
   const riderPaid = order.get('commissionPaid') === true || order.get('deliveryFeePaid') === true;
   const cashWithRider = method === 'cash' && order.get('cashStatus') === 'WITH_RIDER';
   const momoUnverified = method === 'mobile_money' && order.get('paymentStatus') !== 'VERIFIED';
+  // Eat-in / pick-up orders never go out with a rider.
+  const withRider =
+    !['eat_in', 'pickup'].includes(order.get('orderType')) && !!order.get('createdBy');
   return {
     cancel: OPEN.includes(status),
-    deliver: ['READY', 'PICKED_UP'].includes(status),
-    move: OPEN.includes(status),
+    deliver: withRider && ['READY', 'PICKED_UP'].includes(status),
+    move: withRider && OPEN.includes(status),
     reopen: delivered && !riderPaid && (cashWithRider || momoUnverified),
     paymentToMobileMoney: delivered && cashWithRider,
     paymentToCash: delivered && momoUnverified,

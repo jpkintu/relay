@@ -5681,3 +5681,105 @@ img.food-art.photo {
   gap: 8px;
   margin-top: 10px;
 }
+
+/* Counter modules: cashier orders, eat-in / pick-up, call-in delivery */
+.bottom-nav.four {
+  grid-template-columns: repeat(4, 1fr);
+}
+.counter-order .order-page {
+  background: transparent;
+}
+.order-type-row {
+  max-width: 1100px;
+  margin: 14px auto 0;
+  padding: 0 20px;
+}
+.order-type {
+  display: inline-flex;
+}
+.order-type button {
+  min-height: 44px;
+  padding: 0 18px;
+}
+.ticket-type {
+  background: #e8f0ff;
+  color: #1d47b8 !important;
+  font-weight: 700;
+}
+.ticket-unpaid {
+  background: #fde3dc;
+  color: #a33a1c !important;
+  font-weight: 700;
+}
+.ticket-norider {
+  color: #a33a1c !important;
+  font-weight: 700;
+}
+.ticket-close .filter-toggle {
+  display: flex;
+}
+.ticket-close select,
+.ticket-close input {
+  width: 100%;
+}
+.module-toggle {
+  align-items: flex-start;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.module-toggle input {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.module-toggle span {
+  display: grid;
+  gap: 2px;
+}
+.module-toggle small {
+  color: var(--muted);
+  font-weight: 400;
+}
+.counter-note {
+  background: #eef3ff;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin: 6px 0;
+}
+.shift-figures small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.merchant-settings.modules {
+  grid-template-columns: 1fr;
+}
+
+.ticket-actions:has(.pay-button) {
+  flex-wrap: wrap;
+}
+.ticket-actions .pay-button {
+  order: -1;
+  flex: 1 0 100%;
+}
+@media (max-width: 850px) {
+  /* The cashier's bottom menu: the order bar sits above it. */
+  .counter-order .cart-dock {
+    bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+  .counter-order .order-page {
+    padding-bottom: 230px;
+  }
+  /* Eight tabs on a phone: keep each readable and let the bar scroll. */
+  .ops-shell .ops-header nav {
+    grid-auto-columns: minmax(70px, 1fr);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .ops-shell .ops-header nav button span,
+  .ops-shell .ops-header nav button {
+    white-space: nowrap;
+  }
+}

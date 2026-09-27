@@ -25,6 +25,11 @@ function publicConfig(values) {
     commissionRounding: values.commissionRounding,
     requireCashierConfirmForPickup: values.requireCashierConfirmForPickup,
     floatWarningPercent: values.floatWarningPercent,
+    modules: {
+      riderOrders: values.moduleRiderOrders !== false,
+      callIn: values.moduleCallIn === true,
+      counter: values.moduleCounter === true,
+    },
     mapCenter: { lat: Number(values.restaurantLat), lng: Number(values.restaurantLng) },
     mobileMoney: merchantAccounts(values),
     // False until the owner saves a restaurant name in Settings.

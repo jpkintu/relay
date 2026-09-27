@@ -4,6 +4,7 @@
 //   security.js  write guards, _User rules, applySecurity migration
 //   profile.js   getAppInfo, getMyProfile
 //   orders.js    createOrder, transitionOrder (incl. cancel/reject), order issues
+//   counter.js   cashier-created orders: call-in delivery, eat-in, pick-up
 //   customers.js customer records, searchCustomers
 //   push.js      Web Push: VAPID keys, device subscriptions, sending
 //   notifications.js in-app notifications, reminders, getNotifications
@@ -26,6 +27,7 @@ require('./notifications');
 require('./customers');
 require('./payments');
 require('./orders');
+require('./counter');
 require('./menu');
 require('./cash');
 require('./payouts');

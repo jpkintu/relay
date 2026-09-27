@@ -76,6 +76,8 @@ function factOf(order) {
     status: order.get('status'),
     restaurantStatus: order.get('restaurantStatus'),
     channel: order.get('channel'),
+    orderType: order.get('orderType') || 'delivery',
+    source: order.get('source') || 'rider',
     customer: order.get('customerName') || '',
     customerKey: order.get('customer')?.id || (phone ? `tel:${phone}` : name && `name:${name}`),
     riderId: rider?.id || '',
