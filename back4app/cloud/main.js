@@ -137,6 +137,154 @@ var require_dates = __commonJS({
   }
 });
 
+// cloud/lib/tenant.js
+var require_tenant = __commonJS({
+  "cloud/lib/tenant.js"(exports2, module2) {
+    "use strict";
+    var { AsyncLocalStorage } = require("async_hooks");
+    var storage = new AsyncLocalStorage();
+    var SCOPED = /* @__PURE__ */ new Set([
+      "_User",
+      "Order",
+      "OrderItem",
+      "CashHandover",
+      "TillPayout",
+      "Shift",
+      "AuditLog",
+      "Configuration",
+      "MenuItem",
+      "MenuCategory",
+      "Accompaniment",
+      "Customer",
+      "Counter",
+      "DemoOrder",
+      "Notification",
+      "PushSubscription",
+      "ZReport",
+      "ErrorLog",
+      "Secret",
+      "AdminUnlock",
+      "Invoice"
+    ]);
+    var GLOBAL_SECRETS = /* @__PURE__ */ new Set(["vapid", "serverAddress"]);
+    var BASE_ROLES = ["admin", "cashier", "rider"];
+    var SEPARATOR = "__";
+    var current = () => storage.getStore()?.tenant || null;
+    var currentCode = () => storage.getStore()?.code || "";
+    var runAs = (tenant, fn, code = "") => storage.run({ tenant: tenant || null, code }, fn);
+    var withoutTenant = (fn) => storage.run({ tenant: null, code: "" }, fn);
+    var roleName = (base, tenant = current()) => tenant && BASE_ROLES.includes(base) ? `${base}${SEPARATOR}${tenant}` : base;
+    var baseRole = (name) => String(name || "").split(SEPARATOR)[0];
+    var fullUsername = (name, code = currentCode()) => code && !String(name).includes("@") ? `${name}@${code}` : String(name);
+    var displayUsername = (name) => String(name || "").split("@")[0];
+    var pointer = (tenant) => ({ __type: "Pointer", className: "Restaurant", objectId: tenant });
+    function scopeRoleNames(where, tenant) {
+      const name = where?.name;
+      if (typeof name === "string") where.name = roleName(name, tenant);
+      else if (name && Array.isArray(name.$in))
+        where.name = { ...name, $in: name.$in.map((entry) => roleName(entry, tenant)) };
+    }
+    function isGlobalSecret(where) {
+      const key = where?.key;
+      return typeof key === "string" && GLOBAL_SECRETS.has(key);
+    }
+    var installed = false;
+    function install(Parse2) {
+      if (installed) return;
+      installed = true;
+      const toJSON = Parse2.Query.prototype.toJSON;
+      Parse2.Query.prototype.toJSON = function scopedToJSON() {
+        const json = toJSON.call(this);
+        const tenant = current();
+        if (!tenant) return json;
+        if (this.className === "_Role") {
+          json.where = { ...json.where || {} };
+          scopeRoleNames(json.where, tenant);
+        } else if (SCOPED.has(this.className)) {
+          if (this.className === "Secret" && isGlobalSecret(json.where)) return json;
+          json.where = { ...json.where || {}, tenant: pointer(tenant) };
+        }
+        return json;
+      };
+      const stamp = (object) => {
+        const tenant = current();
+        if (!tenant || !object || object.id || !SCOPED.has(object.className) || object.get("tenant"))
+          return;
+        if (object.className === "Secret" && GLOBAL_SECRETS.has(object.get("key"))) return;
+        object.set("tenant", Parse2.Object.extend("Restaurant").createWithoutData(tenant));
+      };
+      const save = Parse2.Object.prototype.save;
+      Parse2.Object.prototype.save = function scopedSave(...args) {
+        stamp(this);
+        return save.apply(this, args);
+      };
+      const saveAll = Parse2.Object.saveAll;
+      Parse2.Object.saveAll = function scopedSaveAll(list, ...rest) {
+        (list || []).forEach(stamp);
+        return saveAll.call(this, list, ...rest);
+      };
+      const getUsername = Parse2.User.prototype.getUsername;
+      Parse2.User.prototype.getUsername = function plainUsername() {
+        return displayUsername(getUsername.call(this));
+      };
+      const getName = Parse2.Role.prototype.getName;
+      Parse2.Role.prototype.getName = function plainName() {
+        return baseRole(getName.call(this));
+      };
+      for (const method of [
+        "setRoleReadAccess",
+        "setRoleWriteAccess",
+        "getRoleReadAccess",
+        "getRoleWriteAccess"
+      ]) {
+        const original = Parse2.ACL.prototype[method];
+        Parse2.ACL.prototype[method] = function scopedRole(role, ...rest) {
+          const name = role instanceof Parse2.Role ? role.getName() : role;
+          return original.call(this, roleName(name), ...rest);
+        };
+      }
+    }
+    var cache = /* @__PURE__ */ new Map();
+    var CACHE_MS = 3e4;
+    async function lookUp(field, value) {
+      const key = `${field}:${value}`;
+      const hit = cache.get(key);
+      if (hit && Date.now() - hit.at < CACHE_MS) return hit.restaurant;
+      const query = new Parse.Query("Restaurant");
+      query.equalTo(field, value);
+      const row = await withoutTenant(() => query.first({ useMasterKey: true })).catch(() => null);
+      const restaurant = row ? { id: row.id, code: row.get("code"), name: row.get("name") } : null;
+      cache.set(key, { restaurant, at: Date.now() });
+      if (cache.size > 5e3) cache.clear();
+      return restaurant;
+    }
+    var clearCache = () => cache.clear();
+    async function restaurantFor(request) {
+      const tenant = request.user?.get?.("tenant");
+      if (tenant) return lookUp("objectId", tenant.id);
+      if (request.user) return null;
+      const code = String(request.params?.restaurant || "").trim().toLowerCase();
+      return /^[a-z0-9-]{3,30}$/.test(code) ? lookUp("code", code) : null;
+    }
+    module2.exports = {
+      install,
+      restaurantFor,
+      lookUp,
+      clearCache,
+      runAs,
+      withoutTenant,
+      current,
+      currentCode,
+      roleName,
+      baseRole,
+      fullUsername,
+      displayUsername,
+      SCOPED,
+      BASE_ROLES
+    };
+  }
+});
+
 // cloud/lib/core.js
 var require_core = __commonJS({
   "cloud/lib/core.js"(exports2, module2) {
@@ -228,7 +376,7 @@ var require_core = __commonJS({
         const acl = new Parse.ACL();
         acl.setRoleReadAccess("admin", true);
         acl.setRoleWriteAccess("admin", true);
-        role = new Parse.Role(name, acl);
+        role = new Parse.Role(require_tenant().roleName(name), acl);
         await role.save(null, MASTER);
       }
       return role;
@@ -581,6 +729,8 @@ var require_errors = __commonJS({
     var crypto = require("crypto");
     var { MASTER, adminOnly, audit, findAll, getRoleName, invalid, readAcl } = require_core();
     var { log, errorMessage, isUnexpected } = require_log();
+    var tenancy = require_tenant();
+    tenancy.install(Parse);
     var clip = (value, max) => String(value ?? "").replace(/\s+$/g, "").slice(0, max);
     var fingerprintOf = (source, where, message) => crypto.createHash("sha1").update(
       [
@@ -634,32 +784,36 @@ var require_errors = __commonJS({
         (error) => log("error", "errorlog.failed", { message: errorMessage(error) })
       );
     }
+    async function guarded(name, handler, request) {
+      const started = Date.now();
+      try {
+        return await handler(request);
+      } catch (error) {
+        if (isUnexpected(error)) {
+          const message = errorMessage(error);
+          log("error", "function.failed", {
+            fn: name,
+            user: request.user?.id || null,
+            ms: Date.now() - started,
+            message
+          });
+          await recordQuietly({
+            source: "server",
+            where: name,
+            message,
+            stack: error?.stack,
+            user: request.user
+          });
+        }
+        throw error;
+      }
+    }
     var define = Parse.Cloud.define.bind(Parse.Cloud);
     Parse.Cloud.define = (name, handler, validator) => define(
       name,
       async (request) => {
-        const started = Date.now();
-        try {
-          return await handler(request);
-        } catch (error) {
-          if (isUnexpected(error)) {
-            const message = errorMessage(error);
-            log("error", "function.failed", {
-              fn: name,
-              user: request.user?.id || null,
-              ms: Date.now() - started,
-              message
-            });
-            await recordQuietly({
-              source: "server",
-              where: name,
-              message,
-              stack: error?.stack,
-              user: request.user
-            });
-          }
-          throw error;
-        }
+        const restaurant = await tenancy.restaurantFor(request);
+        return tenancy.runAs(restaurant?.id, () => guarded(name, handler, request), restaurant?.code);
       },
       validator
     );
@@ -770,6 +924,148 @@ var require_errors = __commonJS({
   }
 });
 
+// cloud/lib/access.js
+var require_access = __commonJS({
+  "cloud/lib/access.js"(exports2, module2) {
+    "use strict";
+    function accessOf(row, graceDays = 0, now = Date.now()) {
+      if (row.get("suspended") === true) return { status: "suspended", ok: false, until: null };
+      const trial = row.get("trialEndsAt");
+      const paid = row.get("paidUntil");
+      const end = Math.max(trial ? trial.getTime() : 0, paid ? paid.getTime() : 0);
+      if (end > now)
+        return {
+          status: paid && paid.getTime() === end ? "active" : "trial",
+          ok: true,
+          until: new Date(end)
+        };
+      const graceEnd = end + Number(graceDays || 0) * 864e5;
+      if (end && graceEnd > now) return { status: "past_due", ok: true, until: new Date(graceEnd) };
+      return { status: "expired", ok: false, until: end ? new Date(end) : null };
+    }
+    module2.exports = { accessOf };
+  }
+});
+
+// cloud/lib/money.js
+var require_money = __commonJS({
+  "cloud/lib/money.js"(exports2, module2) {
+    "use strict";
+    var COMMISSION_TYPES = ["per_order", "percent", "hybrid"];
+    var ROUNDING_STEPS = { none: 0, up_100: 100, up_500: 500, up_1000: 1e3 };
+    function roundCommission(amount, rounding = "none") {
+      const whole = Math.round(Number(amount) || 0);
+      const step = ROUNDING_STEPS[rounding] || 0;
+      return step ? Math.ceil(whole / step) * step : whole;
+    }
+    function computeCommission({ type, perOrder, percent, subtotal, rounding }) {
+      const flat = Number(perOrder) || 0;
+      const share = (Number(subtotal) || 0) * (Number(percent) || 0) / 100;
+      const raw = type === "percent" ? share : type === "hybrid" ? flat + share : flat;
+      return roundCommission(raw, rounding);
+    }
+    function riderPay({ commissionAmount, deliveryPay, deliveryFee }) {
+      const commission = Number(commissionAmount) || 0;
+      if (deliveryPay !== void 0 && deliveryPay !== null) return commission;
+      return commission + (Number(deliveryFee) || 0);
+    }
+    var orderRiderPay = (order) => riderPay({
+      commissionAmount: order.get("commissionAmount"),
+      deliveryPay: order.get("deliveryPay"),
+      deliveryFee: order.get("deliveryFee")
+    });
+    function sumBy(rows, pick) {
+      return rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0);
+    }
+    module2.exports = {
+      COMMISSION_TYPES,
+      ROUNDING_STEPS,
+      roundCommission,
+      computeCommission,
+      riderPay,
+      orderRiderPay,
+      sumBy
+    };
+  }
+});
+
+// cloud/lib/seed.js
+var require_seed = __commonJS({
+  "cloud/lib/seed.js"(exports2, module2) {
+    "use strict";
+    var SEED_MENU = [
+      { key: "1", title: "Smoky chicken bowl", price: 18500, category: "Mains" },
+      { key: "2", title: "Beef rolex deluxe", price: 12e3, category: "Mains" },
+      { key: "3", title: "Garden rice plate", price: 14500, category: "Mains" },
+      { key: "4", title: "Passion fruit juice", price: 6e3, category: "Drinks" },
+      { key: "5", title: "Iced hibiscus", price: 5500, category: "Drinks" },
+      { key: "6", title: "Breakfast chapati", price: 8e3, category: "Breakfast" }
+    ];
+    module2.exports = { SEED_MENU };
+  }
+});
+
+// cloud/lib/accompaniments.js
+var require_accompaniments = __commonJS({
+  "cloud/lib/accompaniments.js"(exports2, module2) {
+    "use strict";
+    var MAX_GROUPS = 6;
+    var MAX_OPTIONS = 20;
+    function normalizeGroups(raw, knownIds) {
+      if (raw === void 0 || raw === null) return [];
+      if (!Array.isArray(raw) || raw.length > MAX_GROUPS)
+        throw new Error(`Use at most ${MAX_GROUPS} accompaniment groups`);
+      return raw.map((group, index) => {
+        const label = String(group?.label || "").trim() || `Choice ${index + 1}`;
+        if (label.length > 40)
+          throw new Error("Accompaniment group names must be 40 characters or less");
+        const options = [...new Set((group?.options || []).map(String))];
+        if (!options.length) throw new Error(`"${label}" needs at least one accompaniment`);
+        if (options.length > MAX_OPTIONS)
+          throw new Error(`"${label}" can offer at most ${MAX_OPTIONS} accompaniments`);
+        const unknown = options.filter((id) => !knownIds.has(id));
+        if (unknown.length)
+          throw new Error(`"${label}" refers to an accompaniment that does not exist`);
+        const max = Number(group?.max ?? options.length);
+        const min = Number(group?.min ?? 0);
+        if (!Number.isInteger(max) || max < 1 || max > options.length)
+          throw new Error(`"${label}": "pick at most" must be between 1 and ${options.length}`);
+        if (!Number.isInteger(min) || min < 0 || min > max)
+          throw new Error(`"${label}": "pick at least" must be between 0 and ${max}`);
+        return { label, options, min, max };
+      });
+    }
+    function availableGroups(groups, isAvailable) {
+      return (groups || []).map((group) => {
+        const options = group.options.filter((id) => isAvailable(id));
+        return {
+          label: group.label,
+          options,
+          min: Math.min(group.min, options.length),
+          max: Math.min(group.max, options.length)
+        };
+      }).filter((group) => group.options.length > 0);
+    }
+    function selectionError(groups, selectedIds) {
+      const selected = (selectedIds || []).map(String);
+      if (new Set(selected).size !== selected.length) return "The same accompaniment was chosen twice";
+      const counts = groups.map(() => 0);
+      for (const id of selected) {
+        const index = groups.findIndex((group) => group.options.includes(id));
+        if (index === -1) return "An accompaniment is not available for this dish";
+        counts[index] += 1;
+      }
+      for (const [index, group] of groups.entries()) {
+        if (counts[index] > group.max)
+          return group.max === 1 ? `Choose only one ${group.label.toLowerCase()} option` : `Choose at most ${group.max} from ${group.label}`;
+        if (counts[index] < group.min) return `Choose at least ${group.min} from ${group.label}`;
+      }
+      return "";
+    }
+    module2.exports = { normalizeGroups, availableGroups, selectionError };
+  }
+});
+
 // cloud/security.js
 var require_security = __commonJS({
   "cloud/security.js"(exports2, module2) {
@@ -777,7 +1073,6 @@ var require_security = __commonJS({
     var {
       MASTER,
       forbidden,
-      countUsers,
       getRoleName,
       readAcl,
       userAcl,
@@ -807,7 +1102,10 @@ var require_security = __commonJS({
       "Secret",
       "ZReport",
       "ErrorLog",
-      "AdminUnlock"
+      "AdminUnlock",
+      // Relay Hosted.
+      "Restaurant",
+      "PlatformSettings"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -817,7 +1115,9 @@ var require_security = __commonJS({
       "Secret",
       "ZReport",
       "ErrorLog",
-      "AdminUnlock"
+      "AdminUnlock",
+      "Restaurant",
+      "PlatformSettings"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -830,14 +1130,7 @@ var require_security = __commonJS({
     }
     Parse.Cloud.beforeSave(Parse.User, async (request) => {
       if (request.master) return;
-      if (!request.original) {
-        if (await countUsers() > 0)
-          throw forbidden("Accounts are created by the restaurant administrator");
-        for (const key of ["active", "commissionType", "commissionPerOrder", "commissionPercent"])
-          request.object.unset(key);
-        for (const key of ["riderCode", "cashierCode"]) request.object.unset(key);
-        return;
-      }
+      if (!request.original) throw forbidden("Accounts are created by the restaurant administrator");
       const blocked = request.object.dirtyKeys().filter((key) => !SELF_EDITABLE_USER_FIELDS.includes(key));
       if (blocked.length) throw forbidden(`You cannot change ${blocked.join(", ")}`);
     });
@@ -1137,6 +1430,18 @@ var require_security = __commonJS({
       },
       Secret: { key: S, value: "Object" },
       AdminUnlock: { tokenHash: S, user, expiresAt: D },
+      // Relay Hosted (docs/HOSTED.md).
+      Restaurant: {
+        name: S,
+        code: S,
+        suspended: B,
+        trialEndsAt: D,
+        ownerName: S,
+        billingPhone: S,
+        priceOverride: N,
+        paidUntil: D
+      },
+      PlatformSettings: { monthlyPrice: N, currency: S, trialDays: N, graceDays: N },
       Notification: {
         recipient: user,
         kind: S,
@@ -1163,7 +1468,8 @@ var require_security = __commonJS({
         const schema = new Parse.Schema(className);
         const current = existing.get(className);
         const known = current ? Object.keys(current.fields || {}) : [];
-        for (const [field, type] of Object.entries(SCHEMAS[className])) {
+        const fields = require_tenant().SCOPED.has(className) ? { ...SCHEMAS[className], tenant: ["Pointer", "Restaurant"] } : SCHEMAS[className];
+        for (const [field, type] of Object.entries(fields)) {
           if (known.includes(field)) continue;
           if (Array.isArray(type)) schema.addField(field, type[0], { targetClass: type[1] });
           else schema.addField(field, type);
@@ -1177,9 +1483,11 @@ var require_security = __commonJS({
       }
       const userFields = Object.keys(existing.get("_User")?.fields || {});
       const missing = Object.entries(USER_FIELDS).filter(([field]) => !userFields.includes(field));
-      if (missing.length) {
+      const needsTenant = !userFields.includes("tenant");
+      if (missing.length || needsTenant) {
         const schema = new Parse.Schema("_User");
         for (const [field, type] of missing) schema.addField(field, type);
+        if (needsTenant) schema.addPointer("tenant", "Restaurant");
         await schema.update();
       }
       return created;
@@ -1324,7 +1632,7 @@ var require_security = __commonJS({
       return repaired;
     }
     Parse.Cloud.job("applySecurity", async () => {
-      const updated = await applySecurity();
+      const updated = await require_restaurants().forEachRestaurant(() => applySecurity());
       return `Security applied: ${JSON.stringify(updated)}`;
     });
     Parse.Cloud.define("adminApplySecurity", async (request) => {
@@ -1334,6 +1642,879 @@ var require_security = __commonJS({
       return updated;
     });
     module2.exports = { applySecurity };
+  }
+});
+
+// cloud/lib/geo.js
+var require_geo = __commonJS({
+  "cloud/lib/geo.js"(exports2, module2) {
+    "use strict";
+    function cleanLocation(value) {
+      if (value === void 0 || value === null || value === "") return { location: null };
+      const lat = Number(value?.lat);
+      const lng = Number(value?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
+        return { error: "That map pin is not a valid location" };
+      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
+      const round = (n) => Math.round(n * 1e6) / 1e6;
+      return { location: { lat: round(lat), lng: round(lng) } };
+    }
+    module2.exports = { cleanLocation };
+  }
+});
+
+// cloud/lib/theme.js
+var require_theme = __commonJS({
+  "cloud/lib/theme.js"(exports2, module2) {
+    "use strict";
+    var DEFAULT_THEME = { ink: "#0b1633", accent: "#f14c1d" };
+    var CREAM = "#f4f6fb";
+    var HEX = /^#[0-9a-f]{6}$/i;
+    function luminance(hex) {
+      const channel = (i) => {
+        const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+    }
+    function contrast(a, b) {
+      const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+      return (x + 0.05) / (y + 0.05);
+    }
+    function themeProblems({ ink = "", accent = "" }) {
+      const problems = [];
+      for (const [label, value] of [
+        ["Main colour", ink],
+        ["Accent colour", accent]
+      ])
+        if (value && !HEX.test(value)) problems.push(`${label} must look like #1a2b3c`);
+      if (problems.length) return problems;
+      const main = ink || DEFAULT_THEME.ink;
+      const highlight = accent || DEFAULT_THEME.accent;
+      if (contrast(main, CREAM) < 7)
+        problems.push("Main colour is too light: text in it would be hard to read. Pick a darker one");
+      else if (contrast(highlight, main) < 3)
+        problems.push("Accent colour is too close to the main colour. Pick a brighter one");
+      return problems;
+    }
+    function cleanTheme(params) {
+      const tidy = (value) => String(value || "").trim().toLowerCase();
+      return { ink: tidy(params.ink), accent: tidy(params.accent) };
+    }
+    module2.exports = { DEFAULT_THEME, themeProblems, cleanTheme, contrast };
+  }
+});
+
+// cloud/admin.js
+var require_admin = __commonJS({
+  "cloud/admin.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireUser,
+      adminOnly,
+      ensureRole,
+      readAcl,
+      userAcl,
+      audit,
+      loadConfig,
+      nextStaffCode,
+      endSessions,
+      fileUrl,
+      findAll
+    } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var { COMMISSION_TYPES, ROUNDING_STEPS } = require_money();
+    var { isValidTimeZone } = require_dates();
+    var { SEED_MENU } = require_seed();
+    var { normalizeGroups } = require_accompaniments();
+    var { applySecurity } = require_security();
+    var { cleanLocation } = require_geo();
+    var { cleanTheme, themeProblems } = require_theme();
+    var ROLE_NAMES = ["admin", "cashier", "rider"];
+    var STAFF_ROLES = ["rider", "cashier"];
+    var merchantField = (value, max) => String(value ?? "").trim().slice(0, max);
+    var codeField = (role) => role === "rider" ? "riderCode" : "cashierCode";
+    async function makeOwner(user, actor) {
+      const role = await ensureRole("admin");
+      role.getUsers().add(user);
+      await role.save(null, MASTER);
+      await Promise.all(STAFF_ROLES.map(ensureRole));
+      if (!await new Parse.Query("MenuItem").first(MASTER)) {
+        const seed = SEED_MENU.map((entry, index) => {
+          const item = new Parse.Object("MenuItem");
+          item.set({
+            title: entry.title,
+            price: entry.price,
+            category: entry.category,
+            active: true,
+            availableToday: true,
+            sortOrder: index
+          });
+          item.setACL(readAcl(null, ["admin"]));
+          return item;
+        });
+        await Parse.Object.saveAll(seed, MASTER);
+      }
+      await applySecurity();
+      await audit(actor, "owner.initialized", role, null, { userId: user.id });
+    }
+    Parse.Cloud.define("bootstrapOwner", async (request) => {
+      requireUser(request);
+      throw forbidden("Start a restaurant from the sign-up page");
+    });
+    async function createOrResetOwner(params) {
+      const tenancy = require_tenant();
+      if (!tenancy.current()) throw invalid('Give the restaurant code as "restaurant"');
+      const username = tenancy.fullUsername(
+        String(params.username || "").trim().toLowerCase()
+      );
+      const password = String(params.password || "");
+      if (!/^[-a-z0-9_.@]{3,64}$/.test(username) || password.length < 8)
+        throw invalid("Give a username (3+ characters) and a password of at least 8 characters");
+      const query = new Parse.Query(Parse.User);
+      query.equalTo("username", username);
+      let user = await query.first(MASTER);
+      const created = !user;
+      if (!user) {
+        user = new Parse.User();
+        user.set({ username, password, active: true });
+        if (params.email) user.set("email", String(params.email).trim());
+        user.set("name", String(params.name || tenancy.displayUsername(username)).trim());
+        await user.signUp(null, MASTER);
+      } else {
+        user.set({ password, active: true });
+        await user.save(null, MASTER);
+      }
+      user.setACL(userAcl(user, "admin"));
+      await user.save(null, MASTER);
+      await makeOwner(user, user);
+      return { username: user.getUsername(), created, role: "admin" };
+    }
+    Parse.Cloud.define("recoverOwner", async (request) => {
+      if (!request.master) throw forbidden("Master key required");
+      return createOrResetOwner(request.params);
+    });
+    Parse.Cloud.job("createOwner", async (request) => {
+      const tenancy = require_tenant();
+      const restaurant = await tenancy.restaurantFor({ params: request.params });
+      const result = await tenancy.runAs(
+        restaurant?.id,
+        () => createOrResetOwner(request.params || {}),
+        restaurant?.code
+      );
+      return `Owner ${result.created ? "created" : "password reset"}: ${result.username}`;
+    });
+    async function roleMembership() {
+      const query = new Parse.Query(Parse.Role);
+      query.containedIn("name", ROLE_NAMES);
+      const held = {};
+      for (const role of await query.find(MASTER)) {
+        const users = await findAll(role.getUsers().query());
+        for (const user of users) (held[user.id] ||= []).push(role.getName());
+      }
+      const members = {};
+      for (const [id, names] of Object.entries(held))
+        members[id] = ROLE_NAMES.find((name) => names.includes(name));
+      return members;
+    }
+    Parse.Cloud.define("adminListSetup", async (request) => {
+      await adminOnly(request);
+      const userQuery = new Parse.Query(Parse.User);
+      const menuQuery = new Parse.Query("MenuItem");
+      menuQuery.ascending("sortOrder");
+      menuQuery.limit(1e3);
+      const categoryQuery = new Parse.Query("MenuCategory");
+      categoryQuery.ascending("sortOrder");
+      categoryQuery.limit(1e3);
+      const accompanimentQuery = new Parse.Query("Accompaniment");
+      accompanimentQuery.ascending("sortOrder");
+      accompanimentQuery.limit(1e3);
+      const cashQuery = new Parse.Query("Order");
+      cashQuery.equalTo("status", "DELIVERED");
+      cashQuery.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
+      cashQuery.select("createdBy", "amountCollected");
+      const shiftQuery = new Parse.Query("Shift");
+      shiftQuery.equalTo("status", "open");
+      shiftQuery.select("operator");
+      const [
+        users,
+        menu,
+        categories,
+        members,
+        { object: config, values },
+        accompaniments,
+        cashOrders,
+        openShifts
+      ] = await Promise.all([
+        findAll(userQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
+        menuQuery.find(MASTER),
+        categoryQuery.find(MASTER),
+        roleMembership(),
+        loadConfig(),
+        accompanimentQuery.find(MASTER),
+        findAll(cashQuery),
+        findAll(shiftQuery)
+      ]);
+      const cashHeld = {};
+      for (const order of cashOrders) {
+        const id = order.get("createdBy")?.id;
+        if (id) cashHeld[id] = (cashHeld[id] || 0) + (Number(order.get("amountCollected")) || 0);
+      }
+      const onShift = new Set(openShifts.map((row) => row.get("operator")?.id));
+      return {
+        team: users.map((user) => ({
+          id: user.id,
+          name: user.get("name") || user.getUsername(),
+          username: user.getUsername(),
+          phone: user.get("phone") || "",
+          active: user.get("active") !== false,
+          role: members[user.id] || "unassigned",
+          code: user.get("riderCode") || user.get("cashierCode") || "",
+          commissionType: user.get("commissionType") || "per_order",
+          commissionPerOrder: user.get("commissionPerOrder") || 0,
+          commissionPercent: user.get("commissionPercent") || 0,
+          available: members[user.id] === "rider" ? user.get("available") !== false : null,
+          onShift: onShift.has(user.id),
+          cashHeld: cashHeld[user.id] || 0,
+          cashLimit: typeof user.get("maxFloat") === "number" ? user.get("maxFloat") : null
+        })),
+        menu: menu.map((item) => ({
+          id: item.id,
+          title: item.get("title"),
+          price: item.get("price"),
+          category: item.get("category"),
+          active: item.get("active") !== false,
+          availableToday: item.get("availableToday") !== false,
+          accompanimentGroups: item.get("accompanimentGroups") || [],
+          description: item.get("description") || "",
+          image: fileUrl(item.get("image")),
+          sortOrder: Number(item.get("sortOrder") || 0),
+          prepMinutes: Number(item.get("prepMinutes") || 0),
+          archived: !!item.get("archivedAt")
+        })),
+        accompaniments: accompaniments.map((row) => ({
+          id: row.id,
+          title: row.get("title"),
+          active: row.get("active") !== false,
+          available: row.get("available") !== false,
+          price: Number(row.get("price") || 0)
+        })),
+        categories: categories.map((category) => ({
+          id: category.id,
+          title: category.get("title"),
+          active: category.get("active") !== false
+        })),
+        settings: config ? { id: config.id, ...values } : null
+      };
+    });
+    Parse.Cloud.define("adminCreateTeamMember", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const roleName = p.role;
+      if (!STAFF_ROLES.includes(roleName)) throw invalid("Invalid role");
+      const name = String(p.name || "").trim();
+      const username = String(p.username || "").trim().toLowerCase();
+      const pin = String(p.pin || "");
+      if (!name || !/^[-a-z0-9_.]{3,32}$/.test(username) || pin.length < 4 || pin.length > 32)
+        throw invalid("Enter a name, valid username and PIN of at least 4 characters");
+      const { values: config } = await loadConfig();
+      const user = new Parse.User();
+      user.set({
+        // Relay Hosted: unique per restaurant (name@restaurant-code).
+        username: require_tenant().fullUsername(username),
+        password: pin,
+        name,
+        phone: String(p.phone || ""),
+        active: true,
+        commissionType: COMMISSION_TYPES.includes(config.defaultCommissionType) ? config.defaultCommissionType : "per_order",
+        commissionPerOrder: Number(config.defaultCommissionPerOrder) || 0,
+        commissionPercent: Number(config.defaultCommissionPercent) || 0,
+        [codeField(roleName)]: await nextStaffCode(roleName)
+      });
+      await user.signUp(null, MASTER);
+      user.setACL(userAcl(user, roleName));
+      await user.save(null, MASTER);
+      const role = await ensureRole(roleName);
+      role.getUsers().add(user);
+      await role.save(null, MASTER);
+      await audit(actor, "team.created", user, null, { name, role: roleName });
+      return { id: user.id, name, username, role: roleName, code: user.get(codeField(roleName)) };
+    });
+    Parse.Cloud.define("adminUpdateMember", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const user = await new Parse.Query(Parse.User).get(p.id, MASTER);
+      if (user.id === actor.id && p.active === false) throw forbidden("You cannot deactivate yourself");
+      const snapshot = () => ({
+        name: user.get("name"),
+        phone: user.get("phone"),
+        active: user.get("active"),
+        commissionType: user.get("commissionType"),
+        commissionPerOrder: user.get("commissionPerOrder"),
+        commissionPercent: user.get("commissionPercent"),
+        maxFloat: user.get("maxFloat")
+      });
+      const before = snapshot();
+      if (p.name !== void 0) {
+        const name = String(p.name || "").trim();
+        if (!name || name.length > 80) throw invalid("Enter a name");
+        user.set("name", name);
+      }
+      if (p.phone !== void 0)
+        user.set(
+          "phone",
+          String(p.phone || "").trim().slice(0, 30)
+        );
+      if (p.maxFloat !== void 0) {
+        if (p.maxFloat === null || p.maxFloat === "") {
+          if (user.has("maxFloat")) user.unset("maxFloat");
+        } else {
+          const limit = Number(p.maxFloat);
+          if (!Number.isFinite(limit) || limit < 0 || limit > 1e8)
+            throw invalid("Invalid cash limit");
+          user.set("maxFloat", Math.round(limit));
+        }
+      }
+      const deactivating = p.active === false && user.get("active") !== false;
+      if (typeof p.active === "boolean") user.set("active", p.active);
+      if (p.commissionType !== void 0) {
+        if (!COMMISSION_TYPES.includes(p.commissionType)) throw invalid("Invalid commission type");
+        user.set("commissionType", p.commissionType);
+      }
+      for (const key of ["commissionPerOrder", "commissionPercent"])
+        if (p[key] !== void 0) {
+          const value = Number(p[key]);
+          const max = key === "commissionPercent" ? 100 : 1e6;
+          if (!Number.isFinite(value) || value < 0 || value > max)
+            throw invalid("Invalid commission value");
+          user.set(key, value);
+        }
+      await user.save(null, MASTER);
+      if (deactivating) await endSessions(user);
+      await audit(actor, "team.updated", user, before, snapshot());
+      return { ok: true };
+    });
+    Parse.Cloud.define("adminChangeRole", async (request) => {
+      const actor = await adminOnly(request);
+      const { userId, role: next } = request.params;
+      if (!STAFF_ROLES.includes(next)) throw invalid("Only rider and cashier roles can be assigned");
+      const user = await new Parse.Query(Parse.User).get(userId, MASTER);
+      if (user.id === actor.id) throw forbidden("You cannot change your own role");
+      const query = new Parse.Query(Parse.Role);
+      query.containedIn("name", ROLE_NAMES);
+      const roles = await query.find(MASTER);
+      const isMember = (role) => role.getUsers().query().get(userId, MASTER).then(() => true).catch(() => false);
+      const adminRole = roles.find((role) => role.getName() === "admin");
+      if (adminRole && await isMember(adminRole))
+        throw forbidden("Admin roles cannot be changed here");
+      let before = "unassigned";
+      for (const role of roles.filter((r) => STAFF_ROLES.includes(r.getName()))) {
+        if (await isMember(role)) {
+          before = role.getName();
+          role.getUsers().remove(user);
+          await role.save(null, MASTER);
+        }
+      }
+      const destination = await ensureRole(next);
+      destination.getUsers().add(user);
+      await destination.save(null, MASTER);
+      if (!user.get(codeField(next))) user.set(codeField(next), await nextStaffCode(next));
+      user.setACL(userAcl(user, next));
+      await user.save(null, MASTER);
+      await audit(actor, "team.role_changed", user, { role: before }, { role: next });
+      return { role: next };
+    });
+    Parse.Cloud.define("adminSaveCategory", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const title = String(p.title || "").trim();
+      if (!title || title.length > 80) throw invalid("Category title is required");
+      const all = await findAll(new Parse.Query("MenuCategory"));
+      if (all.some((row) => row.id !== p.id && row.get("title").toLowerCase() === title.toLowerCase()))
+        throw invalid(`There is already a category called "${title}"`);
+      const category = p.id ? all.find((row) => row.id === p.id) : new Parse.Object("MenuCategory");
+      if (!category) throw invalid("Unknown category");
+      const before = p.id ? category.toJSON() : null;
+      const oldTitle = category.get("title");
+      const sortOrder = p.sortOrder !== void 0 ? Number(p.sortOrder) || 0 : p.id ? Number(category.get("sortOrder") || 0) : Math.max(0, ...all.map((row) => Number(row.get("sortOrder") || 0))) + 1;
+      category.set({ title, active: p.active !== false, sortOrder });
+      category.setACL(readAcl(null, ["admin"]));
+      await category.save(null, MASTER);
+      let moved = 0;
+      if (oldTitle && oldTitle !== title) {
+        const dishes = await findAll(new Parse.Query("MenuItem").equalTo("category", oldTitle));
+        dishes.forEach((dish) => dish.set("category", title));
+        if (dishes.length) await Parse.Object.saveAll(dishes, MASTER);
+        moved = dishes.length;
+      }
+      await audit(actor, "menu.category_saved", category, before, {
+        title,
+        active: category.get("active"),
+        ...moved && { dishesMoved: moved }
+      });
+      return { id: category.id, dishesMoved: moved };
+    });
+    Parse.Cloud.define("adminSortCategories", async (request) => {
+      const actor = await adminOnly(request);
+      const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+      if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length)
+        throw invalid("Send the categories in their new order");
+      const rows = await findAll(new Parse.Query("MenuCategory").containedIn("objectId", ids));
+      if (rows.length !== ids.length) throw invalid("Unknown category in the list");
+      for (const row of rows) row.set("sortOrder", ids.indexOf(row.id) + 1);
+      await Parse.Object.saveAll(rows, MASTER);
+      await audit(actor, "menu.categories_sorted", rows[0], null, { count: rows.length });
+      return { ok: true };
+    });
+    Parse.Cloud.define("adminSaveMenuItem", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const item = p.id ? await new Parse.Query("MenuItem").get(p.id, MASTER) : new Parse.Object("MenuItem");
+      const title = String(p.title || "").trim();
+      const price = Number(p.price);
+      if (!title || !Number.isFinite(price) || price < 0)
+        throw invalid("A title and nonnegative price are required");
+      const before = p.id ? item.toJSON() : null;
+      const category = String(p.category || "Mains").trim();
+      const categories = await findAll(new Parse.Query("MenuCategory"));
+      if (categories.length && !categories.some((row) => row.get("title") === category))
+        throw invalid(`Choose one of the menu categories (not "${category}")`);
+      const prep = p.prepMinutes === void 0 || p.prepMinutes === null || p.prepMinutes === "" ? void 0 : Number(p.prepMinutes);
+      if (prep !== void 0 && (!Number.isInteger(prep) || prep < 0 || prep > 240))
+        throw invalid("Prep time must be whole minutes, 0 to 240");
+      item.set({
+        title,
+        price,
+        category,
+        active: p.active !== false,
+        availableToday: p.availableToday !== false,
+        ...prep !== void 0 && { prepMinutes: prep }
+      });
+      if (p.description !== void 0) item.set("description", merchantField(p.description, 300));
+      if (!p.id && item.get("sortOrder") === void 0) {
+        const last = await new Parse.Query("MenuItem").descending("sortOrder").first(MASTER);
+        item.set("sortOrder", (Number(last?.get("sortOrder")) || 0) + 1);
+      }
+      if (p.archived === true) item.set({ active: false, archivedAt: /* @__PURE__ */ new Date() });
+      if (p.archived === false) {
+        item.set("active", true);
+        if (item.has("archivedAt")) item.unset("archivedAt");
+      }
+      if (p.accompanimentGroups !== void 0) {
+        const known = new Parse.Query("Accompaniment");
+        known.limit(1e3);
+        const ids = new Set((await known.find(MASTER)).map((row) => row.id));
+        try {
+          item.set("accompanimentGroups", normalizeGroups(p.accompanimentGroups, ids));
+        } catch (e) {
+          throw invalid(e.message);
+        }
+      }
+      item.setACL(readAcl(null, ["admin"]));
+      await item.save(null, MASTER);
+      await audit(actor, p.archived === true ? "menu.archived" : "menu.saved", item, before, {
+        title,
+        price,
+        description: item.get("description") || "",
+        active: item.get("active")
+      });
+      return { id: item.id };
+    });
+    Parse.Cloud.define("adminSortMenu", async (request) => {
+      const actor = await adminOnly(request);
+      const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
+      if (!ids.length || ids.length > 1e3 || new Set(ids).size !== ids.length)
+        throw invalid("Send the dishes in their new order");
+      const query = new Parse.Query("MenuItem");
+      query.containedIn("objectId", ids);
+      query.limit(ids.length);
+      const items = await query.find(MASTER);
+      if (items.length !== ids.length) throw invalid("Unknown dish in the list");
+      for (const item of items) item.set("sortOrder", ids.indexOf(item.id) + 1);
+      await Parse.Object.saveAll(items, MASTER);
+      await audit(actor, "menu.sorted", items[0], null, { count: items.length });
+      return { ok: true };
+    });
+    var IMAGE_TYPES = { "/9j/": "image/jpeg", iVBOR: "image/png", UklGR: "image/webp" };
+    var MAX_IMAGE_BASE64 = 7e5;
+    async function imageFile(base64, name) {
+      const data = String(base64 || "").replace(/^data:[^,]+,/, "");
+      const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
+      if (!type) throw invalid("Use a JPEG, PNG or WebP photo");
+      if (data.length > MAX_IMAGE_BASE64) throw invalid("The photo is too large (500 KB at most)");
+      const extension = type.split("/")[1].replace("jpeg", "jpg");
+      const file = new Parse.File(`${name}.${extension}`, { base64: data }, type);
+      await file.save(MASTER);
+      return file;
+    }
+    Parse.Cloud.define("adminSetMenuImage", async (request) => {
+      const actor = await adminOnly(request);
+      const item = await new Parse.Query("MenuItem").get(String(request.params.id || ""), MASTER);
+      const before = { image: fileUrl(item.get("image")) };
+      if (request.params.remove === true) {
+        if (item.has("image")) item.unset("image");
+      } else item.set("image", await imageFile(request.params.image, "dish"));
+      await item.save(null, MASTER);
+      await audit(actor, "menu.image", item, before, { image: fileUrl(item.get("image")) });
+      return { image: fileUrl(item.get("image")) };
+    });
+    Parse.Cloud.define("adminSetRestaurantLogo", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      let { object: config } = await loadConfig();
+      if (!config) {
+        config = new Parse.Object("Configuration");
+        config.setACL(readAcl(null, ["admin"]));
+      }
+      const before = { logo: fileUrl(config.get("restaurantLogo")) };
+      if (request.params.remove === true) {
+        if (config.has("restaurantLogo")) config.unset("restaurantLogo");
+      } else config.set("restaurantLogo", await imageFile(request.params.image, "logo"));
+      await config.save(null, MASTER);
+      const logo = fileUrl(config.get("restaurantLogo"));
+      await audit(actor, "configuration.logo", config, before, { logo });
+      return { logo: logo || "" };
+    });
+    Parse.Cloud.define("adminSaveAccompaniment", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      const title = String(p.title || "").trim();
+      if (!title || title.length > 60) throw invalid("An accompaniment name is required");
+      const price = p.price === void 0 || p.price === null || p.price === "" ? 0 : Number(p.price);
+      if (!Number.isInteger(price) || price < 0 || price > 1e6)
+        throw invalid("An accompaniment price must be a whole amount from 0");
+      const row = p.id ? await new Parse.Query("Accompaniment").get(p.id, MASTER) : new Parse.Object("Accompaniment");
+      const before = p.id ? row.toJSON() : null;
+      row.set({
+        title,
+        active: p.active !== false,
+        available: p.available !== false,
+        sortOrder: Number(p.sortOrder) || 0,
+        price
+      });
+      row.setACL(readAcl(null, ["admin"]));
+      await row.save(null, MASTER);
+      await audit(actor, "menu.accompaniment_saved", row, before, {
+        title,
+        active: row.get("active"),
+        available: row.get("available"),
+        price
+      });
+      return { id: row.id };
+    });
+    Parse.Cloud.define("adminSaveBranding", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const theme = cleanTheme(request.params);
+      const problems = themeProblems(theme);
+      if (problems.length) throw invalid(problems[0]);
+      let { object: config } = await loadConfig();
+      if (!config) {
+        config = new Parse.Object("Configuration");
+        config.setACL(readAcl(null, ["admin"]));
+      }
+      const before = { ink: config.get("themeInk") || "", accent: config.get("themeAccent") || "" };
+      config.set({ themeInk: theme.ink, themeAccent: theme.accent });
+      await config.save(null, MASTER);
+      await audit(actor, "configuration.branding", config, before, theme);
+      return theme;
+    });
+    Parse.Cloud.define("adminSaveSettings", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params;
+      const { object: existing, values: current } = await loadConfig();
+      const config = existing || new Parse.Object("Configuration");
+      const before = existing ? existing.toJSON() : null;
+      const fee = Number(p.defaultDeliveryFee);
+      const max = Number(p.maxRiderFloat);
+      if (!Number.isFinite(fee) || fee < 0 || !Number.isFinite(max) || max < 0)
+        throw invalid("Fee and float limit must be nonnegative");
+      const timezone = String(p.timezone || current.timezone).trim();
+      if (!isValidTimeZone(timezone)) throw invalid("Unknown timezone, e.g. Africa/Kampala");
+      const reminderHour = Number(p.cashReminderHour ?? current.cashReminderHour);
+      if (!Number.isInteger(reminderHour) || reminderHour < 0 || reminderHour > 23)
+        throw invalid("Cash reminder hour must be 0-23");
+      const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
+      if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
+        throw invalid("Cash warning must be between 50% and 99% of the limit");
+      const place = cleanLocation(
+        p.restaurantLat !== void 0 || p.restaurantLng !== void 0 ? { lat: p.restaurantLat, lng: p.restaurantLng } : { lat: current.restaurantLat, lng: current.restaurantLng }
+      );
+      if (place.error) throw invalid(`Restaurant location: ${place.error}`);
+      const zHour = Number(p.zReportHour ?? current.zReportHour);
+      if (!Number.isInteger(zHour) || zHour < 0 || zHour > 23)
+        throw invalid("Z-report hour must be 0-23");
+      const rounding = String(p.commissionRounding ?? current.commissionRounding);
+      if (!Object.hasOwn(ROUNDING_STEPS, rounding)) throw invalid("Invalid commission rounding");
+      const commissionType = String(p.defaultCommissionType ?? current.defaultCommissionType);
+      if (!COMMISSION_TYPES.includes(commissionType)) throw invalid("Invalid commission type");
+      const perOrder = Number(p.defaultCommissionPerOrder ?? current.defaultCommissionPerOrder);
+      const percent = Number(p.defaultCommissionPercent ?? current.defaultCommissionPercent);
+      if (!Number.isFinite(perOrder) || perOrder < 0 || perOrder > 1e6)
+        throw invalid("Invalid default commission amount");
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100)
+        throw invalid("Default commission percent must be 0-100");
+      const modules = [
+        (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
+        (p.moduleCallIn ?? current.moduleCallIn) === true,
+        (p.moduleCounter ?? current.moduleCounter) === true
+      ];
+      if (!modules.some(Boolean)) throw invalid("Keep at least one way of taking orders switched on");
+      config.set({
+        restaurantName: String(p.restaurantName || current.restaurantName).trim(),
+        currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
+        currencyCode: String(p.currencyCode || current.currencyCode).trim().toUpperCase(),
+        timezone,
+        defaultDeliveryFee: fee,
+        maxRiderFloat: max,
+        allowBatching: !!p.allowBatching,
+        requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup,
+        airtelMerchantCode: merchantField(p.airtelMerchantCode, 30),
+        airtelMerchantName: merchantField(p.airtelMerchantName, 60),
+        mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
+        mtnMerchantName: merchantField(p.mtnMerchantName, 60),
+        cashReminderHour: reminderHour,
+        floatWarningPercent: warnPercent,
+        commissionRounding: rounding,
+        defaultCommissionType: commissionType,
+        defaultCommissionPerOrder: perOrder,
+        defaultCommissionPercent: percent,
+        zReportHour: zHour,
+        restaurantLat: place.location.lat,
+        restaurantLng: place.location.lng,
+        moduleRiderOrders: (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
+        moduleCallIn: (p.moduleCallIn ?? current.moduleCallIn) === true,
+        moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true,
+        receiptWidth: Number(p.receiptWidth ?? current.receiptWidth) === 58 ? 58 : 80,
+        receiptHeader: merchantField(p.receiptHeader ?? current.receiptHeader, 300),
+        receiptFooter: merchantField(p.receiptFooter ?? current.receiptFooter, 200),
+        autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true
+      });
+      config.setACL(readAcl(null, ["admin"]));
+      await config.save(null, MASTER);
+      await audit(actor, "configuration.saved", config, before, config.toJSON());
+      return { id: config.id };
+    });
+    module2.exports = { makeOwner };
+  }
+});
+
+// cloud/restaurants.js
+var require_restaurants = __commonJS({
+  "cloud/restaurants.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      audit,
+      claimOnce,
+      forbidden,
+      invalid,
+      readAcl,
+      requireUser,
+      userAcl
+    } = require_core();
+    var tenancy = require_tenant();
+    var { accessOf } = require_access();
+    var { log } = require_log();
+    var DEFAULT_PLATFORM = {
+      monthlyPrice: 5e4,
+      currency: "UGX",
+      trialDays: 14,
+      graceDays: 7
+    };
+    async function platformSettings() {
+      const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
+      const values = { ...DEFAULT_PLATFORM };
+      for (const key of Object.keys(DEFAULT_PLATFORM)) {
+        const value = row?.get(key);
+        if (value !== void 0 && value !== null && value !== "") values[key] = value;
+      }
+      return { row, values };
+    }
+    var codeFrom = (text) => String(text || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
+    var RESERVED = /* @__PURE__ */ new Set(["admin", "api", "app", "platform", "relay", "signup", "www", "help"]);
+    async function codeTaken(code) {
+      if (RESERVED.has(code)) return true;
+      const query = new Parse.Query("Restaurant");
+      query.equalTo("code", code);
+      return !!await tenancy.withoutTenant(() => query.first(MASTER));
+    }
+    var recent = /* @__PURE__ */ new Map();
+    function allowSignUp(key) {
+      const now = Date.now();
+      const times = (recent.get(key) || []).filter((time) => now - time < 36e5);
+      if (times.length >= 5) return false;
+      times.push(now);
+      recent.set(key, times);
+      if (recent.size > 5e3) recent.clear();
+      return true;
+    }
+    Parse.Cloud.define("checkRestaurantCode", async (request) => {
+      const code = codeFrom(request.params?.code);
+      if (code.length < 3) return { code, free: false };
+      return { code, free: !await codeTaken(code) };
+    });
+    Parse.Cloud.define("signUpRestaurant", async (request) => {
+      const p = request.params || {};
+      const restaurantName = String(p.restaurantName || "").trim().slice(0, 80);
+      const code = codeFrom(p.code || restaurantName);
+      const ownerName = String(p.ownerName || "").trim().slice(0, 80);
+      const username = String(p.username || "").trim().toLowerCase();
+      const pin = String(p.pin || "");
+      const phone = String(p.phone || "").replace(/[^\d+]/g, "").slice(0, 20);
+      if (restaurantName.length < 2) throw invalid("Enter the restaurant\u2019s name");
+      if (code.length < 3) throw invalid("The restaurant code needs at least 3 letters or digits");
+      if (!ownerName) throw invalid("Enter your name");
+      if (!/^[-a-z0-9_.]{3,32}$/.test(username))
+        throw invalid("Username: 3 to 32 letters, digits, dots, dashes or underscores");
+      if (pin.length < 6) throw invalid("Choose a PIN or password of at least 6 characters");
+      if (phone.replace(/\D/g, "").length < 9) throw invalid("Enter your phone number");
+      if (!request.master && !allowSignUp(request.ip || "unknown"))
+        throw forbidden("Too many sign-ups from here. Try again in an hour");
+      if (await codeTaken(code) || !await tenancy.withoutTenant(() => claimOnce(`restaurant:${code}`)))
+        throw invalid(`The code \u201C${code}\u201D is taken. Choose another`);
+      const { values: platform } = await platformSettings();
+      const restaurant = new Parse.Object("Restaurant");
+      restaurant.set({
+        name: restaurantName,
+        code,
+        suspended: false,
+        trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 864e5),
+        ownerName,
+        billingPhone: phone,
+        priceOverride: null
+      });
+      restaurant.setACL(new Parse.ACL());
+      await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
+      tenancy.clearCache();
+      await tenancy.runAs(
+        restaurant.id,
+        async () => {
+          const owner = new Parse.User();
+          owner.set({
+            username: tenancy.fullUsername(username),
+            password: pin,
+            name: ownerName,
+            phone,
+            active: true
+          });
+          await owner.signUp(null, MASTER);
+          owner.setACL(userAcl(owner, "admin"));
+          await owner.save(null, MASTER);
+          const config = new Parse.Object("Configuration");
+          config.set({ restaurantName });
+          config.setACL(readAcl(null, ["admin"]));
+          await config.save(null, MASTER);
+          await require_admin().makeOwner(owner, owner);
+          await audit(owner, "restaurant.signed_up", restaurant, null, {
+            name: restaurantName,
+            code,
+            trialDays: platform.trialDays
+          });
+        },
+        code
+      );
+      log("info", "restaurant.signed_up", { restaurant: restaurant.id, code });
+      return { code, username: tenancy.fullUsername(username, code) };
+    });
+    async function restaurantSummary() {
+      const tenant = tenancy.current();
+      if (!tenant) return null;
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(tenant, MASTER).catch(() => null)
+      );
+      if (!row) return null;
+      const { values: platform } = await platformSettings();
+      const access = accessOf(row, platform.graceDays);
+      return {
+        id: row.id,
+        code: row.get("code"),
+        name: row.get("name"),
+        status: access.status,
+        usable: access.ok,
+        // When the trial, the paid month or the grace days end.
+        until: access.until?.toISOString() || null,
+        trialEndsAt: row.get("trialEndsAt")?.toISOString() || null,
+        paidUntil: row.get("paidUntil")?.toISOString() || null
+      };
+    }
+    async function requirePlatform(request) {
+      const user = requireUser(request);
+      if (user.get("tenant")) throw forbidden("platform role required");
+      const query = new Parse.Query(Parse.Role);
+      query.equalTo("name", "platform");
+      query.equalTo("users", user);
+      if (!await tenancy.withoutTenant(() => query.first(MASTER)))
+        throw forbidden("platform role required");
+      return user;
+    }
+    async function createPlatformAdmin(params) {
+      const username = String(params.username || "").trim().toLowerCase();
+      const password = String(params.password || "");
+      if (!/^[-a-z0-9_.]{3,32}$/.test(username) || password.length < 10)
+        throw invalid("Give a username and a password of at least 10 characters");
+      return tenancy.withoutTenant(async () => {
+        const query = new Parse.Query(Parse.User);
+        query.equalTo("username", username);
+        let user = await query.first(MASTER);
+        if (user && user.get("tenant")) throw invalid("That username belongs to a restaurant");
+        if (!user) {
+          user = new Parse.User();
+          user.set({ username, password, name: String(params.name || username), active: true });
+          await user.signUp(null, MASTER);
+        } else {
+          user.set({ password, active: true });
+          await user.save(null, MASTER);
+        }
+        const acl = new Parse.ACL();
+        acl.setReadAccess(user, true);
+        acl.setWriteAccess(user, true);
+        user.setACL(acl);
+        await user.save(null, MASTER);
+        let role = await new Parse.Query(Parse.Role).equalTo("name", "platform").first(MASTER);
+        if (!role) {
+          role = new Parse.Role("platform", new Parse.ACL());
+          await role.save(null, MASTER);
+        }
+        role.getUsers().add(user);
+        await role.save(null, MASTER);
+        return { username, role: "platform" };
+      });
+    }
+    Parse.Cloud.define("createPlatformAdmin", async (request) => {
+      if (!request.master) throw forbidden("Master key required");
+      return createPlatformAdmin(request.params || {});
+    });
+    Parse.Cloud.job("createPlatformAdmin", async (request) => {
+      const result = await createPlatformAdmin(request.params || {});
+      return `Platform account ready: ${result.username}`;
+    });
+    async function forEachRestaurant(work) {
+      const query = new Parse.Query("Restaurant");
+      query.notEqualTo("suspended", true);
+      const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
+      const results = [];
+      for (const row of rows) {
+        try {
+          results.push(await tenancy.runAs(row.id, () => work(row), row.get("code")));
+        } catch (error) {
+          log("error", "restaurant.job_failed", {
+            restaurant: row.id,
+            message: String(error?.message)
+          });
+        }
+      }
+      return results;
+    }
+    module2.exports = {
+      accessOf,
+      platformSettings,
+      restaurantSummary,
+      requirePlatform,
+      forEachRestaurant,
+      codeFrom
+    };
   }
 });
 
@@ -9676,8 +10857,11 @@ var require_collections = __commonJS({
     Parse.Cloud.afterSave("Order", async (request) => {
       if (request.object.get("payRequestStatus") !== "queued") return;
       try {
-        const order = await new Parse.Query("Order").get(request.object.id, MASTER);
-        await sendRequest(order);
+        const tenant = request.object.get("tenant")?.id;
+        await require_tenant().runAs(tenant, async () => {
+          const order = await new Parse.Query("Order").get(request.object.id, MASTER);
+          await sendRequest(order);
+        });
       } catch (error) {
         log("error", "payment.request_error", {
           order: request.object.id,
@@ -9723,48 +10907,6 @@ var require_collections = __commonJS({
       payRequestError: ""
     });
     module2.exports = { newRequest, sweepRequests, pollRequest, PROVIDERS };
-  }
-});
-
-// cloud/lib/money.js
-var require_money = __commonJS({
-  "cloud/lib/money.js"(exports2, module2) {
-    "use strict";
-    var COMMISSION_TYPES = ["per_order", "percent", "hybrid"];
-    var ROUNDING_STEPS = { none: 0, up_100: 100, up_500: 500, up_1000: 1e3 };
-    function roundCommission(amount, rounding = "none") {
-      const whole = Math.round(Number(amount) || 0);
-      const step = ROUNDING_STEPS[rounding] || 0;
-      return step ? Math.ceil(whole / step) * step : whole;
-    }
-    function computeCommission({ type, perOrder, percent, subtotal, rounding }) {
-      const flat = Number(perOrder) || 0;
-      const share = (Number(subtotal) || 0) * (Number(percent) || 0) / 100;
-      const raw = type === "percent" ? share : type === "hybrid" ? flat + share : flat;
-      return roundCommission(raw, rounding);
-    }
-    function riderPay({ commissionAmount, deliveryPay, deliveryFee }) {
-      const commission = Number(commissionAmount) || 0;
-      if (deliveryPay !== void 0 && deliveryPay !== null) return commission;
-      return commission + (Number(deliveryFee) || 0);
-    }
-    var orderRiderPay = (order) => riderPay({
-      commissionAmount: order.get("commissionAmount"),
-      deliveryPay: order.get("deliveryPay"),
-      deliveryFee: order.get("deliveryFee")
-    });
-    function sumBy(rows, pick) {
-      return rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0);
-    }
-    module2.exports = {
-      COMMISSION_TYPES,
-      ROUNDING_STEPS,
-      roundCommission,
-      computeCommission,
-      riderPay,
-      orderRiderPay,
-      sumBy
-    };
   }
 });
 
@@ -11598,9 +12740,11 @@ var require_owner = __commonJS({
       return row;
     }
     Parse.Cloud.job("dailyZReport", async () => {
-      const { values: config } = await loadConfig();
-      const row = await zReportDue(config, { force: true });
-      return row ? `Z-report saved for ${row.get("day")}` : "Not due yet (or already saved)";
+      const rows = await require_restaurants().forEachRestaurant(async () => {
+        const { values: config } = await loadConfig();
+        return zReportDue(config, { force: true });
+      });
+      return `${rows.filter(Boolean).length} Z-reports saved`;
     });
     Parse.Cloud.define("adminGetZReport", async (request) => {
       const actor = await adminOnly(request);
@@ -11993,85 +13137,6 @@ var require_serverAddress = __commonJS({
       return result;
     }
     module2.exports = { checkServerAddress, watchServerAddress };
-  }
-});
-
-// cloud/lib/accompaniments.js
-var require_accompaniments = __commonJS({
-  "cloud/lib/accompaniments.js"(exports2, module2) {
-    "use strict";
-    var MAX_GROUPS = 6;
-    var MAX_OPTIONS = 20;
-    function normalizeGroups(raw, knownIds) {
-      if (raw === void 0 || raw === null) return [];
-      if (!Array.isArray(raw) || raw.length > MAX_GROUPS)
-        throw new Error(`Use at most ${MAX_GROUPS} accompaniment groups`);
-      return raw.map((group, index) => {
-        const label = String(group?.label || "").trim() || `Choice ${index + 1}`;
-        if (label.length > 40)
-          throw new Error("Accompaniment group names must be 40 characters or less");
-        const options = [...new Set((group?.options || []).map(String))];
-        if (!options.length) throw new Error(`"${label}" needs at least one accompaniment`);
-        if (options.length > MAX_OPTIONS)
-          throw new Error(`"${label}" can offer at most ${MAX_OPTIONS} accompaniments`);
-        const unknown = options.filter((id) => !knownIds.has(id));
-        if (unknown.length)
-          throw new Error(`"${label}" refers to an accompaniment that does not exist`);
-        const max = Number(group?.max ?? options.length);
-        const min = Number(group?.min ?? 0);
-        if (!Number.isInteger(max) || max < 1 || max > options.length)
-          throw new Error(`"${label}": "pick at most" must be between 1 and ${options.length}`);
-        if (!Number.isInteger(min) || min < 0 || min > max)
-          throw new Error(`"${label}": "pick at least" must be between 0 and ${max}`);
-        return { label, options, min, max };
-      });
-    }
-    function availableGroups(groups, isAvailable) {
-      return (groups || []).map((group) => {
-        const options = group.options.filter((id) => isAvailable(id));
-        return {
-          label: group.label,
-          options,
-          min: Math.min(group.min, options.length),
-          max: Math.min(group.max, options.length)
-        };
-      }).filter((group) => group.options.length > 0);
-    }
-    function selectionError(groups, selectedIds) {
-      const selected = (selectedIds || []).map(String);
-      if (new Set(selected).size !== selected.length) return "The same accompaniment was chosen twice";
-      const counts = groups.map(() => 0);
-      for (const id of selected) {
-        const index = groups.findIndex((group) => group.options.includes(id));
-        if (index === -1) return "An accompaniment is not available for this dish";
-        counts[index] += 1;
-      }
-      for (const [index, group] of groups.entries()) {
-        if (counts[index] > group.max)
-          return group.max === 1 ? `Choose only one ${group.label.toLowerCase()} option` : `Choose at most ${group.max} from ${group.label}`;
-        if (counts[index] < group.min) return `Choose at least ${group.min} from ${group.label}`;
-      }
-      return "";
-    }
-    module2.exports = { normalizeGroups, availableGroups, selectionError };
-  }
-});
-
-// cloud/lib/geo.js
-var require_geo = __commonJS({
-  "cloud/lib/geo.js"(exports2, module2) {
-    "use strict";
-    function cleanLocation(value) {
-      if (value === void 0 || value === null || value === "") return { location: null };
-      const lat = Number(value?.lat);
-      const lng = Number(value?.lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
-        return { error: "That map pin is not a valid location" };
-      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
-      const round = (n) => Math.round(n * 1e6) / 1e6;
-      return { location: { lat: round(lat), lng: round(lng) } };
-    }
-    module2.exports = { cleanLocation };
   }
 });
 
@@ -13392,12 +14457,16 @@ var require_cashcheck = __commonJS({
       return { checkedAt, ok: !problems.length, problems };
     }
     Parse.Cloud.job("cashCheck", async () => {
+      const results = await require_restaurants().forEachRestaurant(() => nightly());
+      await require_serverAddress().watchServerAddress().catch(() => null);
+      return `${results.length} restaurants checked`;
+    });
+    async function nightly() {
       const result = await runCashCheck();
       const retention = await require_privacy().runRetention();
-      await require_serverAddress().watchServerAddress().catch(() => null);
       const cleaned = retention.orders || retention.customers || retention.notifications;
       return `${result.ok ? "Cash records agree" : `${result.problems.length} problems found`}${cleaned ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers` : ""}`;
-    });
+    }
     Parse.Cloud.define("adminRunCashCheck", async (request) => {
       await adminOnly(request);
       return runCashCheck();
@@ -13929,661 +14998,6 @@ var require_people = __commonJS({
   }
 });
 
-// cloud/lib/seed.js
-var require_seed = __commonJS({
-  "cloud/lib/seed.js"(exports2, module2) {
-    "use strict";
-    var SEED_MENU = [
-      { key: "1", title: "Smoky chicken bowl", price: 18500, category: "Mains" },
-      { key: "2", title: "Beef rolex deluxe", price: 12e3, category: "Mains" },
-      { key: "3", title: "Garden rice plate", price: 14500, category: "Mains" },
-      { key: "4", title: "Passion fruit juice", price: 6e3, category: "Drinks" },
-      { key: "5", title: "Iced hibiscus", price: 5500, category: "Drinks" },
-      { key: "6", title: "Breakfast chapati", price: 8e3, category: "Breakfast" }
-    ];
-    module2.exports = { SEED_MENU };
-  }
-});
-
-// cloud/lib/theme.js
-var require_theme = __commonJS({
-  "cloud/lib/theme.js"(exports2, module2) {
-    "use strict";
-    var DEFAULT_THEME = { ink: "#0b1633", accent: "#f14c1d" };
-    var CREAM = "#f4f6fb";
-    var HEX = /^#[0-9a-f]{6}$/i;
-    function luminance(hex) {
-      const channel = (i) => {
-        const c = parseInt(hex.slice(i, i + 2), 16) / 255;
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-      };
-      return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
-    }
-    function contrast(a, b) {
-      const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
-      return (x + 0.05) / (y + 0.05);
-    }
-    function themeProblems({ ink = "", accent = "" }) {
-      const problems = [];
-      for (const [label, value] of [
-        ["Main colour", ink],
-        ["Accent colour", accent]
-      ])
-        if (value && !HEX.test(value)) problems.push(`${label} must look like #1a2b3c`);
-      if (problems.length) return problems;
-      const main = ink || DEFAULT_THEME.ink;
-      const highlight = accent || DEFAULT_THEME.accent;
-      if (contrast(main, CREAM) < 7)
-        problems.push("Main colour is too light: text in it would be hard to read. Pick a darker one");
-      else if (contrast(highlight, main) < 3)
-        problems.push("Accent colour is too close to the main colour. Pick a brighter one");
-      return problems;
-    }
-    function cleanTheme(params) {
-      const tidy = (value) => String(value || "").trim().toLowerCase();
-      return { ink: tidy(params.ink), accent: tidy(params.accent) };
-    }
-    module2.exports = { DEFAULT_THEME, themeProblems, cleanTheme, contrast };
-  }
-});
-
-// cloud/admin.js
-var require_admin = __commonJS({
-  "cloud/admin.js"(exports2, module2) {
-    "use strict";
-    var {
-      MASTER,
-      invalid,
-      forbidden,
-      requireUser,
-      adminOnly,
-      ensureRole,
-      readAcl,
-      userAcl,
-      audit,
-      loadConfig,
-      countUsers,
-      nextStaffCode,
-      endSessions,
-      fileUrl,
-      findAll
-    } = require_core();
-    var { requireAdminUnlock } = require_adminLock();
-    var { COMMISSION_TYPES, ROUNDING_STEPS } = require_money();
-    var { isValidTimeZone } = require_dates();
-    var { SEED_MENU } = require_seed();
-    var { normalizeGroups } = require_accompaniments();
-    var { applySecurity } = require_security();
-    var { cleanLocation } = require_geo();
-    var { cleanTheme, themeProblems } = require_theme();
-    var ROLE_NAMES = ["admin", "cashier", "rider"];
-    var STAFF_ROLES = ["rider", "cashier"];
-    var merchantField = (value, max) => String(value ?? "").trim().slice(0, max);
-    var codeField = (role) => role === "rider" ? "riderCode" : "cashierCode";
-    async function adminRoleExists() {
-      const query = new Parse.Query(Parse.Role);
-      query.equalTo("name", "admin");
-      return !!await query.first(MASTER);
-    }
-    async function canBootstrapOwner() {
-      return !await adminRoleExists() && await countUsers() === 1;
-    }
-    async function makeOwner(user, actor) {
-      const role = await ensureRole("admin");
-      role.getUsers().add(user);
-      await role.save(null, MASTER);
-      await Promise.all(STAFF_ROLES.map(ensureRole));
-      if (!await new Parse.Query("MenuItem").first(MASTER)) {
-        const seed = SEED_MENU.map((entry, index) => {
-          const item = new Parse.Object("MenuItem");
-          item.set({
-            title: entry.title,
-            price: entry.price,
-            category: entry.category,
-            active: true,
-            availableToday: true,
-            sortOrder: index
-          });
-          item.setACL(readAcl(null, ["admin"]));
-          return item;
-        });
-        await Parse.Object.saveAll(seed, MASTER);
-      }
-      await applySecurity();
-      await audit(actor, "owner.initialized", role, null, { userId: user.id });
-    }
-    Parse.Cloud.define("bootstrapOwner", async (request) => {
-      const user = requireUser(request);
-      if (await adminRoleExists()) throw forbidden("Owner already configured");
-      if (await countUsers() !== 1)
-        throw forbidden("Owner setup requires exactly one existing account");
-      await makeOwner(user, user);
-      return { ok: true };
-    });
-    async function createOrResetOwner(params) {
-      const username = String(params.username || "").trim().toLowerCase();
-      const password = String(params.password || "");
-      if (!/^[-a-z0-9_.@]{3,64}$/.test(username) || password.length < 8)
-        throw invalid("Give a username (3+ characters) and a password of at least 8 characters");
-      const query = new Parse.Query(Parse.User);
-      query.equalTo("username", username);
-      let user = await query.first(MASTER);
-      const created = !user;
-      if (!user) {
-        user = new Parse.User();
-        user.set({ username, password, active: true });
-        if (params.email) user.set("email", String(params.email).trim());
-        user.set("name", String(params.name || username).trim());
-        await user.signUp(null, MASTER);
-      } else {
-        user.set({ password, active: true });
-        await user.save(null, MASTER);
-      }
-      user.setACL(userAcl(user, "admin"));
-      await user.save(null, MASTER);
-      await makeOwner(user, user);
-      return { username, created, role: "admin" };
-    }
-    Parse.Cloud.define("recoverOwner", async (request) => {
-      if (!request.master) throw forbidden("Master key required");
-      return createOrResetOwner(request.params);
-    });
-    Parse.Cloud.job("createOwner", async (request) => {
-      const result = await createOrResetOwner(request.params || {});
-      return `Owner ${result.created ? "created" : "password reset"}: ${result.username}`;
-    });
-    async function roleMembership() {
-      const query = new Parse.Query(Parse.Role);
-      query.containedIn("name", ROLE_NAMES);
-      const held = {};
-      for (const role of await query.find(MASTER)) {
-        const users = await findAll(role.getUsers().query());
-        for (const user of users) (held[user.id] ||= []).push(role.getName());
-      }
-      const members = {};
-      for (const [id, names] of Object.entries(held))
-        members[id] = ROLE_NAMES.find((name) => names.includes(name));
-      return members;
-    }
-    Parse.Cloud.define("adminListSetup", async (request) => {
-      await adminOnly(request);
-      const userQuery = new Parse.Query(Parse.User);
-      const menuQuery = new Parse.Query("MenuItem");
-      menuQuery.ascending("sortOrder");
-      menuQuery.limit(1e3);
-      const categoryQuery = new Parse.Query("MenuCategory");
-      categoryQuery.ascending("sortOrder");
-      categoryQuery.limit(1e3);
-      const accompanimentQuery = new Parse.Query("Accompaniment");
-      accompanimentQuery.ascending("sortOrder");
-      accompanimentQuery.limit(1e3);
-      const cashQuery = new Parse.Query("Order");
-      cashQuery.equalTo("status", "DELIVERED");
-      cashQuery.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
-      cashQuery.select("createdBy", "amountCollected");
-      const shiftQuery = new Parse.Query("Shift");
-      shiftQuery.equalTo("status", "open");
-      shiftQuery.select("operator");
-      const [
-        users,
-        menu,
-        categories,
-        members,
-        { object: config, values },
-        accompaniments,
-        cashOrders,
-        openShifts
-      ] = await Promise.all([
-        findAll(userQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
-        menuQuery.find(MASTER),
-        categoryQuery.find(MASTER),
-        roleMembership(),
-        loadConfig(),
-        accompanimentQuery.find(MASTER),
-        findAll(cashQuery),
-        findAll(shiftQuery)
-      ]);
-      const cashHeld = {};
-      for (const order of cashOrders) {
-        const id = order.get("createdBy")?.id;
-        if (id) cashHeld[id] = (cashHeld[id] || 0) + (Number(order.get("amountCollected")) || 0);
-      }
-      const onShift = new Set(openShifts.map((row) => row.get("operator")?.id));
-      return {
-        team: users.map((user) => ({
-          id: user.id,
-          name: user.get("name") || user.getUsername(),
-          username: user.getUsername(),
-          phone: user.get("phone") || "",
-          active: user.get("active") !== false,
-          role: members[user.id] || "unassigned",
-          code: user.get("riderCode") || user.get("cashierCode") || "",
-          commissionType: user.get("commissionType") || "per_order",
-          commissionPerOrder: user.get("commissionPerOrder") || 0,
-          commissionPercent: user.get("commissionPercent") || 0,
-          available: members[user.id] === "rider" ? user.get("available") !== false : null,
-          onShift: onShift.has(user.id),
-          cashHeld: cashHeld[user.id] || 0,
-          cashLimit: typeof user.get("maxFloat") === "number" ? user.get("maxFloat") : null
-        })),
-        menu: menu.map((item) => ({
-          id: item.id,
-          title: item.get("title"),
-          price: item.get("price"),
-          category: item.get("category"),
-          active: item.get("active") !== false,
-          availableToday: item.get("availableToday") !== false,
-          accompanimentGroups: item.get("accompanimentGroups") || [],
-          description: item.get("description") || "",
-          image: fileUrl(item.get("image")),
-          sortOrder: Number(item.get("sortOrder") || 0),
-          prepMinutes: Number(item.get("prepMinutes") || 0),
-          archived: !!item.get("archivedAt")
-        })),
-        accompaniments: accompaniments.map((row) => ({
-          id: row.id,
-          title: row.get("title"),
-          active: row.get("active") !== false,
-          available: row.get("available") !== false,
-          price: Number(row.get("price") || 0)
-        })),
-        categories: categories.map((category) => ({
-          id: category.id,
-          title: category.get("title"),
-          active: category.get("active") !== false
-        })),
-        settings: config ? { id: config.id, ...values } : null
-      };
-    });
-    Parse.Cloud.define("adminCreateTeamMember", async (request) => {
-      const actor = await adminOnly(request);
-      const p = request.params;
-      const roleName = p.role;
-      if (!STAFF_ROLES.includes(roleName)) throw invalid("Invalid role");
-      const name = String(p.name || "").trim();
-      const username = String(p.username || "").trim().toLowerCase();
-      const pin = String(p.pin || "");
-      if (!name || !/^[-a-z0-9_.]{3,32}$/.test(username) || pin.length < 4 || pin.length > 32)
-        throw invalid("Enter a name, valid username and PIN of at least 4 characters");
-      const { values: config } = await loadConfig();
-      const user = new Parse.User();
-      user.set({
-        username,
-        password: pin,
-        name,
-        phone: String(p.phone || ""),
-        active: true,
-        commissionType: COMMISSION_TYPES.includes(config.defaultCommissionType) ? config.defaultCommissionType : "per_order",
-        commissionPerOrder: Number(config.defaultCommissionPerOrder) || 0,
-        commissionPercent: Number(config.defaultCommissionPercent) || 0,
-        [codeField(roleName)]: await nextStaffCode(roleName)
-      });
-      await user.signUp(null, MASTER);
-      user.setACL(userAcl(user, roleName));
-      await user.save(null, MASTER);
-      const role = await ensureRole(roleName);
-      role.getUsers().add(user);
-      await role.save(null, MASTER);
-      await audit(actor, "team.created", user, null, { name, role: roleName });
-      return { id: user.id, name, username, role: roleName, code: user.get(codeField(roleName)) };
-    });
-    Parse.Cloud.define("adminUpdateMember", async (request) => {
-      const actor = await adminOnly(request);
-      const p = request.params;
-      const user = await new Parse.Query(Parse.User).get(p.id, MASTER);
-      if (user.id === actor.id && p.active === false) throw forbidden("You cannot deactivate yourself");
-      const snapshot = () => ({
-        name: user.get("name"),
-        phone: user.get("phone"),
-        active: user.get("active"),
-        commissionType: user.get("commissionType"),
-        commissionPerOrder: user.get("commissionPerOrder"),
-        commissionPercent: user.get("commissionPercent"),
-        maxFloat: user.get("maxFloat")
-      });
-      const before = snapshot();
-      if (p.name !== void 0) {
-        const name = String(p.name || "").trim();
-        if (!name || name.length > 80) throw invalid("Enter a name");
-        user.set("name", name);
-      }
-      if (p.phone !== void 0)
-        user.set(
-          "phone",
-          String(p.phone || "").trim().slice(0, 30)
-        );
-      if (p.maxFloat !== void 0) {
-        if (p.maxFloat === null || p.maxFloat === "") {
-          if (user.has("maxFloat")) user.unset("maxFloat");
-        } else {
-          const limit = Number(p.maxFloat);
-          if (!Number.isFinite(limit) || limit < 0 || limit > 1e8)
-            throw invalid("Invalid cash limit");
-          user.set("maxFloat", Math.round(limit));
-        }
-      }
-      const deactivating = p.active === false && user.get("active") !== false;
-      if (typeof p.active === "boolean") user.set("active", p.active);
-      if (p.commissionType !== void 0) {
-        if (!COMMISSION_TYPES.includes(p.commissionType)) throw invalid("Invalid commission type");
-        user.set("commissionType", p.commissionType);
-      }
-      for (const key of ["commissionPerOrder", "commissionPercent"])
-        if (p[key] !== void 0) {
-          const value = Number(p[key]);
-          const max = key === "commissionPercent" ? 100 : 1e6;
-          if (!Number.isFinite(value) || value < 0 || value > max)
-            throw invalid("Invalid commission value");
-          user.set(key, value);
-        }
-      await user.save(null, MASTER);
-      if (deactivating) await endSessions(user);
-      await audit(actor, "team.updated", user, before, snapshot());
-      return { ok: true };
-    });
-    Parse.Cloud.define("adminChangeRole", async (request) => {
-      const actor = await adminOnly(request);
-      const { userId, role: next } = request.params;
-      if (!STAFF_ROLES.includes(next)) throw invalid("Only rider and cashier roles can be assigned");
-      const user = await new Parse.Query(Parse.User).get(userId, MASTER);
-      if (user.id === actor.id) throw forbidden("You cannot change your own role");
-      const query = new Parse.Query(Parse.Role);
-      query.containedIn("name", ROLE_NAMES);
-      const roles = await query.find(MASTER);
-      const isMember = (role) => role.getUsers().query().get(userId, MASTER).then(() => true).catch(() => false);
-      const adminRole = roles.find((role) => role.getName() === "admin");
-      if (adminRole && await isMember(adminRole))
-        throw forbidden("Admin roles cannot be changed here");
-      let before = "unassigned";
-      for (const role of roles.filter((r) => STAFF_ROLES.includes(r.getName()))) {
-        if (await isMember(role)) {
-          before = role.getName();
-          role.getUsers().remove(user);
-          await role.save(null, MASTER);
-        }
-      }
-      const destination = await ensureRole(next);
-      destination.getUsers().add(user);
-      await destination.save(null, MASTER);
-      if (!user.get(codeField(next))) user.set(codeField(next), await nextStaffCode(next));
-      user.setACL(userAcl(user, next));
-      await user.save(null, MASTER);
-      await audit(actor, "team.role_changed", user, { role: before }, { role: next });
-      return { role: next };
-    });
-    Parse.Cloud.define("adminSaveCategory", async (request) => {
-      const actor = await adminOnly(request);
-      const p = request.params;
-      const title = String(p.title || "").trim();
-      if (!title || title.length > 80) throw invalid("Category title is required");
-      const all = await findAll(new Parse.Query("MenuCategory"));
-      if (all.some((row) => row.id !== p.id && row.get("title").toLowerCase() === title.toLowerCase()))
-        throw invalid(`There is already a category called "${title}"`);
-      const category = p.id ? all.find((row) => row.id === p.id) : new Parse.Object("MenuCategory");
-      if (!category) throw invalid("Unknown category");
-      const before = p.id ? category.toJSON() : null;
-      const oldTitle = category.get("title");
-      const sortOrder = p.sortOrder !== void 0 ? Number(p.sortOrder) || 0 : p.id ? Number(category.get("sortOrder") || 0) : Math.max(0, ...all.map((row) => Number(row.get("sortOrder") || 0))) + 1;
-      category.set({ title, active: p.active !== false, sortOrder });
-      category.setACL(readAcl(null, ["admin"]));
-      await category.save(null, MASTER);
-      let moved = 0;
-      if (oldTitle && oldTitle !== title) {
-        const dishes = await findAll(new Parse.Query("MenuItem").equalTo("category", oldTitle));
-        dishes.forEach((dish) => dish.set("category", title));
-        if (dishes.length) await Parse.Object.saveAll(dishes, MASTER);
-        moved = dishes.length;
-      }
-      await audit(actor, "menu.category_saved", category, before, {
-        title,
-        active: category.get("active"),
-        ...moved && { dishesMoved: moved }
-      });
-      return { id: category.id, dishesMoved: moved };
-    });
-    Parse.Cloud.define("adminSortCategories", async (request) => {
-      const actor = await adminOnly(request);
-      const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
-      if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length)
-        throw invalid("Send the categories in their new order");
-      const rows = await findAll(new Parse.Query("MenuCategory").containedIn("objectId", ids));
-      if (rows.length !== ids.length) throw invalid("Unknown category in the list");
-      for (const row of rows) row.set("sortOrder", ids.indexOf(row.id) + 1);
-      await Parse.Object.saveAll(rows, MASTER);
-      await audit(actor, "menu.categories_sorted", rows[0], null, { count: rows.length });
-      return { ok: true };
-    });
-    Parse.Cloud.define("adminSaveMenuItem", async (request) => {
-      const actor = await adminOnly(request);
-      const p = request.params;
-      const item = p.id ? await new Parse.Query("MenuItem").get(p.id, MASTER) : new Parse.Object("MenuItem");
-      const title = String(p.title || "").trim();
-      const price = Number(p.price);
-      if (!title || !Number.isFinite(price) || price < 0)
-        throw invalid("A title and nonnegative price are required");
-      const before = p.id ? item.toJSON() : null;
-      const category = String(p.category || "Mains").trim();
-      const categories = await findAll(new Parse.Query("MenuCategory"));
-      if (categories.length && !categories.some((row) => row.get("title") === category))
-        throw invalid(`Choose one of the menu categories (not "${category}")`);
-      const prep = p.prepMinutes === void 0 || p.prepMinutes === null || p.prepMinutes === "" ? void 0 : Number(p.prepMinutes);
-      if (prep !== void 0 && (!Number.isInteger(prep) || prep < 0 || prep > 240))
-        throw invalid("Prep time must be whole minutes, 0 to 240");
-      item.set({
-        title,
-        price,
-        category,
-        active: p.active !== false,
-        availableToday: p.availableToday !== false,
-        ...prep !== void 0 && { prepMinutes: prep }
-      });
-      if (p.description !== void 0) item.set("description", merchantField(p.description, 300));
-      if (!p.id && item.get("sortOrder") === void 0) {
-        const last = await new Parse.Query("MenuItem").descending("sortOrder").first(MASTER);
-        item.set("sortOrder", (Number(last?.get("sortOrder")) || 0) + 1);
-      }
-      if (p.archived === true) item.set({ active: false, archivedAt: /* @__PURE__ */ new Date() });
-      if (p.archived === false) {
-        item.set("active", true);
-        if (item.has("archivedAt")) item.unset("archivedAt");
-      }
-      if (p.accompanimentGroups !== void 0) {
-        const known = new Parse.Query("Accompaniment");
-        known.limit(1e3);
-        const ids = new Set((await known.find(MASTER)).map((row) => row.id));
-        try {
-          item.set("accompanimentGroups", normalizeGroups(p.accompanimentGroups, ids));
-        } catch (e) {
-          throw invalid(e.message);
-        }
-      }
-      item.setACL(readAcl(null, ["admin"]));
-      await item.save(null, MASTER);
-      await audit(actor, p.archived === true ? "menu.archived" : "menu.saved", item, before, {
-        title,
-        price,
-        description: item.get("description") || "",
-        active: item.get("active")
-      });
-      return { id: item.id };
-    });
-    Parse.Cloud.define("adminSortMenu", async (request) => {
-      const actor = await adminOnly(request);
-      const ids = Array.isArray(request.params.ids) ? request.params.ids.map(String) : [];
-      if (!ids.length || ids.length > 1e3 || new Set(ids).size !== ids.length)
-        throw invalid("Send the dishes in their new order");
-      const query = new Parse.Query("MenuItem");
-      query.containedIn("objectId", ids);
-      query.limit(ids.length);
-      const items = await query.find(MASTER);
-      if (items.length !== ids.length) throw invalid("Unknown dish in the list");
-      for (const item of items) item.set("sortOrder", ids.indexOf(item.id) + 1);
-      await Parse.Object.saveAll(items, MASTER);
-      await audit(actor, "menu.sorted", items[0], null, { count: items.length });
-      return { ok: true };
-    });
-    var IMAGE_TYPES = { "/9j/": "image/jpeg", iVBOR: "image/png", UklGR: "image/webp" };
-    var MAX_IMAGE_BASE64 = 7e5;
-    async function imageFile(base64, name) {
-      const data = String(base64 || "").replace(/^data:[^,]+,/, "");
-      const type = Object.entries(IMAGE_TYPES).find(([prefix]) => data.startsWith(prefix))?.[1];
-      if (!type) throw invalid("Use a JPEG, PNG or WebP photo");
-      if (data.length > MAX_IMAGE_BASE64) throw invalid("The photo is too large (500 KB at most)");
-      const extension = type.split("/")[1].replace("jpeg", "jpg");
-      const file = new Parse.File(`${name}.${extension}`, { base64: data }, type);
-      await file.save(MASTER);
-      return file;
-    }
-    Parse.Cloud.define("adminSetMenuImage", async (request) => {
-      const actor = await adminOnly(request);
-      const item = await new Parse.Query("MenuItem").get(String(request.params.id || ""), MASTER);
-      const before = { image: fileUrl(item.get("image")) };
-      if (request.params.remove === true) {
-        if (item.has("image")) item.unset("image");
-      } else item.set("image", await imageFile(request.params.image, "dish"));
-      await item.save(null, MASTER);
-      await audit(actor, "menu.image", item, before, { image: fileUrl(item.get("image")) });
-      return { image: fileUrl(item.get("image")) };
-    });
-    Parse.Cloud.define("adminSetRestaurantLogo", async (request) => {
-      const actor = await requireAdminUnlock(request);
-      let { object: config } = await loadConfig();
-      if (!config) {
-        config = new Parse.Object("Configuration");
-        config.setACL(readAcl(null, ["admin"]));
-      }
-      const before = { logo: fileUrl(config.get("restaurantLogo")) };
-      if (request.params.remove === true) {
-        if (config.has("restaurantLogo")) config.unset("restaurantLogo");
-      } else config.set("restaurantLogo", await imageFile(request.params.image, "logo"));
-      await config.save(null, MASTER);
-      const logo = fileUrl(config.get("restaurantLogo"));
-      await audit(actor, "configuration.logo", config, before, { logo });
-      return { logo: logo || "" };
-    });
-    Parse.Cloud.define("adminSaveAccompaniment", async (request) => {
-      const actor = await adminOnly(request);
-      const p = request.params;
-      const title = String(p.title || "").trim();
-      if (!title || title.length > 60) throw invalid("An accompaniment name is required");
-      const price = p.price === void 0 || p.price === null || p.price === "" ? 0 : Number(p.price);
-      if (!Number.isInteger(price) || price < 0 || price > 1e6)
-        throw invalid("An accompaniment price must be a whole amount from 0");
-      const row = p.id ? await new Parse.Query("Accompaniment").get(p.id, MASTER) : new Parse.Object("Accompaniment");
-      const before = p.id ? row.toJSON() : null;
-      row.set({
-        title,
-        active: p.active !== false,
-        available: p.available !== false,
-        sortOrder: Number(p.sortOrder) || 0,
-        price
-      });
-      row.setACL(readAcl(null, ["admin"]));
-      await row.save(null, MASTER);
-      await audit(actor, "menu.accompaniment_saved", row, before, {
-        title,
-        active: row.get("active"),
-        available: row.get("available"),
-        price
-      });
-      return { id: row.id };
-    });
-    Parse.Cloud.define("adminSaveBranding", async (request) => {
-      const actor = await requireAdminUnlock(request);
-      const theme = cleanTheme(request.params);
-      const problems = themeProblems(theme);
-      if (problems.length) throw invalid(problems[0]);
-      let { object: config } = await loadConfig();
-      if (!config) {
-        config = new Parse.Object("Configuration");
-        config.setACL(readAcl(null, ["admin"]));
-      }
-      const before = { ink: config.get("themeInk") || "", accent: config.get("themeAccent") || "" };
-      config.set({ themeInk: theme.ink, themeAccent: theme.accent });
-      await config.save(null, MASTER);
-      await audit(actor, "configuration.branding", config, before, theme);
-      return theme;
-    });
-    Parse.Cloud.define("adminSaveSettings", async (request) => {
-      const actor = await requireAdminUnlock(request);
-      const p = request.params;
-      const { object: existing, values: current } = await loadConfig();
-      const config = existing || new Parse.Object("Configuration");
-      const before = existing ? existing.toJSON() : null;
-      const fee = Number(p.defaultDeliveryFee);
-      const max = Number(p.maxRiderFloat);
-      if (!Number.isFinite(fee) || fee < 0 || !Number.isFinite(max) || max < 0)
-        throw invalid("Fee and float limit must be nonnegative");
-      const timezone = String(p.timezone || current.timezone).trim();
-      if (!isValidTimeZone(timezone)) throw invalid("Unknown timezone, e.g. Africa/Kampala");
-      const reminderHour = Number(p.cashReminderHour ?? current.cashReminderHour);
-      if (!Number.isInteger(reminderHour) || reminderHour < 0 || reminderHour > 23)
-        throw invalid("Cash reminder hour must be 0-23");
-      const warnPercent = Number(p.floatWarningPercent ?? current.floatWarningPercent);
-      if (!Number.isFinite(warnPercent) || warnPercent < 50 || warnPercent > 99)
-        throw invalid("Cash warning must be between 50% and 99% of the limit");
-      const place = cleanLocation(
-        p.restaurantLat !== void 0 || p.restaurantLng !== void 0 ? { lat: p.restaurantLat, lng: p.restaurantLng } : { lat: current.restaurantLat, lng: current.restaurantLng }
-      );
-      if (place.error) throw invalid(`Restaurant location: ${place.error}`);
-      const zHour = Number(p.zReportHour ?? current.zReportHour);
-      if (!Number.isInteger(zHour) || zHour < 0 || zHour > 23)
-        throw invalid("Z-report hour must be 0-23");
-      const rounding = String(p.commissionRounding ?? current.commissionRounding);
-      if (!Object.hasOwn(ROUNDING_STEPS, rounding)) throw invalid("Invalid commission rounding");
-      const commissionType = String(p.defaultCommissionType ?? current.defaultCommissionType);
-      if (!COMMISSION_TYPES.includes(commissionType)) throw invalid("Invalid commission type");
-      const perOrder = Number(p.defaultCommissionPerOrder ?? current.defaultCommissionPerOrder);
-      const percent = Number(p.defaultCommissionPercent ?? current.defaultCommissionPercent);
-      if (!Number.isFinite(perOrder) || perOrder < 0 || perOrder > 1e6)
-        throw invalid("Invalid default commission amount");
-      if (!Number.isFinite(percent) || percent < 0 || percent > 100)
-        throw invalid("Default commission percent must be 0-100");
-      const modules = [
-        (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
-        (p.moduleCallIn ?? current.moduleCallIn) === true,
-        (p.moduleCounter ?? current.moduleCounter) === true
-      ];
-      if (!modules.some(Boolean)) throw invalid("Keep at least one way of taking orders switched on");
-      config.set({
-        restaurantName: String(p.restaurantName || current.restaurantName).trim(),
-        currencySymbol: String(p.currencySymbol || current.currencySymbol).trim(),
-        currencyCode: String(p.currencyCode || current.currencyCode).trim().toUpperCase(),
-        timezone,
-        defaultDeliveryFee: fee,
-        maxRiderFloat: max,
-        allowBatching: !!p.allowBatching,
-        requireCashierConfirmForPickup: !!p.requireCashierConfirmForPickup,
-        airtelMerchantCode: merchantField(p.airtelMerchantCode, 30),
-        airtelMerchantName: merchantField(p.airtelMerchantName, 60),
-        mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
-        mtnMerchantName: merchantField(p.mtnMerchantName, 60),
-        cashReminderHour: reminderHour,
-        floatWarningPercent: warnPercent,
-        commissionRounding: rounding,
-        defaultCommissionType: commissionType,
-        defaultCommissionPerOrder: perOrder,
-        defaultCommissionPercent: percent,
-        zReportHour: zHour,
-        restaurantLat: place.location.lat,
-        restaurantLng: place.location.lng,
-        moduleRiderOrders: (p.moduleRiderOrders ?? current.moduleRiderOrders) !== false,
-        moduleCallIn: (p.moduleCallIn ?? current.moduleCallIn) === true,
-        moduleCounter: (p.moduleCounter ?? current.moduleCounter) === true,
-        receiptWidth: Number(p.receiptWidth ?? current.receiptWidth) === 58 ? 58 : 80,
-        receiptHeader: merchantField(p.receiptHeader ?? current.receiptHeader, 300),
-        receiptFooter: merchantField(p.receiptFooter ?? current.receiptFooter, 200),
-        autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true
-      });
-      config.setACL(readAcl(null, ["admin"]));
-      await config.save(null, MASTER);
-      await audit(actor, "configuration.saved", config, before, config.toJSON());
-      return { id: config.id };
-    });
-    module2.exports = { canBootstrapOwner };
-  }
-});
-
 // cloud/lib/menuImport.js
 var require_menuImport = __commonJS({
   "cloud/lib/menuImport.js"(exports2, module2) {
@@ -14833,11 +15247,13 @@ var require_data = __commonJS({
     function plain(object) {
       const json = object.toJSON();
       delete json.ACL;
+      delete json.tenant;
       return json;
     }
     async function userRow(user) {
       const row = { objectId: user.id, createdAt: user.createdAt, updatedAt: user.updatedAt };
       for (const field of USER_FIELDS) if (user.get(field) !== void 0) row[field] = user.get(field);
+      if (row.username) row.username = user.getUsername();
       row.role = await getRoleName(user) || "unassigned";
       return row;
     }
@@ -15341,10 +15757,10 @@ var require_profile = __commonJS({
       requireUser,
       getRoleName,
       loadConfig,
-      countUsers,
       withRiderLimit
     } = require_core();
-    var { canBootstrapOwner } = require_admin();
+    var tenancy = require_tenant();
+    var { restaurantSummary } = require_restaurants();
     var { previewEnabled } = require_preview();
     var { merchantAccounts } = require_mobileMoney();
     function publicConfig(values) {
@@ -15379,15 +15795,21 @@ var require_profile = __commonJS({
       };
     }
     Parse.Cloud.define("getAppInfo", async () => {
-      const [{ values }, users] = await Promise.all([loadConfig(), countUsers()]);
+      if (!tenancy.current())
+        return { hosted: true, found: false, signUpOpen: true, previewEnabled: previewEnabled() };
+      const [{ values }, restaurant] = await Promise.all([loadConfig(), restaurantSummary()]);
       return {
+        hosted: true,
+        found: true,
+        signUpOpen: true,
+        restaurant,
         restaurantName: values.restaurantName,
         restaurantLogo: values.restaurantLogo,
         theme: { ink: values.themeInk, accent: values.themeAccent },
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
         timezone: values.timezone,
-        ownerSetupOpen: users === 0,
+        ownerSetupOpen: false,
         // For the privacy notice (/privacy), which anyone can read.
         privacy: {
           contact: values.privacyContact || "",
@@ -15399,8 +15821,14 @@ var require_profile = __commonJS({
     Parse.Cloud.define("getMyProfile", async (request) => {
       const user = requireUser(request);
       await user.fetch(MASTER);
-      const [role, { values }] = await Promise.all([getRoleName(user), loadConfig()]);
+      const [role, { values }, restaurant] = await Promise.all([
+        getRoleName(user),
+        loadConfig(),
+        restaurantSummary()
+      ]);
       return {
+        // Relay Hosted: the person's restaurant (null for platform staff).
+        restaurant,
         id: user.id,
         username: user.getUsername(),
         name: user.get("name") || user.getUsername(),
@@ -15414,7 +15842,7 @@ var require_profile = __commonJS({
           perOrder: user.get("commissionPerOrder") || 0,
           percent: user.get("commissionPercent") || 0
         } : null,
-        canInitialize: role === null && await canBootstrapOwner(),
+        canInitialize: false,
         config: publicConfig(role === "rider" ? withRiderLimit(values, user) : values)
       };
     });
@@ -15424,6 +15852,7 @@ var require_profile = __commonJS({
 // cloud/main.js
 require_errors();
 require_adminLock();
+require_restaurants();
 require_security();
 require_push();
 require_notifications();

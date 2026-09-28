@@ -3,6 +3,7 @@
 //
 //   errors.js    error reporting: wraps every function and job, ErrorLog
 //   adminLock.js PIN re-entry for the Admin area (unlockAdmin, requireAdminUnlock)
+//   restaurants.js Relay Hosted: restaurants, sign-up, platform role (docs/HOSTED.md)
 //   security.js  write guards, _User rules, applySecurity migration
 //   profile.js   getAppInfo, getMyProfile
 //   orders.js    createOrder, transitionOrder (incl. cancel/reject), order issues
@@ -30,6 +31,7 @@
 
 require('./errors');
 require('./adminLock');
+require('./restaurants');
 require('./security');
 require('./push');
 require('./notifications');

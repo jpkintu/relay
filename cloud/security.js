@@ -13,7 +13,6 @@
 const {
   MASTER,
   forbidden,
-  countUsers,
   getRoleName,
   readAcl,
   userAcl,
@@ -45,6 +44,9 @@ const PROTECTED_CLASSES = [
   'ZReport',
   'ErrorLog',
   'AdminUnlock',
+  // Relay Hosted.
+  'Restaurant',
+  'PlatformSettings',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -56,6 +58,8 @@ const PRIVATE_CLASSES = [
   'ZReport',
   'ErrorLog',
   'AdminUnlock',
+  'Restaurant',
+  'PlatformSettings',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -72,15 +76,9 @@ for (const className of PROTECTED_CLASSES) {
 
 Parse.Cloud.beforeSave(Parse.User, async (request) => {
   if (request.master) return;
-  if (!request.original) {
-    if ((await countUsers()) > 0)
-      throw forbidden('Accounts are created by the restaurant administrator');
-    // First owner sign-up: never accept privileged fields from the client.
-    for (const key of ['active', 'commissionType', 'commissionPerOrder', 'commissionPercent'])
-      request.object.unset(key);
-    for (const key of ['riderCode', 'cashierCode']) request.object.unset(key);
-    return;
-  }
+  // Relay Hosted: accounts come from the restaurant sign-up page or the
+  // restaurant's administrator, never from a client sign-up.
+  if (!request.original) throw forbidden('Accounts are created by the restaurant administrator');
   const blocked = request.object
     .dirtyKeys()
     .filter((key) => !SELF_EDITABLE_USER_FIELDS.includes(key));
@@ -389,6 +387,18 @@ const SCHEMAS = {
   },
   Secret: { key: S, value: 'Object' },
   AdminUnlock: { tokenHash: S, user, expiresAt: D },
+  // Relay Hosted (docs/HOSTED.md).
+  Restaurant: {
+    name: S,
+    code: S,
+    suspended: B,
+    trialEndsAt: D,
+    ownerName: S,
+    billingPhone: S,
+    priceOverride: N,
+    paidUntil: D,
+  },
+  PlatformSettings: { monthlyPrice: N, currency: S, trialDays: N, graceDays: N },
   Notification: {
     recipient: user,
     kind: S,
@@ -421,7 +431,11 @@ async function applySchemas() {
     const schema = new Parse.Schema(className);
     const current = existing.get(className);
     const known = current ? Object.keys(current.fields || {}) : [];
-    for (const [field, type] of Object.entries(SCHEMAS[className])) {
+    // Relay Hosted: every restaurant class points at its restaurant.
+    const fields = require('./lib/tenant').SCOPED.has(className)
+      ? { ...SCHEMAS[className], tenant: ['Pointer', 'Restaurant'] }
+      : SCHEMAS[className];
+    for (const [field, type] of Object.entries(fields)) {
       if (known.includes(field)) continue;
       if (Array.isArray(type)) schema.addField(field, type[0], { targetClass: type[1] });
       else schema.addField(field, type);
@@ -436,9 +450,11 @@ async function applySchemas() {
   // Fields Cloud Code keeps on team members (Postgres needs the columns).
   const userFields = Object.keys(existing.get('_User')?.fields || {});
   const missing = Object.entries(USER_FIELDS).filter(([field]) => !userFields.includes(field));
-  if (missing.length) {
+  const needsTenant = !userFields.includes('tenant');
+  if (missing.length || needsTenant) {
     const schema = new Parse.Schema('_User');
     for (const [field, type] of missing) schema.addField(field, type);
+    if (needsTenant) schema.addPointer('tenant', 'Restaurant');
     await schema.update();
   }
   return created;
@@ -592,7 +608,8 @@ async function repairCodes() {
 }
 
 Parse.Cloud.job('applySecurity', async () => {
-  const updated = await applySecurity();
+  // Relay Hosted: once per restaurant (each has its own records and roles).
+  const updated = await require('./restaurants').forEachRestaurant(() => applySecurity());
   return `Security applied: ${JSON.stringify(updated)}`;
 });
 

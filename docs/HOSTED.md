@@ -1,0 +1,127 @@
+# Relay Hosted: the multi-restaurant edition
+
+Relay comes in two editions from one codebase:
+
+|         | Self-hosted (`main`)                                | Hosted (`hosted`, this branch)                 |
+| ------- | --------------------------------------------------- | ---------------------------------------------- |
+| Who     | One restaurant, bought once, optional maintenance   | Many smaller restaurants, monthly subscription |
+| Where   | Its own Back4App app (own database, own Cloud Code) | One shared Back4App app for every restaurant   |
+| Sign-up | The first owner sets it up                          | Self sign-up with a free trial                 |
+| Billing | None in the app                                     | Monthly, collected with ioTec Pay              |
+
+`hosted` is a long-lived branch made from `main`. Fixes and features land on
+`main` first and are merged into `hosted` regularly (`git merge main`), so both
+editions stay current. Only the multi-restaurant parts live here.
+
+## How restaurants are kept apart
+
+Every business record carries a `tenant` pointer to its `Restaurant`. The
+isolation is enforced on the server, in one place, so no Cloud function can
+forget it:
+
+- **Request context.** Every Cloud function and job runs inside a tenant
+  context (Node `AsyncLocalStorage`): the signed-in person's restaurant, or
+  the restaurant named in a public request (sign-in screen), or none (platform
+  functions).
+- **Reads.** In a tenant context, every query on a restaurant's classes gets
+  `tenant = <this restaurant>` added automatically (`cloud/lib/tenant.js`
+  wraps `Parse.Query#toJSON`, which every find, first, count, get, each and
+  sub-query goes through). A record of another restaurant cannot be found,
+  counted or fetched by id.
+- **Writes.** New records get the tenant set before they are saved.
+- **Roles.** Each restaurant has its own roles (`admin__<id>`, `cashier__<id>`,
+  `rider__<id>`). ACLs use them, so what a phone can read directly and what
+  live updates it receives are limited to its own restaurant by Parse itself.
+- **People.** Usernames are unique per restaurant: stored as
+  `name@restaurant-code`, typed as just `name` on the restaurant's sign-in page.
+- **Tests.** The e2e suite runs two restaurants side by side and checks that
+  every function refuses or cannot see the other restaurant's data.
+
+## Restaurants, trials and subscriptions
+
+- `Restaurant`: name, code (used in its web address and usernames), trial end,
+  paid-until date, monthly price override, the owner's billing phone, and a
+  `suspended` switch.
+- **Access is worked out from the dates every time** (`cloud/lib/access.js`),
+  never kept as a stored status that a job must flip: the later of the trial
+  end and the paid-until date, plus the grace days. Statuses: `trial`,
+  `active`, `past_due` (grace days, still usable, warning shown), `expired`
+  (staff cannot work; the owner can still reach the billing page and pay), and
+  `suspended` (set by you, independent of billing; nothing is deleted).
+- **Price.** One platform price (set in the platform console); any restaurant
+  can have its own price, higher or lower, set by you.
+- **Trial.** New restaurants get a free trial (length set in the console).
+- **Billing (ioTec Pay).** The owner taps Pay on the billing page and approves
+  the mobile money prompt on the billing phone (ioTec has no saved payment
+  method: a person always approves). Each attempt gets its own unique
+  reference (`externalId`). Pending payments are checked every few minutes
+  until `Success` or `Failed`. A successful payment moves the paid-until date
+  to one month after the later of today and the current paid-until date, so a
+  late or repeated status answer can never shorten it. You can also record a
+  payment by hand (cash, bank) with its reference. Reminders go to the owner
+  before the paid period ends.
+- **ioTec keys** live in the Back4App app's environment variables, not in the
+  app: `IOTEC_CLIENT_ID`, `IOTEC_CLIENT_SECRET`, `IOTEC_WALLET_ID`, and
+  optionally `IOTEC_ENV=sandbox` (test currency `ITX`) and `IOTEC_API_URL` /
+  `IOTEC_AUTH_URL` if ioTec's addresses differ.
+
+## Lessons carried over from Embiro BI
+
+The Embiro BI platform (Superset, `Embiro-Concepts/embiro-bi`,
+`superset/embiro/`) already keeps its tenants apart and bills them with ioTec.
+What Relay Hosted takes from it:
+
+- **A record without a restaurant is visible to nobody**, never to everybody.
+  Scoped queries always carry `tenant = <this restaurant>`, so an unstamped
+  row cannot leak.
+- **Stamp the tenant automatically on create** from the caller's context,
+  unless already set (`tenant_scoping.py`'s before-insert hook; here the
+  `save` wrapper in `cloud/lib/tenant.js`). Existing records keep theirs.
+- **Access from dates, checked live** (`Organization.has_valid_subscription`),
+  and a separate platform on/off switch (`is_active`), as above.
+- **One enforcement point with an allow-list** (`paywall.py`): sign-in,
+  sign-out, the profile, the billing page and payments stay reachable when a
+  restaurant is expired; the owner lands on the billing page, other staff on
+  an explanation that the owner must renew.
+- **Platform staff belong to no restaurant** and are recognised by an
+  explicit check (`requirePlatform`), not by a role that could bypass the
+  scoping.
+- **ioTec:** fetch a fresh token for every call (tokens last 300 s), from
+  `https://id.iotec.io/connect/token` with the client-credentials grant
+  (form-encoded); `payerNote` is what the payer sees, so it names what is
+  being paid for; poll status because no webhook is documented.
+
+## ioTec Pay API (as used for billing)
+
+From ioTec's documentation (<https://iotec.io/api-docs/pay>):
+
+- **Token.** `POST https://id.iotec.io/connect/token`, form-encoded
+  `client_id`, `client_secret`, `grant_type=client_credentials` →
+  `access_token` (valid 300 s), sent as `Authorization: Bearer <token>`.
+- **Collect.** `POST https://pay.iotec.io/api/collections/collect` with
+  `{ category: "MobileMoney", currency: "UGX" (or "ITX" in the sandbox),
+walletId, externalId (our invoice id, ≤100 chars), payer (MSISDN), payerName,
+payerNote, payeeNote (≤100 chars each), amount (≥ 500),
+transactionChargesCategory: "ChargeWallet" }`. The reply carries the
+  transaction `id` and `status`.
+- **Status.** `GET https://pay.iotec.io/api/collections/status/{id}`: `status`
+  is `Pending` until the payer approves (`Success`) or declines or the request
+  times out (`Failed`); `statusMessage` says why, `vendorTransactionId` is the
+  mobile money reference.
+- Card collections (`POST …/collect/card`, payer = e-mail, `redirectUrl`) are
+  not used yet.
+
+## Platform console
+
+People with the platform `platform` role (you) see every restaurant: status,
+trial and billing, price override, suspend or reactivate, invoices, mark paid,
+and the platform settings (price, currency, trial days, grace days).
+
+## Phases
+
+1. **Tenancy core**: context, scoped reads and writes, per-restaurant roles,
+   usernames, per-restaurant sign-in page, sign-up with trial, isolation tests.
+2. **Platform console**: restaurants list and details, status changes, price
+   overrides, platform settings.
+3. **Billing**: invoices, the monthly billing job, ioTec collection requests and
+   status checks, grace period and suspension, manual payments.

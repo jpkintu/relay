@@ -41,12 +41,14 @@ const USER_FIELDS = [
 function plain(object) {
   const json = object.toJSON();
   delete json.ACL;
+  delete json.tenant;
   return json;
 }
 
 async function userRow(user) {
   const row = { objectId: user.id, createdAt: user.createdAt, updatedAt: user.updatedAt };
   for (const field of USER_FIELDS) if (user.get(field) !== undefined) row[field] = user.get(field);
+  if (row.username) row.username = user.getUsername();
   row.role = (await getRoleName(user)) || 'unassigned';
   return row;
 }

@@ -4,10 +4,10 @@ const {
   requireUser,
   getRoleName,
   loadConfig,
-  countUsers,
   withRiderLimit,
 } = require('./lib/core');
-const { canBootstrapOwner } = require('./admin');
+const tenancy = require('./lib/tenant');
+const { restaurantSummary } = require('./restaurants');
 const { previewEnabled } = require('./preview');
 const { merchantAccounts } = require('./lib/mobileMoney');
 
@@ -45,17 +45,25 @@ function publicConfig(values) {
   };
 }
 
-// Pre-login info for the sign-in screen.
+// Pre-login info for the sign-in screen. Relay Hosted: for the restaurant
+// named by { restaurant: '<code>' }; without one (or an unknown code) the app
+// shows "find your restaurant" and the sign-up page.
 Parse.Cloud.define('getAppInfo', async () => {
-  const [{ values }, users] = await Promise.all([loadConfig(), countUsers()]);
+  if (!tenancy.current())
+    return { hosted: true, found: false, signUpOpen: true, previewEnabled: previewEnabled() };
+  const [{ values }, restaurant] = await Promise.all([loadConfig(), restaurantSummary()]);
   return {
+    hosted: true,
+    found: true,
+    signUpOpen: true,
+    restaurant,
     restaurantName: values.restaurantName,
     restaurantLogo: values.restaurantLogo,
     theme: { ink: values.themeInk, accent: values.themeAccent },
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
     timezone: values.timezone,
-    ownerSetupOpen: users === 0,
+    ownerSetupOpen: false,
     // For the privacy notice (/privacy), which anyone can read.
     privacy: {
       contact: values.privacyContact || '',
@@ -70,8 +78,14 @@ Parse.Cloud.define('getAppInfo', async () => {
 Parse.Cloud.define('getMyProfile', async (request) => {
   const user = requireUser(request);
   await user.fetch(MASTER);
-  const [role, { values }] = await Promise.all([getRoleName(user), loadConfig()]);
+  const [role, { values }, restaurant] = await Promise.all([
+    getRoleName(user),
+    loadConfig(),
+    restaurantSummary(),
+  ]);
   return {
+    // Relay Hosted: the person's restaurant (null for platform staff).
+    restaurant,
     id: user.id,
     username: user.getUsername(),
     name: user.get('name') || user.getUsername(),
@@ -88,7 +102,7 @@ Parse.Cloud.define('getMyProfile', async (request) => {
             percent: user.get('commissionPercent') || 0,
           }
         : null,
-    canInitialize: role === null && (await canBootstrapOwner()),
+    canInitialize: false,
     config: publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
   };
 });

@@ -176,8 +176,11 @@ const PINS = {
   owner: 'owner-pass',
 };
 const PIN_STEPS = ['createHandover', 'endShift', 'payRider', 'recordTillPayout'];
+// Relay Hosted: usernames are stored as name@restaurant-code.
+const CODE = 'mama-rose';
+const plainName = (user) => String(user?.get('username') || '').split('@')[0];
 const run = (name, params, user) => {
-  const pin = PINS[user?.get('username')];
+  const pin = PINS[plainName(user)];
   const withPin =
     PIN_STEPS.includes(name) && params && !('pin' in params) && pin ? { ...params, pin } : params;
   // The Admin area asks for the owner's PIN again, as the app does.
@@ -187,7 +190,8 @@ const run = (name, params, user) => {
     return Parse.Cloud.run(name, withPin, as(user));
   });
 };
-const login = (username, password) => Parse.User.logIn(username, password);
+const login = (username, password, code = CODE) =>
+  Parse.User.logIn(username.includes('@') ? username : `${username}@${code}`, password);
 
 async function rejects(promise, pattern) {
   await assert.rejects(promise, (error) => {
@@ -199,44 +203,85 @@ async function rejects(promise, pattern) {
 // Shared state across the ordered tests below.
 const s = {};
 
-describe('first owner setup', () => {
-  test('sign-up is open while the database is empty', async () => {
-    assert.equal((await run('getAppInfo')).ownerSetupOpen, true);
-    s.owner = new Parse.User({ username: 'owner', password: 'owner-pass', email: 'o@example.com' });
-    await s.owner.signUp();
+describe('restaurant sign-up (Relay Hosted)', () => {
+  test('without a restaurant the sign-in screen offers the sign-up page', async () => {
+    const info = await run('getAppInfo');
+    assert.equal(info.hosted, true);
+    assert.equal(info.found, false);
+    assert.equal(info.signUpOpen, true);
+    assert.equal(info.restaurantName, undefined);
+    assert.equal((await run('getAppInfo', { restaurant: 'nobody-here' })).found, false);
   });
 
-  test('the only account can initialize itself as owner', async () => {
-    const before = await run('getMyProfile', {}, s.owner);
-    assert.equal(before.role, null);
-    assert.equal(before.canInitialize, true);
-    await run('bootstrapOwner', {}, s.owner);
-    const after = await run('getMyProfile', {}, s.owner);
-    assert.equal(after.role, 'admin');
-    assert.equal(after.canInitialize, false);
-    assert.equal(after.config.currencySymbol, 'UGX');
+  test('a restaurant signs up and its owner can sign in', async () => {
+    assert.deepEqual(await run('checkRestaurantCode', { code: 'Mama Rose' }), {
+      code: CODE,
+      free: true,
+    });
+    await rejects(
+      run('signUpRestaurant', {
+        restaurantName: 'Mama Rose',
+        ownerName: 'Rose',
+        username: 'owner',
+      }),
+      /PIN or password/,
+    );
+    const result = await run('signUpRestaurant', {
+      restaurantName: 'Mama Rose',
+      ownerName: 'Rose Owner',
+      username: 'owner',
+      pin: 'owner-pass',
+      phone: '0772 123456',
+    });
+    assert.deepEqual(result, { code: CODE, username: `owner@${CODE}` });
+    assert.equal((await run('checkRestaurantCode', { code: CODE })).free, false);
+    s.owner = await login('owner', 'owner-pass');
+    const profile = await run('getMyProfile', {}, s.owner);
+    assert.equal(profile.role, 'admin');
+    assert.equal(profile.username, 'owner');
+    assert.equal(profile.canInitialize, false);
+    assert.equal(profile.config.currencySymbol, 'UGX');
+    assert.equal(profile.config.restaurantName, 'Mama Rose');
+    assert.equal(profile.restaurant.code, CODE);
+    s.restaurantId = profile.restaurant.id;
+    assert.equal(profile.restaurant.status, 'trial');
+    assert.ok(new Date(profile.restaurant.trialEndsAt) > new Date(Date.now() + 13 * 86400000));
+    const info = await run('getAppInfo', { restaurant: CODE });
+    assert.equal(info.found, true);
+    assert.equal(info.restaurantName, 'Mama Rose');
+    assert.equal(info.ownerSetupOpen, false);
   });
 
-  test('public sign-up closes once any account exists', async () => {
-    assert.equal((await run('getAppInfo')).ownerSetupOpen, false);
+  test('codes are unique and reserved words are refused', async () => {
+    await rejects(
+      run('signUpRestaurant', {
+        restaurantName: 'Mama Rose',
+        ownerName: 'Someone',
+        username: 'boss',
+        pin: 'secret-99',
+        phone: '0772000000',
+      }),
+      /is taken/,
+    );
+    assert.equal((await run('checkRestaurantCode', { code: 'admin' })).free, false);
+  });
+
+  test('nobody signs up as a plain Parse user', async () => {
     await rejects(
       new Parse.User({ username: 'intruder', password: 'x1234' }).signUp(),
       /created by the restaurant administrator/,
     );
+    await rejects(run('bootstrapOwner', {}, s.owner), /sign-up page/);
   });
 
-  test('bootstrapOwner cannot be called again', async () => {
-    await rejects(run('bootstrapOwner', {}, s.owner), /already configured/);
-  });
-
-  test('a user created outside the app (e.g. Google) gets no role and no owner setup', async () => {
+  test('a user created outside the app gets no role', async () => {
     const outsider = new Parse.User({ username: 'google-user', password: 'g-pass-123' });
     await outsider.signUp(null, { useMasterKey: true });
-    const signedIn = await login('google-user', 'g-pass-123');
+    const signedIn = await Parse.User.logIn('google-user', 'g-pass-123');
     const profile = await run('getMyProfile', {}, signedIn);
     assert.equal(profile.role, null);
+    assert.equal(profile.restaurant, null);
     assert.equal(profile.canInitialize, false);
-    await rejects(run('bootstrapOwner', {}, signedIn), /already configured/);
   });
 });
 
@@ -319,17 +364,20 @@ describe('write protection (S1, S4, S8)', () => {
 
   test('user records are not publicly readable', async () => {
     const query = new Parse.Query(Parse.User);
-    query.equalTo('username', 'rita');
+    query.equalTo('username', `rita@${CODE}`);
     assert.equal(await query.first(), undefined);
     const byRider2 = new Parse.Query(Parse.User);
-    byRider2.equalTo('username', 'rita');
+    byRider2.equalTo('username', `rita@${CODE}`);
     assert.equal(await byRider2.first(as(s.rider2)), undefined);
   });
 
   test('applySecurity runs for the owner and not for others', async () => {
-    // google-user was created with the master key and a public-read ACL, like
+    // An account made with the master key and a public-read ACL, like
     // accounts made before this release.
-    const legacy = new Parse.Query(Parse.User).equalTo('username', 'google-user');
+    const old = new Parse.User({ username: `legacy@${CODE}`, password: 'legacy-pass-1' });
+    old.set('tenant', { __type: 'Pointer', className: 'Restaurant', objectId: s.restaurantId });
+    await old.signUp(null, { useMasterKey: true });
+    const legacy = new Parse.Query(Parse.User).equalTo('username', `legacy@${CODE}`);
     assert.ok(await legacy.first(), 'legacy user starts out publicly readable');
     const result = await run('adminApplySecurity', {}, s.owner);
     assert.ok(result._User >= 1);
@@ -489,10 +537,17 @@ describe('owner recovery (master key only)', () => {
     );
   });
 
+  test('needs the restaurant code', async () => {
+    await rejects(
+      Parse.Cloud.run('recoverOwner', { username: 'boss', password: 'boss-pass-1' }, master),
+      /restaurant code/,
+    );
+  });
+
   test('creates a new owner even though accounts already exist', async () => {
     const result = await Parse.Cloud.run(
       'recoverOwner',
-      { username: 'Boss', password: 'boss-pass-1', email: 'boss@example.com' },
+      { username: 'Boss', password: 'boss-pass-1', email: 'boss@example.com', restaurant: CODE },
       master,
     );
     assert.deepEqual(result, { username: 'boss', created: true, role: 'admin' });
@@ -503,7 +558,7 @@ describe('owner recovery (master key only)', () => {
   test('resets the password of an existing account', async () => {
     const result = await Parse.Cloud.run(
       'recoverOwner',
-      { username: 'boss', password: 'new-boss-pass' },
+      { username: 'boss', password: 'new-boss-pass', restaurant: CODE },
       master,
     );
     assert.equal(result.created, false);
@@ -514,7 +569,11 @@ describe('owner recovery (master key only)', () => {
 
   test('rejects weak passwords', async () => {
     await rejects(
-      Parse.Cloud.run('recoverOwner', { username: 'boss', password: 'short' }, master),
+      Parse.Cloud.run(
+        'recoverOwner',
+        { username: 'boss', password: 'short', restaurant: CODE },
+        master,
+      ),
       /at least 8 characters/,
     );
   });
@@ -1247,7 +1306,7 @@ describe('broken codes from the Back4App counter bug', () => {
     const handover = await first('CashHandover');
     handover.set('handoverCode', 'HO-20260925-[object Object]');
     await handover.save(null, M);
-    const rita = await first(Parse.User, (q) => q.equalTo('username', 'rita'));
+    const rita = await first(Parse.User, (q) => q.equalTo('username', `rita@${CODE}`));
     rita.set('riderCode', 'R-[object Object]');
     await rita.save(null, M);
 
@@ -1267,8 +1326,9 @@ describe('broken codes from the Back4App counter bug', () => {
 });
 
 test('the profile says whether the restaurant name has been set', async () => {
+  // Relay Hosted: the name is given on the sign-up page.
   const before = await run('getMyProfile', {}, s.owner);
-  assert.equal(before.config.restaurantNameSet, false);
+  assert.equal(before.config.restaurantNameSet, true);
   const { settings } = await run('adminListSetup', {}, s.owner);
   await run('adminSaveSettings', { ...settings, restaurantName: 'Mama Rose Kitchen' }, s.owner);
   const after = await run('getMyProfile', {}, s.rider);
@@ -1354,7 +1414,7 @@ describe('notifications, cash limits and reported problems', () => {
 
   test('notifications are private to their recipient', async () => {
     const theirs = await new Parse.Query('Notification').find(as(s.cashier));
-    const niaUser = await new Parse.Query(Parse.User).equalTo('username', 'nia').first(M);
+    const niaUser = await new Parse.Query(Parse.User).equalTo('username', `nia@${CODE}`).first(M);
     assert.ok(theirs.every((n) => n.get('recipient').id !== niaUser.id));
     await rejects(
       new Parse.Object('Notification').save({ title: 'x' }, as(s.nia)),
@@ -3209,16 +3269,24 @@ describe('owner reporting and control', () => {
     );
     const { logo } = await run('adminSetRestaurantLogo', { image: PNG }, s.owner);
     assert.match(logo, /^https?:\/\/.+logo\.png$/);
-    assert.equal((await run('getAppInfo')).restaurantLogo, logo, 'shown before sign-in');
+    assert.equal(
+      (await run('getAppInfo', { restaurant: CODE })).restaurantLogo,
+      logo,
+      'shown before sign-in',
+    );
     assert.equal((await run('getMyProfile', {}, s.val)).config.restaurantLogo, logo);
     assert.equal((await run('adminListSetup', {}, s.owner)).settings.restaurantLogo, logo);
     const order = await new Parse.Query('Order').first(M);
     assert.equal((await run('getReceipt', { orderId: order.id }, s.owner)).logo, logo);
     const settings = (await run('adminListSetup', {}, s.owner)).settings;
     await run('adminSaveSettings', settings, s.owner);
-    assert.equal((await run('getAppInfo')).restaurantLogo, logo, 'saving settings keeps it');
+    assert.equal(
+      (await run('getAppInfo', { restaurant: CODE })).restaurantLogo,
+      logo,
+      'saving settings keeps it',
+    );
     await run('adminSetRestaurantLogo', { remove: true }, s.owner);
-    assert.equal((await run('getAppInfo')).restaurantLogo, '');
+    assert.equal((await run('getAppInfo', { restaurant: CODE })).restaurantLogo, '');
   });
 
   test('the owner sets theme colours, checked for readable contrast', async () => {
@@ -3231,13 +3299,24 @@ describe('owner reporting and control', () => {
     );
     const saved = await run('adminSaveBranding', { ink: '#123524', accent: '#E0A526' }, s.owner);
     assert.deepEqual(saved, { ink: '#123524', accent: '#e0a526' });
-    assert.deepEqual((await run('getAppInfo')).theme, saved, 'the sign-in screen gets them');
+    assert.deepEqual(
+      (await run('getAppInfo', { restaurant: CODE })).theme,
+      saved,
+      'the sign-in screen gets them',
+    );
     assert.deepEqual((await run('getMyProfile', {}, s.val)).config.theme, saved);
     const settings = (await run('adminListSetup', {}, s.owner)).settings;
     await run('adminSaveSettings', settings, s.owner);
-    assert.deepEqual((await run('getAppInfo')).theme, saved, 'saving settings keeps them');
+    assert.deepEqual(
+      (await run('getAppInfo', { restaurant: CODE })).theme,
+      saved,
+      'saving settings keeps them',
+    );
     await run('adminSaveBranding', { ink: '', accent: '' }, s.owner);
-    assert.deepEqual((await run('getAppInfo')).theme, { ink: '', accent: '' });
+    assert.deepEqual((await run('getAppInfo', { restaurant: CODE })).theme, {
+      ink: '',
+      accent: '',
+    });
   });
 });
 
@@ -3928,7 +4007,11 @@ describe('error reporting', () => {
       s.dina,
     );
     // Signed out (the sign-in screen) may report too.
-    await run('reportClientError', { message: 'Sign-in screen crashed', where: 'AuthScreen' });
+    await run('reportClientError', {
+      message: 'Sign-in screen crashed',
+      where: 'AuthScreen',
+      restaurant: CODE,
+    });
     await rejects(run('reportClientError', { message: '' }), /Nothing to report/);
 
     const list = await run('adminListErrors', {}, s.owner);
@@ -4012,7 +4095,7 @@ describe('data export and customer privacy', () => {
       { retentionMonths: 12, privacyContact: 'privacy@example.com · 0700 000000' },
       s.owner,
     );
-    const info = await run('getAppInfo');
+    const info = await run('getAppInfo', { restaurant: CODE });
     assert.deepEqual(info.privacy, {
       contact: 'privacy@example.com · 0700 000000',
       retentionMonths: 12,
@@ -4310,7 +4393,7 @@ describe('the Admin area opens only with the PIN', () => {
       const response = await fetch(`${SERVER_URL}/login`, {
         method: 'POST',
         headers: { 'X-Parse-Application-Id': APP_ID, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'owner', password: PINS.owner }),
+        body: JSON.stringify({ username: `owner@${CODE}`, password: PINS.owner }),
       });
       return (await response.json()).sessionToken;
     };
@@ -4349,10 +4432,11 @@ describe('the Admin area opens only with the PIN', () => {
 // (the function checks the person's own records); nobody: master key only,
 // or switched off (preview mode).
 const ACCESS = {
-  public: ['getAppInfo', 'reportClientError'],
+  public: ['getAppInfo', 'reportClientError', 'checkRestaurantCode', 'signUpRestaurant'],
   nobody: [
     'bootstrapOwner',
     'recoverOwner',
+    'createPlatformAdmin',
     'createPreviewOrder',
     'getPreviewOrders',
     'transitionPreviewOrder',
@@ -4468,7 +4552,7 @@ const ALLOWED = {
 // only, or switched off. Other errors (a missing field, no open shift) mean
 // the caller got past the permission check.
 const DENIED =
-  /Sign in required|role required|Master key required|Preview mode is disabled|Owner already configured|Not allowed to start this shift|Account is inactive/;
+  /Sign in required|role required|Master key required|Preview mode is disabled|Owner already configured|sign-up page|Not allowed to start this shift|Account is inactive/;
 
 // Parameters a probe needs to reach the permission check at all.
 const PROBE_PARAMS = {
@@ -4536,5 +4620,102 @@ describe('permission matrix: every Cloud function × every role', () => {
             );
         }
     assert.deepEqual(wrong, []);
+  });
+});
+
+describe('restaurants are kept apart (Relay Hosted)', () => {
+  const M = { useMasterKey: true };
+  const OTHER = 'kato-grill';
+  const day = (offset) =>
+    new Date(Date.now() + 3 * 3600e3 + offset * 864e5).toISOString().slice(0, 10);
+  const range = { from: day(-1), to: day(1) };
+  const other = {};
+
+  before(async () => {
+    await run('signUpRestaurant', {
+      restaurantName: 'Kato Grill',
+      ownerName: 'Kato',
+      username: 'owner',
+      pin: PINS.owner,
+      phone: '0701 234567',
+    });
+    other.owner = await login('owner', PINS.owner, OTHER);
+    // Same username and PIN as the first restaurant's rider.
+    other.rider = await run(
+      'adminCreateTeamMember',
+      { name: 'Rita Two', username: 'rita', pin: PINS.rita, role: 'rider' },
+      other.owner,
+    );
+    other.riderUser = await login('rita', PINS.rita, OTHER);
+    other.theirOrder = await new Parse.Query('Order').descending('createdAt').first(M);
+  });
+
+  test('usernames and codes are per restaurant', async () => {
+    assert.equal(other.rider.code, 'R-001');
+    assert.equal(other.rider.username, 'rita');
+    const profile = await run('getMyProfile', {}, other.riderUser);
+    assert.equal(profile.name, 'Rita Two');
+    assert.equal(profile.role, 'rider');
+    assert.equal(profile.restaurant.code, OTHER);
+    assert.equal(profile.config.restaurantName, 'Kato Grill');
+    assert.notEqual(other.riderUser.id, s.rider.id);
+    await rejects(login('rita', 'wrong-pin', OTHER), /Invalid username\/password/);
+  });
+
+  test('the team, menu, orders and settings are the restaurant’s own', async () => {
+    const { team } = await run('adminListSetup', {}, other.owner);
+    assert.deepEqual(team.map((m) => m.username).sort(), ['owner', 'rita']);
+    const menu = (await run('getOperationalMenu', {}, other.riderUser)).items;
+    assert.ok(menu.length > 0);
+    const firstIds = new Set(s.menu.map((item) => item.id));
+    assert.ok(menu.every((item) => !firstIds.has(item.id)));
+    assert.equal((await run('adminSearchOrders', range, other.owner)).rows.length, 0);
+    const { rows } = await run('adminExportData', { className: 'Order' }, other.owner);
+    assert.equal(rows.length, 0);
+    const info = await run('getAppInfo', { restaurant: OTHER });
+    assert.equal(info.restaurantName, 'Kato Grill');
+    // A signed-in person always gets their own restaurant, whatever they name.
+    const mine = await run('getAppInfo', { restaurant: OTHER }, s.owner);
+    assert.equal(mine.restaurant.code, CODE);
+  });
+
+  test('another restaurant’s records cannot be reached by id', async () => {
+    const id = other.theirOrder.id;
+    await rejects(run('adminGetOrder', { id }, other.owner), /not found|Object not found/i);
+    await rejects(
+      run('transitionOrder', { orderId: id, action: 'deliver' }, other.riderUser),
+      /not found|Object not found/i,
+    );
+    await rejects(new Parse.Query('Order').get(id, as(other.owner)), /Object not found/);
+    const direct = await new Parse.Query('Order').find(as(other.owner));
+    assert.equal(direct.length, 0);
+    const people = await new Parse.Query(Parse.User).find(as(other.owner));
+    assert.ok(people.some((user) => user.get('username') === `rita@${OTHER}`));
+    assert.ok(people.every((user) => !user.get('username').endsWith(`@${CODE}`)));
+  });
+
+  test('new orders stay in their restaurant', async () => {
+    const menu = (await run('getOperationalMenu', {}, other.riderUser)).items;
+    const dish = menu.find((item) => !item.accompanimentGroups.length) || menu[0];
+    const created = await run(
+      'createOrder',
+      {
+        customerName: 'Kato Customer',
+        customerPhone: '+256 701 000111',
+        deliveryAddress: 'Ntinda',
+        channel: 'whatsapp',
+        paymentMethod: 'cash',
+        items: [{ id: dish.id, quantity: 1 }],
+      },
+      other.riderUser,
+    );
+    assert.match(created.orderCode, /-0001$/);
+    const theirs = await run('adminSearchOrders', range, other.owner);
+    assert.equal(theirs.rows.length, 1);
+    const ours = await run('adminSearchOrders', range, s.owner);
+    assert.ok(ours.rows.every((row) => row.id !== created.id));
+    await rejects(run('adminGetOrder', { id: created.id }, s.owner), /not found/i);
+    const firstNotes = await run('getNotifications', {}, s.owner);
+    assert.ok(firstNotes.items.every((row) => !JSON.stringify(row).includes('Kato Customer')));
   });
 });

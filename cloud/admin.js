@@ -9,7 +9,6 @@ const {
   userAcl,
   audit,
   loadConfig,
-  countUsers,
   nextStaffCode,
   endSessions,
   fileUrl,
@@ -31,18 +30,6 @@ const merchantField = (value, max) =>
     .trim()
     .slice(0, max);
 const codeField = (role) => (role === 'rider' ? 'riderCode' : 'cashierCode');
-
-async function adminRoleExists() {
-  const query = new Parse.Query(Parse.Role);
-  query.equalTo('name', 'admin');
-  return !!(await query.first(MASTER));
-}
-
-// First-owner setup is open only while no admin exists and the caller is the
-// only account in the database.
-async function canBootstrapOwner() {
-  return !(await adminRoleExists()) && (await countUsers()) === 1;
-}
 
 // Makes `user` an owner (admin), creates the staff roles, seeds a starter menu
 // on an empty restaurant and applies the security rules.
@@ -72,12 +59,9 @@ async function makeOwner(user, actor) {
 }
 
 Parse.Cloud.define('bootstrapOwner', async (request) => {
-  const user = requireUser(request);
-  if (await adminRoleExists()) throw forbidden('Owner already configured');
-  if ((await countUsers()) !== 1)
-    throw forbidden('Owner setup requires exactly one existing account');
-  await makeOwner(user, user);
-  return { ok: true };
+  // Relay Hosted: restaurants start from the sign-up page (signUpRestaurant).
+  requireUser(request);
+  throw forbidden('Start a restaurant from the sign-up page');
 });
 
 // Recovery for a restaurant where nobody can sign in as owner (lost password,
@@ -87,9 +71,14 @@ Parse.Cloud.define('bootstrapOwner', async (request) => {
 // the Cloud Job "createOwner" or via the REST console / curl with the master
 // key. Params: { username, password, email?, name? }.
 async function createOrResetOwner(params) {
-  const username = String(params.username || '')
-    .trim()
-    .toLowerCase();
+  // Relay Hosted: for one restaurant, named by { restaurant: '<code>' }.
+  const tenancy = require('./lib/tenant');
+  if (!tenancy.current()) throw invalid('Give the restaurant code as "restaurant"');
+  const username = tenancy.fullUsername(
+    String(params.username || '')
+      .trim()
+      .toLowerCase(),
+  );
   const password = String(params.password || '');
   if (!/^[-a-z0-9_.@]{3,64}$/.test(username) || password.length < 8)
     throw invalid('Give a username (3+ characters) and a password of at least 8 characters');
@@ -101,7 +90,7 @@ async function createOrResetOwner(params) {
     user = new Parse.User();
     user.set({ username, password, active: true });
     if (params.email) user.set('email', String(params.email).trim());
-    user.set('name', String(params.name || username).trim());
+    user.set('name', String(params.name || tenancy.displayUsername(username)).trim());
     await user.signUp(null, MASTER);
   } else {
     user.set({ password, active: true });
@@ -110,7 +99,7 @@ async function createOrResetOwner(params) {
   user.setACL(userAcl(user, 'admin'));
   await user.save(null, MASTER);
   await makeOwner(user, user);
-  return { username, created, role: 'admin' };
+  return { username: user.getUsername(), created, role: 'admin' };
 }
 
 Parse.Cloud.define('recoverOwner', async (request) => {
@@ -119,7 +108,13 @@ Parse.Cloud.define('recoverOwner', async (request) => {
 });
 
 Parse.Cloud.job('createOwner', async (request) => {
-  const result = await createOrResetOwner(request.params || {});
+  const tenancy = require('./lib/tenant');
+  const restaurant = await tenancy.restaurantFor({ params: request.params });
+  const result = await tenancy.runAs(
+    restaurant?.id,
+    () => createOrResetOwner(request.params || {}),
+    restaurant?.code,
+  );
   return `Owner ${result.created ? 'created' : 'password reset'}: ${result.username}`;
 });
 
@@ -245,7 +240,8 @@ Parse.Cloud.define('adminCreateTeamMember', async (request) => {
   const { values: config } = await loadConfig();
   const user = new Parse.User();
   user.set({
-    username,
+    // Relay Hosted: unique per restaurant (name@restaurant-code).
+    username: require('./lib/tenant').fullUsername(username),
     password: pin,
     name,
     phone: String(p.phone || ''),
@@ -677,4 +673,4 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
   return { id: config.id };
 });
 
-module.exports = { canBootstrapOwner };
+module.exports = { makeOwner };

@@ -97,21 +97,26 @@ async function runCashCheck() {
 }
 
 Parse.Cloud.job('cashCheck', async () => {
+  // Relay Hosted: each restaurant separately, then the platform-wide checks.
+  const results = await require('./restaurants').forEachRestaurant(() => nightly());
+  await require('./serverAddress')
+    .watchServerAddress()
+    .catch(() => null);
+  return `${results.length} restaurants checked`;
+});
+
+async function nightly() {
   const result = await runCashCheck();
   // The nightly run also removes customer details past the owner's
   // retention period (Admin → Data & privacy).
   const retention = await require('./privacy').runRetention();
-  // And checks the server's public address (Airtel's allowed list).
-  await require('./serverAddress')
-    .watchServerAddress()
-    .catch(() => null);
   const cleaned = retention.orders || retention.customers || retention.notifications;
   return `${result.ok ? 'Cash records agree' : `${result.problems.length} problems found`}${
     cleaned
       ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers`
       : ''
   }`;
-});
+}
 
 Parse.Cloud.define('adminRunCashCheck', async (request) => {
   await adminOnly(request);

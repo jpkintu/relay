@@ -98,7 +98,8 @@ async function ensureRole(name) {
     const acl = new Parse.ACL();
     acl.setRoleReadAccess('admin', true);
     acl.setRoleWriteAccess('admin', true);
-    role = new Parse.Role(name, acl);
+    // Relay Hosted: the restaurant's own role (admin__<restaurant id>).
+    role = new Parse.Role(require('./tenant').roleName(name), acl);
     await role.save(null, MASTER);
   }
   return role;

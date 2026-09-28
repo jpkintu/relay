@@ -508,9 +508,11 @@ async function zReportDue(config, { force = false } = {}) {
 }
 
 Parse.Cloud.job('dailyZReport', async () => {
-  const { values: config } = await loadConfig();
-  const row = await zReportDue(config, { force: true });
-  return row ? `Z-report saved for ${row.get('day')}` : 'Not due yet (or already saved)';
+  const rows = await require('./restaurants').forEachRestaurant(async () => {
+    const { values: config } = await loadConfig();
+    return zReportDue(config, { force: true });
+  });
+  return `${rows.filter(Boolean).length} Z-reports saved`;
 });
 
 // Owner: one day's Z-report. Past days come from the saved copy (saved on

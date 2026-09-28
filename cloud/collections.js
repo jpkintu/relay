@@ -327,8 +327,12 @@ async function pollRequest(order) {
 Parse.Cloud.afterSave('Order', async (request) => {
   if (request.object.get('payRequestStatus') !== 'queued') return;
   try {
-    const order = await new Parse.Query('Order').get(request.object.id, MASTER);
-    await sendRequest(order);
+    // Relay Hosted: triggers run outside the request; work as the order's restaurant.
+    const tenant = request.object.get('tenant')?.id;
+    await require('./lib/tenant').runAs(tenant, async () => {
+      const order = await new Parse.Query('Order').get(request.object.id, MASTER);
+      await sendRequest(order);
+    });
   } catch (error) {
     log('error', 'payment.request_error', {
       order: request.object.id,

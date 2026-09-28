@@ -10,6 +10,10 @@
 const crypto = require('crypto');
 const { MASTER, adminOnly, audit, findAll, getRoleName, invalid, readAcl } = require('./lib/core');
 const { log, errorMessage, isUnexpected } = require('./lib/log');
+const tenancy = require('./lib/tenant');
+
+// Relay Hosted: restaurants are kept apart from here on (lib/tenant.js).
+tenancy.install(Parse);
 
 const clip = (value, max) =>
   String(value ?? '')
@@ -80,6 +84,31 @@ function recordQuietly(entry) {
   );
 }
 
+async function guarded(name, handler, request) {
+  const started = Date.now();
+  try {
+    return await handler(request);
+  } catch (error) {
+    if (isUnexpected(error)) {
+      const message = errorMessage(error);
+      log('error', 'function.failed', {
+        fn: name,
+        user: request.user?.id || null,
+        ms: Date.now() - started,
+        message,
+      });
+      await recordQuietly({
+        source: 'server',
+        where: name,
+        message,
+        stack: error?.stack,
+        user: request.user,
+      });
+    }
+    throw error;
+  }
+}
+
 // Wrap every Cloud function: unexpected failures are logged and recorded,
 // then passed on unchanged.
 const define = Parse.Cloud.define.bind(Parse.Cloud);
@@ -87,28 +116,10 @@ Parse.Cloud.define = (name, handler, validator) =>
   define(
     name,
     async (request) => {
-      const started = Date.now();
-      try {
-        return await handler(request);
-      } catch (error) {
-        if (isUnexpected(error)) {
-          const message = errorMessage(error);
-          log('error', 'function.failed', {
-            fn: name,
-            user: request.user?.id || null,
-            ms: Date.now() - started,
-            message,
-          });
-          await recordQuietly({
-            source: 'server',
-            where: name,
-            message,
-            stack: error?.stack,
-            user: request.user,
-          });
-        }
-        throw error;
-      }
+      // Each function runs for the caller's restaurant (lib/tenant.js), so
+      // what it records on failure belongs to that restaurant too.
+      const restaurant = await tenancy.restaurantFor(request);
+      return tenancy.runAs(restaurant?.id, () => guarded(name, handler, request), restaurant?.code);
     },
     validator,
   );
