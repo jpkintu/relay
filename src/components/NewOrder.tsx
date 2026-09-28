@@ -597,7 +597,11 @@ export function NewOrder({
                 {i.image ? (
                   <img className="food-art photo" src={i.image} alt="" loading="lazy" />
                 ) : (
-                  <div className="food-art" style={{ background: i.color || '#819c72' }}>
+                  <div
+                    className="food-art"
+                    aria-hidden="true"
+                    style={{ background: i.color || '#819c72' }}
+                  >
                     {i.title[0]}
                   </div>
                 )}

@@ -3,16 +3,7 @@ import { CheckCircle2, Circle } from 'lucide-react';
 import Parse from '../parse';
 import { useSession } from '../lib/session';
 import { MenuImport } from './MenuImport';
-
-export type SetupProgress = {
-  steps: { details: boolean; logo: boolean; menu: boolean; riders: boolean; cashiers: boolean };
-  dishes: number;
-  starterDishes: number;
-  riders: number;
-  cashiers: number;
-  complete: boolean;
-  finished: boolean;
-};
+import { STEP_COUNT, STEP_ORDER, stepsDone, type SetupProgress } from '../lib/setup';
 
 type Settings = Record<string, unknown> & {
   restaurantName?: string;
@@ -20,11 +11,6 @@ type Settings = Record<string, unknown> & {
   currencySymbol?: string;
   timezone?: string;
 };
-
-const STEP_ORDER = ['details', 'menu', 'riders', 'cashiers', 'logo'] as const;
-export const stepsDone = (progress: SetupProgress) =>
-  STEP_ORDER.filter((step) => progress.steps[step]).length;
-export const STEP_COUNT = STEP_ORDER.length;
 
 function Step({
   done,

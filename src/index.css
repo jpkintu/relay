@@ -5,6 +5,8 @@
   --ink: #0b1633;
   --cream: #f4f6fb;
   --accent: #f14c1d;
+  /* Text on the accent colour (set from the theme in src/lib/theme.ts). */
+  --on-accent: #0b1633;
   /* Raised panels on the main colour (active menu item, rider New order card). */
   --ink-raised: #1a3a8f;
   --ink-card: #13306f;
@@ -265,7 +267,7 @@ button {
   border: 0;
   border-radius: 50%;
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
   font-weight: 800;
 }
 .rider-content {
@@ -367,7 +369,7 @@ button {
 }
 .metric-card > span {
   font-size: 12px;
-  color: #6e778c;
+  color: var(--muted);
   margin-top: 8px;
 }
 .metric-card button {
@@ -821,7 +823,7 @@ button {
     justify-content: center;
     gap: 4px;
     font-size: 10px;
-    color: #6d768a;
+    color: var(--muted);
   }
   .bottom-nav svg {
     width: 20px;
@@ -956,7 +958,7 @@ button {
 }
 .ops-header nav b {
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
   border-radius: 20px;
   padding: 2px 7px;
 }
@@ -1555,7 +1557,7 @@ button {
   display: grid;
   place-items: center;
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
   font: 600 25px var(--font-display);
 }
 .profile-card h2 {
@@ -3828,7 +3830,7 @@ table.data.compact-table {
 }
 .new-order-hero > span {
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
 }
 .new-order-hero small {
   color: var(--on-dark-muted);
@@ -3895,7 +3897,7 @@ table.data.compact-table {
   padding: 0 5px;
   border-radius: 10px;
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
   font: 700 11px/19px var(--font-body);
   font-variant-numeric: tabular-nums;
   text-align: center;
@@ -4069,7 +4071,7 @@ table.data.compact-table {
   padding: 1px 7px;
   border-radius: 11px;
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
   font: 700 12px/20px var(--font-body);
   text-align: center;
 }
@@ -4833,7 +4835,7 @@ table.data.compact-table {
   padding: 11px 16px;
   font-weight: 700;
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
 }
 .change-pin-actions button.setup-secondary,
 .profile-card .change-pin-actions button.setup-secondary {
@@ -5023,7 +5025,7 @@ table.data.compact-table {
   border: 0;
   border-radius: 8px;
   background: var(--accent);
-  color: var(--on-dark);
+  color: var(--on-accent);
   padding: 9px 14px;
   font-weight: 700;
 }
@@ -6556,6 +6558,12 @@ a {
   overflow-wrap: anywhere;
 }
 
+/* An owner section still downloading (loaded on first use). */
+.section-loading {
+  margin: 24px 0;
+  color: var(--muted);
+}
+
 /* Admin → Errors */
 .section-intro {
   max-width: 70ch;
@@ -6727,4 +6735,82 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+/* Phone usability (touch screens, checked with a 360 px audit): every control
+   is at least 44 px to tap, small labels stay readable, and rows that
+   squeezed controls to a sliver wrap instead. */
+@media (pointer: coarse) {
+  button,
+  select,
+  summary,
+  .detail-link,
+  label.setup-checkbox,
+  .charged-toggle,
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']) {
+    min-height: 44px;
+  }
+  .icon-button,
+  .setup-secondary,
+  .ops-header .icon-button {
+    min-width: 44px;
+  }
+  /* Controls whose own rules set a smaller height. */
+  .channel-row button,
+  .filter-toggle button,
+  .filter-toggle.small button,
+  .filter-toggle.wide button,
+  .menu-actions .setup-secondary,
+  .menu-actions .icon-button,
+  .member-action .setup-secondary,
+  .z-toolbar .setup-secondary {
+    min-height: 44px;
+  }
+  .add-button,
+  .avatar-button,
+  .push-dismiss {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+  .bottom-nav button,
+  .ops-header nav button,
+  .shift-live {
+    font-size: 12px;
+  }
+  /* The kitchen board's bottom tabs: up to seven on a phone, so labels may
+     take two lines rather than overlap. */
+  .ops-shell .ops-header nav button {
+    font-size: 11px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .channel-row {
+    flex-wrap: wrap;
+  }
+  small {
+    font-size: max(12px, 0.8em);
+  }
+  .category-create {
+    flex-wrap: wrap;
+  }
+  .category-create input {
+    flex: 1 1 100%;
+  }
+  .category-create .price-input {
+    flex: 1 1 140px;
+  }
+  .menu-actions {
+    flex-wrap: wrap;
+  }
+}
+/* Small grey text on the dark cash card was below readable contrast. */
+.metric-card.cash p,
+.metric-card.cash .limit {
+  color: var(--on-dark-muted);
+}
+/* A dish without a photo shows its first letter (decoration only). */
+.food-art {
+  color: #fff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 35%);
 }

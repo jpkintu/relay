@@ -2,8 +2,37 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+// `vite preview` (how the Container serves the site) sends every file with
+// "Cache-Control: no-cache", so a phone asks the server about each script on
+// every visit, a round trip each on a slow network. Files under /assets have
+// the content hash in their name and never change: let browsers keep them.
+// The page and the service worker keep no-cache so a deploy is seen at once.
+const longCacheAssets = {
+  name: 'relay-long-cache-assets',
+  configurePreviewServer(server) {
+    server.middlewares.use((req, res, next) => {
+      if (req.url?.startsWith('/assets/')) {
+        // sirv sets its own Cache-Control when it writes the head; replace it.
+        const writeHead = res.writeHead.bind(res);
+        res.writeHead = (status, ...rest) => {
+          // Only a file that exists; a missing one (an old deploy) is not kept.
+          if (status === 200 || status === 304) {
+            for (const arg of rest)
+              if (arg && typeof arg === 'object')
+                for (const key of Object.keys(arg))
+                  if (key.toLowerCase() === 'cache-control') delete arg[key];
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+          return writeHead(status, ...rest);
+        };
+      }
+      next();
+    });
+  },
+};
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), longCacheAssets],
   // The build date, sent with crash reports (src/lib/errors.ts) so the owner
   // can tell an old copy of the app from the current one.
   define: {
@@ -93,7 +122,19 @@ export default defineConfig({
     // even on the first loading screen; other assets use the default rule.
     assetsInlineLimit: (file) => (file.endsWith('embiro-logo-small.webp') ? true : undefined),
     rollupOptions: {
-      output: { banner: '/*! Relay, designed and developed by Embiro Concepts. See NOTICE. */' },
+      output: {
+        banner: '/*! Relay, designed and developed by Embiro Concepts. See NOTICE. */',
+        // Parse, React and the router in a file of their own: its name only
+        // changes when a library is upgraded, so phones keep it (service
+        // worker cache) across Relay deploys instead of downloading ~400 kB
+        // again. The chart and map libraries stay separate, loaded on use.
+        manualChunks: (id) =>
+          /node_modules\/(parse|react|react-dom|react-router|react-router-dom|@remix-run|scheduler|core-js-pure|@babel\/runtime-corejs3|crypto-js|events|idb-keyval)\//.test(
+            id,
+          )
+            ? 'vendor'
+            : undefined,
+      },
     },
   },
   // `npm run preview` is how Back4App Containers serves the built site. Accept
