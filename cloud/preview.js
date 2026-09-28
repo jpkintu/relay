@@ -68,7 +68,7 @@ function openDemoOrders() {
 async function seedDemoOrders() {
   const total = await new Parse.Query('DemoOrder').count(MASTER);
   if (!(await claimOnce(`preview:seed:${total}`))) {
-    for (let i = 0; i < 30; i += 1) {
+    for (let i = 0; i < 100; i += 1) {
       if (await openDemoOrders().count(MASTER)) return;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -93,6 +93,24 @@ async function seedDemoOrders() {
   await Parse.Object.saveAll(rows, MASTER);
 }
 
+// Keeps the earliest of any demo tickets that share a code (a slow database
+// can still let two seedings through).
+async function withoutDuplicates(rows) {
+  const seen = new Set();
+  const keep = [];
+  const extra = [];
+  for (const row of [...rows].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))) {
+    const code = row.get('orderCode');
+    if (seen.has(code)) extra.push(row);
+    else {
+      seen.add(code);
+      keep.push(row);
+    }
+  }
+  if (extra.length) await Parse.Object.destroyAll(extra, MASTER).catch(() => undefined);
+  return rows.filter((row) => !extra.includes(row));
+}
+
 Parse.Cloud.define('getPreviewOrders', async () => {
   requirePreview();
   let rows = await openDemoOrders().find(MASTER);
@@ -100,6 +118,7 @@ Parse.Cloud.define('getPreviewOrders', async () => {
     await seedDemoOrders();
     rows = await openDemoOrders().find(MASTER);
   }
+  rows = await withoutDuplicates(rows);
   return rows.map((row) => ({
     id: row.id,
     code: row.get('orderCode'),
