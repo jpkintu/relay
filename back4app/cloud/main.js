@@ -9021,10 +9021,11 @@ var require_momoApi = __commonJS({
       });
       const status = String(data?.status || "").toUpperCase();
       const reason = typeof data?.reason === "string" ? data.reason : data?.reason?.message || data?.reason?.code;
+      const failed = ["FAILED", "REJECTED", "TIMEOUT", "EXPIRED"].includes(status);
       return {
-        status: status === "SUCCESSFUL" ? "successful" : status === "FAILED" ? "failed" : "pending",
+        status: status === "SUCCESSFUL" ? "successful" : failed ? "failed" : "pending",
         transactionId: String(data?.financialTransactionId || ""),
-        reason: reason ? String(reason) : ""
+        reason: reason ? String(reason) : status === "REJECTED" ? "the customer declined" : ["TIMEOUT", "EXPIRED"].includes(status) ? "the customer did not answer in time" : ""
       };
     }
     async function mtnSandboxUser(subscriptionKey, callbackHost = "example.com") {
@@ -9092,8 +9093,17 @@ var require_momoApi = __commonJS({
         reason: code === "TS" ? "" : String(transaction.message || "")
       };
     }
+    var MTN_TEST_NUMBERS = {
+      46733123450: "fails",
+      46733123451: "is declined",
+      46733123452: "times out",
+      46733123453: "stays in progress",
+      46733123454: "stays pending"
+    };
+    var isMtnTestNumber = (digits) => Object.hasOwn(MTN_TEST_NUMBERS, String(digits));
     function payerNumber(provider, phone, dial = "256") {
       let digits = String(phone || "").replace(/[^\d]/g, "");
+      if (provider === "mtn" && isMtnTestNumber(digits)) return digits;
       if (digits.startsWith("00")) digits = digits.slice(2);
       if (digits.startsWith(dial)) digits = digits.slice(dial.length);
       if (digits.startsWith("0")) digits = digits.slice(1);
@@ -9110,6 +9120,8 @@ var require_momoApi = __commonJS({
       airtelRequest,
       airtelStatus,
       payerNumber,
+      MTN_TEST_NUMBERS,
+      isMtnTestNumber,
       forgetToken: forget,
       mtnKey,
       airtelKey
@@ -9460,7 +9472,13 @@ var require_collections = __commonJS({
           lastTest: own.lastTest || null
         };
       }
-      return { ...view, dialCode: values.momoDialCode || "256", currency: values.currencyCode };
+      return {
+        ...view,
+        dialCode: values.momoDialCode || "256",
+        currency: values.currencyCode,
+        // What each MTN test number does (test environment only).
+        mtnTestNumbers: api.MTN_TEST_NUMBERS
+      };
     });
     Parse.Cloud.define("adminSavePaymentSettings", async (request) => {
       const actor = await requireAdminUnlock(request);
@@ -9595,6 +9613,8 @@ var require_collections = __commonJS({
         config.momoDialCode || "256"
       );
       if (!msisdn) return fail("No usable phone number for the payment request");
+      if (provider === "mtn" && api.isMtnTestNumber(msisdn) && own.environment === "production")
+        return fail("MTN test numbers only work in the MTN test environment");
       const request = {
         amount: Number(order.get("total") || 0),
         currency: config.currencyCode,
@@ -15015,6 +15035,10 @@ var require_overrides = __commonJS({
         after: parse(row.get("afterJson"))
       }));
     }
+    var requestReference = (order) => {
+      const id = order.get("payRequestId") || "";
+      return order.get("paymentProvider") === "airtel" ? id.replace(/-/g, "") : id;
+    };
     Parse.Cloud.define("adminGetOrder", async (request) => {
       await adminOnly(request);
       const id = idOf(request.params.id);
@@ -15074,7 +15098,14 @@ var require_overrides = __commonJS({
           rejectReason: order.get("paymentRejectReason") || "",
           paidAtDoor: order.get("paidAtDoor") === true,
           amountCollected: order.get("amountCollected") || 0,
-          cashStatus: order.get("cashStatus") || ""
+          cashStatus: order.get("cashStatus") || "",
+          // Automatic payments: confirmed by the provider, and the reference to
+          // look the request up in the MTN / Airtel portal.
+          auto: order.get("paymentAuto") === true,
+          requestStatus: order.get("payRequestStatus") || "",
+          requestReference: requestReference(order),
+          requestPhone: order.get("payRequestPhone") || "",
+          requestError: order.get("payRequestError") || ""
         },
         riderPay: status === "DELIVERED" ? {
           total: orderRiderPay(order),

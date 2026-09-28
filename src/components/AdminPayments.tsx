@@ -15,7 +15,13 @@ type ProviderView = {
   keys: Record<string, string>;
   lastTest: { ok: boolean; message: string; at: string } | null;
 };
-type View = { mtn: ProviderView; airtel: ProviderView; dialCode: string; currency: string };
+type View = {
+  mtn: ProviderView;
+  airtel: ProviderView;
+  dialCode: string;
+  currency: string;
+  mtnTestNumbers?: Record<string, string>;
+};
 
 const FIELDS: Record<Provider, [string, string, string][]> = {
   mtn: [
@@ -58,6 +64,7 @@ export function AdminPayments() {
           provider={provider}
           view={data[provider]}
           dialCode={data.dialCode}
+          testNumbers={provider === 'mtn' ? data.mtnTestNumbers : undefined}
           onSaved={reload}
         />
       ))}
@@ -154,11 +161,13 @@ function ProviderCard({
   provider,
   view,
   dialCode,
+  testNumbers,
   onSaved,
 }: {
   provider: Provider;
   view: ProviderView;
   dialCode: string;
+  testNumbers?: Record<string, string>;
   onSaved: () => void;
 }) {
   const adminRun = useAdminRun();
@@ -309,6 +318,22 @@ function ProviderCard({
       )}
       {notice && <p className="setup-notice">{notice}</p>}
       {error && <p className="ops-error">{error}</p>}
+      {testNumbers && view.environment === 'sandbox' && (
+        <details className="test-numbers">
+          <summary>Test numbers: try a failed, declined or unanswered payment</summary>
+          <p className="muted small">
+            In the test environment, use one of these as the customer’s MTN number. Any other number
+            is approved.
+          </p>
+          <ul>
+            {Object.entries(testNumbers).map(([number, outcome]) => (
+              <li key={number}>
+                <code>{number}</code> {outcome}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <p className="muted small">
         {provider === 'mtn'
           ? 'Keys come from momodeveloper.mtn.com (test) and the MTN MoMo partner portal (live). The test sandbox charges in EUR with test numbers; live uses your currency.'

@@ -13,6 +13,11 @@ describe('payerNumber', () => {
     expect(payerNumber('mtn', '')).toBe('');
     expect(payerNumber('airtel', '07521234567890')).toBe('');
   });
+  test('MTN test environment numbers pass through unchanged', () => {
+    expect(payerNumber('mtn', '46733123451')).toBe('46733123451');
+    expect(payerNumber('mtn', '+46 733 123 452')).toBe('46733123452');
+    expect(payerNumber('airtel', '46733123451')).toBe('');
+  });
   test('uses another country code when set', () => {
     expect(payerNumber('mtn', '0712345678', '254')).toBe('254712345678');
   });

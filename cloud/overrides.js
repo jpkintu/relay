@@ -68,6 +68,13 @@ async function orderAudit(order) {
 }
 
 // Owner: everything about one order.
+// The id Relay gave the payment request, as each provider shows it: MTN keeps
+// the UUID (X-Reference-Id), Airtel the same without dashes.
+const requestReference = (order) => {
+  const id = order.get('payRequestId') || '';
+  return order.get('paymentProvider') === 'airtel' ? id.replace(/-/g, '') : id;
+};
+
 Parse.Cloud.define('adminGetOrder', async (request) => {
   await adminOnly(request);
   const id = idOf(request.params.id);
@@ -130,6 +137,13 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
       paidAtDoor: order.get('paidAtDoor') === true,
       amountCollected: order.get('amountCollected') || 0,
       cashStatus: order.get('cashStatus') || '',
+      // Automatic payments: confirmed by the provider, and the reference to
+      // look the request up in the MTN / Airtel portal.
+      auto: order.get('paymentAuto') === true,
+      requestStatus: order.get('payRequestStatus') || '',
+      requestReference: requestReference(order),
+      requestPhone: order.get('payRequestPhone') || '',
+      requestError: order.get('payRequestError') || '',
     },
     riderPay:
       status === 'DELIVERED'

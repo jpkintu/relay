@@ -332,6 +332,12 @@ export function OrderDetail({
                     ? 'Waiting for the customer to approve'
                     : PAYMENT_STATUS_LABEL[order.paymentStatus] || order.paymentStatus}
                 </h3>
+                {order.paymentAuto && order.paymentStatus === 'VERIFIED' && (
+                  <p className="muted small">
+                    Confirmed automatically by {providerLabel(order.paymentProvider)}. Their
+                    transaction ID is {order.paymentReference}.
+                  </p>
+                )}
                 {order.paymentStatus === 'PENDING_VERIFICATION' &&
                   ['queued', 'pending'].includes(order.payRequestStatus) && (
                     <PaymentRequestStatus orderId={order.id} onSettled={() => void load()} />

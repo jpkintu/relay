@@ -76,6 +76,9 @@ function startMomoMock() {
     if (polls < 2) return res.json({ status: 'PENDING' });
     if (request.payer.partyId.endsWith('99'))
       return res.json({ status: 'FAILED', reason: 'APPROVAL_REJECTED' });
+    // MTN's own test numbers answer in a fixed way.
+    if (request.payer.partyId === '46733123451') return res.json({ status: 'REJECTED' });
+    if (request.payer.partyId === '46733123452') return res.json({ status: 'TIMEOUT' });
     res.json({
       status: 'SUCCESSFUL',
       financialTransactionId: `MTN${polls}${req.params.id.slice(0, 6)}`,
@@ -4186,6 +4189,12 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.equal(sent.target, 'sandbox');
     const ledger = await run('getMobileMoneyLedger', {}, s.owner);
     assert.ok(ledger.verified.some((row) => row.id === order.id && row.auto));
+    // The owner's order page shows the provider's ID and the request reference.
+    const detail = await run('adminGetOrder', { id: order.id }, s.owner);
+    assert.equal(detail.payment.auto, true);
+    assert.equal(detail.payment.reference, state.reference);
+    assert.ok(momo.mtn.has(detail.payment.requestReference), 'the X-Reference-Id MTN got');
+    assert.equal(detail.payment.requestPhone, '0772 123456');
   });
 
   test('MTN: a declined request leaves the payment not received, and the bill open again', async () => {
@@ -4210,6 +4219,26 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
       },
       s.owner,
     );
+  });
+
+  test('MTN test numbers: declined and timed-out requests are not received', async () => {
+    for (const [phone, reason] of [
+      ['46733123451', /declined/],
+      ['46733123452', /did not answer in time/],
+    ]) {
+      const order = await counterOrder({
+        orderType: 'eat_in',
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'mtn',
+        payerPhone: phone,
+      });
+      const state = await settle(order.id);
+      assert.equal(state.paymentStatus, 'REJECTED');
+      assert.match(state.reason, reason);
+      assert.equal([...momo.mtn.values()].at(-1).payer.partyId, phone, 'sent unchanged');
+    }
+    const view = await run('adminGetPaymentSettings', {}, s.owner);
+    assert.equal(view.mtnTestNumbers['46733123451'], 'is declined');
   });
 
   test('Airtel: the national number is used and the payment confirms itself', async () => {

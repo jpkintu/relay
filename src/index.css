@@ -7122,3 +7122,23 @@ a {
   width: 18px;
   height: 18px;
 }
+small.block {
+  display: block;
+}
+.test-numbers {
+  margin: 8px 0;
+  font-size: 14px;
+}
+.test-numbers summary {
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 32px;
+}
+.test-numbers ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+.test-numbers code {
+  font-family: var(--font-mono);
+}

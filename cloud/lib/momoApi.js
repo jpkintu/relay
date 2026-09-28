@@ -130,10 +130,19 @@ async function mtnStatus(settings, id) {
   const status = String(data?.status || '').toUpperCase();
   const reason =
     typeof data?.reason === 'string' ? data.reason : data?.reason?.message || data?.reason?.code;
+  // FAILED, REJECTED (declined), TIMEOUT / EXPIRED (not answered) end the
+  // request; PENDING and ONGOING wait.
+  const failed = ['FAILED', 'REJECTED', 'TIMEOUT', 'EXPIRED'].includes(status);
   return {
-    status: status === 'SUCCESSFUL' ? 'successful' : status === 'FAILED' ? 'failed' : 'pending',
+    status: status === 'SUCCESSFUL' ? 'successful' : failed ? 'failed' : 'pending',
     transactionId: String(data?.financialTransactionId || ''),
-    reason: reason ? String(reason) : '',
+    reason: reason
+      ? String(reason)
+      : status === 'REJECTED'
+        ? 'the customer declined'
+        : ['TIMEOUT', 'EXPIRED'].includes(status)
+          ? 'the customer did not answer in time'
+          : '',
   };
 }
 
@@ -212,11 +221,24 @@ async function airtelStatus(settings, id, currency) {
   };
 }
 
+// Numbers MTN's test environment (sandbox) answers in a fixed way, to try
+// what happens when a payment fails. Any other number is approved.
+const MTN_TEST_NUMBERS = {
+  46733123450: 'fails',
+  46733123451: 'is declined',
+  46733123452: 'times out',
+  46733123453: 'stays in progress',
+  46733123454: 'stays pending',
+};
+const isMtnTestNumber = (digits) => Object.hasOwn(MTN_TEST_NUMBERS, String(digits));
+
 // The number each provider wants: MTN takes the full international number
 // (256772123456), Airtel the national number without the leading 0
 // (752123456). `dial` is the country code without "+". '' if unusable.
 function payerNumber(provider, phone, dial = '256') {
   let digits = String(phone || '').replace(/[^\d]/g, '');
+  // MTN's test environment numbers (see MTN_TEST_NUMBERS) go as they are.
+  if (provider === 'mtn' && isMtnTestNumber(digits)) return digits;
   if (digits.startsWith('00')) digits = digits.slice(2);
   if (digits.startsWith(dial)) digits = digits.slice(dial.length);
   if (digits.startsWith('0')) digits = digits.slice(1);
@@ -234,6 +256,8 @@ module.exports = {
   airtelRequest,
   airtelStatus,
   payerNumber,
+  MTN_TEST_NUMBERS,
+  isMtnTestNumber,
   forgetToken: forget,
   mtnKey,
   airtelKey,
