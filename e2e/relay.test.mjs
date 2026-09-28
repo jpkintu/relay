@@ -45,7 +45,19 @@ const MOMO_PORT = 1341;
 process.env.RELAY_MTN_URL = `http://localhost:${MOMO_PORT}/mtn`;
 process.env.RELAY_AIRTEL_URL = `http://localhost:${MOMO_PORT}/airtel`;
 process.env.RELAY_IP_URL = `http://localhost:${MOMO_PORT}/ip`;
-const momo = { mtn: new Map(), airtel: new Map(), polls: new Map(), ip: '203.0.113.10' };
+// Relay Hosted: ioTec Pay, for subscription payments (cloud/lib/iotec.js).
+process.env.IOTEC_AUTH_URL = `http://localhost:${MOMO_PORT}/iotec/connect/token`;
+process.env.IOTEC_API_URL = `http://localhost:${MOMO_PORT}/iotec`;
+process.env.IOTEC_CLIENT_ID = 'iotec-client';
+process.env.IOTEC_CLIENT_SECRET = 'iotec-secret';
+process.env.IOTEC_WALLET_ID = 'wallet-1';
+const momo = {
+  mtn: new Map(),
+  airtel: new Map(),
+  iotec: new Map(),
+  polls: new Map(),
+  ip: '203.0.113.10',
+};
 let momoServer;
 function startMomoMock() {
   const app = express();
@@ -115,6 +127,34 @@ function startMomoMock() {
         },
       },
       status: { code: '200', success: true },
+    });
+  });
+  // ioTec: token (form-encoded client credentials), collect, status.
+  app.post('/iotec/connect/token', express.urlencoded({ extended: false }), (req, res) => {
+    if (req.body.client_secret !== 'iotec-secret' || req.body.grant_type !== 'client_credentials')
+      return res.status(400).json({ error: 'invalid_client' });
+    res.json({ access_token: 'iotec-token', expires_in: 300, token_type: 'Bearer' });
+  });
+  app.post('/iotec/api/collections/collect', (req, res) => {
+    if (req.headers.authorization !== 'Bearer iotec-token') return res.status(401).end();
+    const id = `io-${momo.iotec.size + 1}`;
+    momo.iotec.set(id, { ...req.body, polls: 0 });
+    res.json({ id, status: 'Pending', statusMessage: 'Request is being processed' });
+  });
+  app.get('/iotec/api/collections/status/:id', (req, res) => {
+    if (req.headers.authorization !== 'Bearer iotec-token') return res.status(401).end();
+    const payment = momo.iotec.get(req.params.id);
+    if (!payment) return res.status(404).send('Not Found');
+    payment.polls += 1;
+    // The payer answers on the second check; numbers ending 99 decline.
+    if (payment.polls < 2) return res.json({ id: req.params.id, status: 'Pending' });
+    if (payment.payer.endsWith('99'))
+      return res.json({ id: req.params.id, status: 'Failed', statusMessage: 'Payer declined' });
+    res.json({
+      id: req.params.id,
+      status: 'Success',
+      statusMessage: 'Paid',
+      vendorTransactionId: `MP${req.params.id}`,
     });
   });
   // The server's public address, as a "what is my IP" service reports it.
@@ -4443,6 +4483,8 @@ const ACCESS = {
     'platformUpdateRestaurant',
     'platformSaveSettings',
     'platformGetAudit',
+    'platformRecordPayment',
+    'platformListPayments',
     'createPreviewOrder',
     'getPreviewOrders',
     'transitionPreviewOrder',
@@ -4490,6 +4532,10 @@ const ACCESS = {
     'getPaymentsLedger',
   ],
   admin: [
+    // Relay Hosted: paying the subscription.
+    'getBilling',
+    'startSubscriptionPayment',
+    'checkSubscriptionPayment',
     'adminListSetup',
     'adminCreateTeamMember',
     'adminUpdateMember',
@@ -4871,5 +4917,156 @@ describe('platform console and access (Relay Hosted)', () => {
     assert.equal(change.entityId, other.id);
     assert.equal(change.by, 'Relay Ops');
     await rejects(run('platformGetAudit', {}, s.owner), /platform role required/);
+  });
+});
+
+describe('subscription payments with ioTec (Relay Hosted)', () => {
+  const OTHER = 'kato-grill';
+  const DAY = 86400000;
+  const when = (days) => new Date(Date.now() + days * DAY).toISOString();
+  const k = {};
+  const pay = (params) => run('startSubscriptionPayment', params, k.owner);
+  const check = (id) => run('checkSubscriptionPayment', { id }, k.owner);
+  const lastSent = () => [...momo.iotec.values()].at(-1);
+
+  before(async () => {
+    k.ops = await Parse.User.logIn('ops', 'ops-pass-123');
+    k.owner = await login('owner', PINS.owner, OTHER);
+    k.rider = await login('rita', PINS.rita, OTHER);
+    const { rows } = await run('platformListRestaurants', {}, k.ops);
+    k.id = rows.find((row) => row.code === OTHER).id;
+  });
+
+  test('the owner pays with mobile money and the paid month moves on', async () => {
+    const billing = await run('getBilling', {}, k.owner);
+    assert.equal(billing.payInApp, true);
+    assert.equal(billing.restaurant.monthlyPrice, 50000);
+    assert.equal(billing.billingPhone, '0701234567');
+    assert.deepEqual(billing.payments, []);
+    await rejects(run('getBilling', {}, k.rider), /admin role required/);
+    await rejects(pay({ months: 2, phone: '0772555111' }), /Choose 1, 3, 6, 12 months/);
+    await rejects(pay({ months: 1, phone: '07' }), /mobile money number/);
+
+    const before = billing.restaurant.paidUntil;
+    const started = await pay({ months: 3, phone: '0772 555 111' });
+    assert.equal(started.status, 'pending');
+    assert.equal(started.amount, 150000);
+    assert.equal(started.currency, 'UGX');
+    const sent = lastSent();
+    assert.equal(sent.payer, '0772555111');
+    assert.equal(sent.amount, 150000);
+    assert.equal(sent.currency, 'UGX');
+    assert.equal(sent.walletId, 'wallet-1');
+    assert.equal(sent.category, 'MobileMoney');
+    assert.match(sent.payerNote, /Relay for Kato Grill: 3 months/);
+    assert.match(sent.externalId, /^relay-kato-grill-/);
+    // One prompt at a time.
+    await rejects(pay({ months: 1, phone: '0772555111' }), /already waiting for approval/);
+
+    const done = await check(started.id);
+    assert.equal(done.payment.status, 'paid');
+    assert.match(done.payment.reference, /^MPio-/);
+    assert.equal(done.restaurant.status, 'active');
+    const days = (new Date(done.restaurant.paidUntil) - new Date(before)) / DAY;
+    assert.ok(days >= 89 && days <= 92, `moved on ${days} days`);
+    // Checking again never adds the months twice.
+    const again = await check(started.id);
+    assert.equal(again.restaurant.paidUntil, done.restaurant.paidUntil);
+    const after = await run('getBilling', {}, k.owner);
+    assert.equal(after.billingPhone, '0772555111');
+    assert.equal(after.payments[0].status, 'paid');
+    assert.equal(after.payments[0].periodEnd, done.restaurant.paidUntil);
+  });
+
+  test('a declined payment changes nothing', async () => {
+    const { restaurant } = await run('getBilling', {}, k.owner);
+    const started = await pay({ months: 1, phone: '0772 000 099' });
+    assert.equal((await check(started.id)).payment.status, 'pending');
+    const done = await check(started.id);
+    assert.equal(done.payment.status, 'failed');
+    assert.equal(done.payment.message, 'Payer declined');
+    assert.equal(done.restaurant.paidUntil, restaurant.paidUntil);
+  });
+
+  test('an expired restaurant’s owner can still pay, which opens it again', async () => {
+    const expired = await run(
+      'platformUpdateRestaurant',
+      { id: k.id, trialEndsAt: when(-40), paidUntil: null },
+      k.ops,
+    );
+    assert.equal(expired.status, 'expired');
+    await rejects(run('getOperationalMenu', {}, k.rider), /subscription has ended/);
+    const started = await pay({ months: 1, phone: '0772555111' });
+    await check(started.id);
+    const done = await check(started.id);
+    assert.equal(done.payment.status, 'paid');
+    assert.equal(done.restaurant.status, 'active');
+    const days = (new Date(done.restaurant.paidUntil) - Date.now()) / DAY;
+    assert.ok(days >= 27 && days <= 32, `open for ${days} days`);
+    assert.ok((await run('getOperationalMenu', {}, k.rider)).items.length > 0);
+  });
+
+  test('Relay records a payment received by hand', async () => {
+    await rejects(
+      run('platformRecordPayment', { id: k.id, months: 2 }, k.owner),
+      /platform role required/,
+    );
+    await rejects(run('platformRecordPayment', { id: k.id, months: 0 }, k.ops), /Months/);
+    const { restaurant } = await run('getBilling', {}, k.owner);
+    const recorded = await run(
+      'platformRecordPayment',
+      { id: k.id, months: 2, reference: 'Bank slip 889' },
+      k.ops,
+    );
+    assert.equal(recorded.method, 'manual');
+    assert.equal(recorded.status, 'paid');
+    assert.equal(recorded.amount, 100000);
+    assert.equal(recorded.reference, 'Bank slip 889');
+    assert.equal(recorded.periodStart, restaurant.paidUntil);
+    const billing = await run('getBilling', {}, k.owner);
+    assert.equal(billing.payments[0].method, 'manual');
+    assert.equal(billing.restaurant.paidUntil, recorded.periodEnd);
+
+    const { rows } = await run('platformListPayments', { id: k.id }, k.ops);
+    assert.ok(rows.length >= 4);
+    assert.ok(rows.every((row) => row.restaurant === 'Kato Grill'));
+    // The first restaurant sees none of these.
+    assert.deepEqual((await run('getBilling', {}, s.owner)).payments, []);
+    const audit = await run('platformGetAudit', {}, k.ops);
+    const entry = audit.rows.find((row) => row.action === 'platform.payment_recorded');
+    assert.equal(entry.entityId, k.id);
+    assert.equal(entry.after.reference, 'Bank slip 889');
+  });
+
+  test('owners are reminded before the month ends, once', async () => {
+    await run('platformUpdateRestaurant', { id: k.id, paidUntil: when(2) }, k.ops);
+    const reminders = async () =>
+      (await run('getNotifications', {}, k.owner)).items.filter((n) =>
+        /month ends in/.test(n.title),
+      );
+    const waitFor = async (count) => {
+      for (let i = 0; i < 50 && (await reminders()).length < count; i += 1)
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    await Parse.Cloud.startJob('billing', {});
+    await waitFor(1);
+    assert.equal((await reminders()).length, 1);
+    await Parse.Cloud.startJob('billing', {});
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal((await reminders()).length, 1);
+    // The first restaurant's owner is not told about another restaurant.
+    const theirs = await run('getNotifications', {}, s.owner);
+    assert.ok(theirs.items.every((n) => !/month ends in/.test(n.title)));
+  });
+
+  test('without ioTec keys the owner is told to contact Relay', async () => {
+    const saved = process.env.IOTEC_CLIENT_ID;
+    delete process.env.IOTEC_CLIENT_ID;
+    try {
+      assert.equal((await run('getBilling', {}, k.owner)).payInApp, false);
+      await rejects(pay({ months: 1, phone: '0772555111' }), /not switched on yet/);
+    } finally {
+      process.env.IOTEC_CLIENT_ID = saved;
+    }
   });
 });

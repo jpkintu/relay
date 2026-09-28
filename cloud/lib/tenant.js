@@ -41,7 +41,7 @@ const SCOPED = new Set([
   'ErrorLog',
   'Secret',
   'AdminUnlock',
-  'Invoice',
+  'SubscriptionPayment',
 ]);
 // Secret rows shared by the whole platform (push keys, server address).
 const GLOBAL_SECRETS = new Set(['vapid', 'serverAddress']);

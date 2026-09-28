@@ -164,7 +164,7 @@ var require_tenant = __commonJS({
       "ErrorLog",
       "Secret",
       "AdminUnlock",
-      "Invoice"
+      "SubscriptionPayment"
     ]);
     var GLOBAL_SECRETS = /* @__PURE__ */ new Set(["vapid", "serverAddress"]);
     var BASE_ROLES = ["admin", "cashier", "rider"];
@@ -680,7 +680,16 @@ var require_access = __commonJS({
       if (end && graceEnd > now) return { status: "past_due", ok: true, until: new Date(graceEnd) };
       return { status: "expired", ok: false, until: end ? new Date(end) : null };
     }
-    module2.exports = { accessOf };
+    function addMonths(date, months) {
+      const next = new Date(date);
+      const day = next.getUTCDate();
+      next.setUTCDate(1);
+      next.setUTCMonth(next.getUTCMonth() + months);
+      const last = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+      next.setUTCDate(Math.min(day, last));
+      return next;
+    }
+    module2.exports = { accessOf, addMonths };
   }
 });
 
@@ -911,7 +920,8 @@ var require_security = __commonJS({
       "AdminUnlock",
       // Relay Hosted.
       "Restaurant",
-      "PlatformSettings"
+      "PlatformSettings",
+      "SubscriptionPayment"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -923,7 +933,8 @@ var require_security = __commonJS({
       "ErrorLog",
       "AdminUnlock",
       "Restaurant",
-      "PlatformSettings"
+      "PlatformSettings",
+      "SubscriptionPayment"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -1247,6 +1258,23 @@ var require_security = __commonJS({
         priceOverride: N,
         paidUntil: D,
         note: S
+      },
+      SubscriptionPayment: {
+        amount: N,
+        currency: S,
+        months: N,
+        method: S,
+        status: S,
+        payer: S,
+        externalId: S,
+        providerId: S,
+        message: S,
+        reference: S,
+        note: S,
+        periodStart: D,
+        periodEnd: D,
+        paidAt: D,
+        recordedBy: user
       },
       PlatformSettings: {
         monthlyPrice: N,
@@ -2163,7 +2191,11 @@ var require_restaurants = __commonJS({
       "getMyProfile",
       "changeMyPin",
       "removePushSubscription",
-      "reportClientError"
+      "reportClientError",
+      // Paying the subscription (billing.js).
+      "getBilling",
+      "startSubscriptionPayment",
+      "checkSubscriptionPayment"
     ]);
     async function checkAccess(name, restaurant) {
       if (OPEN_WHEN_CLOSED.has(name)) return;
@@ -2500,6 +2532,7 @@ var require_restaurants = __commonJS({
       };
     });
     module2.exports = {
+      priceOf,
       checkAccess,
       isPlatform,
       accessOf,
@@ -2713,6 +2746,315 @@ var require_errors = __commonJS({
       return { resolved: rows.length };
     });
     module2.exports = { recordError };
+  }
+});
+
+// cloud/lib/momoApi.js
+var require_momoApi = __commonJS({
+  "cloud/lib/momoApi.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var MTN_URLS = {
+      sandbox: "https://sandbox.momodeveloper.mtn.com",
+      production: "https://proxy.momoapi.mtn.com"
+    };
+    var AIRTEL_URLS = {
+      sandbox: "https://openapiuat.airtel.africa",
+      production: "https://openapi.airtel.africa"
+    };
+    var mtnBase = (settings) => process.env.RELAY_MTN_URL || MTN_URLS[settings.environment] || MTN_URLS.sandbox;
+    var airtelBase = (settings) => process.env.RELAY_AIRTEL_URL || AIRTEL_URLS[settings.environment] || AIRTEL_URLS.sandbox;
+    var ProviderError = class extends Error {
+      constructor(message, status) {
+        super(message);
+        this.status = status;
+      }
+    };
+    async function call(method, url, { headers = {}, body } = {}) {
+      let response;
+      try {
+        response = await fetch(url, {
+          method,
+          headers: { Accept: "application/json", ...headers },
+          body: body === void 0 ? void 0 : typeof body === "string" ? body : JSON.stringify(body),
+          signal: AbortSignal.timeout(2e4)
+        });
+      } catch (error) {
+        throw new ProviderError(`Could not reach the provider (${error.message})`, 0);
+      }
+      const text = await response.text();
+      const data = (() => {
+        try {
+          return text ? JSON.parse(text) : null;
+        } catch {
+          return { raw: text.slice(0, 300) };
+        }
+      })();
+      if (!response.ok) {
+        const detail = data?.message || data?.error_description || data?.error || data?.status?.message || text;
+        throw new ProviderError(
+          `${response.status} ${String(detail || response.statusText).slice(0, 200)}`,
+          response.status
+        );
+      }
+      return { status: response.status, data };
+    }
+    var tokens = /* @__PURE__ */ new Map();
+    async function cachedToken(key, fetchToken) {
+      const hit = tokens.get(key);
+      if (hit && hit.expires > Date.now()) return hit.token;
+      const { token, seconds } = await fetchToken();
+      tokens.set(key, { token, expires: Date.now() + Math.max(60, seconds - 60) * 1e3 });
+      return token;
+    }
+    var forget = (key) => tokens.delete(key);
+    var mtnHeaders = (settings) => ({ "Ocp-Apim-Subscription-Key": settings.subscriptionKey });
+    var mtnKey = (settings) => `mtn:${settings.environment}:${settings.apiUser}`;
+    function mtnToken(settings) {
+      return cachedToken(mtnKey(settings), async () => {
+        const basic = Buffer.from(`${settings.apiUser}:${settings.apiKey}`).toString("base64");
+        const { data } = await call("POST", `${mtnBase(settings)}/collection/token/`, {
+          headers: { ...mtnHeaders(settings), Authorization: `Basic ${basic}` }
+        });
+        if (!data?.access_token) throw new ProviderError("MTN did not return an access token", 0);
+        return { token: data.access_token, seconds: Number(data.expires_in) || 3600 };
+      });
+    }
+    var mtnTarget = (settings) => settings.environment === "production" ? settings.targetEnvironment || "mtnuganda" : "sandbox";
+    async function mtnRequest(settings, { id, amount, currency, msisdn, externalId, note }) {
+      const token = await mtnToken(settings);
+      await call("POST", `${mtnBase(settings)}/collection/v1_0/requesttopay`, {
+        headers: {
+          ...mtnHeaders(settings),
+          Authorization: `Bearer ${token}`,
+          "X-Reference-Id": id,
+          "X-Target-Environment": mtnTarget(settings),
+          "Content-Type": "application/json"
+        },
+        body: {
+          amount: String(Math.round(amount)),
+          // The sandbox only accepts EUR.
+          currency: settings.environment === "production" ? currency : "EUR",
+          externalId,
+          payer: { partyIdType: "MSISDN", partyId: msisdn },
+          payerMessage: note,
+          payeeNote: note
+        }
+      });
+    }
+    async function mtnStatus(settings, id) {
+      const token = await mtnToken(settings);
+      const { data } = await call("GET", `${mtnBase(settings)}/collection/v1_0/requesttopay/${id}`, {
+        headers: {
+          ...mtnHeaders(settings),
+          Authorization: `Bearer ${token}`,
+          "X-Target-Environment": mtnTarget(settings)
+        }
+      });
+      const status = String(data?.status || "").toUpperCase();
+      const reason = typeof data?.reason === "string" ? data.reason : data?.reason?.message || data?.reason?.code;
+      const failed = ["FAILED", "REJECTED", "TIMEOUT", "EXPIRED"].includes(status);
+      return {
+        status: status === "SUCCESSFUL" ? "successful" : failed ? "failed" : "pending",
+        transactionId: String(data?.financialTransactionId || ""),
+        reason: reason ? String(reason) : status === "REJECTED" ? "the customer declined" : ["TIMEOUT", "EXPIRED"].includes(status) ? "the customer did not answer in time" : ""
+      };
+    }
+    async function mtnSandboxUser(subscriptionKey, callbackHost = "example.com") {
+      const settings = { environment: "sandbox", subscriptionKey };
+      const apiUser = crypto.randomUUID();
+      await call("POST", `${mtnBase(settings)}/v1_0/apiuser`, {
+        headers: {
+          ...mtnHeaders(settings),
+          "X-Reference-Id": apiUser,
+          "Content-Type": "application/json"
+        },
+        body: { providerCallbackHost: callbackHost }
+      });
+      const { data } = await call("POST", `${mtnBase(settings)}/v1_0/apiuser/${apiUser}/apikey`, {
+        headers: mtnHeaders(settings)
+      });
+      if (!data?.apiKey) throw new ProviderError("MTN did not return an API key", 0);
+      return { apiUser, apiKey: data.apiKey };
+    }
+    var airtelKey = (settings) => `airtel:${settings.environment}:${settings.clientId}`;
+    function airtelToken(settings) {
+      return cachedToken(airtelKey(settings), async () => {
+        const { data } = await call("POST", `${airtelBase(settings)}/auth/oauth2/token`, {
+          headers: { "Content-Type": "application/json" },
+          body: {
+            client_id: settings.clientId,
+            client_secret: settings.clientSecret,
+            grant_type: "client_credentials"
+          }
+        });
+        if (!data?.access_token) throw new ProviderError("Airtel did not return an access token", 0);
+        return { token: data.access_token, seconds: Number(data.expires_in) || 180 };
+      });
+    }
+    var airtelHeaders = (settings, token, currency) => ({
+      Authorization: `Bearer ${token}`,
+      "X-Country": settings.country || "UG",
+      "X-Currency": currency,
+      "Content-Type": "application/json"
+    });
+    async function airtelRequest(settings, { id, amount, currency, msisdn, externalId }) {
+      const token = await airtelToken(settings);
+      const country = settings.country || "UG";
+      const { data } = await call("POST", `${airtelBase(settings)}/merchant/v1/payments/`, {
+        headers: airtelHeaders(settings, token, currency),
+        body: {
+          reference: externalId,
+          subscriber: { country, currency, msisdn },
+          transaction: { amount: Math.round(amount), country, currency, id }
+        }
+      });
+      if (data?.status && data.status.success === false)
+        throw new ProviderError(data.status.message || "Airtel refused the request", 0);
+    }
+    async function airtelStatus(settings, id, currency) {
+      const token = await airtelToken(settings);
+      const { data } = await call("GET", `${airtelBase(settings)}/standard/v1/payments/${id}`, {
+        headers: airtelHeaders(settings, token, currency)
+      });
+      const transaction = data?.data?.transaction || {};
+      const code = String(transaction.status || "").toUpperCase();
+      return {
+        status: code === "TS" ? "successful" : code === "TF" || code === "TE" ? "failed" : "pending",
+        transactionId: String(transaction.airtel_money_id || ""),
+        reason: code === "TS" ? "" : String(transaction.message || "")
+      };
+    }
+    var MTN_TEST_NUMBERS = {
+      46733123450: "fails",
+      46733123451: "is declined",
+      46733123452: "times out",
+      46733123453: "stays in progress",
+      46733123454: "stays pending"
+    };
+    var isMtnTestNumber = (digits) => Object.hasOwn(MTN_TEST_NUMBERS, String(digits));
+    function payerNumber(provider, phone, dial = "256") {
+      let digits = String(phone || "").replace(/[^\d]/g, "");
+      if (provider === "mtn" && isMtnTestNumber(digits)) return digits;
+      if (digits.startsWith("00")) digits = digits.slice(2);
+      if (digits.startsWith(dial)) digits = digits.slice(dial.length);
+      if (digits.startsWith("0")) digits = digits.slice(1);
+      if (digits.length < 8 || digits.length > 10) return "";
+      return provider === "mtn" ? `${dial}${digits}` : digits;
+    }
+    module2.exports = {
+      ProviderError,
+      call,
+      mtnToken,
+      mtnRequest,
+      mtnStatus,
+      mtnSandboxUser,
+      airtelToken,
+      airtelRequest,
+      airtelStatus,
+      payerNumber,
+      MTN_TEST_NUMBERS,
+      isMtnTestNumber,
+      forgetToken: forget,
+      mtnKey,
+      airtelKey
+    };
+  }
+});
+
+// cloud/lib/iotec.js
+var require_iotec = __commonJS({
+  "cloud/lib/iotec.js"(exports2, module2) {
+    "use strict";
+    var { ProviderError, call } = require_momoApi();
+    var env = (name) => String(process.env[name] || "").trim();
+    var apiUrl = () => (env("IOTEC_API_URL") || "https://pay.iotec.io").replace(/\/+$/, "");
+    var authUrl = () => env("IOTEC_AUTH_URL") || "https://id.iotec.io/connect/token";
+    var sandbox = () => env("IOTEC_ENV").toLowerCase() === "sandbox";
+    function configured() {
+      return !!(env("IOTEC_CLIENT_ID") && env("IOTEC_CLIENT_SECRET") && env("IOTEC_WALLET_ID"));
+    }
+    async function token() {
+      if (!configured()) throw new ProviderError("ioTec is not set up on the server", 0);
+      const { data } = await call("POST", authUrl(), {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: env("IOTEC_CLIENT_ID"),
+          client_secret: env("IOTEC_CLIENT_SECRET"),
+          grant_type: "client_credentials"
+        }).toString()
+      });
+      if (!data?.access_token) throw new ProviderError("ioTec did not return an access token", 0);
+      return data.access_token;
+    }
+    function payerMsisdn(phone) {
+      const digits = String(phone || "").replace(/\D/g, "");
+      if (/^256\d{9}$/.test(digits)) return `0${digits.slice(3)}`;
+      if (/^\d{9}$/.test(digits)) return `0${digits}`;
+      return digits;
+    }
+    async function collect({ externalId, amount, currency, payer, payerName, note }) {
+      const bearer = await token();
+      const { data } = await call("POST", `${apiUrl()}/api/collections/collect`, {
+        headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+        body: {
+          category: "MobileMoney",
+          currency: sandbox() ? "ITX" : currency,
+          walletId: env("IOTEC_WALLET_ID"),
+          externalId: String(externalId).slice(0, 100),
+          payer: payerMsisdn(payer),
+          payerName: String(payerName || "").slice(0, 150),
+          // What the payer sees: say what is being paid for.
+          payerNote: String(note).slice(0, 100),
+          payeeNote: String(note).slice(0, 100),
+          amount,
+          transactionChargesCategory: "ChargeWallet"
+        }
+      });
+      if (!data?.id) throw new ProviderError("ioTec did not return a transaction ID", 0);
+      return { id: String(data.id), ...outcome(data) };
+    }
+    function outcome(data) {
+      const raw = String(data?.status || "").toLowerCase();
+      const status = raw === "success" ? "paid" : raw === "failed" ? "failed" : "pending";
+      return {
+        status,
+        message: String(data?.statusMessage || "").slice(0, 200),
+        reference: String(data?.vendorTransactionId || "").slice(0, 100)
+      };
+    }
+    async function checkStatus(id) {
+      const bearer = await token();
+      const { data } = await call(
+        "GET",
+        `${apiUrl()}/api/collections/status/${encodeURIComponent(id)}`,
+        { headers: { Authorization: `Bearer ${bearer}` } }
+      );
+      return outcome(data);
+    }
+    module2.exports = { configured, sandbox, collect, checkStatus, payerMsisdn, outcome };
+  }
+});
+
+// cloud/lib/alerts.js
+var require_alerts = __commonJS({
+  "cloud/lib/alerts.js"(exports2, module2) {
+    "use strict";
+    function floatLevel(float, max, warnPercent = 80) {
+      const limit = Number(max) || 0;
+      const cash = Number(float) || 0;
+      if (limit <= 0) return null;
+      if (cash >= limit) return "reached";
+      const percent = Math.min(Math.max(Number(warnPercent) || 80, 1), 99);
+      if (cash >= limit * percent / 100) return "near";
+      return null;
+    }
+    function handoverReminderDue(float, localHour, reminderHour = 20) {
+      const hour = Number(reminderHour);
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return false;
+      return (Number(float) || 0) > 0 && localHour >= hour;
+    }
+    module2.exports = { floatLevel, handoverReminderDue };
   }
 });
 
@@ -10274,240 +10616,6 @@ var require_push = __commonJS({
   }
 });
 
-// cloud/lib/alerts.js
-var require_alerts = __commonJS({
-  "cloud/lib/alerts.js"(exports2, module2) {
-    "use strict";
-    function floatLevel(float, max, warnPercent = 80) {
-      const limit = Number(max) || 0;
-      const cash = Number(float) || 0;
-      if (limit <= 0) return null;
-      if (cash >= limit) return "reached";
-      const percent = Math.min(Math.max(Number(warnPercent) || 80, 1), 99);
-      if (cash >= limit * percent / 100) return "near";
-      return null;
-    }
-    function handoverReminderDue(float, localHour, reminderHour = 20) {
-      const hour = Number(reminderHour);
-      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return false;
-      return (Number(float) || 0) > 0 && localHour >= hour;
-    }
-    module2.exports = { floatLevel, handoverReminderDue };
-  }
-});
-
-// cloud/lib/momoApi.js
-var require_momoApi = __commonJS({
-  "cloud/lib/momoApi.js"(exports2, module2) {
-    "use strict";
-    var crypto = require("crypto");
-    var MTN_URLS = {
-      sandbox: "https://sandbox.momodeveloper.mtn.com",
-      production: "https://proxy.momoapi.mtn.com"
-    };
-    var AIRTEL_URLS = {
-      sandbox: "https://openapiuat.airtel.africa",
-      production: "https://openapi.airtel.africa"
-    };
-    var mtnBase = (settings) => process.env.RELAY_MTN_URL || MTN_URLS[settings.environment] || MTN_URLS.sandbox;
-    var airtelBase = (settings) => process.env.RELAY_AIRTEL_URL || AIRTEL_URLS[settings.environment] || AIRTEL_URLS.sandbox;
-    var ProviderError = class extends Error {
-      constructor(message, status) {
-        super(message);
-        this.status = status;
-      }
-    };
-    async function call(method, url, { headers = {}, body } = {}) {
-      let response;
-      try {
-        response = await fetch(url, {
-          method,
-          headers: { Accept: "application/json", ...headers },
-          body: body === void 0 ? void 0 : typeof body === "string" ? body : JSON.stringify(body),
-          signal: AbortSignal.timeout(2e4)
-        });
-      } catch (error) {
-        throw new ProviderError(`Could not reach the provider (${error.message})`, 0);
-      }
-      const text = await response.text();
-      const data = (() => {
-        try {
-          return text ? JSON.parse(text) : null;
-        } catch {
-          return { raw: text.slice(0, 300) };
-        }
-      })();
-      if (!response.ok) {
-        const detail = data?.message || data?.error_description || data?.error || data?.status?.message || text;
-        throw new ProviderError(
-          `${response.status} ${String(detail || response.statusText).slice(0, 200)}`,
-          response.status
-        );
-      }
-      return { status: response.status, data };
-    }
-    var tokens = /* @__PURE__ */ new Map();
-    async function cachedToken(key, fetchToken) {
-      const hit = tokens.get(key);
-      if (hit && hit.expires > Date.now()) return hit.token;
-      const { token, seconds } = await fetchToken();
-      tokens.set(key, { token, expires: Date.now() + Math.max(60, seconds - 60) * 1e3 });
-      return token;
-    }
-    var forget = (key) => tokens.delete(key);
-    var mtnHeaders = (settings) => ({ "Ocp-Apim-Subscription-Key": settings.subscriptionKey });
-    var mtnKey = (settings) => `mtn:${settings.environment}:${settings.apiUser}`;
-    function mtnToken(settings) {
-      return cachedToken(mtnKey(settings), async () => {
-        const basic = Buffer.from(`${settings.apiUser}:${settings.apiKey}`).toString("base64");
-        const { data } = await call("POST", `${mtnBase(settings)}/collection/token/`, {
-          headers: { ...mtnHeaders(settings), Authorization: `Basic ${basic}` }
-        });
-        if (!data?.access_token) throw new ProviderError("MTN did not return an access token", 0);
-        return { token: data.access_token, seconds: Number(data.expires_in) || 3600 };
-      });
-    }
-    var mtnTarget = (settings) => settings.environment === "production" ? settings.targetEnvironment || "mtnuganda" : "sandbox";
-    async function mtnRequest(settings, { id, amount, currency, msisdn, externalId, note }) {
-      const token = await mtnToken(settings);
-      await call("POST", `${mtnBase(settings)}/collection/v1_0/requesttopay`, {
-        headers: {
-          ...mtnHeaders(settings),
-          Authorization: `Bearer ${token}`,
-          "X-Reference-Id": id,
-          "X-Target-Environment": mtnTarget(settings),
-          "Content-Type": "application/json"
-        },
-        body: {
-          amount: String(Math.round(amount)),
-          // The sandbox only accepts EUR.
-          currency: settings.environment === "production" ? currency : "EUR",
-          externalId,
-          payer: { partyIdType: "MSISDN", partyId: msisdn },
-          payerMessage: note,
-          payeeNote: note
-        }
-      });
-    }
-    async function mtnStatus(settings, id) {
-      const token = await mtnToken(settings);
-      const { data } = await call("GET", `${mtnBase(settings)}/collection/v1_0/requesttopay/${id}`, {
-        headers: {
-          ...mtnHeaders(settings),
-          Authorization: `Bearer ${token}`,
-          "X-Target-Environment": mtnTarget(settings)
-        }
-      });
-      const status = String(data?.status || "").toUpperCase();
-      const reason = typeof data?.reason === "string" ? data.reason : data?.reason?.message || data?.reason?.code;
-      const failed = ["FAILED", "REJECTED", "TIMEOUT", "EXPIRED"].includes(status);
-      return {
-        status: status === "SUCCESSFUL" ? "successful" : failed ? "failed" : "pending",
-        transactionId: String(data?.financialTransactionId || ""),
-        reason: reason ? String(reason) : status === "REJECTED" ? "the customer declined" : ["TIMEOUT", "EXPIRED"].includes(status) ? "the customer did not answer in time" : ""
-      };
-    }
-    async function mtnSandboxUser(subscriptionKey, callbackHost = "example.com") {
-      const settings = { environment: "sandbox", subscriptionKey };
-      const apiUser = crypto.randomUUID();
-      await call("POST", `${mtnBase(settings)}/v1_0/apiuser`, {
-        headers: {
-          ...mtnHeaders(settings),
-          "X-Reference-Id": apiUser,
-          "Content-Type": "application/json"
-        },
-        body: { providerCallbackHost: callbackHost }
-      });
-      const { data } = await call("POST", `${mtnBase(settings)}/v1_0/apiuser/${apiUser}/apikey`, {
-        headers: mtnHeaders(settings)
-      });
-      if (!data?.apiKey) throw new ProviderError("MTN did not return an API key", 0);
-      return { apiUser, apiKey: data.apiKey };
-    }
-    var airtelKey = (settings) => `airtel:${settings.environment}:${settings.clientId}`;
-    function airtelToken(settings) {
-      return cachedToken(airtelKey(settings), async () => {
-        const { data } = await call("POST", `${airtelBase(settings)}/auth/oauth2/token`, {
-          headers: { "Content-Type": "application/json" },
-          body: {
-            client_id: settings.clientId,
-            client_secret: settings.clientSecret,
-            grant_type: "client_credentials"
-          }
-        });
-        if (!data?.access_token) throw new ProviderError("Airtel did not return an access token", 0);
-        return { token: data.access_token, seconds: Number(data.expires_in) || 180 };
-      });
-    }
-    var airtelHeaders = (settings, token, currency) => ({
-      Authorization: `Bearer ${token}`,
-      "X-Country": settings.country || "UG",
-      "X-Currency": currency,
-      "Content-Type": "application/json"
-    });
-    async function airtelRequest(settings, { id, amount, currency, msisdn, externalId }) {
-      const token = await airtelToken(settings);
-      const country = settings.country || "UG";
-      const { data } = await call("POST", `${airtelBase(settings)}/merchant/v1/payments/`, {
-        headers: airtelHeaders(settings, token, currency),
-        body: {
-          reference: externalId,
-          subscriber: { country, currency, msisdn },
-          transaction: { amount: Math.round(amount), country, currency, id }
-        }
-      });
-      if (data?.status && data.status.success === false)
-        throw new ProviderError(data.status.message || "Airtel refused the request", 0);
-    }
-    async function airtelStatus(settings, id, currency) {
-      const token = await airtelToken(settings);
-      const { data } = await call("GET", `${airtelBase(settings)}/standard/v1/payments/${id}`, {
-        headers: airtelHeaders(settings, token, currency)
-      });
-      const transaction = data?.data?.transaction || {};
-      const code = String(transaction.status || "").toUpperCase();
-      return {
-        status: code === "TS" ? "successful" : code === "TF" || code === "TE" ? "failed" : "pending",
-        transactionId: String(transaction.airtel_money_id || ""),
-        reason: code === "TS" ? "" : String(transaction.message || "")
-      };
-    }
-    var MTN_TEST_NUMBERS = {
-      46733123450: "fails",
-      46733123451: "is declined",
-      46733123452: "times out",
-      46733123453: "stays in progress",
-      46733123454: "stays pending"
-    };
-    var isMtnTestNumber = (digits) => Object.hasOwn(MTN_TEST_NUMBERS, String(digits));
-    function payerNumber(provider, phone, dial = "256") {
-      let digits = String(phone || "").replace(/[^\d]/g, "");
-      if (provider === "mtn" && isMtnTestNumber(digits)) return digits;
-      if (digits.startsWith("00")) digits = digits.slice(2);
-      if (digits.startsWith(dial)) digits = digits.slice(dial.length);
-      if (digits.startsWith("0")) digits = digits.slice(1);
-      if (digits.length < 8 || digits.length > 10) return "";
-      return provider === "mtn" ? `${dial}${digits}` : digits;
-    }
-    module2.exports = {
-      ProviderError,
-      mtnToken,
-      mtnRequest,
-      mtnStatus,
-      mtnSandboxUser,
-      airtelToken,
-      airtelRequest,
-      airtelStatus,
-      payerNumber,
-      MTN_TEST_NUMBERS,
-      isMtnTestNumber,
-      forgetToken: forget,
-      mtnKey,
-      airtelKey
-    };
-  }
-});
-
 // cloud/lib/mobileMoney.js
 var require_mobileMoney = __commonJS({
   "cloud/lib/mobileMoney.js"(exports2, module2) {
@@ -13141,6 +13249,306 @@ var require_notifications = __commonJS({
       notifyAdmins,
       cashLimitAlert
     };
+  }
+});
+
+// cloud/billing.js
+var require_billing = __commonJS({
+  "cloud/billing.js"() {
+    "use strict";
+    var { MASTER, audit, claimOnce, invalid, readAcl, requireRole } = require_core();
+    var tenancy = require_tenant();
+    var iotec = require_iotec();
+    var { log } = require_log();
+    var { accessOf, addMonths } = require_access();
+    var { notifyAdmins } = require_notifications();
+    var {
+      platformSettings,
+      requirePlatform,
+      restaurantSummary,
+      priceOf,
+      forEachRestaurant
+    } = require_restaurants();
+    var MONTHS = [1, 3, 6, 12];
+    var MIN_AMOUNT = 500;
+    var ANSWER_MS = 30 * 6e4;
+    var DAY = 864e5;
+    var REMIND_DAYS = 3;
+    async function restaurantRow(id = tenancy.current()) {
+      return tenancy.withoutTenant(() => new Parse.Query("Restaurant").get(id, MASTER));
+    }
+    function toJSON(row) {
+      return {
+        id: row.id,
+        createdAt: row.createdAt?.toISOString() || null,
+        amount: row.get("amount"),
+        currency: row.get("currency"),
+        months: row.get("months"),
+        method: row.get("method"),
+        status: row.get("status"),
+        payer: row.get("payer") || "",
+        message: row.get("message") || "",
+        reference: row.get("reference") || "",
+        periodStart: row.get("periodStart")?.toISOString() || null,
+        periodEnd: row.get("periodEnd")?.toISOString() || null,
+        paidAt: row.get("paidAt")?.toISOString() || null
+      };
+    }
+    async function settle(payment, { reference = "", message = "" } = {}) {
+      if (!await tenancy.withoutTenant(() => claimOnce(`subscription-payment:${payment.id}`)))
+        return payment.fetch(MASTER);
+      const row = await restaurantRow(payment.get("tenant").id);
+      const base = new Date(
+        Math.max(
+          Date.now(),
+          row.get("trialEndsAt")?.getTime() || 0,
+          row.get("paidUntil")?.getTime() || 0
+        )
+      );
+      const end = addMonths(base, Number(payment.get("months")) || 1);
+      row.set("paidUntil", end);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      tenancy.clearCache();
+      payment.set({
+        status: "paid",
+        reference: reference || payment.get("reference") || "",
+        message: message || "Paid",
+        periodStart: base,
+        periodEnd: end,
+        paidAt: /* @__PURE__ */ new Date()
+      });
+      await payment.save(null, MASTER);
+      log("info", "billing.paid", {
+        restaurant: row.id,
+        payment: payment.id,
+        amount: payment.get("amount"),
+        until: end.toISOString()
+      });
+      return payment;
+    }
+    async function refresh(payment) {
+      if (payment.get("status") !== "pending" || payment.get("method") !== "iotec") return payment;
+      const id = payment.get("providerId");
+      const age = Date.now() - payment.createdAt.getTime();
+      if (id) {
+        try {
+          const result = await iotec.checkStatus(id);
+          if (result.status === "paid") return settle(payment, result);
+          if (result.status === "failed") {
+            payment.set({ status: "failed", message: result.message || "Not paid" });
+            await payment.save(null, MASTER);
+            return payment;
+          }
+        } catch (error) {
+          payment.set("message", `Could not check with ioTec: ${String(error.message).slice(0, 150)}`);
+        }
+      }
+      if (age > ANSWER_MS) {
+        payment.set({ status: "failed", message: "Nobody approved it on the phone in 30 minutes" });
+        await payment.save(null, MASTER);
+      } else if (payment.dirty()) await payment.save(null, MASTER);
+      return payment;
+    }
+    async function pendingPayments() {
+      const query = new Parse.Query("SubscriptionPayment");
+      query.equalTo("status", "pending");
+      query.limit(100);
+      return query.find(MASTER);
+    }
+    async function history(limit = 20) {
+      const query = new Parse.Query("SubscriptionPayment");
+      query.descending("createdAt");
+      query.limit(limit);
+      return query.find(MASTER);
+    }
+    async function billingState() {
+      for (const payment of await pendingPayments()) await refresh(payment);
+      const row = await restaurantRow();
+      return {
+        restaurant: await restaurantSummary(),
+        // False until the ioTec keys are set in the Back4App app.
+        payInApp: iotec.configured(),
+        sandbox: iotec.sandbox(),
+        billingPhone: row.get("billingPhone") || "",
+        months: MONTHS,
+        payments: (await history()).map(toJSON)
+      };
+    }
+    Parse.Cloud.define("getBilling", async (request) => {
+      await requireRole(request, ["admin"]);
+      return billingState();
+    });
+    Parse.Cloud.define("startSubscriptionPayment", async (request) => {
+      const { user } = await requireRole(request, ["admin"]);
+      const p = request.params || {};
+      const { values: platform } = await platformSettings();
+      if (!iotec.configured())
+        throw invalid(
+          `Paying in the app is not switched on yet. Contact Relay${platform.supportContact ? ` (${platform.supportContact})` : ""} to renew`
+        );
+      const months = Number(p.months);
+      if (!MONTHS.includes(months)) throw invalid(`Choose ${MONTHS.join(", ")} months`);
+      const phone = String(p.phone || "").replace(/[^\d+]/g, "");
+      if (phone.replace(/\D/g, "").length < 9)
+        throw invalid("Enter the mobile money number to pay from");
+      const row = await restaurantRow();
+      const amount = priceOf(row, platform) * months;
+      if (amount < MIN_AMOUNT) throw invalid("Nothing to pay at this price. Contact Relay");
+      for (const waiting of await pendingPayments()) {
+        await refresh(waiting);
+        if (waiting.get("status") === "pending")
+          throw invalid(
+            `A payment is already waiting for approval on ${waiting.get("payer")}. Approve it there, or wait a few minutes`
+          );
+      }
+      const payment = new Parse.Object("SubscriptionPayment");
+      payment.set({
+        amount,
+        currency: platform.currency,
+        months,
+        method: "iotec",
+        status: "pending",
+        payer: phone,
+        externalId: `relay-${row.get("code")}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        recordedBy: user
+      });
+      payment.setACL(readAcl(null, ["admin"]));
+      await payment.save(null, MASTER);
+      try {
+        const result = await iotec.collect({
+          externalId: payment.get("externalId"),
+          amount,
+          currency: platform.currency,
+          payer: phone,
+          payerName: row.get("ownerName") || row.get("name"),
+          note: `Relay for ${row.get("name")}: ${months} month${months === 1 ? "" : "s"}`.slice(0, 100)
+        });
+        payment.set({ providerId: result.id, message: result.message || "Waiting for approval" });
+        if (result.status === "failed") payment.set("status", "failed");
+        await payment.save(null, MASTER);
+        if (result.status === "paid") await settle(payment, result);
+      } catch (error) {
+        payment.set({
+          status: "failed",
+          message: `ioTec refused the request: ${String(error.message).slice(0, 150)}`
+        });
+        await payment.save(null, MASTER);
+      }
+      if (row.get("billingPhone") !== phone) {
+        row.set("billingPhone", phone);
+        await tenancy.withoutTenant(() => row.save(null, MASTER));
+      }
+      await audit(user, "billing.payment_started", payment, null, toJSON(payment));
+      return toJSON(payment);
+    });
+    Parse.Cloud.define("checkSubscriptionPayment", async (request) => {
+      await requireRole(request, ["admin"]);
+      const payment = await new Parse.Query("SubscriptionPayment").get(String(request.params?.id || ""), MASTER).catch(() => null);
+      if (!payment) throw invalid("Payment not found");
+      await refresh(payment);
+      return { payment: toJSON(payment), restaurant: await restaurantSummary() };
+    });
+    Parse.Cloud.define("platformRecordPayment", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const row = await tenancy.withoutTenant(() => new Parse.Query("Restaurant").get(String(p.id || ""), MASTER)).catch(() => null);
+      if (!row) throw invalid("Restaurant not found");
+      const months = Number(p.months);
+      if (!Number.isInteger(months) || months < 1 || months > 24) throw invalid("Months: 1 to 24");
+      const { values: platform } = await platformSettings();
+      const amount = p.amount === void 0 || p.amount === "" ? priceOf(row, platform) * months : Number(p.amount);
+      if (!Number.isFinite(amount) || amount < 0) throw invalid("Amount: a number from 0 up");
+      const payment = await tenancy.runAs(
+        row.id,
+        async () => {
+          const created = new Parse.Object("SubscriptionPayment");
+          created.set({
+            amount: Math.round(amount),
+            currency: platform.currency,
+            months,
+            method: "manual",
+            status: "pending",
+            reference: String(p.reference || "").trim().slice(0, 100),
+            note: String(p.note || "").trim().slice(0, 200),
+            recordedBy: actor
+          });
+          created.setACL(readAcl(null, ["admin"]));
+          await created.save(null, MASTER);
+          return settle(created, { message: "Recorded by Relay" });
+        },
+        row.get("code")
+      );
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.payment_recorded", row, null, {
+          amount: payment.get("amount"),
+          months,
+          reference: payment.get("reference"),
+          paidUntil: payment.get("periodEnd")
+        })
+      );
+      return toJSON(payment);
+    });
+    Parse.Cloud.define("platformListPayments", async (request) => {
+      await requirePlatform(request);
+      const query = new Parse.Query("SubscriptionPayment");
+      if (request.params?.id)
+        query.equalTo("tenant", {
+          __type: "Pointer",
+          className: "Restaurant",
+          objectId: String(request.params.id)
+        });
+      query.descending("createdAt");
+      query.limit(100);
+      query.include("tenant");
+      const rows = await tenancy.withoutTenant(() => query.find(MASTER));
+      return {
+        rows: rows.map((row) => ({
+          ...toJSON(row),
+          restaurantId: row.get("tenant")?.id || "",
+          restaurant: row.get("tenant")?.get("name") || ""
+        }))
+      };
+    });
+    async function remind(row, platform) {
+      const access = accessOf(row, platform.graceDays);
+      const until = access.until;
+      if (!until) return 0;
+      const left = Math.ceil((until.getTime() - Date.now()) / DAY);
+      const price = `${platform.currency} ${priceOf(row, platform).toLocaleString("en-US")}`;
+      const day = until.toISOString().slice(0, 10);
+      if ((access.status === "trial" || access.status === "active") && left <= REMIND_DAYS)
+        return notifyAdmins({
+          kind: "billing.reminder",
+          tone: "warning",
+          title: access.status === "trial" ? `Your free trial ends in ${left} day${left === 1 ? "" : "s"}` : `Your Relay month ends in ${left} day${left === 1 ? "" : "s"}`,
+          body: `Pay ${price} a month from Overview to keep Relay open.`,
+          link: "/admin",
+          key: `billing:${access.status}:${day}`
+        });
+      if (access.status === "past_due")
+        return notifyAdmins({
+          kind: "billing.reminder",
+          tone: "alert",
+          title: `Relay closes in ${left} day${left === 1 ? "" : "s"}`,
+          body: `Your subscription has ended. Pay ${price} from Overview to keep the app open.`,
+          link: "/admin",
+          key: `billing:past_due:${day}`
+        });
+      return 0;
+    }
+    Parse.Cloud.job("billing", async () => {
+      const { values: platform } = await platformSettings();
+      let checked = 0;
+      let reminded = 0;
+      await forEachRestaurant(async (row) => {
+        for (const payment of await pendingPayments()) {
+          await refresh(payment);
+          checked += 1;
+        }
+        reminded += await remind(row, platform);
+      });
+      return `${checked} payments checked, ${reminded} reminders sent`;
+    });
   }
 });
 
@@ -16061,6 +16469,7 @@ var require_profile = __commonJS({
 require_errors();
 require_adminLock();
 require_restaurants();
+require_billing();
 require_security();
 require_push();
 require_notifications();

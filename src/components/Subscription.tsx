@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { LogOut } from 'lucide-react';
+import Parse from '../parse';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
 import { BrandMark } from './BrandMark';
@@ -29,13 +31,18 @@ export function SubscriptionBanner() {
 // The owner, on the Overview: trial or paid-until, and the monthly price.
 export function SubscriptionNotice() {
   const { profile, config } = useSession();
+  const [paying, setPaying] = useState(false);
   const r = profile?.restaurant;
-  if (!r || profile?.role !== 'admin' || r.status === 'past_due') return null;
+  if (!r || profile?.role !== 'admin') return null;
   const date = formatDate(r.until, config.timezone, { dateStyle: 'medium' });
   return (
-    <div className="setup-notice subscription-notice">
+    <div className={`setup-notice subscription-notice${paying ? ' open' : ''}`}>
       <span>
-        {r.status === 'trial' ? (
+        {r.status === 'past_due' ? (
+          <>
+            <b>Relay subscription ended.</b> Pay by {date} to keep the app open · {priceText(r)}.
+          </>
+        ) : r.status === 'trial' ? (
           <>
             <b>Free trial:</b> {plural(daysLeft(r.until), 'day')} left (until {date}). Then{' '}
             {priceText(r)}.
@@ -46,6 +53,12 @@ export function SubscriptionNotice() {
           </>
         )}
       </span>
+      {!paying && (
+        <button onClick={() => setPaying(true)}>
+          {r.status === 'active' ? 'Pay ahead' : 'Pay now'}
+        </button>
+      )}
+      {paying && <BillingPanel onClose={() => setPaying(false)} />}
     </div>
   );
 }
@@ -82,13 +95,7 @@ export function ClosedScreen() {
                   : ''}
                 Renew to open the app again for you and your team. Nothing has been deleted.
               </p>
-              <dl className="subscription-facts">
-                <dt>Price</dt>
-                <dd>{priceText(r)}</dd>
-              </dl>
-              <p className="muted">
-                To renew, contact Relay{contact}. Paying from the app is coming soon.
-              </p>
+              <BillingPanel />
             </>
           ) : (
             <p className="muted">
@@ -97,7 +104,10 @@ export function ClosedScreen() {
             </p>
           )}
           <div className="closed-actions">
-            <button className="primary-button" onClick={() => void refresh()}>
+            <button
+              className={owner && r.status !== 'suspended' ? 'secondary-button' : 'primary-button'}
+              onClick={() => void refresh()}
+            >
               Check again
             </button>
             <button className="preview-button" onClick={() => void logout()}>
@@ -107,5 +117,176 @@ export function ClosedScreen() {
         </div>
       </section>
     </main>
+  );
+}
+
+type Payment = {
+  id: string;
+  createdAt: string | null;
+  amount: number;
+  currency: string;
+  months: number;
+  method: 'iotec' | 'manual';
+  status: 'pending' | 'paid' | 'failed';
+  payer: string;
+  message: string;
+  reference: string;
+  periodEnd: string | null;
+};
+type Billing = {
+  restaurant: RestaurantSummary;
+  payInApp: boolean;
+  sandbox: boolean;
+  billingPhone: string;
+  months: number[];
+  payments: Payment[];
+};
+
+const POLL_MS = 4000;
+const message = (e: unknown) => (e instanceof Error ? e.message : 'That did not work');
+
+// The owner pays the Relay subscription with mobile money (ioTec): choose the
+// months, approve the prompt on the phone, and the app opens again.
+export function BillingPanel({ onClose }: { onClose?: () => void }) {
+  const { refresh, config } = useSession();
+  const [data, setData] = useState<Billing | null>(null);
+  const [months, setMonths] = useState(1);
+  const [phone, setPhone] = useState('');
+  const [current, setCurrent] = useState<Payment | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const timer = useRef<number | undefined>(undefined);
+
+  const load = useCallback(async () => {
+    try {
+      const next: Billing = await Parse.Cloud.run('getBilling');
+      setData(next);
+      setPhone((p) => p || next.billingPhone);
+      const waiting = next.payments.find((pay) => pay.status === 'pending');
+      if (waiting) setCurrent(waiting);
+    } catch (e) {
+      setError(message(e));
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+    return () => window.clearTimeout(timer.current);
+  }, [load]);
+
+  // Follows a waiting payment until the phone answers.
+  useEffect(() => {
+    if (current?.status !== 'pending') return;
+    timer.current = window.setTimeout(async () => {
+      try {
+        const { payment } = await Parse.Cloud.run('checkSubscriptionPayment', { id: current.id });
+        setCurrent(payment);
+        if (payment.status !== 'pending') {
+          await load();
+          if (payment.status === 'paid') await refresh();
+        }
+      } catch (e) {
+        setError(message(e));
+      }
+    }, POLL_MS);
+    return () => window.clearTimeout(timer.current);
+  }, [current, load, refresh]);
+
+  const pay = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      setCurrent(await Parse.Cloud.run('startSubscriptionPayment', { months, phone }));
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!data) return <p className="muted">{error || 'Loading…'}</p>;
+  const r = data.restaurant;
+  const money = (n: number) => formatMoney(n, r.currency);
+  const day = (value: string | null) => formatDate(value, config.timezone, { dateStyle: 'medium' });
+  const contact = r.supportContact ? ` (${r.supportContact})` : '';
+  return (
+    <div className="billing-panel">
+      {current?.status === 'pending' ? (
+        <div className="billing-waiting" role="status">
+          <b>Check your phone ({current.payer}).</b> Approve {money(current.amount)} for Relay with
+          your mobile money PIN. This page updates by itself.
+        </div>
+      ) : current?.status === 'paid' ? (
+        <p className="form-success">
+          Paid, thank you. Relay is open until {day(current.periodEnd)}.
+        </p>
+      ) : current?.status === 'failed' ? (
+        <p className="form-error">
+          Not paid: {current.message || 'the payment did not go through'}.
+        </p>
+      ) : null}
+      {!data.payInApp ? (
+        <p className="muted">
+          Paying in the app is not switched on yet. Contact Relay{contact} to renew.
+        </p>
+      ) : (
+        current?.status !== 'pending' && (
+          <form className="billing-form" onSubmit={(e) => void pay(e)}>
+            <label className="setup-field">
+              Pay for
+              <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
+                {data.months.map((m) => (
+                  <option key={m} value={m}>
+                    {m} month{m === 1 ? '' : 's'} · {money(r.monthlyPrice * m)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="setup-field">
+              Mobile money number
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete="tel"
+                placeholder="07…"
+              />
+            </label>
+            {error && <p className="form-error">{error}</p>}
+            <div className="billing-actions">
+              <button className="primary-button" disabled={busy}>
+                {busy ? 'Sending…' : `Pay ${money(r.monthlyPrice * months)}`}
+              </button>
+              {onClose && (
+                <button type="button" className="secondary-button" onClick={onClose}>
+                  Close
+                </button>
+              )}
+            </div>
+            {data.sandbox && <small className="muted">Test mode: no real money moves.</small>}
+          </form>
+        )
+      )}
+      {data.payments.length > 0 && (
+        <details className="billing-history">
+          <summary>Past payments</summary>
+          <ul>
+            {data.payments.map((p) => (
+              <li key={p.id}>
+                <span>{day(p.createdAt)}</span>
+                <span>
+                  {money(p.amount)} · {p.months} month{p.months === 1 ? '' : 's'}
+                  {p.method === 'manual' ? ' · recorded by Relay' : ''}
+                </span>
+                <span className={`billing-status ${p.status}`}>
+                  {p.status === 'paid' ? 'Paid' : p.status === 'failed' ? 'Not paid' : 'Waiting'}
+                  {p.reference ? ` · ${p.reference}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }

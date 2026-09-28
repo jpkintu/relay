@@ -60,6 +60,10 @@ const OPEN_WHEN_CLOSED = new Set([
   'changeMyPin',
   'removePushSubscription',
   'reportClientError',
+  // Paying the subscription (billing.js).
+  'getBilling',
+  'startSubscriptionPayment',
+  'checkSubscriptionPayment',
 ]);
 
 // Called for every Cloud function run for a restaurant (errors.js). Access
@@ -478,6 +482,7 @@ Parse.Cloud.define('platformGetAudit', async (request) => {
 });
 
 module.exports = {
+  priceOf,
   checkAccess,
   isPlatform,
   accessOf,

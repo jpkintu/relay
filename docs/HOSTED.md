@@ -136,11 +136,46 @@ can sign in. The server enforces all of this (`checkAccess` in
 suspensions); only sign-in details, the profile, PIN changes, sign-out and crash
 reports stay open.
 
+## Billing (phase 3)
+
+**Owner.** The Overview shows the trial or paid-until date with **Pay now** /
+**Pay ahead**. When the restaurant has expired, the owner signs in to the same
+payment form. Choose 1, 3, 6 or 12 months and the mobile money number, tap
+Pay, approve the prompt on the phone; the page follows it and opens the app as
+soon as ioTec says Success. Past payments are listed under the form.
+
+**Server** (`cloud/billing.js`, `cloud/lib/iotec.js`):
+
+- `getBilling`, `startSubscriptionPayment { months, phone }`,
+  `checkSubscriptionPayment { id }` (the owner; open while expired).
+- One `SubscriptionPayment` row per attempt with its own `externalId`; one
+  waiting prompt at a time; a prompt nobody approves is given up after 30
+  minutes.
+- A successful payment moves `paidUntil` on by its months from the later of
+  today, the trial end and the current paid-until date, exactly once (a
+  claim guards against two checks at the same moment).
+- `platformRecordPayment { id, months, amount?, reference? }` records money
+  received by hand the same way; `platformListPayments { id? }`.
+- The **`billing` job** follows up waiting payments and reminds owners (in the
+  app and by push) 3 days before the trial or paid month ends and during the
+  grace days, once per date.
+
+**Setting it up on Back4App** (the hosted app):
+
+1. App Settings → Environment variables: `IOTEC_CLIENT_ID`,
+   `IOTEC_CLIENT_SECRET`, `IOTEC_WALLET_ID` from your ioTec account; for
+   testing also `IOTEC_ENV=sandbox` (ITX test currency). Remove it to take
+   real money. Without the three keys the owner is told to contact you.
+2. Cloud Code → Jobs → schedule **`billing`** every 5 minutes (or as often as
+   Back4App allows), and the existing `cashCheck` nightly.
+3. Platform console → Platform settings: your price, currency (UGX), trial and
+   grace days and the support contact.
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,
    usernames, per-restaurant sign-in page, sign-up with trial, isolation tests.
 2. **Platform console** (done): restaurants list, price overrides, trial and
    paid-until dates, suspension, platform settings, the access gate.
-3. **Billing**: invoices, the monthly billing job, ioTec collection requests and
-   status checks, grace period and suspension, manual payments.
+3. **Billing** (done): ioTec collection requests and status checks, the
+   `billing` job and reminders, manual payments, the owner's payment form.

@@ -248,6 +248,7 @@ function payerNumber(provider, phone, dial = '256') {
 
 module.exports = {
   ProviderError,
+  call,
   mtnToken,
   mtnRequest,
   mtnStatus,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { accessOf } from './access.js';
+import { accessOf, addMonths } from './access.js';
 
 const DAY = 86400000;
 const NOW = Date.parse('2026-10-01T09:00:00Z');
@@ -41,5 +41,22 @@ describe('accessOf', () => {
   });
   test('no dates at all is expired', () => {
     expect(accessOf(row({}), 7, NOW)).toEqual({ status: 'expired', ok: false, until: null });
+  });
+});
+
+describe('addMonths', () => {
+  test('same day next month, or the month’s last day', () => {
+    expect(addMonths(new Date('2026-10-15T09:00:00Z'), 1).toISOString()).toBe(
+      '2026-11-15T09:00:00.000Z',
+    );
+    expect(addMonths(new Date('2026-01-31T09:00:00Z'), 1).toISOString()).toBe(
+      '2026-02-28T09:00:00.000Z',
+    );
+    expect(addMonths(new Date('2026-11-30T09:00:00Z'), 3).toISOString()).toBe(
+      '2027-02-28T09:00:00.000Z',
+    );
+    expect(addMonths(new Date('2026-03-31T09:00:00Z'), 12).toISOString()).toBe(
+      '2027-03-31T09:00:00.000Z',
+    );
   });
 });

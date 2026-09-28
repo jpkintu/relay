@@ -22,4 +22,15 @@ function accessOf(row, graceDays = 0, now = Date.now()) {
   return { status: 'expired', ok: false, until: end ? new Date(end) : null };
 }
 
-module.exports = { accessOf };
+// One month later, on the same day of the month or the month's last day.
+function addMonths(date, months) {
+  const next = new Date(date);
+  const day = next.getUTCDate();
+  next.setUTCDate(1);
+  next.setUTCMonth(next.getUTCMonth() + months);
+  const last = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+  next.setUTCDate(Math.min(day, last));
+  return next;
+}
+
+module.exports = { accessOf, addMonths };

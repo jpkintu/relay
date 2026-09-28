@@ -250,8 +250,18 @@ export function PlatformConsole() {
                     <b>{c.by}</b>{' '}
                     {c.action === 'platform.settings_saved'
                       ? 'changed the platform settings'
-                      : `changed ${names.get(c.entityId) || 'a restaurant'}`}
-                    {describe(c)}
+                      : c.action === 'platform.payment_recorded'
+                        ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
+                            Number(c.after.amount) || 0,
+                            currency,
+                          )} for ${String(c.after.months)} month(s)${
+                            c.after.reference ? ` (${String(c.after.reference)})` : ''
+                          }`
+                        : `changed ${names.get(c.entityId) || 'a restaurant'}`}
+                    {c.action === 'platform.restaurant_updated' ||
+                    c.action === 'platform.settings_saved'
+                      ? describe(c)
+                      : ''}
                   </span>
                 </li>
               ))}
@@ -327,12 +337,6 @@ function RestaurantEditor({
     event.preventDefault();
     void save();
   };
-  const addMonth = () => {
-    const from = Math.max(Date.now(), row.until ? new Date(row.until).getTime() : 0);
-    const next = new Date(from);
-    next.setMonth(next.getMonth() + 1);
-    setPaidUntil(toInput(next.toISOString()));
-  };
 
   return (
     <section className="admin-panel platform-editor" ref={panel}>
@@ -365,9 +369,7 @@ function RestaurantEditor({
         <label className="setup-field">
           Paid until
           <input type="date" value={paidUntil} onChange={(e) => setPaidUntil(e.target.value)} />
-          <button type="button" className="link-button" onClick={addMonth}>
-            + one month (payment received by hand)
-          </button>
+          <small>To correct it. Payments below move it on by themselves.</small>
         </label>
         <label className="setup-field platform-note">
           Note (only you see it)
@@ -397,7 +399,138 @@ function RestaurantEditor({
           </button>
         </div>
       </form>
+      <Payments row={row} onRecorded={onSaved} />
     </section>
+  );
+}
+
+type Payment = {
+  id: string;
+  createdAt: string | null;
+  amount: number;
+  currency: string;
+  months: number;
+  method: 'iotec' | 'manual';
+  status: 'pending' | 'paid' | 'failed';
+  payer: string;
+  message: string;
+  reference: string;
+  periodEnd: string | null;
+};
+
+// One restaurant's payments, and recording one received by hand.
+function Payments({ row, onRecorded }: { row: Row; onRecorded: (row: Row) => void }) {
+  const [rows, setRows] = useState<Payment[] | null>(null);
+  const [months, setMonths] = useState('1');
+  const [amount, setAmount] = useState('');
+  const [reference, setReference] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState('');
+  const load = useCallback(async () => {
+    try {
+      const result = await Parse.Cloud.run('platformListPayments', { id: row.id });
+      setRows(result.rows);
+    } catch (e) {
+      setError(message(e));
+    }
+  }, [row.id]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  const expected = row.monthlyPrice * (Number(months) || 0);
+  const record = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setDone('');
+    try {
+      const payment: Payment = await Parse.Cloud.run('platformRecordPayment', {
+        id: row.id,
+        months: Number(months),
+        amount: amount.trim() === '' ? undefined : Number(amount),
+        reference,
+      });
+      setDone(`Recorded. Paid until ${day(payment.periodEnd)}.`);
+      setAmount('');
+      setReference('');
+      await load();
+      const list = await Parse.Cloud.run('platformListRestaurants');
+      const next = (list.rows as Row[]).find((r) => r.id === row.id);
+      if (next) onRecorded(next);
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="platform-payments">
+      <h3>Payments</h3>
+      <form className="platform-form" onSubmit={(e) => void record(e)}>
+        <label className="setup-field">
+          Months paid
+          <input
+            inputMode="numeric"
+            value={months}
+            onChange={(e) => setMonths(e.target.value.replace(/[^\d]/g, ''))}
+          />
+        </label>
+        <label className="setup-field">
+          Amount received ({row.currency})
+          <input
+            inputMode="numeric"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ''))}
+            placeholder={formatMoney(expected, row.currency)}
+          />
+        </label>
+        <label className="setup-field">
+          Reference (receipt, bank slip)
+          <input value={reference} onChange={(e) => setReference(e.target.value)} />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        {done && <p className="form-success">{done}</p>}
+        <div className="platform-actions">
+          <button className="secondary-button" disabled={busy || !Number(months)}>
+            {busy ? 'Recording…' : 'Record a payment received by hand'}
+          </button>
+        </div>
+      </form>
+      {rows && rows.length > 0 && (
+        <div className="table-scroll">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>How</th>
+                <th>Status</th>
+                <th>Reference</th>
+                <th className="num">Months</th>
+                <th className="num">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id}>
+                  <td>{day(p.createdAt)}</td>
+                  <td>{p.method === 'manual' ? 'By hand' : `Mobile money ${p.payer}`}</td>
+                  <td>
+                    {p.status === 'paid' ? 'Paid' : p.status === 'failed' ? 'Not paid' : 'Waiting'}
+                    {p.status === 'failed' && p.message && (
+                      <small className="cell-sub">{p.message}</small>
+                    )}
+                  </td>
+                  <td>{p.reference || '—'}</td>
+                  <td className="num">{p.months}</td>
+                  <td className="num">{formatMoney(p.amount, p.currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 

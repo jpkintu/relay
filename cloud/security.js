@@ -47,6 +47,7 @@ const PROTECTED_CLASSES = [
   // Relay Hosted.
   'Restaurant',
   'PlatformSettings',
+  'SubscriptionPayment',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -60,6 +61,7 @@ const PRIVATE_CLASSES = [
   'AdminUnlock',
   'Restaurant',
   'PlatformSettings',
+  'SubscriptionPayment',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -398,6 +400,23 @@ const SCHEMAS = {
     priceOverride: N,
     paidUntil: D,
     note: S,
+  },
+  SubscriptionPayment: {
+    amount: N,
+    currency: S,
+    months: N,
+    method: S,
+    status: S,
+    payer: S,
+    externalId: S,
+    providerId: S,
+    message: S,
+    reference: S,
+    note: S,
+    periodStart: D,
+    periodEnd: D,
+    paidAt: D,
+    recordedBy: user,
   },
   PlatformSettings: {
     monthlyPrice: N,
