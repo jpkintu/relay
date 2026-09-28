@@ -156,6 +156,10 @@ Parse.Cloud.define('getNotifications', async (request) => {
     const { values: config } = await loadConfig();
     await staleHandoverAlerts(config);
     if (role === 'admin') await require('./owner').zReportDue(config);
+    // Once a day: cash check, retention, server address (cashcheck.js).
+    require('./cashcheck').upkeepDue();
+    // Relay Hosted: the subscription's payments and reminders (billing.js).
+    if (role === 'admin') require('./billing').billingDue();
   }
   // The bell lists unread notifications only; reading one clears it.
   const listQuery = new Parse.Query('Notification');

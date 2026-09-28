@@ -356,10 +356,8 @@ Parse.Cloud.define('checkPaymentRequest', async (request) => {
 
 // Staff screens and every app's notification check: bring open requests up
 // to date (a few at a time, at most every 5 seconds per server).
-let lastSweep = 0;
 async function sweepRequests(limit = 10) {
-  if (Date.now() - lastSweep < 5000) return 0;
-  lastSweep = Date.now();
+  if (!require('./lib/throttle').due('payment-sweep', 5000)) return 0;
   const query = new Parse.Query('Order');
   query.containedIn('payRequestStatus', ['queued', 'pending']);
   query.ascending('updatedAt');

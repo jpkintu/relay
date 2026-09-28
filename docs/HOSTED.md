@@ -164,8 +164,8 @@ soon as ioTec says Success. Past payments are listed under the form.
   claim guards against two checks at the same moment).
 - `platformRecordPayment { id, months, amount?, reference? }` records money
   received by hand the same way; `platformListPayments { id? }`.
-- The **`billing` job** follows up waiting payments and reminds owners (in the
-  app and by push) 3 days before the trial or paid month ends and during the
+- The **`billing` job** (optional; the same runs on the owner's app activity)
+  follows up waiting payments and reminds owners (in the app and by push) 3 days before the trial or paid month ends and during the
   grace days, once per date.
 
 **Setting it up on Back4App** (the hosted app):
@@ -175,8 +175,12 @@ soon as ioTec says Success. Past payments are listed under the form.
    testing also `IOTEC_ENV=sandbox` (ITX test currency; pay from an ioTec test
    number such as 256111777777, real numbers are refused). Remove it to take
    real money. Without the three keys the owner is told to contact you.
-2. Cloud Code → Jobs → schedule **`billing`** every 5 minutes (or as often as
-   Back4App allows), and the existing `cashCheck` nightly.
+2. Scheduled jobs are optional (Back4App's scheduler is a paid feature).
+   Without them, each restaurant's waiting payments and reminders are followed
+   up whenever its owner has the app open (at most every 5 minutes), and its
+   daily upkeep (cash check, retention) runs on the first staff activity of
+   the day. Scheduling **`billing`** every 5 minutes and `cashCheck` /
+   `dailyZReport` nightly also covers restaurants nobody opens.
 3. Platform console → Platform settings: your price, currency (UGX), trial and
    grace days and the support contact.
 

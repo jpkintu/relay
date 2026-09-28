@@ -6,6 +6,7 @@ const { MASTER, audit, claimOnce, invalid, readAcl, requireRole } = require('./l
 const tenancy = require('./lib/tenant');
 const iotec = require('./lib/iotec');
 const { log } = require('./lib/log');
+const { due } = require('./lib/throttle');
 const { accessOf, addMonths } = require('./lib/access');
 const { notifyAdmins } = require('./notifications');
 const {
@@ -333,6 +334,23 @@ async function remind(row, platform) {
   return 0;
 }
 
+// Without the billing job (Back4App's scheduler is a paid feature): whenever
+// the restaurant's owner has the app open (their notification check), follow
+// up its waiting payments and send any reminder due, at most every few
+// minutes per restaurant, in the background.
+const billingCheckMs = () => Number(process.env.RELAY_BILLING_CHECK_MS ?? 300000);
+function billingDue() {
+  const tenant = tenancy.current();
+  if (!tenant || !due('billing', billingCheckMs())) return;
+  void (async () => {
+    for (const payment of await pendingPayments()) await refresh(payment);
+    const { values: platform } = await platformSettings();
+    await remind(await restaurantRow(tenant), platform);
+  })().catch((error) =>
+    log('warn', 'billing.check_failed', { restaurant: tenant, message: String(error?.message) }),
+  );
+}
+
 // Job: every few minutes (Back4App → Cloud Code → Jobs → schedule "billing").
 // Follows up pending ioTec payments and sends the owners' reminders.
 Parse.Cloud.job('billing', async () => {
@@ -348,3 +366,5 @@ Parse.Cloud.job('billing', async () => {
   });
   return `${checked} payments checked, ${reminded} reminders sent`;
 });
+
+module.exports = { billingDue };

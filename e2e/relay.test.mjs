@@ -21,6 +21,10 @@ const FileSystemAdapter = require('@parse/fs-files-adapter');
 process.env.RELAY_STALE_CHECK_MS = '0';
 // The nightly Z-report is tested directly, not from the owner's polling.
 process.env.RELAY_Z_CHECK_MS = '-1';
+// So is the daily upkeep (cash check, retention, server address).
+process.env.RELAY_UPKEEP_CHECK_MS = '-1';
+// And the subscription follow-ups on the owner's activity (Relay Hosted).
+process.env.RELAY_BILLING_CHECK_MS = '-1';
 
 const PORT = 1338;
 const APP_ID = 'relay-e2e';
@@ -5103,6 +5107,30 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
     assert.ok(theirs.items.every((n) => !/month ends in/.test(n.title)));
   });
 
+  test('without the billing job, the owner’s app follows up payments and reminders', async () => {
+    process.env.RELAY_BILLING_CHECK_MS = '0';
+    try {
+      const started = await pay({ months: 1, phone: '0772555111' });
+      await run('platformUpdateRestaurant', { id: k.id, paidUntil: when(1) }, k.ops);
+      const status = async () =>
+        (await run('platformListPayments', { id: k.id }, k.ops)).rows.find(
+          (row) => row.id === started.id,
+        ).status;
+      // Nobody opens the payment again: the owner's notification checks move it on.
+      for (let i = 0; i < 50 && (await status()) !== 'paid'; i += 1) {
+        await run('getNotifications', {}, k.owner);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(await status(), 'paid');
+      // And the paid month moved on, so the reminder is for the new end date.
+      const { restaurant } = await run('getBilling', {}, k.owner);
+      const days = (new Date(restaurant.paidUntil) - Date.now()) / DAY;
+      assert.ok(days > 27, `paid for ${days} more days`);
+    } finally {
+      process.env.RELAY_BILLING_CHECK_MS = '-1';
+    }
+  });
+
   test('without ioTec keys the owner is told to contact Relay', async () => {
     const saved = process.env.IOTEC_CLIENT_ID;
     delete process.env.IOTEC_CLIENT_ID;
@@ -5111,6 +5139,46 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
       await rejects(pay({ months: 1, phone: '0772555111' }), /not switched on yet/);
     } finally {
       process.env.IOTEC_CLIENT_ID = saved;
+    }
+  });
+});
+
+describe('daily upkeep without scheduled jobs', () => {
+  test('the first staff activity of the day runs it once, in the background', async () => {
+    const claims = () =>
+      new Parse.Query('Counter').startsWith('key', 'upkeep:').find({ useMasterKey: true });
+    const settle = async (value) => {
+      for (let i = 0; i < 50; i += 1) {
+        const rows = await claims();
+        if (rows.length && rows[0].get('value') >= value) return rows;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return claims();
+    };
+    process.env.RELAY_UPKEEP_CHECK_MS = '0';
+    const before = momo.ip;
+    momo.ip = '203.0.113.77';
+    try {
+      assert.deepEqual(await claims(), []);
+      await run('getNotifications', {}, s.owner);
+      const rows = await settle(1);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].get('value'), 1);
+      // The server address check ran with it: the owner hears about the change.
+      let told = false;
+      for (let i = 0; i < 50 && !told; i += 1) {
+        const { items } = await run('getNotifications', {}, s.owner);
+        told = items.some((n) => /address changed/.test(n.title) && /203\.0\.113\.77/.test(n.body));
+        if (!told) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.ok(told, 'the owner was told the server address changed');
+      // Later activity the same day does not run it again.
+      await run('getNotifications', {}, s.owner);
+      const again = await settle(2);
+      assert.equal(again[0].get('value'), 2, 'the second attempt found the day taken');
+    } finally {
+      process.env.RELAY_UPKEEP_CHECK_MS = '-1';
+      momo.ip = before;
     }
   });
 });
