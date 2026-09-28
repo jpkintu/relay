@@ -486,10 +486,8 @@ const zSummary = (config, data) =>
 // whenever an owner opens the app, so it happens even without the job
 // (RELAY_Z_CHECK_MS=-1 turns the automatic check off, as in the e2e tests).
 const Z_CHECK_MS = Number(process.env.RELAY_Z_CHECK_MS ?? 600000);
-let lastZCheck = 0;
 async function zReportDue(config, { force = false } = {}) {
-  if (!force && (Z_CHECK_MS < 0 || Date.now() - lastZCheck < Z_CHECK_MS)) return null;
-  lastZCheck = Date.now();
+  if (!force && !require('./lib/throttle').due('z-report', Z_CHECK_MS)) return null;
   const now = new Date();
   if (localClock(now, config.timezone).hour < Number(config.zReportHour ?? 23)) return null;
   const day = isoDay(now, config.timezone);

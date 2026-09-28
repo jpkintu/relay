@@ -1,9 +1,12 @@
 // Cash check: confirms the cash records still agree with each other and tells
-// the owner about anything that does not. Runs nightly as the Cloud Job
-// "cashCheck" (schedule it in Back4App → Cloud Code → Jobs) and on demand
+// the owner about anything that does not. Runs once a day with the rest of the
+// daily upkeep: on the first staff activity of the day (no scheduled job
+// needed), or as the Cloud Job "cashCheck" if one is scheduled, and on demand
 // from the owner's Payments ledger.
 
-const { adminOnly, loadConfig, findAll } = require('./lib/core');
+const { adminOnly, claimOnce, loadConfig, findAll } = require('./lib/core');
+const { due } = require('./lib/throttle');
+const { log, errorMessage } = require('./lib/log');
 const { sumBy } = require('./lib/money');
 const { dateKey } = require('./lib/dates');
 const { money, notifyAdmins } = require('./notifications');
@@ -96,15 +99,34 @@ async function runCashCheck() {
   return { checkedAt, ok: !problems.length, problems };
 }
 
-Parse.Cloud.job('cashCheck', async () => {
+// The daily upkeep: the cash check, removing customer details past the
+// owner's retention period (Admin → Data & privacy), and checking the
+// server's public address (Airtel's allowed list).
+async function upkeep() {
   const result = await runCashCheck();
-  // The nightly run also removes customer details past the owner's
-  // retention period (Admin → Data & privacy).
   const retention = await require('./privacy').runRetention();
-  // And checks the server's public address (Airtel's allowed list).
   await require('./serverAddress')
     .watchServerAddress()
     .catch(() => null);
+  return { result, retention };
+}
+
+// Once a day without a scheduled job: the first staff activity of the day
+// (their notification check) starts the upkeep in the background. The day is
+// claimed in the database, so only one server does it.
+const upkeepCheckMs = () => Number(process.env.RELAY_UPKEEP_CHECK_MS ?? 600000);
+function upkeepDue() {
+  if (!due('upkeep', upkeepCheckMs())) return;
+  void (async () => {
+    const { values: config } = await loadConfig();
+    if (!(await claimOnce(`upkeep:${dateKey(new Date(), config.timezone)}`))) return;
+    const { result } = await upkeep();
+    log('info', 'upkeep.done', { problems: result.problems.length });
+  })().catch((error) => log('error', 'upkeep.failed', { message: errorMessage(error) }));
+}
+
+Parse.Cloud.job('cashCheck', async () => {
+  const { result, retention } = await upkeep();
   const cleaned = retention.orders || retention.customers || retention.notifications;
   return `${result.ok ? 'Cash records agree' : `${result.problems.length} problems found`}${
     cleaned
@@ -118,4 +140,4 @@ Parse.Cloud.define('adminRunCashCheck', async (request) => {
   return runCashCheck();
 });
 
-module.exports = { runCashCheck };
+module.exports = { runCashCheck, upkeepDue };
