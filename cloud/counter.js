@@ -178,7 +178,13 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
   const total = subtotal + fee;
   const momo =
     method === 'mobile_money' && !payLater
-      ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference)
+      ? await checkMobileMoney(
+          config,
+          p.paymentProvider,
+          p.paymentReference,
+          undefined,
+          p.payerPhone || p.customerPhone,
+        )
       : null;
 
   const me = await actor.fetch(MASTER);
@@ -218,6 +224,7 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
     assignedAt: new Date(),
     ...(rider && { createdBy: rider }),
     ...(momo && {
+      ...momo.request,
       paymentProvider: momo.provider,
       paymentReference: momo.reference,
       paymentStatus: PENDING,
@@ -303,8 +310,15 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
   const { values: config } = await loadConfig();
   if (p.paymentMethod === 'cash') await cashIntoTill(order, actor, role);
   else if (p.paymentMethod === 'mobile_money') {
-    const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
+    const momo = await checkMobileMoney(
+      config,
+      p.paymentProvider,
+      p.paymentReference,
+      order.id,
+      p.payerPhone || order.get('customerPhone'),
+    );
     order.set({
+      ...momo.request,
       paymentMethod: 'mobile_money',
       paymentProvider: momo.provider,
       paymentReference: momo.reference,

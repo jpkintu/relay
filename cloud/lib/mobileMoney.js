@@ -7,22 +7,29 @@ const PROVIDERS = [
     label: 'Airtel Money',
     codeField: 'airtelMerchantCode',
     nameField: 'airtelMerchantName',
+    autoField: 'airtelAutoCollect',
   },
   {
     provider: 'mtn',
     label: 'MTN MoMo',
     codeField: 'mtnMerchantCode',
     nameField: 'mtnMerchantName',
+    autoField: 'mtnAutoCollect',
   },
 ];
 
-// The merchant accounts riders can offer: only providers with a code set.
+// The providers riders can offer: those with a merchant code set, or with
+// automatic payments switched on (Admin → Payments). `auto`: the app can ask
+// the customer's phone to pay instead of waiting for a transaction ID.
 function merchantAccounts(config) {
-  return PROVIDERS.filter((p) => String(config[p.codeField] || '').trim()).map((p) => ({
+  return PROVIDERS.filter(
+    (p) => String(config[p.codeField] || '').trim() || config[p.autoField] === true,
+  ).map((p) => ({
     provider: p.provider,
     label: p.label,
-    code: String(config[p.codeField]).trim(),
+    code: String(config[p.codeField] || '').trim(),
     name: String(config[p.nameField] || '').trim(),
+    auto: config[p.autoField] === true,
   }));
 }
 

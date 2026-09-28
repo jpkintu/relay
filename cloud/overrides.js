@@ -229,8 +229,15 @@ Parse.Cloud.define('adminOverrideOrder', async (request) => {
     if (p.method === 'mobile_money') {
       if (!can.paymentToMobileMoney)
         throw invalid('Only a delivered cash order whose cash is still with the rider can switch');
-      const momo = await checkMobileMoney(config, p.provider, p.reference, order.id);
+      const momo = await checkMobileMoney(
+        config,
+        p.provider,
+        p.reference,
+        order.id,
+        p.payerPhone || order.get('customerPhone'),
+      );
       order.set({
+        ...momo.request,
         paymentMethod: 'mobile_money',
         paymentProvider: momo.provider,
         paymentReference: momo.reference,

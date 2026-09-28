@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { ArrowRight, Eye, LockKeyhole } from 'lucide-react';
 import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
+
+// Google sign-in is off (owner's decision 2026-09-28): staff sign in with a
+// username and PIN. Build with VITE_ENABLE_GOOGLE_SIGNIN=true to show it again.
+const GOOGLE_SIGN_IN = import.meta.env.VITE_ENABLE_GOOGLE_SIGNIN === 'true';
 import { useSession } from '../lib/session';
 import { BrandMark } from './BrandMark';
 import { RelayMark } from './RelayMark';
@@ -154,9 +158,11 @@ export function AuthScreen() {
               <ArrowRight size={19} />
             </button>
           </form>
-          <button className="google-button" onClick={() => startGoogleSignIn()}>
-            Continue with Google
-          </button>
+          {GOOGLE_SIGN_IN && (
+            <button className="google-button" onClick={() => startGoogleSignIn()}>
+              Continue with Google
+            </button>
+          )}
           {previewAvailable && (
             <button className="preview-button" onClick={startPreview}>
               <Eye size={17} /> Preview rider workspace

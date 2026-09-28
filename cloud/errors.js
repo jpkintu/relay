@@ -172,7 +172,9 @@ const FIXED_DAYS = 30;
 // Owner: recorded errors, newest first. Old ones are cleared as the list is
 // read: fixed ones after 30 days, open ones after 90.
 Parse.Cloud.define('adminListErrors', async (request) => {
-  await adminOnly(request);
+  // The count in the menu is shown without opening Admin; the list needs it.
+  if (request.params?.countOnly) await adminOnly(request);
+  else await require('./adminLock').requireAdminUnlock(request);
   const state = request.params?.state === 'fixed' ? 'fixed' : 'open';
   const now = Date.now();
   const stale = await findAll(new Parse.Query('ErrorLog'));
@@ -212,7 +214,7 @@ Parse.Cloud.define('adminListErrors', async (request) => {
 // Owner: mark errors fixed. { ids } or { all: true }. If one happens again
 // it comes back as a new open entry.
 Parse.Cloud.define('adminResolveErrors', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await require('./adminLock').requireAdminUnlock(request);
   const p = request.params || {};
   const query = new Parse.Query('ErrorLog');
   query.notEqualTo('resolved', true);

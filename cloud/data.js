@@ -1,7 +1,8 @@
 // Owner's data export (Admin → Data & privacy): every business record, a
 // page at a time, for a backup file or spreadsheets. Read-only.
 
-const { MASTER, adminOnly, audit, invalid, getRoleName } = require('./lib/core');
+const { MASTER, audit, invalid, getRoleName } = require('./lib/core');
+const { requireAdminUnlock } = require('./adminLock');
 
 // What a backup contains. Left out: login sessions, PIN hashes, device
 // push keys, the VAPID secret, counters and demo rows.
@@ -53,7 +54,7 @@ async function userRow(user) {
 // { className, after } → { rows, next }. Pages run in objectId order; pass
 // `next` back as `after` until it is null.
 Parse.Cloud.define('adminExportData', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const { className, after } = request.params || {};
   if (!EXPORT_CLASSES.includes(className)) throw invalid('Unknown kind of record');
   if (after !== undefined && after !== null && !/^[A-Za-z0-9]{1,32}$/.test(String(after)))
@@ -78,7 +79,7 @@ Parse.Cloud.define('adminExportData', async (request) => {
 
 // How many records a backup will hold, so the app can show progress.
 Parse.Cloud.define('adminExportSummary', async (request) => {
-  await adminOnly(request);
+  await requireAdminUnlock(request);
   const counts = {};
   for (const className of EXPORT_CLASSES) {
     const query = new Parse.Query(className);

@@ -17,13 +17,13 @@ const {
   getRoleName,
   readAcl,
   userAcl,
-  adminOnly,
   audit,
   loadConfig,
   nextStaffCode,
   nextDailyCode,
   isBrokenCode,
 } = require('./lib/core');
+const { requireAdminUnlock } = require('./adminLock');
 
 const PROTECTED_CLASSES = [
   'Order',
@@ -44,6 +44,7 @@ const PROTECTED_CLASSES = [
   'Secret',
   'ZReport',
   'ErrorLog',
+  'AdminUnlock',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -54,6 +55,7 @@ const PRIVATE_CLASSES = [
   'Secret',
   'ZReport',
   'ErrorLog',
+  'AdminUnlock',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -183,6 +185,14 @@ const SCHEMAS = {
     feePayout: ['Pointer', 'TillPayout'],
     // Customer details removed (privacy retention or a request).
     anonymisedAt: D,
+    // Automatic mobile money: the request sent to the customer's phone.
+    payRequestStatus: S,
+    payRequestId: S,
+    payRequestPhone: S,
+    payRequestAt: D,
+    payRequestSentAt: D,
+    payRequestError: S,
+    paymentAuto: B,
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -268,6 +278,9 @@ const SCHEMAS = {
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
     restaurantName: S,
+    mtnAutoCollect: B,
+    airtelAutoCollect: B,
+    momoDialCode: S,
     retentionMonths: N,
     privacyContact: S,
     setupDone: B,
@@ -375,6 +388,7 @@ const SCHEMAS = {
     lastErrorAt: D,
   },
   Secret: { key: S, value: 'Object' },
+  AdminUnlock: { tokenHash: S, user, expiresAt: D },
   Notification: {
     recipient: user,
     kind: S,
@@ -583,7 +597,7 @@ Parse.Cloud.job('applySecurity', async () => {
 });
 
 Parse.Cloud.define('adminApplySecurity', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const updated = await applySecurity();
   await audit(actor, 'security.applied', { className: 'Security', id: 'all' }, null, updated);
   return updated;

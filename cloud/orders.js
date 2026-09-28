@@ -188,7 +188,13 @@ Parse.Cloud.define('createOrder', async (request) => {
   // the order is sent; the cashier confirms it before the kitchen accepts.
   const momo =
     paymentMethod === 'mobile_money'
-      ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference)
+      ? await checkMobileMoney(
+          config,
+          p.paymentProvider,
+          p.paymentReference,
+          undefined,
+          p.payerPhone || p.customerPhone,
+        )
       : null;
 
   const order = new Parse.Object('Order');
@@ -219,6 +225,7 @@ Parse.Cloud.define('createOrder', async (request) => {
     disputeFlag: false,
     ...(pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) }),
     ...(momo && {
+      ...momo.request,
       paymentProvider: momo.provider,
       paymentReference: momo.reference,
       paymentStatus: PENDING,
@@ -308,7 +315,16 @@ const counterPaid = (order) =>
 // Used by the rider's "Delivered" step and the owner's override.
 async function applyDelivery(
   order,
-  { method: wanted, provider, reference, amount: given, actor, config, now = new Date() },
+  {
+    method: wanted,
+    provider,
+    reference,
+    payerPhone,
+    amount: given,
+    actor,
+    config,
+    now = new Date(),
+  },
 ) {
   const method = wanted || order.get('paymentMethod');
   if (!PAYMENT_METHODS.includes(method)) throw invalid('Invalid payment method');
@@ -317,8 +333,15 @@ async function applyDelivery(
   // Paying by mobile money at the door instead of cash: record the
   // transaction for the cashier to confirm.
   if (!paidByMomo && method === 'mobile_money') {
-    const momo = await checkMobileMoney(config, provider, reference, order.id);
+    const momo = await checkMobileMoney(
+      config,
+      provider,
+      reference,
+      order.id,
+      payerPhone || order.get('customerPhone'),
+    );
     order.set({
+      ...momo.request,
       paymentProvider: momo.provider,
       paymentReference: momo.reference,
       paymentStatus: PENDING,
@@ -425,6 +448,7 @@ Parse.Cloud.define('transitionOrder', async (request) => {
       method: p.paymentMethod,
       provider: p.paymentProvider,
       reference: p.paymentReference,
+      payerPhone: p.payerPhone,
       amount: p.amountCollected,
       actor,
       config,

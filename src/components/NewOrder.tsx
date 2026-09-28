@@ -27,7 +27,13 @@ import {
   extrasOf,
 } from '../lib/cart';
 import type { AccompanimentOption, CartLine, MenuItem } from '../lib/cart';
-import { MobileMoneyPanel, referenceProblem } from './MobileMoney';
+import {
+  MobileMoneyPanel,
+  PaymentRequestStatus,
+  payerPhoneProblem,
+  referenceProblem,
+  usesRequest,
+} from './MobileMoney';
 import { PinSheet } from './MapPin';
 import type { LatLng } from './MapPin';
 import { usePrint } from '../lib/print';
@@ -110,6 +116,9 @@ type Draft = {
   payment: string;
   provider: string;
   reference: string;
+  // Automatic payments: the manual way chosen, and the number to ask.
+  manualPay?: boolean;
+  payerPhone?: string;
   orderType?: OrderType;
   riderId?: string;
   table?: string;
@@ -206,6 +215,7 @@ export function NewOrder({
     id?: string;
     orderCode?: string;
     cashLimitReached?: boolean;
+    payRequest?: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -250,12 +260,18 @@ export function NewOrder({
   );
   // Counter orders can be paid later (eat-in / pick-up only).
   const payLater = !!counter && !isDelivery && !!draft.payLater;
+  const payRequest = usesRequest(config.mobileMoney, draft.provider, draft.manualPay);
   const problems = [
     isDelivery && !draft.name.trim() && 'customer name',
     isDelivery && !draft.address.trim() && !draft.location && 'delivery address or map pin',
     !draft.cart.length && 'at least one item',
     !payLater && !isCash && !draft.provider && 'Airtel or MTN',
-    !payLater && !isCash && draft.provider && referenceProblem(draft.reference),
+    !payLater &&
+      !isCash &&
+      draft.provider &&
+      (payRequest
+        ? payerPhoneProblem(draft.payerPhone ?? draft.phone)
+        : referenceProblem(draft.reference)),
   ].filter(Boolean) as string[];
 
   const quickAdd = (item: MenuItem) => {
@@ -329,7 +345,8 @@ export function NewOrder({
         deliveryFee: fee,
         paymentMethod: draft.payment,
         paymentProvider: isCash || payLater ? undefined : draft.provider,
-        paymentReference: isCash || payLater ? undefined : draft.reference.trim(),
+        paymentReference: isCash || payLater ? undefined : payRequest ? '' : draft.reference.trim(),
+        ...(!isCash && !payLater && payRequest && { payerPhone: draft.payerPhone ?? draft.phone }),
         items: draft.cart.map((line) => ({
           id: line.itemId,
           quantity: line.quantity,
@@ -342,7 +359,7 @@ export function NewOrder({
       } catch {
         // ignore
       }
-      setPlaced(result || {});
+      setPlaced({ ...(result || {}), payRequest: !isCash && !payLater && payRequest });
       // Counter orders: open the print dialog for the kitchen ticket at once.
       if (counter && result?.id && config.receipt?.autoPrintKitchen && !preview)
         void print(result.id, 'kitchen');
@@ -372,6 +389,7 @@ export function NewOrder({
                 : 'The kitchen has it.'
             : 'The kitchen has received your order.'}
         </p>
+        {placed.payRequest && placed.id && !preview && <PaymentRequestStatus orderId={placed.id} />}
         {placed.cashLimitReached && (
           <p className="limit-banner" role="status">
             This order takes you to your cash limit. Deliver it and hand over the cash before taking
@@ -723,6 +741,10 @@ export function NewOrder({
                 customerPhone={draft.phone}
                 onProvider={(provider) => update({ provider })}
                 onReference={(reference) => update({ reference })}
+                manual={draft.manualPay}
+                onManual={(manualPay) => update({ manualPay })}
+                payerPhone={draft.payerPhone}
+                onPayerPhone={(payerPhone) => update({ payerPhone })}
               />
             )}
             {!payLater && isCash && (

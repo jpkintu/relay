@@ -51,6 +51,10 @@ const DEFAULT_CONFIG = {
   // Privacy (Admin → Data & privacy): months to keep customer details on
   // finished orders (0 = keep), and who customers contact about their data.
   retentionMonths: 0,
+  // Automatic mobile money (Admin → Payments); the keys are in Secret.
+  mtnAutoCollect: false,
+  airtelAutoCollect: false,
+  momoDialCode: '256',
   privacyContact: '',
   // Admin → Get started: true once the owner finishes it, false when they
   // reopen it, null (not set) to decide from the restaurant's state.

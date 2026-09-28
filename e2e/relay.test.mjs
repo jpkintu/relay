@@ -39,11 +39,89 @@ const CLOUD_MAIN = process.env.RELAY_CLOUD_MAIN
   ? path.resolve(process.env.RELAY_CLOUD_MAIN)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cloud/main.js');
 
+// Stand-ins for the MTN MoMo and Airtel Money APIs (cloud/lib/momoApi.js
+// talks to these instead of the real services).
+const MOMO_PORT = 1341;
+process.env.RELAY_MTN_URL = `http://localhost:${MOMO_PORT}/mtn`;
+process.env.RELAY_AIRTEL_URL = `http://localhost:${MOMO_PORT}/airtel`;
+const momo = { mtn: new Map(), airtel: new Map(), polls: new Map() };
+let momoServer;
+function startMomoMock() {
+  const app = express();
+  app.use(express.json());
+  // MTN: token (Basic auth + subscription key), request to pay, status.
+  app.post('/mtn/collection/token/', (req, res) => {
+    const [user, key] = Buffer.from(String(req.headers.authorization).split(' ')[1] || '', 'base64')
+      .toString()
+      .split(':');
+    if (req.headers['ocp-apim-subscription-key'] !== 'mtn-sub' || !user || key === 'bad')
+      return res.status(401).json({ message: 'Invalid credentials' });
+    res.json({ access_token: 'mtn-token', token_type: 'access_token', expires_in: 3600 });
+  });
+  app.post('/mtn/collection/v1_0/requesttopay', (req, res) => {
+    if (req.headers.authorization !== 'Bearer mtn-token') return res.status(401).end();
+    momo.mtn.set(req.headers['x-reference-id'], {
+      ...req.body,
+      target: req.headers['x-target-environment'],
+    });
+    res.status(202).end();
+  });
+  app.get('/mtn/collection/v1_0/requesttopay/:id', (req, res) => {
+    const request = momo.mtn.get(req.params.id);
+    if (!request) return res.status(404).json({ message: 'Not found' });
+    const polls = (momo.polls.get(req.params.id) || 0) + 1;
+    momo.polls.set(req.params.id, polls);
+    // The customer answers on the second check; numbers ending 99 decline.
+    if (polls < 2) return res.json({ status: 'PENDING' });
+    if (request.payer.partyId.endsWith('99'))
+      return res.json({ status: 'FAILED', reason: 'APPROVAL_REJECTED' });
+    res.json({
+      status: 'SUCCESSFUL',
+      financialTransactionId: `MTN${polls}${req.params.id.slice(0, 6)}`,
+    });
+  });
+  app.post('/mtn/v1_0/apiuser', (req, res) => res.status(201).end());
+  app.post('/mtn/v1_0/apiuser/:id/apikey', (req, res) =>
+    res.status(201).json({ apiKey: 'sandbox-api-key' }),
+  );
+  // Airtel: token (client credentials), USSD push, status.
+  app.post('/airtel/auth/oauth2/token', (req, res) => {
+    if (req.body.client_secret !== 'airtel-secret')
+      return res.status(401).json({ error: 'invalid_client', error_description: 'Bad client' });
+    res.json({ access_token: 'airtel-token', expires_in: 180, token_type: 'bearer' });
+  });
+  app.post('/airtel/merchant/v1/payments/', (req, res) => {
+    if (req.headers.authorization !== 'Bearer airtel-token') return res.status(401).end();
+    momo.airtel.set(req.body.transaction.id, { ...req.body, country: req.headers['x-country'] });
+    res.json({
+      data: { transaction: { id: req.body.transaction.id, status: 'Success.' } },
+      status: { code: '200', success: true, message: 'Success.' },
+    });
+  });
+  app.get('/airtel/standard/v1/payments/:id', (req, res) => {
+    const polls = (momo.polls.get(req.params.id) || 0) + 1;
+    momo.polls.set(req.params.id, polls);
+    res.json({
+      data: {
+        transaction: {
+          id: req.params.id,
+          status: polls < 2 ? 'TIP' : 'TS',
+          airtel_money_id: polls < 2 ? '' : `AM${req.params.id.slice(0, 8)}`,
+          message: 'Paid',
+        },
+      },
+      status: { code: '200', success: true },
+    });
+  });
+  momoServer = app.listen(MOMO_PORT);
+}
+
 let httpServer;
 let parseServer;
 const LIVE_CLASSES = ['Order', 'CashHandover', 'Notification'];
 
 before(async () => {
+  startMomoMock();
   parseServer = new ParseServer({
     databaseURI: databaseUri(),
     cloud: CLOUD_MAIN,
@@ -75,6 +153,7 @@ before(async () => {
 });
 
 after(async () => {
+  momoServer?.close();
   httpServer?.close();
   await parseServer?.handleShutdown?.();
 });
@@ -95,7 +174,12 @@ const run = (name, params, user) => {
   const pin = PINS[user?.get('username')];
   const withPin =
     PIN_STEPS.includes(name) && params && !('pin' in params) && pin ? { ...params, pin } : params;
-  return Parse.Cloud.run(name, withPin, user ? as(user) : {});
+  // The Admin area asks for the owner's PIN again, as the app does.
+  return Parse.Cloud.run(name, withPin, user ? as(user) : {}).catch(async (error) => {
+    if (!user || !pin || !/Admin is locked/.test(String(error.message))) throw error;
+    await Parse.Cloud.run('unlockAdmin', { pin }, as(user));
+    return Parse.Cloud.run(name, withPin, as(user));
+  });
 };
 const login = (username, password) => Parse.User.logIn(username, password);
 
@@ -816,8 +900,15 @@ describe('phase 1: accompaniments, stock and the full order flow', () => {
   test('riders get the configured merchant codes', async () => {
     const profile = await run('getMyProfile', {}, s.rider2);
     assert.deepEqual(profile.config.mobileMoney, [
-      { provider: 'airtel', label: 'Airtel Money', code: '654321', name: 'Relay Foods' },
-      { provider: 'mtn', label: 'MTN MoMo', code: '123456', name: 'Relay Foods' },
+      // auto: automatic payments are off until the owner adds API keys.
+      {
+        provider: 'airtel',
+        label: 'Airtel Money',
+        code: '654321',
+        name: 'Relay Foods',
+        auto: false,
+      },
+      { provider: 'mtn', label: 'MTN MoMo', code: '123456', name: 'Relay Foods', auto: false },
     ]);
   });
 
@@ -3997,6 +4088,211 @@ describe('data export and customer privacy', () => {
   });
 });
 
+describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
+  let item;
+  let settings;
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run('adminSaveSettings', { ...settings, moduleCounter: true }, s.owner);
+  });
+  after(async () => {
+    await run('adminSavePaymentSettings', { provider: 'mtn', enabled: false }, s.owner);
+    await run('adminSavePaymentSettings', { provider: 'airtel', enabled: false }, s.owner);
+    await run('adminSaveSettings', settings, s.owner);
+  });
+  // Asks until the request is settled (the stand-in answers on the 2nd check).
+  const settle = async (orderId) => {
+    for (let i = 0; i < 10; i += 1) {
+      const state = await run('checkPaymentRequest', { orderId }, s.owner);
+      if (!['queued', 'pending'].includes(state.payRequestStatus)) return state;
+      await new Promise((resolve) => setTimeout(resolve, 3200));
+    }
+    throw new Error('the payment request never settled');
+  };
+  const counterOrder = (params) =>
+    run(
+      'createCounterOrder',
+      { orderType: 'pickup', items: [{ id: item.id, quantity: 1 }], ...params },
+      s.owner,
+    );
+
+  test('the owner stores the keys: masked on the way back, checked with the provider', async () => {
+    await rejects(
+      run('adminSavePaymentSettings', { provider: 'mtn', enabled: true }, s.owner),
+      /Add all the MTN MoMo keys/,
+    );
+    await run(
+      'adminSavePaymentSettings',
+      { provider: 'mtn', environment: 'sandbox', subscriptionKey: 'mtn-sub', enabled: false },
+      s.owner,
+    );
+    // Sandbox: Relay makes the API user and key from the subscription key.
+    const made = await run('adminMtnSandboxUser', {}, s.owner);
+    assert.match(made.apiKey, /^••••/);
+    await run(
+      'adminSavePaymentSettings',
+      { provider: 'mtn', environment: 'sandbox', enabled: true },
+      s.owner,
+    );
+    const view = await run('adminGetPaymentSettings', {}, s.owner);
+    assert.equal(view.mtn.enabled, true);
+    assert.equal(view.mtn.configured, true);
+    assert.equal(view.mtn.keys.subscriptionKey, '••••-sub');
+    assert.ok(!JSON.stringify(view).includes('sandbox-api-key'), 'keys never come back in full');
+    assert.deepEqual(await run('adminTestPaymentConnection', { provider: 'mtn' }, s.owner), {
+      ok: true,
+      message: 'Connected: the keys work.',
+    });
+    await run(
+      'adminSavePaymentSettings',
+      { provider: 'airtel', environment: 'sandbox', clientId: 'airtel-id', clientSecret: 'wrong' },
+      s.owner,
+    );
+    const bad = await run('adminTestPaymentConnection', { provider: 'airtel' }, s.owner);
+    assert.equal(bad.ok, false);
+    assert.match(bad.message, /401/);
+    const log = await run('adminGetAuditLog', { group: 'payment' }, s.owner);
+    assert.ok(log.rows.some((r) => r.action === 'payment.settings_saved'));
+    assert.ok(!JSON.stringify(log).includes('mtn-sub'), 'keys never reach the audit log');
+    await rejects(run('adminGetPaymentSettings', {}, s.dina), /admin role required/);
+    const profile = await run('getMyProfile', {}, s.pia);
+    assert.ok(profile.config.mobileMoney.some((a) => a.provider === 'mtn' && a.auto));
+  });
+
+  test('MTN: no transaction ID sends a request to the customer; approval confirms the payment', async () => {
+    await rejects(
+      counterOrder({ paymentMethod: 'mobile_money', paymentProvider: 'mtn', customerPhone: '12' }),
+      /Enter the customer’s MTN MoMo number/,
+    );
+    const order = await counterOrder({
+      paymentMethod: 'mobile_money',
+      paymentProvider: 'mtn',
+      customerPhone: '0772 123456',
+    });
+    const state = await settle(order.id);
+    assert.equal(state.payRequestStatus, 'successful');
+    assert.equal(state.paymentStatus, 'VERIFIED');
+    assert.match(state.reference, /^MTN/);
+    const sent = [...momo.mtn.values()].at(-1);
+    assert.equal(sent.payer.partyId, '256772123456');
+    assert.equal(sent.currency, 'EUR', 'the MTN sandbox only takes EUR');
+    assert.equal(sent.amount, String(order.total));
+    assert.equal(sent.target, 'sandbox');
+    const ledger = await run('getMobileMoneyLedger', {}, s.owner);
+    assert.ok(ledger.verified.some((row) => row.id === order.id && row.auto));
+  });
+
+  test('MTN: a declined request leaves the payment not received, and the bill open again', async () => {
+    const order = await counterOrder({
+      orderType: 'eat_in',
+      paymentMethod: 'mobile_money',
+      paymentProvider: 'mtn',
+      payerPhone: '0772000099',
+    });
+    const state = await settle(order.id);
+    assert.equal(state.payRequestStatus, 'failed');
+    assert.equal(state.paymentStatus, 'REJECTED');
+    assert.match(state.reason, /did not go through/);
+    // The cashier takes it another way; a typed transaction ID still works.
+    await run(
+      'takeCounterPayment',
+      {
+        orderId: order.id,
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'mtn',
+        paymentReference: 'MP12345678',
+      },
+      s.owner,
+    );
+  });
+
+  test('Airtel: the national number is used and the payment confirms itself', async () => {
+    await run(
+      'adminSavePaymentSettings',
+      { provider: 'airtel', environment: 'sandbox', clientSecret: 'airtel-secret', enabled: true },
+      s.owner,
+    );
+    assert.equal(
+      (await run('adminTestPaymentConnection', { provider: 'airtel' }, s.owner)).ok,
+      true,
+    );
+    const order = await counterOrder({ orderType: 'eat_in', payLater: true });
+    await run(
+      'takeCounterPayment',
+      {
+        orderId: order.id,
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'airtel',
+        payerPhone: '+256 752 123 456',
+      },
+      s.owner,
+    );
+    const state = await settle(order.id);
+    assert.equal(state.paymentStatus, 'VERIFIED');
+    assert.match(state.reference, /^AM/);
+    const sent = [...momo.airtel.values()].at(-1);
+    assert.equal(sent.subscriber.msisdn, '752123456');
+    assert.equal(sent.country, 'UG');
+    assert.equal(sent.transaction.amount, order.total);
+  });
+
+  test('with automatic payments off, the transaction ID is required again', async () => {
+    await run('adminSavePaymentSettings', { provider: 'mtn', enabled: false }, s.owner);
+    await rejects(
+      counterOrder({
+        paymentMethod: 'mobile_money',
+        paymentProvider: 'mtn',
+        customerPhone: '0772123456',
+      }),
+      /Enter the transaction ID|Choose/,
+    );
+  });
+});
+
+describe('the Admin area opens only with the PIN', () => {
+  test('a fresh owner session must re-enter the PIN; it can be locked again', async () => {
+    // Fresh sessions straight from the REST API (the SDK would reuse the
+    // shared owner object and change the session the other tests use).
+    const session = async () => {
+      const response = await fetch(`${SERVER_URL}/login`, {
+        method: 'POST',
+        headers: { 'X-Parse-Application-Id': APP_ID, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'owner', password: PINS.owner }),
+      });
+      return (await response.json()).sessionToken;
+    };
+    const token = await session();
+    const call = (name, params = {}) => Parse.Cloud.run(name, params, { sessionToken: token });
+    for (const name of [
+      'adminGetAuditLog',
+      'adminSaveBranding',
+      'adminExportSummary',
+      'adminListErrors',
+    ])
+      await rejects(call(name), /Admin is locked/);
+    // The menu's error count works without opening Admin.
+    assert.equal(typeof (await call('adminListErrors', { countOnly: true })).open, 'number');
+    assert.equal((await call('getAdminUnlock')).unlocked, false);
+    await rejects(call('unlockAdmin', { pin: 'wrong-pin' }), /Wrong PIN/);
+    const opened = await call('unlockAdmin', { pin: PINS.owner });
+    assert.equal(opened.unlocked, true);
+    assert.ok((await call('adminGetAuditLog')).rows.some((r) => r.action === 'admin.unlocked'));
+    assert.equal((await call('getAdminUnlock')).unlocked, true);
+    // Another session of the same owner is still locked.
+    const other = await session();
+    await rejects(
+      Parse.Cloud.run('adminExportSummary', {}, { sessionToken: other }),
+      /Admin is locked/,
+    );
+    await call('lockAdmin');
+    await rejects(call('adminExportSummary'), /Admin is locked/);
+    await rejects(run('unlockAdmin', { pin: PINS.dina }, s.dina), /admin role required/);
+  });
+});
+
 // Who may call each Cloud function. Every function the server registers must
 // be listed here, so a new function cannot ship without deciding who may use
 // it. public: anyone, signed in or not; signedIn: any active team member
@@ -4027,6 +4323,7 @@ const ACCESS = {
     'setOrderLocation',
     'flagOrderIssue',
     'resubmitPayment',
+    'checkPaymentRequest',
   ],
   rider: ['createOrder', 'createHandover', 'getMyHandovers', 'getMyPay', 'setMyAvailability'],
   riderOrAdmin: ['getRiderEarnings'],
@@ -4096,6 +4393,13 @@ const ACCESS = {
     'adminSavePrivacy',
     'adminApplyRetention',
     'adminForgetCustomer',
+    'unlockAdmin',
+    'getAdminUnlock',
+    'lockAdmin',
+    'adminGetPaymentSettings',
+    'adminSavePaymentSettings',
+    'adminTestPaymentConnection',
+    'adminMtnSandboxUser',
   ],
 };
 const ALLOWED = {

@@ -136,6 +136,10 @@ function toJSON(row) {
 
 Parse.Cloud.define('getNotifications', async (request) => {
   const user = requireUser(request);
+  // Automatic mobile money requests move on even when nobody watches them.
+  await require('./collections')
+    .sweepRequests()
+    .catch(() => 0);
   const role = await getRoleName(user);
   if (role === 'rider') {
     const { values: settings } = await loadConfig();

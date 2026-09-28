@@ -188,6 +188,10 @@ var require_core = __commonJS({
       // Privacy (Admin → Data & privacy): months to keep customer details on
       // finished orders (0 = keep), and who customers contact about their data.
       retentionMonths: 0,
+      // Automatic mobile money (Admin → Payments); the keys are in Secret.
+      mtnAutoCollect: false,
+      airtelAutoCollect: false,
+      momoDialCode: "256",
       privacyContact: "",
       // Admin → Get started: true once the owner finishes it, false when they
       // reopen it, null (not set) to decide from the restaurant's state.
@@ -501,6 +505,75 @@ var require_log = __commonJS({
   }
 });
 
+// cloud/adminLock.js
+var require_adminLock = __commonJS({
+  "cloud/adminLock.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var { MASTER, adminOnly, audit, forbidden, verifyPin } = require_core();
+    var UNLOCK_MINUTES = 15;
+    var LOCKED = "Admin is locked. Enter your PIN to open it.";
+    var sessionToken = (request) => request.user?.getSessionToken?.() || request.headers?.["x-parse-session-token"] || "";
+    var hash = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
+    async function unlockRow(request) {
+      const token = sessionToken(request);
+      if (!token) return null;
+      const query = new Parse.Query("AdminUnlock");
+      query.equalTo("tokenHash", hash(token));
+      return query.first(MASTER);
+    }
+    async function requireAdminUnlock(request) {
+      if (request.master) return null;
+      const actor = await adminOnly(request);
+      const row = await unlockRow(request);
+      const now = Date.now();
+      if (!row || row.get("user")?.id !== actor.id || row.get("expiresAt") <= new Date(now))
+        throw forbidden(LOCKED);
+      if (row.get("expiresAt") - now < (UNLOCK_MINUTES - 1) * 6e4) {
+        row.set("expiresAt", new Date(now + UNLOCK_MINUTES * 6e4));
+        await row.save(null, MASTER);
+      }
+      return actor;
+    }
+    Parse.Cloud.define("unlockAdmin", async (request) => {
+      const actor = await adminOnly(request);
+      const token = sessionToken(request);
+      if (!token) throw forbidden("Sign in again to open Admin");
+      await verifyPin(actor, request.params?.pin);
+      const row = await unlockRow(request) || new Parse.Object("AdminUnlock");
+      const until = new Date(Date.now() + UNLOCK_MINUTES * 6e4);
+      row.set({ tokenHash: hash(token), user: actor, expiresAt: until });
+      row.setACL(new Parse.ACL());
+      await row.save(null, MASTER);
+      const stale = new Parse.Query("AdminUnlock");
+      stale.lessThan("expiresAt", /* @__PURE__ */ new Date());
+      const expired = await stale.find(MASTER);
+      if (expired.length) await Parse.Object.destroyAll(expired, MASTER);
+      await audit(actor, "admin.unlocked", { className: "Admin", id: "unlock" }, null, {
+        minutes: UNLOCK_MINUTES
+      });
+      return { unlocked: true, until: until.toISOString(), minutes: UNLOCK_MINUTES };
+    });
+    Parse.Cloud.define("getAdminUnlock", async (request) => {
+      const actor = await adminOnly(request);
+      const row = await unlockRow(request);
+      const open = !!row && row.get("user")?.id === actor.id && row.get("expiresAt") > /* @__PURE__ */ new Date();
+      return {
+        unlocked: open,
+        until: open ? row.get("expiresAt").toISOString() : null,
+        minutes: UNLOCK_MINUTES
+      };
+    });
+    Parse.Cloud.define("lockAdmin", async (request) => {
+      await adminOnly(request);
+      const row = await unlockRow(request);
+      if (row) await row.destroy(MASTER);
+      return { unlocked: false };
+    });
+    module2.exports = { requireAdminUnlock, LOCKED, UNLOCK_MINUTES };
+  }
+});
+
 // cloud/errors.js
 var require_errors = __commonJS({
   "cloud/errors.js"(exports2, module2) {
@@ -640,7 +713,8 @@ var require_errors = __commonJS({
     var OPEN_DAYS = 90;
     var FIXED_DAYS = 30;
     Parse.Cloud.define("adminListErrors", async (request) => {
-      await adminOnly(request);
+      if (request.params?.countOnly) await adminOnly(request);
+      else await require_adminLock().requireAdminUnlock(request);
       const state = request.params?.state === "fixed" ? "fixed" : "open";
       const now = Date.now();
       const stale = await findAll(new Parse.Query("ErrorLog"));
@@ -675,7 +749,7 @@ var require_errors = __commonJS({
       };
     });
     Parse.Cloud.define("adminResolveErrors", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await require_adminLock().requireAdminUnlock(request);
       const p = request.params || {};
       const query = new Parse.Query("ErrorLog");
       query.notEqualTo("resolved", true);
@@ -707,13 +781,13 @@ var require_security = __commonJS({
       getRoleName,
       readAcl,
       userAcl,
-      adminOnly,
       audit,
       loadConfig,
       nextStaffCode,
       nextDailyCode,
       isBrokenCode
     } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
     var PROTECTED_CLASSES = [
       "Order",
       "OrderItem",
@@ -732,7 +806,8 @@ var require_security = __commonJS({
       "PushSubscription",
       "Secret",
       "ZReport",
-      "ErrorLog"
+      "ErrorLog",
+      "AdminUnlock"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -741,7 +816,8 @@ var require_security = __commonJS({
       "PushSubscription",
       "Secret",
       "ZReport",
-      "ErrorLog"
+      "ErrorLog",
+      "AdminUnlock"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -856,7 +932,15 @@ var require_security = __commonJS({
         deliveryFeePaid: B,
         feePayout: ["Pointer", "TillPayout"],
         // Customer details removed (privacy retention or a request).
-        anonymisedAt: D
+        anonymisedAt: D,
+        // Automatic mobile money: the request sent to the customer's phone.
+        payRequestStatus: S,
+        payRequestId: S,
+        payRequestPhone: S,
+        payRequestAt: D,
+        payRequestSentAt: D,
+        payRequestError: S,
+        paymentAuto: B
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -942,6 +1026,9 @@ var require_security = __commonJS({
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
         restaurantName: S,
+        mtnAutoCollect: B,
+        airtelAutoCollect: B,
+        momoDialCode: S,
         retentionMonths: N,
         privacyContact: S,
         setupDone: B,
@@ -1049,6 +1136,7 @@ var require_security = __commonJS({
         lastErrorAt: D
       },
       Secret: { key: S, value: "Object" },
+      AdminUnlock: { tokenHash: S, user, expiresAt: D },
       Notification: {
         recipient: user,
         kind: S,
@@ -1240,7 +1328,7 @@ var require_security = __commonJS({
       return `Security applied: ${JSON.stringify(updated)}`;
     });
     Parse.Cloud.define("adminApplySecurity", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const updated = await applySecurity();
       await audit(actor, "security.applied", { className: "Security", id: "all" }, null, updated);
       return updated;
@@ -8829,6 +8917,795 @@ var require_alerts = __commonJS({
   }
 });
 
+// cloud/lib/momoApi.js
+var require_momoApi = __commonJS({
+  "cloud/lib/momoApi.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var MTN_URLS = {
+      sandbox: "https://sandbox.momodeveloper.mtn.com",
+      production: "https://proxy.momoapi.mtn.com"
+    };
+    var AIRTEL_URLS = {
+      sandbox: "https://openapiuat.airtel.africa",
+      production: "https://openapi.airtel.africa"
+    };
+    var mtnBase = (settings) => process.env.RELAY_MTN_URL || MTN_URLS[settings.environment] || MTN_URLS.sandbox;
+    var airtelBase = (settings) => process.env.RELAY_AIRTEL_URL || AIRTEL_URLS[settings.environment] || AIRTEL_URLS.sandbox;
+    var ProviderError = class extends Error {
+      constructor(message, status) {
+        super(message);
+        this.status = status;
+      }
+    };
+    async function call(method, url, { headers = {}, body } = {}) {
+      let response;
+      try {
+        response = await fetch(url, {
+          method,
+          headers: { Accept: "application/json", ...headers },
+          body: body === void 0 ? void 0 : typeof body === "string" ? body : JSON.stringify(body),
+          signal: AbortSignal.timeout(2e4)
+        });
+      } catch (error) {
+        throw new ProviderError(`Could not reach the provider (${error.message})`, 0);
+      }
+      const text = await response.text();
+      const data = (() => {
+        try {
+          return text ? JSON.parse(text) : null;
+        } catch {
+          return { raw: text.slice(0, 300) };
+        }
+      })();
+      if (!response.ok) {
+        const detail = data?.message || data?.error_description || data?.error || data?.status?.message || text;
+        throw new ProviderError(
+          `${response.status} ${String(detail || response.statusText).slice(0, 200)}`,
+          response.status
+        );
+      }
+      return { status: response.status, data };
+    }
+    var tokens = /* @__PURE__ */ new Map();
+    async function cachedToken(key, fetchToken) {
+      const hit = tokens.get(key);
+      if (hit && hit.expires > Date.now()) return hit.token;
+      const { token, seconds } = await fetchToken();
+      tokens.set(key, { token, expires: Date.now() + Math.max(60, seconds - 60) * 1e3 });
+      return token;
+    }
+    var forget = (key) => tokens.delete(key);
+    var mtnHeaders = (settings) => ({ "Ocp-Apim-Subscription-Key": settings.subscriptionKey });
+    var mtnKey = (settings) => `mtn:${settings.environment}:${settings.apiUser}`;
+    function mtnToken(settings) {
+      return cachedToken(mtnKey(settings), async () => {
+        const basic = Buffer.from(`${settings.apiUser}:${settings.apiKey}`).toString("base64");
+        const { data } = await call("POST", `${mtnBase(settings)}/collection/token/`, {
+          headers: { ...mtnHeaders(settings), Authorization: `Basic ${basic}` }
+        });
+        if (!data?.access_token) throw new ProviderError("MTN did not return an access token", 0);
+        return { token: data.access_token, seconds: Number(data.expires_in) || 3600 };
+      });
+    }
+    var mtnTarget = (settings) => settings.environment === "production" ? settings.targetEnvironment || "mtnuganda" : "sandbox";
+    async function mtnRequest(settings, { id, amount, currency, msisdn, externalId, note }) {
+      const token = await mtnToken(settings);
+      await call("POST", `${mtnBase(settings)}/collection/v1_0/requesttopay`, {
+        headers: {
+          ...mtnHeaders(settings),
+          Authorization: `Bearer ${token}`,
+          "X-Reference-Id": id,
+          "X-Target-Environment": mtnTarget(settings),
+          "Content-Type": "application/json"
+        },
+        body: {
+          amount: String(Math.round(amount)),
+          // The sandbox only accepts EUR.
+          currency: settings.environment === "production" ? currency : "EUR",
+          externalId,
+          payer: { partyIdType: "MSISDN", partyId: msisdn },
+          payerMessage: note,
+          payeeNote: note
+        }
+      });
+    }
+    async function mtnStatus(settings, id) {
+      const token = await mtnToken(settings);
+      const { data } = await call("GET", `${mtnBase(settings)}/collection/v1_0/requesttopay/${id}`, {
+        headers: {
+          ...mtnHeaders(settings),
+          Authorization: `Bearer ${token}`,
+          "X-Target-Environment": mtnTarget(settings)
+        }
+      });
+      const status = String(data?.status || "").toUpperCase();
+      const reason = typeof data?.reason === "string" ? data.reason : data?.reason?.message || data?.reason?.code;
+      return {
+        status: status === "SUCCESSFUL" ? "successful" : status === "FAILED" ? "failed" : "pending",
+        transactionId: String(data?.financialTransactionId || ""),
+        reason: reason ? String(reason) : ""
+      };
+    }
+    async function mtnSandboxUser(subscriptionKey, callbackHost = "example.com") {
+      const settings = { environment: "sandbox", subscriptionKey };
+      const apiUser = crypto.randomUUID();
+      await call("POST", `${mtnBase(settings)}/v1_0/apiuser`, {
+        headers: {
+          ...mtnHeaders(settings),
+          "X-Reference-Id": apiUser,
+          "Content-Type": "application/json"
+        },
+        body: { providerCallbackHost: callbackHost }
+      });
+      const { data } = await call("POST", `${mtnBase(settings)}/v1_0/apiuser/${apiUser}/apikey`, {
+        headers: mtnHeaders(settings)
+      });
+      if (!data?.apiKey) throw new ProviderError("MTN did not return an API key", 0);
+      return { apiUser, apiKey: data.apiKey };
+    }
+    var airtelKey = (settings) => `airtel:${settings.environment}:${settings.clientId}`;
+    function airtelToken(settings) {
+      return cachedToken(airtelKey(settings), async () => {
+        const { data } = await call("POST", `${airtelBase(settings)}/auth/oauth2/token`, {
+          headers: { "Content-Type": "application/json" },
+          body: {
+            client_id: settings.clientId,
+            client_secret: settings.clientSecret,
+            grant_type: "client_credentials"
+          }
+        });
+        if (!data?.access_token) throw new ProviderError("Airtel did not return an access token", 0);
+        return { token: data.access_token, seconds: Number(data.expires_in) || 180 };
+      });
+    }
+    var airtelHeaders = (settings, token, currency) => ({
+      Authorization: `Bearer ${token}`,
+      "X-Country": settings.country || "UG",
+      "X-Currency": currency,
+      "Content-Type": "application/json"
+    });
+    async function airtelRequest(settings, { id, amount, currency, msisdn, externalId }) {
+      const token = await airtelToken(settings);
+      const country = settings.country || "UG";
+      const { data } = await call("POST", `${airtelBase(settings)}/merchant/v1/payments/`, {
+        headers: airtelHeaders(settings, token, currency),
+        body: {
+          reference: externalId,
+          subscriber: { country, currency, msisdn },
+          transaction: { amount: Math.round(amount), country, currency, id }
+        }
+      });
+      if (data?.status && data.status.success === false)
+        throw new ProviderError(data.status.message || "Airtel refused the request", 0);
+    }
+    async function airtelStatus(settings, id, currency) {
+      const token = await airtelToken(settings);
+      const { data } = await call("GET", `${airtelBase(settings)}/standard/v1/payments/${id}`, {
+        headers: airtelHeaders(settings, token, currency)
+      });
+      const transaction = data?.data?.transaction || {};
+      const code = String(transaction.status || "").toUpperCase();
+      return {
+        status: code === "TS" ? "successful" : code === "TF" || code === "TE" ? "failed" : "pending",
+        transactionId: String(transaction.airtel_money_id || ""),
+        reason: code === "TS" ? "" : String(transaction.message || "")
+      };
+    }
+    function payerNumber(provider, phone, dial = "256") {
+      let digits = String(phone || "").replace(/[^\d]/g, "");
+      if (digits.startsWith("00")) digits = digits.slice(2);
+      if (digits.startsWith(dial)) digits = digits.slice(dial.length);
+      if (digits.startsWith("0")) digits = digits.slice(1);
+      if (digits.length < 8 || digits.length > 10) return "";
+      return provider === "mtn" ? `${dial}${digits}` : digits;
+    }
+    module2.exports = {
+      ProviderError,
+      mtnToken,
+      mtnRequest,
+      mtnStatus,
+      mtnSandboxUser,
+      airtelToken,
+      airtelRequest,
+      airtelStatus,
+      payerNumber,
+      forgetToken: forget,
+      mtnKey,
+      airtelKey
+    };
+  }
+});
+
+// cloud/lib/mobileMoney.js
+var require_mobileMoney = __commonJS({
+  "cloud/lib/mobileMoney.js"(exports2, module2) {
+    "use strict";
+    var PROVIDERS = [
+      {
+        provider: "airtel",
+        label: "Airtel Money",
+        codeField: "airtelMerchantCode",
+        nameField: "airtelMerchantName",
+        autoField: "airtelAutoCollect"
+      },
+      {
+        provider: "mtn",
+        label: "MTN MoMo",
+        codeField: "mtnMerchantCode",
+        nameField: "mtnMerchantName",
+        autoField: "mtnAutoCollect"
+      }
+    ];
+    function merchantAccounts(config) {
+      return PROVIDERS.filter(
+        (p) => String(config[p.codeField] || "").trim() || config[p.autoField] === true
+      ).map((p) => ({
+        provider: p.provider,
+        label: p.label,
+        code: String(config[p.codeField] || "").trim(),
+        name: String(config[p.nameField] || "").trim(),
+        auto: config[p.autoField] === true
+      }));
+    }
+    function cleanReference(value) {
+      return String(value ?? "").replace(/\s+/g, "").toUpperCase().slice(0, 40);
+    }
+    function referenceProblem(reference) {
+      if (!reference) return "Enter the transaction ID from the customer\u2019s payment message";
+      if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
+        return "A transaction ID has 4 to 40 letters or digits";
+      return "";
+    }
+    module2.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
+  }
+});
+
+// cloud/payments.js
+var require_payments = __commonJS({
+  "cloud/payments.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireRole,
+      getRoleName,
+      requireUser,
+      audit,
+      loadConfig,
+      requireCashierShift,
+      takeOrder,
+      findAll
+    } = require_core();
+    var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
+    var { dateKey } = require_dates();
+    var { money, notifyUser, notifyStaff, personName } = require_notifications();
+    var PENDING = "PENDING_VERIFICATION";
+    async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId, payerPhone) {
+      const accounts = merchantAccounts(config);
+      if (!accounts.length)
+        throw invalid("Mobile money is not set up. Ask the owner to add merchant codes in Settings");
+      const provider = String(providerParam || "");
+      const account = accounts.find((entry) => entry.provider === provider);
+      if (!account) throw invalid(`Choose ${accounts.map((a) => a.label).join(" or ")}`);
+      const reference = cleanReference(referenceParam);
+      if (!reference && account.auto) {
+        const { payerNumber } = require_momoApi();
+        if (!payerNumber(provider, payerPhone, config.momoDialCode || "256"))
+          throw invalid(`Enter the customer\u2019s ${account.label} number to send the payment request`);
+        const { newRequest } = require_collections();
+        return { provider, reference: "", auto: true, request: newRequest(payerPhone) };
+      }
+      const problem = referenceProblem(reference);
+      if (problem) throw invalid(problem);
+      const query = new Parse.Query("Order");
+      query.equalTo("paymentProvider", provider);
+      query.equalTo("paymentReference", reference);
+      query.notEqualTo("paymentStatus", "REJECTED");
+      if (excludeOrderId) query.notEqualTo("objectId", excludeOrderId);
+      const duplicate = await query.first(MASTER);
+      if (duplicate)
+        throw invalid(`This transaction ID was already used on ${duplicate.get("orderCode")}`);
+      return { provider, reference, auto: false, request: {} };
+    }
+    async function settlePayment(order, { received, reason = "", actor }) {
+      order.set({
+        paymentStatus: received ? "VERIFIED" : "REJECTED",
+        paymentCheckedAt: /* @__PURE__ */ new Date(),
+        paymentRejectReason: received ? "" : reason
+      });
+      if (actor) order.set("paymentCheckedBy", actor);
+      else if (order.has("paymentCheckedBy")) order.unset("paymentCheckedBy");
+      const owedByRider = !received && order.get("status") === "DELIVERED" && !!order.get("createdBy");
+      if (!received && ["eat_in", "pickup"].includes(order.get("orderType")))
+        order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: order.get("total") });
+      if (owedByRider)
+        order.set({
+          paymentMethod: "cash",
+          amountCollected: Number(order.get("total") || 0),
+          cashStatus: "WITH_RIDER"
+        });
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        received ? "payment.verified" : "payment.rejected",
+        order,
+        { paymentStatus: PENDING },
+        {
+          paymentStatus: order.get("paymentStatus"),
+          provider: order.get("paymentProvider"),
+          reference: order.get("paymentReference"),
+          amount: order.get("total"),
+          reason,
+          ...!actor && { auto: true }
+        }
+      );
+      const code = order.get("orderCode");
+      const { values: config } = await loadConfig();
+      if (order.get("createdBy"))
+        await notifyUser(order.get("createdBy"), {
+          kind: received ? "payment.verified" : "payment.rejected",
+          tone: received ? "update" : "alert",
+          title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
+          body: received ? order.get("status") === "DELIVERED" ? "It is off your list." : "The kitchen can start on it." : owedByRider ? `${reason}. You owe ${money(config, order.get("total"))}: hand it over in cash, or send the correct transaction ID.` : actor ? `${reason}. Correct the transaction ID or cancel the order.` : `${reason}. Send the request again, type the transaction ID, or cancel the order.`,
+          link: `/rider/order/${order.id}`,
+          order
+        });
+      if (!actor)
+        await notifyStaff({
+          kind: received ? "payment.verified" : "payment.rejected",
+          tone: received ? "update" : "alert",
+          title: received ? `${code}: ${money(config, order.get("total"))} received automatically` : `${code}: automatic payment did not go through`,
+          body: received ? order.get("paymentReference") || "" : reason,
+          link: "/cashier/payments",
+          order
+        });
+    }
+    Parse.Cloud.define("verifyPayment", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      if (order.get("paymentStatus") !== PENDING)
+        throw invalid("This payment is not waiting for a check");
+      const received = request.params.received === true;
+      const reason = String(request.params.reason || "").trim().slice(0, 200);
+      if (!received && reason.length < 3) throw invalid("Say why the payment was not accepted");
+      await takeOrder(order, actor, role);
+      await settlePayment(order, { received, reason, actor });
+      return { paymentStatus: order.get("paymentStatus") };
+    });
+    Parse.Cloud.define("resubmitPayment", async (request) => {
+      const actor = requireUser(request);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      const role = await getRoleName(actor);
+      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
+        throw forbidden("Not allowed");
+      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
+      if (![PENDING, "REJECTED"].includes(order.get("paymentStatus")))
+        throw invalid("This payment cannot be changed");
+      const owedAsCash = order.get("status") === "DELIVERED" && order.get("paymentMethod") === "cash";
+      if (owedAsCash && order.get("cashStatus") !== "WITH_RIDER")
+        throw invalid("This order was already handed over as cash");
+      const { values: config } = await loadConfig();
+      const momo = await checkMobileMoney(
+        config,
+        request.params.provider,
+        request.params.reference,
+        order.id,
+        request.params.payerPhone || order.get("customerPhone")
+      );
+      const { provider, reference } = momo;
+      const before = {
+        provider: order.get("paymentProvider"),
+        reference: order.get("paymentReference"),
+        paymentStatus: order.get("paymentStatus")
+      };
+      order.set({
+        ...momo.request,
+        paymentProvider: provider,
+        paymentReference: reference,
+        paymentStatus: PENDING,
+        paymentRejectReason: "",
+        ...owedAsCash && {
+          paymentMethod: "mobile_money",
+          amountCollected: 0,
+          cashStatus: "NOT_APPLICABLE"
+        }
+      });
+      await order.save(null, MASTER);
+      await audit(actor, "payment.resubmitted", order, before, { provider, reference });
+      await notifyStaff({
+        kind: "payment.resubmitted",
+        tone: "new",
+        title: `New transaction ID for ${order.get("orderCode")}`,
+        body: `${personName(await actor.fetch(MASTER))} \xB7 ${reference}`,
+        link: "/cashier/payments",
+        order,
+        except: actor
+      });
+      return { paymentStatus: PENDING };
+    });
+    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name")].filter(Boolean).join(" \xB7 ") : "";
+    function paymentRow(order) {
+      return {
+        id: order.id,
+        code: order.get("orderCode"),
+        customer: order.get("customerName"),
+        rider: nameOf(order.get("createdBy")),
+        provider: order.get("paymentProvider"),
+        reference: order.get("paymentReference"),
+        amount: order.get("total"),
+        paymentStatus: order.get("paymentStatus"),
+        orderStatus: order.get("status"),
+        createdAt: order.createdAt,
+        checkedAt: order.get("paymentCheckedAt") || null,
+        checkedBy: nameOf(order.get("paymentCheckedBy")),
+        rejectReason: order.get("paymentRejectReason") || "",
+        holderId: order.get("cashier")?.id || "",
+        holderName: order.get("cashierName") || "",
+        // Automatic payments: queued | pending | successful | failed | closed.
+        payRequest: order.get("payRequestStatus") || "",
+        payRequestError: order.get("payRequestError") || "",
+        auto: order.get("paymentAuto") === true
+      };
+    }
+    Parse.Cloud.define("getMobileMoneyLedger", async (request) => {
+      await requireRole(request, ["cashier", "admin"]);
+      await require_collections().sweepRequests();
+      const { values: config } = await loadConfig();
+      const pendingQuery = new Parse.Query("Order");
+      pendingQuery.equalTo("paymentStatus", PENDING);
+      pendingQuery.include(["createdBy"]);
+      const checkedQuery = new Parse.Query("Order");
+      checkedQuery.containedIn("paymentStatus", ["VERIFIED", "REJECTED"]);
+      checkedQuery.greaterThanOrEqualTo("paymentCheckedAt", new Date(Date.now() - 48 * 3600 * 1e3));
+      checkedQuery.include(["createdBy", "paymentCheckedBy"]);
+      const [pending, checked] = await Promise.all([
+        findAll(pendingQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
+        findAll(checkedQuery).then(
+          (rows) => rows.sort((a, b) => b.get("paymentCheckedAt") - a.get("paymentCheckedAt"))
+        )
+      ]);
+      const today = dateKey(/* @__PURE__ */ new Date(), config.timezone);
+      const checkedToday = checked.filter(
+        (order) => dateKey(order.get("paymentCheckedAt"), config.timezone) === today
+      );
+      const verified = checkedToday.filter((order) => order.get("paymentStatus") === "VERIFIED");
+      const totals = merchantAccounts(config).map((account) => {
+        const rows = verified.filter((order) => order.get("paymentProvider") === account.provider);
+        return {
+          ...account,
+          count: rows.length,
+          amount: rows.reduce((sum, order) => sum + Number(order.get("total") || 0), 0)
+        };
+      });
+      return {
+        pending: pending.map(paymentRow),
+        verified: verified.map(paymentRow),
+        rejected: checkedToday.filter((order) => order.get("paymentStatus") === "REJECTED").map(paymentRow),
+        totals
+      };
+    });
+    module2.exports = { checkMobileMoney, settlePayment, PENDING };
+  }
+});
+
+// cloud/collections.js
+var require_collections = __commonJS({
+  "cloud/collections.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var {
+      MASTER,
+      audit,
+      claimOnce,
+      forbidden,
+      getRoleName,
+      invalid,
+      loadConfig,
+      readAcl,
+      requireUser
+    } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var api = require_momoApi();
+    var { log, errorMessage } = require_log();
+    var SECRET_KEY = "mobileMoneyApi";
+    var PROVIDERS = {
+      mtn: {
+        label: "MTN MoMo",
+        toggle: "mtnAutoCollect",
+        secrets: ["subscriptionKey", "apiUser", "apiKey"],
+        plain: ["environment", "targetEnvironment"]
+      },
+      airtel: {
+        label: "Airtel Money",
+        toggle: "airtelAutoCollect",
+        secrets: ["clientId", "clientSecret"],
+        plain: ["environment", "country"]
+      }
+    };
+    var ENVIRONMENTS = ["sandbox", "production"];
+    var EXPIRE_MINUTES = 15;
+    async function secretRow() {
+      const query = new Parse.Query("Secret");
+      query.equalTo("key", SECRET_KEY);
+      query.ascending("createdAt");
+      return query.first(MASTER);
+    }
+    async function loadKeys() {
+      const row = await secretRow();
+      const value = row?.get("value") || {};
+      return { mtn: value.mtn || {}, airtel: value.airtel || {} };
+    }
+    var mask = (value) => {
+      const text = String(value || "");
+      if (!text) return "";
+      return text.length <= 6 ? "\u2022\u2022\u2022\u2022" : `\u2022\u2022\u2022\u2022${text.slice(-4)}`;
+    };
+    var configured = (provider, keys) => PROVIDERS[provider].secrets.every((field) => String(keys[field] || "").trim());
+    Parse.Cloud.define("adminGetPaymentSettings", async (request) => {
+      await requireAdminUnlock(request);
+      const [{ values }, keys] = await Promise.all([loadConfig(), loadKeys()]);
+      const view = {};
+      for (const [provider, meta] of Object.entries(PROVIDERS)) {
+        const own = keys[provider];
+        view[provider] = {
+          enabled: values[meta.toggle] === true,
+          configured: configured(provider, own),
+          environment: own.environment || "sandbox",
+          ...provider === "mtn" && { targetEnvironment: own.targetEnvironment || "mtnuganda" },
+          ...provider === "airtel" && { country: own.country || "UG" },
+          keys: Object.fromEntries(meta.secrets.map((field) => [field, mask(own[field])])),
+          lastTest: own.lastTest || null
+        };
+      }
+      return { ...view, dialCode: values.momoDialCode || "256", currency: values.currencyCode };
+    });
+    Parse.Cloud.define("adminSavePaymentSettings", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params || {};
+      const meta = PROVIDERS[p.provider];
+      if (!meta) throw invalid("Choose MTN MoMo or Airtel Money");
+      const environment = String(p.environment || "sandbox");
+      if (!ENVIRONMENTS.includes(environment)) throw invalid("Choose test (sandbox) or live");
+      const row = await secretRow() || new Parse.Object("Secret");
+      const all = { mtn: {}, airtel: {}, ...row.get("value") || {} };
+      const own = { ...all[p.provider], environment };
+      const changed = [];
+      for (const field of meta.secrets) {
+        const value = String(p[field] ?? "").trim();
+        if (value) {
+          if (value.length > 500) throw invalid("That key is too long");
+          if (value !== own[field]) changed.push(field);
+          own[field] = value;
+        }
+      }
+      if (p.provider === "mtn") {
+        const target = String(p.targetEnvironment || own.targetEnvironment || "mtnuganda").trim();
+        if (!/^[a-z0-9]{3,30}$/.test(target)) throw invalid("Target environment looks like mtnuganda");
+        own.targetEnvironment = target;
+      }
+      if (p.provider === "airtel") {
+        const country = String(p.country || own.country || "UG").trim().toUpperCase();
+        if (!/^[A-Z]{2}$/.test(country)) throw invalid("Country is two letters, e.g. UG");
+        own.country = country;
+      }
+      if (changed.length || environment !== all[p.provider].environment) delete own.lastTest;
+      const enabled = p.enabled === true;
+      if (enabled && !configured(p.provider, own))
+        throw invalid(`Add all the ${meta.label} keys before switching automatic payments on`);
+      all[p.provider] = own;
+      row.set({ key: SECRET_KEY, value: all });
+      row.setACL(new Parse.ACL());
+      await row.save(null, MASTER);
+      const { object } = await loadConfig();
+      const config = object || new Parse.Object("Configuration");
+      const before = { enabled: config.get(meta.toggle) === true };
+      config.set(meta.toggle, enabled);
+      if (p.dialCode !== void 0) {
+        const dial = String(p.dialCode).replace(/[^\d]/g, "");
+        if (!/^\d{1,4}$/.test(dial)) throw invalid("Country calling code, e.g. 256");
+        config.set("momoDialCode", dial);
+      }
+      config.setACL(readAcl(null, ["admin"]));
+      await config.save(null, MASTER);
+      api.forgetToken(p.provider === "mtn" ? api.mtnKey(own) : api.airtelKey(own));
+      await audit(actor, "payment.settings_saved", config, before, {
+        provider: p.provider,
+        enabled,
+        environment,
+        keysChanged: changed
+      });
+      return { saved: true, enabled };
+    });
+    Parse.Cloud.define("adminTestPaymentConnection", async (request) => {
+      await requireAdminUnlock(request);
+      const provider = String(request.params?.provider || "");
+      if (!PROVIDERS[provider]) throw invalid("Choose MTN MoMo or Airtel Money");
+      const row = await secretRow();
+      const all = row?.get("value") || {};
+      const own = all[provider] || {};
+      if (!configured(provider, own)) throw invalid(`Add the ${PROVIDERS[provider].label} keys first`);
+      let result;
+      try {
+        if (provider === "mtn") {
+          api.forgetToken(api.mtnKey(own));
+          await api.mtnToken(own);
+        } else {
+          api.forgetToken(api.airtelKey(own));
+          await api.airtelToken(own);
+        }
+        result = { ok: true, message: "Connected: the keys work." };
+      } catch (error) {
+        result = { ok: false, message: errorMessage(error) };
+      }
+      all[provider] = { ...own, lastTest: { ...result, at: (/* @__PURE__ */ new Date()).toISOString() } };
+      row.set("value", all);
+      await row.save(null, MASTER);
+      return result;
+    });
+    Parse.Cloud.define("adminMtnSandboxUser", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const row = await secretRow();
+      const all = row?.get("value") || {};
+      const own = all.mtn || {};
+      if ((own.environment || "sandbox") !== "sandbox")
+        throw invalid("Only for the MTN test (sandbox) environment");
+      if (!own.subscriptionKey) throw invalid("Save the MTN subscription key first");
+      let created;
+      try {
+        created = await api.mtnSandboxUser(own.subscriptionKey);
+      } catch (error) {
+        throw invalid(`MTN refused: ${errorMessage(error)}`);
+      }
+      all.mtn = { ...own, ...created };
+      delete all.mtn.lastTest;
+      row.set("value", all);
+      await row.save(null, MASTER);
+      await audit(actor, "payment.settings_saved", { className: "Secret", id: "mtn" }, null, {
+        provider: "mtn",
+        sandboxUserCreated: true
+      });
+      return { apiUser: mask(created.apiUser), apiKey: mask(created.apiKey) };
+    });
+    async function settle(order, received, reason, transactionId) {
+      const { settlePayment } = require_payments();
+      if (received && transactionId) order.set("paymentReference", transactionId.slice(0, 40));
+      order.set({
+        payRequestStatus: received ? "successful" : "failed",
+        payRequestError: received ? "" : reason,
+        paymentAuto: true
+      });
+      await settlePayment(order, { received, reason, actor: null });
+    }
+    async function sendRequest(order) {
+      const id = order.get("payRequestId");
+      if (order.get("payRequestStatus") !== "queued" || !id) return;
+      if (!await claimOnce(`collect:${id}`)) return;
+      const provider = order.get("paymentProvider");
+      const [{ values: config }, keys] = await Promise.all([loadConfig(), loadKeys()]);
+      const own = keys[provider] || {};
+      const fail = (reason) => settle(order, false, reason);
+      if (!PROVIDERS[provider] || config[PROVIDERS[provider].toggle] !== true || !configured(provider, own))
+        return fail("Automatic payments are switched off. Type the transaction ID instead");
+      const msisdn = api.payerNumber(
+        provider,
+        order.get("payRequestPhone") || order.get("customerPhone"),
+        config.momoDialCode || "256"
+      );
+      if (!msisdn) return fail("No usable phone number for the payment request");
+      const request = {
+        amount: Number(order.get("total") || 0),
+        currency: config.currencyCode,
+        msisdn,
+        externalId: order.get("orderCode"),
+        note: `${config.restaurantName} ${order.get("orderCode")}`.slice(0, 60)
+      };
+      try {
+        if (provider === "mtn") await api.mtnRequest(own, { ...request, id });
+        else await api.airtelRequest(own, { ...request, id: id.replace(/-/g, "") });
+      } catch (error) {
+        log("warn", "payment.request_failed", {
+          order: order.id,
+          provider,
+          message: errorMessage(error)
+        });
+        return fail(`The payment request could not be sent (${errorMessage(error)})`);
+      }
+      order.set({ payRequestStatus: "pending", payRequestSentAt: /* @__PURE__ */ new Date(), payRequestError: "" });
+      await order.save(null, MASTER);
+    }
+    var lastPoll = /* @__PURE__ */ new Map();
+    async function pollRequest(order) {
+      if (order.get("payRequestStatus") === "pending") {
+        if (order.get("paymentStatus") !== "PENDING_VERIFICATION") {
+          order.set("payRequestStatus", "closed");
+          await order.save(null, MASTER);
+        } else if (Date.now() - (lastPoll.get(order.id) || 0) > 3e3) {
+          lastPoll.set(order.id, Date.now());
+          if (lastPoll.size > 2e3) lastPoll.clear();
+          const provider = order.get("paymentProvider");
+          const [{ values: config }, keys] = await Promise.all([loadConfig(), loadKeys()]);
+          const id = order.get("payRequestId");
+          let result = null;
+          try {
+            result = provider === "mtn" ? await api.mtnStatus(keys.mtn, id) : await api.airtelStatus(keys.airtel, id.replace(/-/g, ""), config.currencyCode);
+          } catch (error) {
+            log("warn", "payment.status_failed", { order: order.id, message: errorMessage(error) });
+          }
+          const sent = order.get("payRequestSentAt") || order.get("payRequestAt") || /* @__PURE__ */ new Date();
+          if (result?.status === "successful") await settle(order, true, "", result.transactionId);
+          else if (result?.status === "failed")
+            await settle(
+              order,
+              false,
+              result.reason ? `The customer\u2019s payment did not go through (${result.reason})` : "The customer declined or did not complete the payment"
+            );
+          else if (Date.now() - sent > EXPIRE_MINUTES * 6e4)
+            await settle(order, false, "The customer did not approve the payment in time");
+        }
+      }
+      return {
+        payRequestStatus: order.get("payRequestStatus") || "",
+        paymentStatus: order.get("paymentStatus") || "",
+        reason: order.get("payRequestError") || order.get("paymentRejectReason") || "",
+        reference: order.get("paymentReference") || ""
+      };
+    }
+    Parse.Cloud.afterSave("Order", async (request) => {
+      if (request.object.get("payRequestStatus") !== "queued") return;
+      try {
+        const order = await new Parse.Query("Order").get(request.object.id, MASTER);
+        await sendRequest(order);
+      } catch (error) {
+        log("error", "payment.request_error", {
+          order: request.object.id,
+          message: errorMessage(error)
+        });
+      }
+    });
+    Parse.Cloud.define("checkPaymentRequest", async (request) => {
+      const actor = requireUser(request);
+      const id = String(request.params?.orderId || "");
+      if (!/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown order");
+      const order = await new Parse.Query("Order").get(id, MASTER);
+      const role = await getRoleName(actor);
+      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
+        throw forbidden("Not allowed");
+      if (order.get("payRequestStatus") === "queued") await sendRequest(order);
+      return pollRequest(order);
+    });
+    var lastSweep = 0;
+    async function sweepRequests(limit = 10) {
+      if (Date.now() - lastSweep < 5e3) return 0;
+      lastSweep = Date.now();
+      const query = new Parse.Query("Order");
+      query.containedIn("payRequestStatus", ["queued", "pending"]);
+      query.ascending("updatedAt");
+      query.limit(limit);
+      const open = await query.find(MASTER).catch(() => []);
+      for (const order of open) {
+        try {
+          if (order.get("payRequestStatus") === "queued") await sendRequest(order);
+          else await pollRequest(order);
+        } catch (error) {
+          log("warn", "payment.sweep_failed", { order: order.id, message: errorMessage(error) });
+        }
+      }
+      return open.length;
+    }
+    var newRequest = (payerPhone) => ({
+      payRequestStatus: "queued",
+      payRequestId: crypto.randomUUID(),
+      payRequestPhone: String(payerPhone || ""),
+      payRequestAt: /* @__PURE__ */ new Date(),
+      payRequestError: ""
+    });
+    module2.exports = { newRequest, sweepRequests, pollRequest, PROVIDERS };
+  }
+});
+
 // cloud/lib/money.js
 var require_money = __commonJS({
   "cloud/lib/money.js"(exports2, module2) {
@@ -9782,45 +10659,6 @@ var require_reports = __commonJS({
   }
 });
 
-// cloud/lib/mobileMoney.js
-var require_mobileMoney = __commonJS({
-  "cloud/lib/mobileMoney.js"(exports2, module2) {
-    "use strict";
-    var PROVIDERS = [
-      {
-        provider: "airtel",
-        label: "Airtel Money",
-        codeField: "airtelMerchantCode",
-        nameField: "airtelMerchantName"
-      },
-      {
-        provider: "mtn",
-        label: "MTN MoMo",
-        codeField: "mtnMerchantCode",
-        nameField: "mtnMerchantName"
-      }
-    ];
-    function merchantAccounts(config) {
-      return PROVIDERS.filter((p) => String(config[p.codeField] || "").trim()).map((p) => ({
-        provider: p.provider,
-        label: p.label,
-        code: String(config[p.codeField]).trim(),
-        name: String(config[p.nameField] || "").trim()
-      }));
-    }
-    function cleanReference(value) {
-      return String(value ?? "").replace(/\s+/g, "").toUpperCase().slice(0, 40);
-    }
-    function referenceProblem(reference) {
-      if (!reference) return "Enter the transaction ID from the customer\u2019s payment message";
-      if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
-        return "A transaction ID has 4 to 40 letters or digits";
-      return "";
-    }
-    module2.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
-  }
-});
-
 // cloud/reports.js
 var require_reports2 = __commonJS({
   "cloud/reports.js"(exports2, module2) {
@@ -10292,6 +11130,7 @@ var require_owner = __commonJS({
       personName,
       orNone
     } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
     var {
       resolveRange,
       bucketKeys,
@@ -10490,7 +11329,8 @@ var require_owner = __commonJS({
       "setup",
       "errors",
       "data",
-      "privacy"
+      "privacy",
+      "admin"
     ];
     var PAGE = 100;
     var parseJson = (json) => {
@@ -10531,7 +11371,7 @@ var require_owner = __commonJS({
       return labels;
     }
     Parse.Cloud.define("adminGetAuditLog", async (request) => {
-      await adminOnly(request);
+      await requireAdminUnlock(request);
       const p = request.params;
       const { values: config } = await loadConfig();
       const range = resolveRange(p, config.timezone, { defaultDays: 7, maxDays: 366 });
@@ -10886,6 +11726,7 @@ var require_notifications = __commonJS({
     }
     Parse.Cloud.define("getNotifications", async (request) => {
       const user = requireUser(request);
+      await require_collections().sweepRequests().catch(() => 0);
       const role = await getRoleName(user);
       if (role === "rider") {
         const { values: settings } = await loadConfig();
@@ -11043,207 +11884,6 @@ var require_customers = __commonJS({
       });
     });
     module2.exports = { recordCustomerOrder, pinCustomerAddress };
-  }
-});
-
-// cloud/payments.js
-var require_payments = __commonJS({
-  "cloud/payments.js"(exports2, module2) {
-    "use strict";
-    var {
-      MASTER,
-      invalid,
-      forbidden,
-      requireRole,
-      getRoleName,
-      requireUser,
-      audit,
-      loadConfig,
-      requireCashierShift,
-      takeOrder,
-      findAll
-    } = require_core();
-    var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
-    var { dateKey } = require_dates();
-    var { money, notifyUser, notifyStaff, personName } = require_notifications();
-    var PENDING = "PENDING_VERIFICATION";
-    async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId) {
-      const accounts = merchantAccounts(config);
-      if (!accounts.length)
-        throw invalid("Mobile money is not set up. Ask the owner to add merchant codes in Settings");
-      const provider = String(providerParam || "");
-      if (!accounts.some((account) => account.provider === provider))
-        throw invalid(`Choose ${accounts.map((a) => a.label).join(" or ")}`);
-      const reference = cleanReference(referenceParam);
-      const problem = referenceProblem(reference);
-      if (problem) throw invalid(problem);
-      const query = new Parse.Query("Order");
-      query.equalTo("paymentProvider", provider);
-      query.equalTo("paymentReference", reference);
-      query.notEqualTo("paymentStatus", "REJECTED");
-      if (excludeOrderId) query.notEqualTo("objectId", excludeOrderId);
-      const duplicate = await query.first(MASTER);
-      if (duplicate)
-        throw invalid(`This transaction ID was already used on ${duplicate.get("orderCode")}`);
-      return { provider, reference };
-    }
-    Parse.Cloud.define("verifyPayment", async (request) => {
-      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
-      await requireCashierShift(actor, role);
-      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
-      if (order.get("paymentStatus") !== PENDING)
-        throw invalid("This payment is not waiting for a check");
-      const received = request.params.received === true;
-      const reason = String(request.params.reason || "").trim().slice(0, 200);
-      if (!received && reason.length < 3) throw invalid("Say why the payment was not accepted");
-      await takeOrder(order, actor, role);
-      order.set({
-        paymentStatus: received ? "VERIFIED" : "REJECTED",
-        paymentCheckedBy: actor,
-        paymentCheckedAt: /* @__PURE__ */ new Date(),
-        paymentRejectReason: received ? "" : reason
-      });
-      const owedByRider = !received && order.get("status") === "DELIVERED" && !!order.get("createdBy");
-      if (!received && ["eat_in", "pickup"].includes(order.get("orderType")))
-        order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: order.get("total") });
-      if (owedByRider)
-        order.set({
-          paymentMethod: "cash",
-          amountCollected: Number(order.get("total") || 0),
-          cashStatus: "WITH_RIDER"
-        });
-      await order.save(null, MASTER);
-      await audit(
-        actor,
-        received ? "payment.verified" : "payment.rejected",
-        order,
-        { paymentStatus: PENDING },
-        {
-          paymentStatus: order.get("paymentStatus"),
-          provider: order.get("paymentProvider"),
-          reference: order.get("paymentReference"),
-          amount: order.get("total"),
-          reason
-        }
-      );
-      const code = order.get("orderCode");
-      const { values: config } = await loadConfig();
-      if (order.get("createdBy"))
-        await notifyUser(order.get("createdBy"), {
-          kind: received ? "payment.verified" : "payment.rejected",
-          tone: received ? "update" : "alert",
-          title: received ? `Payment confirmed for ${code}` : `Payment not received for ${code}`,
-          body: received ? order.get("status") === "DELIVERED" ? "It is off your list." : "The kitchen can start on it." : owedByRider ? `${reason}. You owe ${money(config, order.get("total"))}: hand it over in cash, or send the correct transaction ID.` : `${reason}. Correct the transaction ID or cancel the order.`,
-          link: `/rider/order/${order.id}`,
-          order
-        });
-      return { paymentStatus: order.get("paymentStatus") };
-    });
-    Parse.Cloud.define("resubmitPayment", async (request) => {
-      const actor = requireUser(request);
-      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
-      const role = await getRoleName(actor);
-      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
-        throw forbidden("Not allowed");
-      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
-      if (![PENDING, "REJECTED"].includes(order.get("paymentStatus")))
-        throw invalid("This payment cannot be changed");
-      const owedAsCash = order.get("status") === "DELIVERED" && order.get("paymentMethod") === "cash";
-      if (owedAsCash && order.get("cashStatus") !== "WITH_RIDER")
-        throw invalid("This order was already handed over as cash");
-      const { values: config } = await loadConfig();
-      const { provider, reference } = await checkMobileMoney(
-        config,
-        request.params.provider,
-        request.params.reference,
-        order.id
-      );
-      const before = {
-        provider: order.get("paymentProvider"),
-        reference: order.get("paymentReference"),
-        paymentStatus: order.get("paymentStatus")
-      };
-      order.set({
-        paymentProvider: provider,
-        paymentReference: reference,
-        paymentStatus: PENDING,
-        paymentRejectReason: "",
-        ...owedAsCash && {
-          paymentMethod: "mobile_money",
-          amountCollected: 0,
-          cashStatus: "NOT_APPLICABLE"
-        }
-      });
-      await order.save(null, MASTER);
-      await audit(actor, "payment.resubmitted", order, before, { provider, reference });
-      await notifyStaff({
-        kind: "payment.resubmitted",
-        tone: "new",
-        title: `New transaction ID for ${order.get("orderCode")}`,
-        body: `${personName(await actor.fetch(MASTER))} \xB7 ${reference}`,
-        link: "/cashier/payments",
-        order,
-        except: actor
-      });
-      return { paymentStatus: PENDING };
-    });
-    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name")].filter(Boolean).join(" \xB7 ") : "";
-    function paymentRow(order) {
-      return {
-        id: order.id,
-        code: order.get("orderCode"),
-        customer: order.get("customerName"),
-        rider: nameOf(order.get("createdBy")),
-        provider: order.get("paymentProvider"),
-        reference: order.get("paymentReference"),
-        amount: order.get("total"),
-        paymentStatus: order.get("paymentStatus"),
-        orderStatus: order.get("status"),
-        createdAt: order.createdAt,
-        checkedAt: order.get("paymentCheckedAt") || null,
-        checkedBy: nameOf(order.get("paymentCheckedBy")),
-        rejectReason: order.get("paymentRejectReason") || "",
-        holderId: order.get("cashier")?.id || "",
-        holderName: order.get("cashierName") || ""
-      };
-    }
-    Parse.Cloud.define("getMobileMoneyLedger", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
-      const { values: config } = await loadConfig();
-      const pendingQuery = new Parse.Query("Order");
-      pendingQuery.equalTo("paymentStatus", PENDING);
-      pendingQuery.include(["createdBy"]);
-      const checkedQuery = new Parse.Query("Order");
-      checkedQuery.containedIn("paymentStatus", ["VERIFIED", "REJECTED"]);
-      checkedQuery.greaterThanOrEqualTo("paymentCheckedAt", new Date(Date.now() - 48 * 3600 * 1e3));
-      checkedQuery.include(["createdBy", "paymentCheckedBy"]);
-      const [pending, checked] = await Promise.all([
-        findAll(pendingQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
-        findAll(checkedQuery).then(
-          (rows) => rows.sort((a, b) => b.get("paymentCheckedAt") - a.get("paymentCheckedAt"))
-        )
-      ]);
-      const today = dateKey(/* @__PURE__ */ new Date(), config.timezone);
-      const checkedToday = checked.filter(
-        (order) => dateKey(order.get("paymentCheckedAt"), config.timezone) === today
-      );
-      const verified = checkedToday.filter((order) => order.get("paymentStatus") === "VERIFIED");
-      const totals = merchantAccounts(config).map((account) => {
-        const rows = verified.filter((order) => order.get("paymentProvider") === account.provider);
-        return {
-          ...account,
-          count: rows.length,
-          amount: rows.reduce((sum, order) => sum + Number(order.get("total") || 0), 0)
-        };
-      });
-      return {
-        pending: pending.map(paymentRow),
-        verified: verified.map(paymentRow),
-        rejected: checkedToday.filter((order) => order.get("paymentStatus") === "REJECTED").map(paymentRow),
-        totals
-      };
-    });
-    module2.exports = { checkMobileMoney, PENDING };
   }
 });
 
@@ -11489,7 +12129,13 @@ var require_orders = __commonJS({
       if (isCash && p.amountToCollect !== void 0 && Number(p.amountToCollect) !== total)
         throw invalid("The customer must pay the full total");
       const amountToCollect = isCash ? total : 0;
-      const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
+      const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(
+        config,
+        p.paymentProvider,
+        p.paymentReference,
+        void 0,
+        p.payerPhone || p.customerPhone
+      ) : null;
       const order = new Parse.Object("Order");
       order.set({
         orderCode: await nextDailyCode("ORD", 4, config.timezone, {
@@ -11518,6 +12164,7 @@ var require_orders = __commonJS({
         disputeFlag: false,
         ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
         ...momo && {
+          ...momo.request,
           paymentProvider: momo.provider,
           paymentReference: momo.reference,
           paymentStatus: PENDING
@@ -11583,14 +12230,30 @@ var require_orders = __commonJS({
     };
     var COUNTER_TYPES = ["eat_in", "pickup"];
     var counterPaid = (order) => !order.get("billOpen") && (order.get("paymentMethod") === "cash" ? order.get("cashStatus") === "IN_TILL" : order.get("paymentStatus") === "VERIFIED");
-    async function applyDelivery(order, { method: wanted, provider, reference, amount: given, actor, config, now = /* @__PURE__ */ new Date() }) {
+    async function applyDelivery(order, {
+      method: wanted,
+      provider,
+      reference,
+      payerPhone,
+      amount: given,
+      actor,
+      config,
+      now = /* @__PURE__ */ new Date()
+    }) {
       const method = wanted || order.get("paymentMethod");
       if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
       const paidByMomo = order.get("paymentMethod") === "mobile_money";
       if (paidByMomo && method !== "mobile_money") throw invalid("This order was paid by mobile money");
       if (!paidByMomo && method === "mobile_money") {
-        const momo = await checkMobileMoney(config, provider, reference, order.id);
+        const momo = await checkMobileMoney(
+          config,
+          provider,
+          reference,
+          order.id,
+          payerPhone || order.get("customerPhone")
+        );
         order.set({
+          ...momo.request,
           paymentProvider: momo.provider,
           paymentReference: momo.reference,
           paymentStatus: PENDING,
@@ -11688,6 +12351,7 @@ var require_orders = __commonJS({
           method: p.paymentMethod,
           provider: p.paymentProvider,
           reference: p.paymentReference,
+          payerPhone: p.payerPhone,
           amount: p.amountCollected,
           actor,
           config,
@@ -12055,7 +12719,13 @@ var require_counter = __commonJS({
       const subtotal = sumBy(lines, (line) => line.lineTotal);
       const fee = isDelivery ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0)) : 0;
       const total = subtotal + fee;
-      const momo = method === "mobile_money" && !payLater ? await checkMobileMoney(config, p.paymentProvider, p.paymentReference) : null;
+      const momo = method === "mobile_money" && !payLater ? await checkMobileMoney(
+        config,
+        p.paymentProvider,
+        p.paymentReference,
+        void 0,
+        p.payerPhone || p.customerPhone
+      ) : null;
       const me = await actor.fetch(MASTER);
       const order = new Parse.Object("Order");
       order.set({
@@ -12093,6 +12763,7 @@ var require_counter = __commonJS({
         assignedAt: /* @__PURE__ */ new Date(),
         ...rider && { createdBy: rider },
         ...momo && {
+          ...momo.request,
           paymentProvider: momo.provider,
           paymentReference: momo.reference,
           paymentStatus: PENDING
@@ -12172,8 +12843,15 @@ var require_counter = __commonJS({
       const { values: config } = await loadConfig();
       if (p.paymentMethod === "cash") await cashIntoTill(order, actor, role);
       else if (p.paymentMethod === "mobile_money") {
-        const momo = await checkMobileMoney(config, p.paymentProvider, p.paymentReference, order.id);
+        const momo = await checkMobileMoney(
+          config,
+          p.paymentProvider,
+          p.paymentReference,
+          order.id,
+          p.payerPhone || order.get("customerPhone")
+        );
         order.set({
+          ...momo.request,
           paymentMethod: "mobile_money",
           paymentProvider: momo.provider,
           paymentReference: momo.reference,
@@ -12379,7 +13057,8 @@ var require_menu = __commonJS({
 var require_privacy = __commonJS({
   "cloud/privacy.js"(exports2, module2) {
     "use strict";
-    var { MASTER, adminOnly, audit, findAll, invalid, loadConfig, readAcl } = require_core();
+    var { MASTER, audit, findAll, invalid, loadConfig, readAcl } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
     var RETENTION_CHOICES = [0, 6, 12, 24, 36];
     var REMOVED_NAME = "Customer (details removed)";
     var OPEN_CASH = ["WITH_RIDER", "HANDOVER_PENDING", "DISPUTED"];
@@ -12440,7 +13119,7 @@ var require_privacy = __commonJS({
       return result;
     }
     Parse.Cloud.define("adminSavePrivacy", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const p = request.params || {};
       const months = Number(p.retentionMonths);
       if (!RETENTION_CHOICES.includes(months)) throw invalid("Choose how long to keep details");
@@ -12461,7 +13140,7 @@ var require_privacy = __commonJS({
       return { retentionMonths: months, privacyContact: contact };
     });
     Parse.Cloud.define("adminApplyRetention", async (request) => {
-      const actor = request.master ? null : await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const p = request.params || {};
       const { values } = await loadConfig();
       const months = Number(values.retentionMonths) || 0;
@@ -12479,7 +13158,7 @@ var require_privacy = __commonJS({
       return result;
     });
     Parse.Cloud.define("adminForgetCustomer", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const p = request.params || {};
       const phone = String(p.phone || "").replace(/[^\d+]/g, "");
       if (p.customerId && !/^[A-Za-z0-9]{1,32}$/.test(String(p.customerId)))
@@ -13219,6 +13898,7 @@ var require_admin = __commonJS({
       fileUrl,
       findAll
     } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
     var { COMMISSION_TYPES, ROUNDING_STEPS } = require_money();
     var { isValidTimeZone } = require_dates();
     var { SEED_MENU } = require_seed();
@@ -13656,7 +14336,7 @@ var require_admin = __commonJS({
       return { image: fileUrl(item.get("image")) };
     });
     Parse.Cloud.define("adminSetRestaurantLogo", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       let { object: config } = await loadConfig();
       if (!config) {
         config = new Parse.Object("Configuration");
@@ -13699,7 +14379,7 @@ var require_admin = __commonJS({
       return { id: row.id };
     });
     Parse.Cloud.define("adminSaveBranding", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const theme = cleanTheme(request.params);
       const problems = themeProblems(theme);
       if (problems.length) throw invalid(problems[0]);
@@ -13715,7 +14395,7 @@ var require_admin = __commonJS({
       return theme;
     });
     Parse.Cloud.define("adminSaveSettings", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const p = request.params;
       const { object: existing, values: current } = await loadConfig();
       const config = existing || new Parse.Object("Configuration");
@@ -14008,7 +14688,8 @@ var require_onboarding = __commonJS({
 var require_data = __commonJS({
   "cloud/data.js"(exports2, module2) {
     "use strict";
-    var { MASTER, adminOnly, audit, invalid, getRoleName } = require_core();
+    var { MASTER, audit, invalid, getRoleName } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
     var EXPORT_CLASSES = [
       "Configuration",
       "_User",
@@ -14051,7 +14732,7 @@ var require_data = __commonJS({
       return row;
     }
     Parse.Cloud.define("adminExportData", async (request) => {
-      const actor = await adminOnly(request);
+      const actor = await requireAdminUnlock(request);
       const { className, after } = request.params || {};
       if (!EXPORT_CLASSES.includes(className)) throw invalid("Unknown kind of record");
       if (after !== void 0 && after !== null && !/^[A-Za-z0-9]{1,32}$/.test(String(after)))
@@ -14072,7 +14753,7 @@ var require_data = __commonJS({
       return { rows, next: found.length === PAGE ? found[found.length - 1].id : null };
     });
     Parse.Cloud.define("adminExportSummary", async (request) => {
-      await adminOnly(request);
+      await requireAdminUnlock(request);
       const counts = {};
       for (const className of EXPORT_CLASSES) {
         const query = new Parse.Query(className);
@@ -14385,8 +15066,15 @@ var require_overrides = __commonJS({
         if (p.method === "mobile_money") {
           if (!can.paymentToMobileMoney)
             throw invalid("Only a delivered cash order whose cash is still with the rider can switch");
-          const momo = await checkMobileMoney(config, p.provider, p.reference, order.id);
+          const momo = await checkMobileMoney(
+            config,
+            p.provider,
+            p.reference,
+            order.id,
+            p.payerPhone || order.get("customerPhone")
+          );
           order.set({
+            ...momo.request,
             paymentMethod: "mobile_money",
             paymentProvider: momo.provider,
             paymentReference: momo.reference,
@@ -14614,11 +15302,13 @@ var require_profile = __commonJS({
 
 // cloud/main.js
 require_errors();
+require_adminLock();
 require_security();
 require_push();
 require_notifications();
 require_customers();
 require_payments();
+require_collections();
 require_orders();
 require_counter();
 require_menu();

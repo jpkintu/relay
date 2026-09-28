@@ -6,6 +6,7 @@ import { shrinkImage } from '../lib/image';
 import { DEFAULT_THEME, themeProblems, type Theme } from '../lib/theme';
 import Parse from '../parse';
 import { MenuImport } from './MenuImport';
+import { useAdminRun } from '../lib/adminRun';
 import { useMoney, useSession } from '../lib/session';
 import { ChangePin } from './Profile';
 import { PinSheet } from './MapPin';
@@ -197,11 +198,12 @@ function RestaurantLogo({
   onDone: () => void;
   onError: (message: string) => void;
 }) {
+  const adminRun = useAdminRun();
   const [busy, setBusy] = useState(false);
   const run = async (params: Record<string, unknown>, failed: string) => {
     setBusy(true);
     try {
-      await Parse.Cloud.run('adminSetRestaurantLogo', params);
+      await adminRun('adminSetRestaurantLogo', params);
       onDone();
     } catch (e) {
       onError(e instanceof Error ? e.message : failed);
@@ -390,6 +392,7 @@ export function AdminSetup({
   const { config, refresh } = useSession();
   const money = useMoney();
   const navigate = useNavigate();
+  const adminRun = useAdminRun();
   const [team, setTeam] = useState<Member[]>([]),
     [menu, setMenu] = useState<Item[]>([]),
     [accompaniments, setAccompaniments] = useState<Accompaniment[]>([]),
@@ -440,7 +443,7 @@ export function AdminSetup({
     setError('');
     setNotice('');
     try {
-      await Parse.Cloud.run(fn, payload);
+      await adminRun(fn, payload);
       after();
       await load();
       setNotice('Saved to the restaurant database.');
@@ -1251,7 +1254,7 @@ export function AdminSetup({
               onSave={async (pin) => {
                 if (!pin) return;
                 const next = { ...settings, restaurantLat: pin.lat, restaurantLng: pin.lng };
-                await Parse.Cloud.run('adminSaveSettings', next);
+                await adminRun('adminSaveSettings', next);
                 setSettings(next);
                 setNotice('Restaurant location saved.');
                 void refresh();
@@ -1266,22 +1269,6 @@ export function AdminSetup({
           <h2>Your password</h2>
           <p className="muted">Changing it signs you out of your other devices.</p>
           <ChangePin />
-        </div>
-      )}
-      {section === 'Settings' && (
-        <div className="admin-panel">
-          <h2>Access rules</h2>
-          <p className="muted">
-            Re-applies database permissions and assigns missing rider and cashier codes. Run it once
-            after each deployment that changes Cloud Code; it is safe to run again.
-          </p>
-          <button
-            className="setup-submit"
-            disabled={busy || preview}
-            onClick={() => void save('adminApplySecurity', {}, () => {})}
-          >
-            Apply security rules
-          </button>
         </div>
       )}
     </div>

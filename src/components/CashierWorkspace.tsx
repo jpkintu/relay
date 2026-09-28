@@ -23,7 +23,7 @@ import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
 import { formatDate } from '../lib/format';
-import { providerLabel } from './MobileMoney';
+import { PaymentRequestStatus, payerPhoneProblem, providerLabel } from './MobileMoney';
 import { BrandMark } from './BrandMark';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
@@ -371,6 +371,10 @@ function KitchenBoard() {
   const [payMethod, setPayMethod] = useState<'cash' | 'mobile_money'>('cash');
   const [payProvider, setPayProvider] = useState('');
   const [payRef, setPayRef] = useState('');
+  // Automatic payments: the number to send the request to, and the ticket
+  // whose request is on its way.
+  const [payPhone, setPayPhone] = useState('');
+  const [requesting, setRequesting] = useState<{ id: string; code: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -495,6 +499,7 @@ function KitchenBoard() {
   };
 
   const takePayment = async (ticket: Ticket) => {
+    const request = payMethod === 'mobile_money' && autoFor(payProvider) && !payRef.trim();
     try {
       await Parse.Cloud.run('takeCounterPayment', {
         orderId: ticket.id,
@@ -502,10 +507,13 @@ function KitchenBoard() {
         ...(payMethod === 'mobile_money' && {
           paymentProvider: payProvider,
           paymentReference: payRef.trim(),
+          ...(request && { payerPhone: payPhone }),
         }),
       });
+      if (request) setRequesting({ id: ticket.id, code: ticket.code });
       setPaying(null);
       setPayRef('');
+      setPayPhone('');
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not record the payment');
@@ -514,12 +522,23 @@ function KitchenBoard() {
     await load();
   };
 
+  const autoFor = (provider: string) =>
+    !!(config.mobileMoney || []).find((m) => m.provider === provider)?.auto;
   const { print, printError } = usePrint();
   const visible = tickets.filter((t) => !mineOnly || !t.holderId || t.holderId === me);
 
   return (
     <div className="ops-content">
       {(error || printError) && <div className="ops-error">{error || printError}</div>}
+      {requesting && (
+        <div className="request-banner">
+          <b>{requesting.code}</b>
+          <PaymentRequestStatus orderId={requesting.id} onSettled={() => void load()} />
+          <button className="link-button" onClick={() => setRequesting(null)}>
+            Close
+          </button>
+        </div>
+      )}
       <div className="ops-title">
         <div>
           <h1>Kitchen board</h1>
@@ -683,10 +702,22 @@ function KitchenBoard() {
                                 </option>
                               ))}
                             </select>
+                            {autoFor(payProvider) && (
+                              <input
+                                value={payPhone}
+                                onChange={(e) => setPayPhone(e.target.value)}
+                                inputMode="tel"
+                                placeholder="Customer’s number, for a payment request"
+                              />
+                            )}
                             <input
                               value={payRef}
                               onChange={(e) => setPayRef(e.target.value.toUpperCase())}
-                              placeholder="Transaction ID"
+                              placeholder={
+                                autoFor(payProvider)
+                                  ? 'Or the transaction ID, if they paid the code'
+                                  : 'Transaction ID'
+                              }
                             />
                           </>
                         ) : (
@@ -696,11 +727,17 @@ function KitchenBoard() {
                           <button onClick={() => setPaying(null)}>Back</button>
                           <button
                             disabled={
-                              payMethod === 'mobile_money' && (!payProvider || !payRef.trim())
+                              payMethod === 'mobile_money' &&
+                              (!payProvider ||
+                                (!payRef.trim() &&
+                                  (!autoFor(payProvider) || !!payerPhoneProblem(payPhone))))
                             }
                             onClick={() => void takePayment(ticket)}
                           >
-                            <Check /> Paid
+                            <Check />{' '}
+                            {payMethod === 'mobile_money' && autoFor(payProvider) && !payRef.trim()
+                              ? 'Send request'
+                              : 'Paid'}
                           </button>
                         </div>
                       </div>
@@ -1027,6 +1064,10 @@ type PaymentRow = {
   rejectReason: string;
   holderId: string;
   holderName: string;
+  // Automatic payments (Admin → Payments).
+  payRequest: string;
+  payRequestError: string;
+  auto: boolean;
 };
 type Ledger = {
   pending: PaymentRow[];
@@ -1082,7 +1123,14 @@ function MobileMoneyLedger() {
   const transaction = (row: PaymentRow) => (
     <td data-label="Transaction">
       <b>{providerLabel(row.provider)}</b>
-      <span className="code">{row.reference}</span>
+      {row.reference ? (
+        <span className="code">{row.reference}</span>
+      ) : ['queued', 'pending'].includes(row.payRequest) ? (
+        <small>Request sent · waiting for the customer to approve</small>
+      ) : (
+        <small>Payment request</small>
+      )}
+      {row.auto && row.paymentStatus === 'VERIFIED' && <small>Confirmed automatically</small>}
     </td>
   );
   const orderCell = (row: PaymentRow) => (

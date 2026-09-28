@@ -27,14 +27,25 @@ const PENDING = 'PENDING_VERIFICATION';
 
 // Validates provider + transaction ID and makes sure the ID has not already
 // been used on another order. Returns the cleaned values.
-async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId) {
+// With automatic payments on (Admin → Payments) and no transaction ID, the
+// order is marked for a payment request to `payerPhone` instead
+// (collections.js sends it once the order is saved). Callers set `request`
+// on the order along with the provider and reference.
+async function checkMobileMoney(config, providerParam, referenceParam, excludeOrderId, payerPhone) {
   const accounts = merchantAccounts(config);
   if (!accounts.length)
     throw invalid('Mobile money is not set up. Ask the owner to add merchant codes in Settings');
   const provider = String(providerParam || '');
-  if (!accounts.some((account) => account.provider === provider))
-    throw invalid(`Choose ${accounts.map((a) => a.label).join(' or ')}`);
+  const account = accounts.find((entry) => entry.provider === provider);
+  if (!account) throw invalid(`Choose ${accounts.map((a) => a.label).join(' or ')}`);
   const reference = cleanReference(referenceParam);
+  if (!reference && account.auto) {
+    const { payerNumber } = require('./lib/momoApi');
+    if (!payerNumber(provider, payerPhone, config.momoDialCode || '256'))
+      throw invalid(`Enter the customer’s ${account.label} number to send the payment request`);
+    const { newRequest } = require('./collections');
+    return { provider, reference: '', auto: true, request: newRequest(payerPhone) };
+  }
   const problem = referenceProblem(reference);
   if (problem) throw invalid(problem);
   const query = new Parse.Query('Order');
@@ -45,28 +56,22 @@ async function checkMobileMoney(config, providerParam, referenceParam, excludeOr
   const duplicate = await query.first(MASTER);
   if (duplicate)
     throw invalid(`This transaction ID was already used on ${duplicate.get('orderCode')}`);
-  return { provider, reference };
+  return { provider, reference, auto: false, request: {} };
 }
 
-// Cashier/admin: the money is (or is not) in the merchant account.
-Parse.Cloud.define('verifyPayment', async (request) => {
-  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
-  await requireCashierShift(actor, role);
-  const order = await new Parse.Query('Order').get(request.params.orderId, MASTER);
-  if (order.get('paymentStatus') !== PENDING)
-    throw invalid('This payment is not waiting for a check');
-  const received = request.params.received === true;
-  const reason = String(request.params.reason || '')
-    .trim()
-    .slice(0, 200);
-  if (!received && reason.length < 3) throw invalid('Say why the payment was not accepted');
-  await takeOrder(order, actor, role);
+// Records that a mobile money payment arrived (VERIFIED) or did not
+// (REJECTED), with what follows: a rider who delivered owes the total as
+// cash, an eat-in or pick-up bill opens again, the rider is told. Used by the
+// cashier's check (actor = the cashier) and automatic payments (actor null).
+async function settlePayment(order, { received, reason = '', actor }) {
   order.set({
     paymentStatus: received ? 'VERIFIED' : 'REJECTED',
-    paymentCheckedBy: actor,
     paymentCheckedAt: new Date(),
     paymentRejectReason: received ? '' : reason,
   });
+  // Automatic payments are confirmed by the provider, not a person.
+  if (actor) order.set('paymentCheckedBy', actor);
+  else if (order.has('paymentCheckedBy')) order.unset('paymentCheckedBy');
   // A delivered order whose mobile money did not arrive: the rider collected
   // nothing we can see, so they owe the total as cash (it goes back on their
   // cash list) until they hand it over or send a correct transaction ID.
@@ -93,6 +98,7 @@ Parse.Cloud.define('verifyPayment', async (request) => {
       reference: order.get('paymentReference'),
       amount: order.get('total'),
       reason,
+      ...(!actor && { auto: true }),
     },
   );
   const code = order.get('orderCode');
@@ -108,10 +114,41 @@ Parse.Cloud.define('verifyPayment', async (request) => {
           : 'The kitchen can start on it.'
         : owedByRider
           ? `${reason}. You owe ${money(config, order.get('total'))}: hand it over in cash, or send the correct transaction ID.`
-          : `${reason}. Correct the transaction ID or cancel the order.`,
+          : actor
+            ? `${reason}. Correct the transaction ID or cancel the order.`
+            : `${reason}. Send the request again, type the transaction ID, or cancel the order.`,
       link: `/rider/order/${order.id}`,
       order,
     });
+  // Paid automatically: the kitchen board and payments list change on their
+  // own, so tell the staff.
+  if (!actor)
+    await notifyStaff({
+      kind: received ? 'payment.verified' : 'payment.rejected',
+      tone: received ? 'update' : 'alert',
+      title: received
+        ? `${code}: ${money(config, order.get('total'))} received automatically`
+        : `${code}: automatic payment did not go through`,
+      body: received ? order.get('paymentReference') || '' : reason,
+      link: '/cashier/payments',
+      order,
+    });
+}
+
+// Cashier/admin: the money is (or is not) in the merchant account.
+Parse.Cloud.define('verifyPayment', async (request) => {
+  const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
+  await requireCashierShift(actor, role);
+  const order = await new Parse.Query('Order').get(request.params.orderId, MASTER);
+  if (order.get('paymentStatus') !== PENDING)
+    throw invalid('This payment is not waiting for a check');
+  const received = request.params.received === true;
+  const reason = String(request.params.reason || '')
+    .trim()
+    .slice(0, 200);
+  if (!received && reason.length < 3) throw invalid('Say why the payment was not accepted');
+  await takeOrder(order, actor, role);
+  await settlePayment(order, { received, reason, actor });
   return { paymentStatus: order.get('paymentStatus') };
 });
 
@@ -131,18 +168,21 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
   if (owedAsCash && order.get('cashStatus') !== 'WITH_RIDER')
     throw invalid('This order was already handed over as cash');
   const { values: config } = await loadConfig();
-  const { provider, reference } = await checkMobileMoney(
+  const momo = await checkMobileMoney(
     config,
     request.params.provider,
     request.params.reference,
     order.id,
+    request.params.payerPhone || order.get('customerPhone'),
   );
+  const { provider, reference } = momo;
   const before = {
     provider: order.get('paymentProvider'),
     reference: order.get('paymentReference'),
     paymentStatus: order.get('paymentStatus'),
   };
   order.set({
+    ...momo.request,
     paymentProvider: provider,
     paymentReference: reference,
     paymentStatus: PENDING,
@@ -191,6 +231,10 @@ function paymentRow(order) {
     rejectReason: order.get('paymentRejectReason') || '',
     holderId: order.get('cashier')?.id || '',
     holderName: order.get('cashierName') || '',
+    // Automatic payments: queued | pending | successful | failed | closed.
+    payRequest: order.get('payRequestStatus') || '',
+    payRequestError: order.get('payRequestError') || '',
+    auto: order.get('paymentAuto') === true,
   };
 }
 
@@ -199,6 +243,8 @@ function paymentRow(order) {
 // the Airtel/MTN merchant statements).
 Parse.Cloud.define('getMobileMoneyLedger', async (request) => {
   await requireRole(request, ['cashier', 'admin']);
+  // Bring automatic payment requests up to date before listing.
+  await require('./collections').sweepRequests();
   const { values: config } = await loadConfig();
   const pendingQuery = new Parse.Query('Order');
   pendingQuery.equalTo('paymentStatus', PENDING);
@@ -236,4 +282,4 @@ Parse.Cloud.define('getMobileMoneyLedger', async (request) => {
   };
 });
 
-module.exports = { checkMobileMoney, PENDING };
+module.exports = { checkMobileMoney, settlePayment, PENDING };
