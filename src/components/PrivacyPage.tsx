@@ -135,8 +135,9 @@ export function PlatformTerms() {
             taken during the trial.
           </li>
           <li>
-            After the trial, Relay costs {price ? <b>{price} a month</b> : 'a monthly fee'} unless
-            we agree a different price with you. The price is shown in the app before you pay.
+            After the trial, Relay starts at {price ? <b>{price} a month</b> : 'a monthly fee'}.
+            Your restaurant’s price may be agreed with you, higher or lower, depending on its size
+            and needs; it is always shown in the app before you pay.
           </li>
           <li>
             You pay in the app with mobile money (through ioTec Pay), for 1 to 12 months at a time,

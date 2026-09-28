@@ -4863,7 +4863,8 @@ describe('platform console and access (Relay Hosted)', () => {
     );
 
     const { rows, settings } = await run('platformListRestaurants', {}, ops);
-    assert.equal(settings.monthlyPrice, 50000);
+    // Relay's starting price until the console sets another.
+    assert.equal(settings.monthlyPrice, 100000);
     assert.deepEqual(rows.map((row) => row.code).sort(), [OTHER, CODE]);
     const mine = rows.find((row) => row.code === CODE);
     const theirs = rows.find((row) => row.code === OTHER);
@@ -4873,7 +4874,7 @@ describe('platform console and access (Relay Hosted)', () => {
     assert.equal(theirs.orders30, 1);
     assert.equal(theirs.staff, 2);
     assert.equal(theirs.status, 'trial');
-    assert.equal(theirs.monthlyPrice, 50000);
+    assert.equal(theirs.monthlyPrice, 100000);
     assert.equal(theirs.priceOverride, null);
     assert.equal(theirs.billingPhone, '0701234567');
     // Size and subscription only: no orders, customers or money.

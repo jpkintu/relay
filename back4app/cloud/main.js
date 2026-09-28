@@ -2160,7 +2160,8 @@ var require_restaurants = __commonJS({
     var { accessOf } = require_access();
     var { log } = require_log();
     var DEFAULT_PLATFORM = {
-      monthlyPrice: 5e4,
+      // Relay's starting price (owner's decision 2026-09-29).
+      monthlyPrice: 1e5,
       currency: "UGX",
       trialDays: 14,
       graceDays: 7,

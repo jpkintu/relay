@@ -1,3 +1,4 @@
+import embiroLogo from '../assets/embiro-logo-small.webp';
 import { formatDate, formatMoney } from './format';
 
 // Relay Hosted: a receipt for a paid subscription payment, opened in a new
@@ -40,6 +41,9 @@ export function printSubscriptionReceipt(
     ],
     ['Reference', payment.reference || '—'],
   ];
+  // Absolute addresses: the receipt opens in a new, blank window.
+  const relayLogo = new URL('/icons/favicon.svg', window.location.href).href;
+  const embiro = new URL(embiroLogo, window.location.href).href;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Relay receipt RLY-${escape(
     payment.id,
   )}</title><style>
@@ -48,7 +52,11 @@ h1{font-size:22px;margin:0 0 4px}p{margin:0 0 20px;color:#5f687c}
 table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #e5e9f1;vertical-align:top}
 td:first-child{color:#5f687c;width:40%}.total td{font-size:18px;font-weight:700;border-bottom:0;padding-top:16px}
 small{display:block;margin-top:24px;color:#5f687c}@media print{body{margin:0 auto}}
-</style></head><body><h1>Receipt</h1><p>Relay · software by Embiro Concepts</p><table>${rows
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}.brand img{width:40px;height:40px}
+.brand b{font-size:22px}.credit{display:flex;align-items:center;gap:6px;font-size:11px;color:#5f687c;margin:0 0 24px}
+.credit img{height:15px;width:auto}
+</style></head><body><div class="brand"><img src="${relayLogo}" alt=""><b>Relay</b></div>
+<p class="credit">Powered by <img src="${embiro}" alt="Embiro"></p><h1>Receipt</h1><p>Subscription payment</p><table>${rows
     .map(([k, v]) => `<tr><td>${escape(k)}</td><td>${escape(v)}</td></tr>`)
     .join('')}<tr class="total"><td>Amount paid</td><td>${escape(
     formatMoney(payment.amount, payment.currency),

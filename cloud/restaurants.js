@@ -17,7 +17,8 @@ const { accessOf } = require('./lib/access');
 const { log } = require('./lib/log');
 
 const DEFAULT_PLATFORM = {
-  monthlyPrice: 50000,
+  // Relay's starting price (owner's decision 2026-09-29).
+  monthlyPrice: 100000,
   currency: 'UGX',
   trialDays: 14,
   graceDays: 7,
