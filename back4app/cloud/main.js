@@ -11887,6 +11887,95 @@ var require_customers = __commonJS({
   }
 });
 
+// cloud/serverAddress.js
+var require_serverAddress = __commonJS({
+  "cloud/serverAddress.js"(exports2, module2) {
+    "use strict";
+    var net = require("net");
+    var { MASTER } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var { log, errorMessage } = require_log();
+    var SECRET_KEY = "serverAddress";
+    var LOOKUPS = () => process.env.RELAY_IP_URL ? [process.env.RELAY_IP_URL] : ["https://api.ipify.org", "https://checkip.amazonaws.com", "https://ifconfig.me/ip"];
+    async function lookUp() {
+      for (const url of LOOKUPS()) {
+        try {
+          const response = await fetch(url, {
+            headers: { Accept: "text/plain" },
+            signal: AbortSignal.timeout(8e3)
+          });
+          const ip = (await response.text()).trim();
+          if (response.ok && net.isIP(ip)) return ip;
+        } catch (error) {
+          log("warn", "server_address.lookup_failed", { url, message: errorMessage(error) });
+        }
+      }
+      return "";
+    }
+    async function row() {
+      const query = new Parse.Query("Secret");
+      query.equalTo("key", SECRET_KEY);
+      query.ascending("createdAt");
+      return await query.first(MASTER) || (() => {
+        const created = new Parse.Object("Secret");
+        created.set({ key: SECRET_KEY, value: {} });
+        created.setACL(new Parse.ACL());
+        return created;
+      })();
+    }
+    async function checkServerAddress() {
+      const ip = await lookUp();
+      const record = await row();
+      const value = record.get("value") || {};
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const history = Array.isArray(value.history) ? value.history : [];
+      let changed = false;
+      if (ip) {
+        const last = history[0];
+        if (last && last.ip === ip) last.lastSeen = now;
+        else {
+          changed = !!last;
+          history.unshift({ ip, firstSeen: now, lastSeen: now });
+        }
+        record.set("value", {
+          history: history.slice(0, 10),
+          ...changed ? { changedAt: now } : value.changedAt ? { changedAt: value.changedAt } : {},
+          checkedAt: now
+        });
+        await record.save(null, MASTER);
+      }
+      const saved = record.get("value") || {};
+      return {
+        ip,
+        previous: saved.history?.[1]?.ip || "",
+        changedAt: saved.changedAt || null,
+        checkedAt: saved.checkedAt || now,
+        changed,
+        history: saved.history || []
+      };
+    }
+    Parse.Cloud.define("adminGetServerAddress", async (request) => {
+      await requireAdminUnlock(request);
+      return checkServerAddress();
+    });
+    async function watchServerAddress() {
+      const result = await checkServerAddress();
+      if (result.changed) {
+        const { notifyAdmins } = require_notifications();
+        await notifyAdmins({
+          kind: "server.address_changed",
+          tone: "alert",
+          title: "The server\u2019s address changed",
+          body: `Now ${result.ip} (was ${result.previous}). Add it to Airtel\u2019s Server IP Allowed List.`,
+          link: "/admin/site/payments"
+        });
+      }
+      return result;
+    }
+    module2.exports = { checkServerAddress, watchServerAddress };
+  }
+});
+
 // cloud/lib/accompaniments.js
 var require_accompaniments = __commonJS({
   "cloud/lib/accompaniments.js"(exports2, module2) {
@@ -13285,6 +13374,7 @@ var require_cashcheck = __commonJS({
     Parse.Cloud.job("cashCheck", async () => {
       const result = await runCashCheck();
       const retention = await require_privacy().runRetention();
+      await require_serverAddress().watchServerAddress().catch(() => null);
       const cleaned = retention.orders || retention.customers || retention.notifications;
       return `${result.ok ? "Cash records agree" : `${result.problems.length} problems found`}${cleaned ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers` : ""}`;
     });
@@ -15309,6 +15399,7 @@ require_notifications();
 require_customers();
 require_payments();
 require_collections();
+require_serverAddress();
 require_orders();
 require_counter();
 require_menu();

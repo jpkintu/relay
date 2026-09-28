@@ -12,6 +12,7 @@
 //   notifications.js in-app notifications, reminders, getNotifications
 //   payments.js  mobile money: verifyPayment, resubmitPayment, ledger
 //   collections.js automatic MTN MoMo / Airtel Money payment requests
+//   serverAddress.js the server's public IP (Airtel's allowed list), change alerts
 //   menu.js      getOperationalMenu, getStock, setAvailability
 //   cash.js      cash handovers, partial acceptance, disputes and resolutions
 //   payouts.js   money paid out of the till (rider pay, expenses)
@@ -35,6 +36,7 @@ require('./notifications');
 require('./customers');
 require('./payments');
 require('./collections');
+require('./serverAddress');
 require('./orders');
 require('./counter');
 require('./menu');

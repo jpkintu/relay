@@ -44,7 +44,8 @@ const CLOUD_MAIN = process.env.RELAY_CLOUD_MAIN
 const MOMO_PORT = 1341;
 process.env.RELAY_MTN_URL = `http://localhost:${MOMO_PORT}/mtn`;
 process.env.RELAY_AIRTEL_URL = `http://localhost:${MOMO_PORT}/airtel`;
-const momo = { mtn: new Map(), airtel: new Map(), polls: new Map() };
+process.env.RELAY_IP_URL = `http://localhost:${MOMO_PORT}/ip`;
+const momo = { mtn: new Map(), airtel: new Map(), polls: new Map(), ip: '203.0.113.10' };
 let momoServer;
 function startMomoMock() {
   const app = express();
@@ -113,6 +114,8 @@ function startMomoMock() {
       status: { code: '200', success: true },
     });
   });
+  // The server's public address, as a "what is my IP" service reports it.
+  app.get('/ip', (req, res) => res.type('text/plain').send(momo.ip));
   momoServer = app.listen(MOMO_PORT);
 }
 
@@ -4239,6 +4242,24 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.equal(sent.transaction.amount, order.total);
   });
 
+  test('the server address for Airtel’s allowed list, and a warning when it changes', async () => {
+    const first = await run('adminGetServerAddress', {}, s.owner);
+    assert.equal(first.ip, '203.0.113.10');
+    assert.equal((await run('adminGetServerAddress', {}, s.owner)).changed, false);
+    momo.ip = '203.0.113.99';
+    const moved = await run('adminGetServerAddress', {}, s.owner);
+    assert.deepEqual(
+      [moved.ip, moved.previous, moved.changed],
+      ['203.0.113.99', '203.0.113.10', true],
+    );
+    assert.ok(moved.changedAt);
+    assert.deepEqual(
+      moved.history.map((h) => h.ip),
+      ['203.0.113.99', '203.0.113.10'],
+    );
+    await rejects(run('adminGetServerAddress', {}, s.dina), /admin role required/);
+  });
+
   test('with automatic payments off, the transaction ID is required again', async () => {
     await run('adminSavePaymentSettings', { provider: 'mtn', enabled: false }, s.owner);
     await rejects(
@@ -4400,6 +4421,7 @@ const ACCESS = {
     'adminSavePaymentSettings',
     'adminTestPaymentConnection',
     'adminMtnSandboxUser',
+    'adminGetServerAddress',
   ],
 };
 const ALLOWED = {

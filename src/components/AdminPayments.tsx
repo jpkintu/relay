@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { CheckCircle2, XCircle } from 'lucide-react';
+import { CheckCircle2, Copy, TriangleAlert, XCircle } from 'lucide-react';
 import { useAdminRun } from '../lib/adminRun';
+import { useConfig } from '../lib/session';
+import { formatDate } from '../lib/format';
 import { useCloud } from './reports/common';
 
 type Provider = 'mtn' | 'airtel';
@@ -59,7 +61,92 @@ export function AdminPayments() {
           onSaved={reload}
         />
       ))}
+      <ServerAddress />
     </div>
+  );
+}
+
+type Address = {
+  ip: string;
+  previous: string;
+  changedAt: string | null;
+  checkedAt: string;
+  changed: boolean;
+  history: { ip: string; firstSeen: string; lastSeen: string }[];
+};
+
+// The public address Relay's server calls MTN and Airtel from, for Airtel's
+// "Server IP Allowed List". It can change on shared hosting; a change is
+// flagged here and sent to the owner by the nightly check.
+function ServerAddress() {
+  const { timezone } = useConfig();
+  const [tick, setTick] = useState(0);
+  const { data, error, loading } = useCloud<Address>('adminGetServerAddress', { tick });
+  const [copied, setCopied] = useState(false);
+  const when = (at: string | null) =>
+    formatDate(at, timezone, { dateStyle: 'medium', timeStyle: 'short' });
+  const recent =
+    !!data?.changedAt && Date.now() - new Date(data.changedAt).getTime() < 30 * 86400000;
+  return (
+    <section className="admin-panel server-address">
+      <div className="panel-title">
+        <h2>Server address</h2>
+      </div>
+      <p className="muted small">
+        The public IP address Relay’s server uses when it calls MTN and Airtel. Airtel asks for it
+        under <b>Server IP Allowed List</b>. Your host may change it; if it does, it is flagged here
+        and you get a notification from the nightly check, so you can update Airtel.
+      </p>
+      {error && <p className="ops-error">{error}</p>}
+      {data && !data.ip && (
+        <p className="ops-error">The address could not be looked up just now. Try again.</p>
+      )}
+      {data?.ip && (
+        <div className="server-ip">
+          <code>{data.ip}</code>
+          <button
+            type="button"
+            className="setup-secondary"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(data.ip);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 2000);
+              } catch {
+                // Clipboard blocked: the address is on screen to copy by hand.
+              }
+            }}
+          >
+            <Copy aria-hidden /> {copied ? 'Copied' : 'Copy'}
+          </button>
+          <button
+            type="button"
+            className="setup-secondary"
+            disabled={loading}
+            onClick={() => setTick((n) => n + 1)}
+          >
+            {loading ? 'Checking…' : 'Check again'}
+          </button>
+        </div>
+      )}
+      {data?.ip && recent && data.previous && (
+        <p className="server-ip-warning" role="alert">
+          <TriangleAlert aria-hidden /> Changed on {when(data.changedAt)}: it was{' '}
+          <code>{data.previous}</code>. Add <code>{data.ip}</code> to Airtel’s allowed list (keep
+          the old one until payments work again).
+        </p>
+      )}
+      {data && data.history.length > 1 && (
+        <p className="muted small">
+          Seen before:{' '}
+          {data.history
+            .slice(1)
+            .map((h) => `${h.ip} (until ${when(h.lastSeen)})`)
+            .join(' · ')}
+        </p>
+      )}
+      {data?.checkedAt && <p className="muted small">Checked {when(data.checkedAt)}.</p>}
+    </section>
   );
 }
 

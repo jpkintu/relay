@@ -101,6 +101,10 @@ Parse.Cloud.job('cashCheck', async () => {
   // The nightly run also removes customer details past the owner's
   // retention period (Admin → Data & privacy).
   const retention = await require('./privacy').runRetention();
+  // And checks the server's public address (Airtel's allowed list).
+  await require('./serverAddress')
+    .watchServerAddress()
+    .catch(() => null);
   const cleaned = retention.orders || retention.customers || retention.notifications;
   return `${result.ok ? 'Cash records agree' : `${result.problems.length} problems found`}${
     cleaned

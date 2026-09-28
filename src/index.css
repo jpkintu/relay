@@ -7082,3 +7082,43 @@ a {
     min-height: 44px;
   }
 }
+
+/* Admin → Payments: server address */
+.server-ip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+.server-ip code {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font: 600 20px var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.server-ip .setup-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.server-ip svg {
+  width: 16px;
+  height: 16px;
+}
+.server-ip-warning {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fdf3e1;
+  color: #7a4b00;
+  font-weight: 600;
+}
+.server-ip-warning svg {
+  width: 18px;
+  height: 18px;
+}
