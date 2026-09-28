@@ -15,6 +15,7 @@ const {
   fileUrl,
   findAll,
 } = require('./lib/core');
+const { requireAdminUnlock } = require('./adminLock');
 const { COMMISSION_TYPES, ROUNDING_STEPS } = require('./lib/money');
 const { isValidTimeZone } = require('./lib/dates');
 const { SEED_MENU } = require('./lib/seed');
@@ -527,7 +528,7 @@ Parse.Cloud.define('adminSetMenuImage', async (request) => {
 // Owner: the restaurant's logo, shown on the sign-in screen, the admin menu
 // and printed receipts. { image: base64 PNG/JPEG/WebP } or { remove: true }.
 Parse.Cloud.define('adminSetRestaurantLogo', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   let { object: config } = await loadConfig();
   if (!config) {
     config = new Parse.Object('Configuration');
@@ -579,7 +580,7 @@ Parse.Cloud.define('adminSaveAccompaniment', async (request) => {
 // Owner: theme colours (Branding). { ink, accent } as #rrggbb; '' restores
 // Relay's colour. Refused when text would be hard to read.
 Parse.Cloud.define('adminSaveBranding', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const theme = cleanTheme(request.params);
   const problems = themeProblems(theme);
   if (problems.length) throw invalid(problems[0]);
@@ -596,7 +597,7 @@ Parse.Cloud.define('adminSaveBranding', async (request) => {
 });
 
 Parse.Cloud.define('adminSaveSettings', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const p = request.params;
   const { object: existing, values: current } = await loadConfig();
   const config = existing || new Parse.Object('Configuration');

@@ -2,6 +2,7 @@
 // registers its Cloud functions, triggers and jobs.
 //
 //   errors.js    error reporting: wraps every function and job, ErrorLog
+//   adminLock.js PIN re-entry for the Admin area (unlockAdmin, requireAdminUnlock)
 //   security.js  write guards, _User rules, applySecurity migration
 //   profile.js   getAppInfo, getMyProfile
 //   orders.js    createOrder, transitionOrder (incl. cancel/reject), order issues
@@ -10,6 +11,7 @@
 //   push.js      Web Push: VAPID keys, device subscriptions, sending
 //   notifications.js in-app notifications, reminders, getNotifications
 //   payments.js  mobile money: verifyPayment, resubmitPayment, ledger
+//   collections.js automatic MTN MoMo / Airtel Money payment requests
 //   menu.js      getOperationalMenu, getStock, setAvailability
 //   cash.js      cash handovers, partial acceptance, disputes and resolutions
 //   payouts.js   money paid out of the till (rider pay, expenses)
@@ -26,11 +28,13 @@
 //   preview.js   optional demo mode (RELAY_ENABLE_PREVIEW=true)
 
 require('./errors');
+require('./adminLock');
 require('./security');
 require('./push');
 require('./notifications');
 require('./customers');
 require('./payments');
+require('./collections');
 require('./orders');
 require('./counter');
 require('./menu');

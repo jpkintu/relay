@@ -8,8 +8,16 @@ test('merchantAccounts lists only providers with a merchant code', () => {
       mtnMerchantName: 'Relay Foods',
       airtelMerchantCode: '',
     }),
-  ).toEqual([{ provider: 'mtn', label: 'MTN MoMo', code: '123456', name: 'Relay Foods' }]);
+  ).toEqual([
+    { provider: 'mtn', label: 'MTN MoMo', code: '123456', name: 'Relay Foods', auto: false },
+  ]);
   expect(merchantAccounts({})).toEqual([]);
+});
+
+test('automatic payments list a provider even without a merchant code', () => {
+  expect(merchantAccounts({ airtelAutoCollect: true })).toEqual([
+    { provider: 'airtel', label: 'Airtel Money', code: '', name: '', auto: true },
+  ]);
 });
 
 test('transaction IDs are normalised and validated', () => {

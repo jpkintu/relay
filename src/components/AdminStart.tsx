@@ -3,6 +3,7 @@ import { CheckCircle2, Circle } from 'lucide-react';
 import Parse from '../parse';
 import { useSession } from '../lib/session';
 import { MenuImport } from './MenuImport';
+import { useAdminRun } from '../lib/adminRun';
 import { STEP_COUNT, STEP_ORDER, stepsDone, type SetupProgress } from '../lib/setup';
 
 type Settings = Record<string, unknown> & {
@@ -126,6 +127,7 @@ export function AdminStart({
   goTo: (section: 'Branding' | 'Menu' | 'Team' | 'Settings' | 'Overview') => void;
 }) {
   const { refresh } = useSession();
+  const adminRun = useAdminRun();
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [settings, setSettings] = useState<Settings>({});
   const [open, setOpen] = useState<string>('');
@@ -162,7 +164,7 @@ export function AdminStart({
     setSaved('');
     try {
       // The Settings page's other values stay as they are.
-      await Parse.Cloud.run('adminSaveSettings', {
+      await adminRun('adminSaveSettings', {
         defaultDeliveryFee: 3000,
         maxRiderFloat: 200000,
         ...settings,

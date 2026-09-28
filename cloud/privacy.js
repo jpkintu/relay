@@ -4,7 +4,8 @@
 // list, while the amounts stay for the books. A customer can also ask to be
 // forgotten at once. The privacy notice (/privacy) reads the same settings.
 
-const { MASTER, adminOnly, audit, findAll, invalid, loadConfig, readAcl } = require('./lib/core');
+const { MASTER, audit, findAll, invalid, loadConfig, readAcl } = require('./lib/core');
+const { requireAdminUnlock } = require('./adminLock');
 
 const RETENTION_CHOICES = [0, 6, 12, 24, 36];
 const REMOVED_NAME = 'Customer (details removed)';
@@ -77,7 +78,7 @@ async function runRetention() {
 
 // Owner: who customers contact about their data, and how long details are kept.
 Parse.Cloud.define('adminSavePrivacy', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const p = request.params || {};
   const months = Number(p.retentionMonths);
   if (!RETENTION_CHOICES.includes(months)) throw invalid('Choose how long to keep details');
@@ -103,7 +104,7 @@ Parse.Cloud.define('adminSavePrivacy', async (request) => {
 // Owner: run the clean-up now, or see what it would remove ({ dryRun }).
 Parse.Cloud.define('adminApplyRetention', async (request) => {
   // The master key (tests, the dashboard) may also move "now" forward.
-  const actor = request.master ? null : await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const p = request.params || {};
   const { values } = await loadConfig();
   const months = Number(values.retentionMonths) || 0;
@@ -126,7 +127,7 @@ Parse.Cloud.define('adminApplyRetention', async (request) => {
 // finished order (amounts stay) and their saved record is deleted. Orders
 // still in progress keep the details until they are done.
 Parse.Cloud.define('adminForgetCustomer', async (request) => {
-  const actor = await adminOnly(request);
+  const actor = await requireAdminUnlock(request);
   const p = request.params || {};
   const phone = String(p.phone || '').replace(/[^\d+]/g, '');
   if (p.customerId && !/^[A-Za-z0-9]{1,32}$/.test(String(p.customerId)))

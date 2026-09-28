@@ -11,6 +11,8 @@ interface ImportMetaEnv {
   readonly VITE_PARSE_LIVEQUERY_URL?: string;
   /** 'true' shows the demo preview mode (the server must also allow it). */
   readonly VITE_ENABLE_PREVIEW?: string;
+  /** 'true' shows "Continue with Google" on the sign-in screen (off by default). */
+  readonly VITE_ENABLE_GOOGLE_SIGNIN?: string;
   /** Back4App managed Google sign-in proxy, if used. */
   readonly VITE_BACK4APP_OAUTH_PROXY_URL?: string;
   /** Build date (set in vite.config.ts), sent with crash reports. */

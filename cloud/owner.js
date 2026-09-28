@@ -12,6 +12,7 @@ const {
   personName,
   orNone,
 } = require('./lib/core');
+const { requireAdminUnlock } = require('./adminLock');
 const {
   resolveRange,
   bucketKeys,
@@ -228,6 +229,7 @@ const AUDIT_GROUPS = [
   'errors',
   'data',
   'privacy',
+  'admin',
 ];
 const PAGE = 100;
 
@@ -274,7 +276,7 @@ async function entityLabels(rows) {
 // Owner: who did what, newest first, 100 at a time. Filters: dates, person,
 // kind of action (order, payment, cash, …), and one record.
 Parse.Cloud.define('adminGetAuditLog', async (request) => {
-  await adminOnly(request);
+  await requireAdminUnlock(request);
   const p = request.params;
   const { values: config } = await loadConfig();
   const range = resolveRange(p, config.timezone, { defaultDays: 7, maxDays: 366 });

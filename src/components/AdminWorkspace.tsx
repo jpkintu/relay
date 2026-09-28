@@ -8,20 +8,17 @@ import {
   HandCoins,
   LayoutDashboard,
   LogOut,
-  Settings,
-  Palette,
+  ShieldCheck,
   Users,
   CircleDollarSign,
   BarChart3,
   TriangleAlert,
-  History,
   Rocket,
-  Bug,
-  Database,
 } from 'lucide-react';
 import Parse from '../parse';
 import { AdminOverview } from './AdminOverview';
 import { STEP_COUNT, stepsDone, type SetupProgress } from '../lib/setup';
+import { ADMIN_TABS, type AdminTab } from '../lib/adminTabs';
 import { lazyScreen } from '../lib/lazy';
 import { BrandMark } from './BrandMark';
 import { useConfig, useSession } from '../lib/session';
@@ -42,9 +39,7 @@ const Reports = lazyScreen(() => import('./reports/Reports').then((m) => m.Repor
 const AdminSetup = lazyScreen(() => import('./AdminSetup').then((m) => m.AdminSetup));
 const AdminMember = lazyScreen(() => import('./AdminMember').then((m) => m.AdminMember));
 const AdminOrder = lazyScreen(() => import('./AdminOrder').then((m) => m.AdminOrder));
-const AuditLog = lazyScreen(() => import('./AuditLog').then((m) => m.AuditLog));
-const AdminData = lazyScreen(() => import('./AdminData').then((m) => m.AdminData));
-const AdminErrors = lazyScreen(() => import('./AdminErrors').then((m) => m.AdminErrors));
+const AdminSite = lazyScreen(() => import('./AdminSite').then((m) => m.AdminSite));
 const AdminStart = lazyScreen(() => import('./AdminStart').then((m) => m.AdminStart));
 const ZReportPage = lazyScreen(() => import('./reports/ZReport').then((m) => m.ZReportPage));
 
@@ -57,14 +52,21 @@ const NAV = [
   [HandCoins, 'Payments ledger', 'payments'],
   [CircleDollarSign, 'Commissions', 'commissions'],
   [Users, 'Team', 'team'],
-  [History, 'Audit log', 'audit'],
-  [Bug, 'Errors', 'errors'],
-  [Database, 'Data & privacy', 'data'],
   [ClipboardList, 'Menu', 'menu'],
-  [Palette, 'Branding', 'branding'],
-  [Settings, 'Settings', 'settings'],
+  // Settings, branding, payments, access rules, audit log, errors and data &
+  // privacy, behind the owner's PIN (AdminSite).
+  [ShieldCheck, 'Admin', 'site'],
 ] as const;
 type Section = (typeof NAV)[number][1];
+// Pages that moved into Admin keep working from old links and bookmarks.
+const MOVED: Record<string, AdminTab> = {
+  settings: 'settings',
+  branding: 'branding',
+  audit: 'audit',
+  errors: 'errors',
+  data: 'data',
+};
+const isAdminTab = (value: string): value is AdminTab => ADMIN_TABS.some(([id]) => id === value);
 
 export function AdminWorkspace() {
   const { preview, logout } = useSession();
@@ -87,8 +89,12 @@ export function AdminWorkspace() {
     slug === 'reports' && pathParts[3] === 'z' && !preview ? pathParts[4] || 'today' : '';
   const current = NAV.find((entry) => entry[2] === slug);
   const section: Section = current ? current[1] : 'Overview';
-  const setSection = (label: Section) =>
-    navigate(`/admin/${NAV.find((entry) => entry[1] === label)?.[2] ?? ''}`);
+  const adminTab: AdminTab =
+    slug === 'site' && isAdminTab(pathParts[3]) ? pathParts[3] : 'settings';
+  const setSection = (label: Section | 'Settings' | 'Branding') =>
+    label === 'Settings' || label === 'Branding'
+      ? navigate(`/admin/site/${label.toLowerCase()}`)
+      : navigate(`/admin/${NAV.find((entry) => entry[1] === label)?.[2] ?? ''}`);
   const [error, setError] = useState('');
   const [openIssues, setOpenIssues] = useState(0);
   const [openErrors, setOpenErrors] = useState(0);
@@ -121,6 +127,7 @@ export function AdminWorkspace() {
     slowMs: 120000,
   });
   if (slug === 'cash') return <Navigate to="/admin/payments" replace />;
+  if (MOVED[slug]) return <Navigate to={`/admin/site/${MOVED[slug]}`} replace />;
   if (!current) return <Navigate to="/admin" replace />;
   return (
     <main className="admin-shell">
@@ -158,7 +165,7 @@ export function AdminWorkspace() {
               {label === 'Problems' && openIssues > 0 && (
                 <span className="nav-count">{openIssues}</span>
               )}
-              {label === 'Errors' && openErrors > 0 && (
+              {label === 'Admin' && openErrors > 0 && (
                 <span className="nav-count">{openErrors}</span>
               )}
             </button>
@@ -244,16 +251,9 @@ export function AdminWorkspace() {
               <AdminStart onChanged={() => void load()} goTo={(label) => setSection(label)} />
             ))}
           {preview &&
-          [
-            'Reports',
-            'Orders',
-            'Problems',
-            'Payments ledger',
-            'Commissions',
-            'Audit log',
-            'Errors',
-            'Data & privacy',
-          ].includes(section) ? (
+          ['Reports', 'Orders', 'Problems', 'Payments ledger', 'Commissions', 'Admin'].includes(
+            section,
+          ) ? (
             <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
             <>
@@ -264,20 +264,22 @@ export function AdminWorkspace() {
                 ) : (
                   <AdminOrders />
                 ))}
-              {section === 'Audit log' && <AuditLog />}
-              {section === 'Errors' && <AdminErrors onChanged={() => void load()} />}
-              {section === 'Data & privacy' && <AdminData />}
+              {section === 'Admin' && (
+                <AdminSite
+                  tab={adminTab}
+                  onTab={(tab) => navigate(`/admin/site/${tab}`)}
+                  openErrors={openErrors}
+                  onChanged={() => void load()}
+                />
+              )}
               {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
               {section === 'Payments ledger' && <PaymentsLedger />}
               {section === 'Commissions' && <Commissions />}
             </>
           )}
           {memberId && <AdminMember key={memberId} id={memberId} />}
-          {!memberId && ['Team', 'Menu', 'Branding', 'Settings'].includes(section) && (
-            <AdminSetup
-              section={section as 'Team' | 'Menu' | 'Branding' | 'Settings'}
-              preview={preview}
-            />
+          {!memberId && (section === 'Team' || section === 'Menu') && (
+            <AdminSetup section={section} preview={preview} />
           )}
         </Suspense>
       </section>

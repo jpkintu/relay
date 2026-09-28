@@ -6940,3 +6940,145 @@ a {
   align-items: center;
   gap: 8px;
 }
+
+/* Automatic mobile money (MobileMoney.tsx, kitchen board, Admin → Payments) */
+.momo-mode {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.momo-request {
+  display: grid;
+  gap: 6px;
+}
+.momo-request label {
+  display: grid;
+  gap: 6px;
+}
+.pay-request {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.pay-request svg {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+.pay-request.good {
+  background: #e6f4ea;
+  color: #1e5e36;
+}
+.pay-request.bad {
+  background: #fdecea;
+  color: #8a1c14;
+}
+.pay-request small {
+  font-weight: 400;
+}
+.spin {
+  animation: relay-spin 1s linear infinite;
+}
+@keyframes relay-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.request-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.request-banner .pay-request {
+  flex: 1 1 260px;
+  margin: 0;
+}
+.pay-test {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.pay-test svg {
+  width: 20px;
+  height: 20px;
+}
+.pay-test.good {
+  color: #1e5e36;
+}
+.pay-test.bad {
+  color: #8a1c14;
+}
+
+/* Admin (behind the PIN) */
+.admin-gate {
+  display: grid;
+  gap: 12px;
+  max-width: 440px;
+}
+.admin-gate h2 {
+  margin: 0;
+  font: 600 24px var(--font-display);
+}
+.admin-gate-icon {
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
+}
+.admin-gate .setup-submit {
+  justify-self: start;
+}
+.admin-site {
+  display: grid;
+  gap: 12px;
+}
+.admin-site-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.admin-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+}
+.admin-tabs button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-dark);
+}
+.admin-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.admin-lock svg {
+  width: 16px;
+  height: 16px;
+}
+@media (pointer: coarse) {
+  .admin-tabs button {
+    min-height: 44px;
+  }
+}

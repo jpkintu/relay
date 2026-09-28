@@ -9,6 +9,9 @@ import {
   PAYMENT_STATUS_LABEL,
   providerLabel,
   referenceProblem,
+  PaymentRequestStatus,
+  payerPhoneProblem,
+  usesRequest,
 } from './MobileMoney';
 import { NotificationBell } from './NotificationBell';
 import { statusLabel, statusTone } from '../lib/labels';
@@ -52,6 +55,9 @@ type Detail = {
   paymentReference: string;
   paymentStatus: string;
   paymentRejectReason: string;
+  // Automatic mobile money: queued | pending | successful | failed | closed.
+  payRequestStatus: string;
+  paymentAuto: boolean;
   createdAt: Date;
   lines: Line[];
 };
@@ -104,6 +110,8 @@ async function loadDetail(orderId: string): Promise<Detail> {
     paymentReference: order.get('paymentReference') || '',
     paymentStatus: order.get('paymentStatus') || '',
     paymentRejectReason: order.get('paymentRejectReason') || '',
+    payRequestStatus: order.get('payRequestStatus') || '',
+    paymentAuto: order.get('paymentAuto') === true,
     createdAt: order.createdAt!,
     lines: items.map((item) => ({
       id: item.id!,
@@ -138,6 +146,10 @@ export function OrderDetail({
   const [payment, setPayment] = useState('');
   const [provider, setProvider] = useState('');
   const [reference, setReference] = useState('');
+  // Automatic payments: the manual way chosen, and the number to ask.
+  const [manualPay, setManualPay] = useState(false);
+  const [payerPhone, setPayerPhone] = useState<string | undefined>(undefined);
+  const { mobileMoney } = useConfig();
   const [pinning, setPinning] = useState(false);
 
   const load = useCallback(async () => {
@@ -176,6 +188,12 @@ export function OrderDetail({
   const amount = order?.amountToCollect ?? 0;
   const paidByMomo = order?.paymentMethod === 'mobile_money';
   const switchingToMomo = !!order && !paidByMomo && method === 'mobile_money';
+  const deliverRequest = usesRequest(mobileMoney, provider, manualPay);
+  const resubmitProvider = provider || order?.paymentProvider || '';
+  const resubmitRequest = usesRequest(mobileMoney, resubmitProvider, manualPay);
+  const resubmitProblem = resubmitRequest
+    ? payerPhoneProblem(payerPhone ?? order?.customerPhone)
+    : referenceProblem(reference);
 
   return (
     <main className="rider-shell">
@@ -303,19 +321,35 @@ export function OrderDetail({
                 className={`detail-card payment-card payment-${order.paymentStatus.toLowerCase()}`}
               >
                 <p className="eyebrow">
-                  {providerLabel(order.paymentProvider)} · Transaction {order.paymentReference}
+                  {providerLabel(order.paymentProvider)} ·{' '}
+                  {order.paymentReference
+                    ? `Transaction ${order.paymentReference}`
+                    : 'Payment request to the customer’s phone'}
                 </p>
-                <h3>{PAYMENT_STATUS_LABEL[order.paymentStatus] || order.paymentStatus}</h3>
-                {order.paymentStatus === 'PENDING_VERIFICATION' && (
-                  <p className="muted">
-                    {order.status === 'DELIVERED'
-                      ? 'The cashier checks this payment on the merchant account. Until it is confirmed, this order stays on your list.'
-                      : 'The kitchen starts once the cashier finds this payment on the merchant account.'}
-                  </p>
-                )}
+                <h3>
+                  {order.paymentStatus === 'PENDING_VERIFICATION' &&
+                  ['queued', 'pending'].includes(order.payRequestStatus)
+                    ? 'Waiting for the customer to approve'
+                    : PAYMENT_STATUS_LABEL[order.paymentStatus] || order.paymentStatus}
+                </h3>
+                {order.paymentStatus === 'PENDING_VERIFICATION' &&
+                  ['queued', 'pending'].includes(order.payRequestStatus) && (
+                    <PaymentRequestStatus orderId={order.id} onSettled={() => void load()} />
+                  )}
+                {order.paymentStatus === 'PENDING_VERIFICATION' &&
+                  !['queued', 'pending'].includes(order.payRequestStatus) && (
+                    <p className="muted">
+                      {order.status === 'DELIVERED'
+                        ? 'The cashier checks this payment on the merchant account. Until it is confirmed, this order stays on your list.'
+                        : 'The kitchen starts once the cashier finds this payment on the merchant account.'}
+                    </p>
+                  )}
                 {order.paymentStatus === 'REJECTED' && (
                   <>
-                    <p className="form-error">Cashier: {order.paymentRejectReason}</p>
+                    <p className="form-error">
+                      {order.paymentAuto ? '' : 'Cashier: '}
+                      {order.paymentRejectReason}
+                    </p>
                     {order.status === 'DELIVERED' && order.cashStatus === 'WITH_RIDER' && (
                       <p className="muted">
                         You owe {money(order.total)}. Hand it over in cash from My cash, or send the
@@ -332,21 +366,30 @@ export function OrderDetail({
                             customerPhone={order.customerPhone}
                             onProvider={setProvider}
                             onReference={setReference}
+                            manual={manualPay}
+                            onManual={setManualPay}
+                            payerPhone={payerPhone}
+                            onPayerPhone={setPayerPhone}
                           />
                           <button
                             className="primary-button wide"
-                            disabled={busy || !!referenceProblem(reference)}
+                            disabled={busy || !!resubmitProblem}
                             onClick={async () => {
                               if (
                                 await act('resubmitPayment', {
-                                  provider: provider || order.paymentProvider,
-                                  reference,
+                                  provider: resubmitProvider,
+                                  reference: resubmitRequest ? '' : reference,
+                                  ...(resubmitRequest && {
+                                    payerPhone: payerPhone ?? order.customerPhone,
+                                  }),
                                 })
                               )
                                 setReference('');
                             }}
                           >
-                            Send corrected transaction ID
+                            {resubmitRequest
+                              ? 'Send the payment request again'
+                              : 'Send corrected transaction ID'}
                           </button>
                         </>
                       )}
@@ -425,10 +468,17 @@ export function OrderDetail({
                       customerPhone={order.customerPhone}
                       onProvider={setProvider}
                       onReference={setReference}
+                      manual={manualPay}
+                      onManual={setManualPay}
+                      payerPhone={payerPhone}
+                      onPayerPhone={setPayerPhone}
                     />
                     <p className="collect-note">
-                      The cashier must confirm this payment. Until they do, the order stays on your
-                      list; if the money is not found you owe {money(order.total)} in cash.
+                      {deliverRequest
+                        ? 'The customer approves the request on their phone; it confirms itself. '
+                        : 'The cashier must confirm this payment. '}
+                      Until it is confirmed the order stays on your list; if the money does not
+                      arrive you owe {money(order.total)} in cash.
                     </p>
                   </>
                 )}
@@ -440,7 +490,12 @@ export function OrderDetail({
                 <button
                   className="primary-button wide"
                   disabled={
-                    busy || (switchingToMomo && (!provider || !!referenceProblem(reference)))
+                    busy ||
+                    (switchingToMomo &&
+                      (!provider ||
+                        !!(deliverRequest
+                          ? payerPhoneProblem(payerPhone ?? order.customerPhone)
+                          : referenceProblem(reference))))
                   }
                   onClick={() =>
                     void act('transitionOrder', {
@@ -449,7 +504,8 @@ export function OrderDetail({
                       amountCollected: isCash ? amount : 0,
                       ...(switchingToMomo && {
                         paymentProvider: provider,
-                        paymentReference: reference,
+                        paymentReference: deliverRequest ? '' : reference,
+                        ...(deliverRequest && { payerPhone: payerPhone ?? order.customerPhone }),
                       }),
                     })
                   }

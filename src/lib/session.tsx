@@ -33,7 +33,15 @@ export type AppConfig = {
   receipt?: { width: number; header: string; footer: string; autoPrintKitchen: boolean };
 };
 
-export type MerchantAccount = { provider: string; label: string; code: string; name: string };
+export type MerchantAccount = {
+  provider: string;
+  label: string;
+  code: string;
+  name: string;
+  // Automatic payments on (Admin → Payments): the app can ask the
+  // customer's phone to pay instead of waiting for a transaction ID.
+  auto?: boolean;
+};
 
 export type Profile = {
   id: string;
