@@ -14880,7 +14880,7 @@ var require_data = __commonJS({
 var require_preview = __commonJS({
   "cloud/preview.js"(exports2, module2) {
     "use strict";
-    var { MASTER, forbidden, invalid } = require_core();
+    var { MASTER, claimOnce, forbidden, invalid } = require_core();
     var { SEED_MENU } = require_seed();
     var previewEnabled = () => process.env.RELAY_ENABLE_PREVIEW === "true";
     var DEMO_FEE = 3e3;
@@ -14919,36 +14919,51 @@ var require_preview = __commonJS({
       await row.save(null, MASTER);
       return { id: row.id, orderCode: row.get("orderCode"), total: row.get("total") };
     });
-    Parse.Cloud.define("getPreviewOrders", async () => {
-      requirePreview();
+    var SEEDS = [
+      ["DEMO-0218", "Joel M.", "2\xD7 Smoky chicken bowl \xB7 1\xD7 Juice", 43e3, "PLACED"],
+      ["DEMO-0217", "Sarah N.", "2\xD7 Garden rice plate", 32e3, "PREPARING"],
+      ["DEMO-0214", "Joseph K.", "1\xD7 Chicken bowl \xB7 1\xD7 Hibiscus", 24500, "READY"]
+    ];
+    function openDemoOrders() {
       const query = new Parse.Query("DemoOrder");
       query.notContainedIn("status", ["PICKED_UP", "DELIVERED", "CANCELLED"]);
       query.descending("createdAt");
       query.limit(30);
-      let rows = await query.find(MASTER);
-      if (!rows.length) {
-        const seeds = [
-          ["DEMO-0218", "Joel M.", "2\xD7 Smoky chicken bowl \xB7 1\xD7 Juice", 43e3, "PLACED"],
-          ["DEMO-0217", "Sarah N.", "2\xD7 Garden rice plate", 32e3, "PREPARING"],
-          ["DEMO-0214", "Joseph K.", "1\xD7 Chicken bowl \xB7 1\xD7 Hibiscus", 24500, "READY"]
-        ];
-        rows = seeds.map(([code, customer, items, total, status]) => {
-          const row = new Parse.Object("DemoOrder");
-          row.set({
-            orderCode: code,
-            customerName: customer,
-            deliveryAddress: "Kampala Central",
-            riderName: "R-014 \xB7 Amina",
-            itemSummary: items,
-            total,
-            status,
-            restaurantStatus: String(status).toLowerCase(),
-            isDemo: true
-          });
-          row.setACL(new Parse.ACL());
-          return row;
+      return query;
+    }
+    async function seedDemoOrders() {
+      const total = await new Parse.Query("DemoOrder").count(MASTER);
+      if (!await claimOnce(`preview:seed:${total}`)) {
+        for (let i = 0; i < 30; i += 1) {
+          if (await openDemoOrders().count(MASTER)) return;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return;
+      }
+      const rows = SEEDS.map(([code, customer, items, amount, status]) => {
+        const row = new Parse.Object("DemoOrder");
+        row.set({
+          orderCode: code,
+          customerName: customer,
+          deliveryAddress: "Kampala Central",
+          riderName: "R-014 \xB7 Amina",
+          itemSummary: items,
+          total: amount,
+          status,
+          restaurantStatus: String(status).toLowerCase(),
+          isDemo: true
         });
-        await Parse.Object.saveAll(rows, MASTER);
+        row.setACL(new Parse.ACL());
+        return row;
+      });
+      await Parse.Object.saveAll(rows, MASTER);
+    }
+    Parse.Cloud.define("getPreviewOrders", async () => {
+      requirePreview();
+      let rows = await openDemoOrders().find(MASTER);
+      if (!rows.length) {
+        await seedDemoOrders();
+        rows = await openDemoOrders().find(MASTER);
       }
       return rows.map((row) => ({
         id: row.id,

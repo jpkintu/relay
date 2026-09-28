@@ -459,6 +459,18 @@ describe('preview mode (S2)', () => {
     );
   });
 
+  test('two first loads at once seed the demo tickets once (U6)', async () => {
+    process.env.RELAY_ENABLE_PREVIEW = 'true';
+    try {
+      const [a, b] = await Promise.all([run('getPreviewOrders'), run('getPreviewOrders')]);
+      assert.equal(a.length, 3);
+      assert.deepEqual(b.map((row) => row.id).sort(), a.map((row) => row.id).sort());
+      assert.equal(new Set(a.map((row) => row.code)).size, 3);
+    } finally {
+      delete process.env.RELAY_ENABLE_PREVIEW;
+    }
+  });
+
   test('works when enabled and stays out of operational orders', async () => {
     process.env.RELAY_ENABLE_PREVIEW = 'true';
     try {
