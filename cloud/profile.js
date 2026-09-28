@@ -56,6 +56,11 @@ Parse.Cloud.define('getAppInfo', async () => {
     currencyCode: values.currencyCode,
     timezone: values.timezone,
     ownerSetupOpen: users === 0,
+    // For the privacy notice (/privacy), which anyone can read.
+    privacy: {
+      contact: values.privacyContact || '',
+      retentionMonths: Number(values.retentionMonths) || 0,
+    },
     previewEnabled: previewEnabled(),
   };
 });

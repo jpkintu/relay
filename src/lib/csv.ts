@@ -104,3 +104,19 @@ export const MENU_TEMPLATE = [
   'Beef pilau,14000,Mains,,25',
   'Passion juice,5000,Drinks,Fresh,',
 ].join('\r\n');
+
+// Writes rows as CSV that Excel opens correctly (byte-order mark, quoted
+// cells, Windows line endings). Cells starting with = + - @ are prefixed with
+// ' so a spreadsheet never runs them as formulas.
+export function toCsv(header: string[], rows: (string | number | null | undefined)[][]) {
+  const cell = (value: string | number | null | undefined) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'number') return String(value);
+    const text = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return (
+    String.fromCharCode(0xfeff) +
+    [header, ...rows].map((row) => row.map(cell).join(',')).join('\r\n')
+  );
+}

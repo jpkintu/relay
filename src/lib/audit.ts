@@ -44,6 +44,10 @@ const ACTIONS: Record<string, string> = {
   'menu.imported': 'Imported dishes from a spreadsheet',
   'setup.finished': 'Finished or reopened Get started',
   'errors.resolved': 'Marked errors as fixed',
+  'data.exported': 'Downloaded data',
+  'privacy.settings_saved': 'Changed the privacy settings',
+  'privacy.retention': 'Removed old customer details',
+  'privacy.customer_forgotten': 'Removed a customer’s details on request',
   'menu.archived': 'Archived a dish',
   'menu.sorted': 'Reordered the menu',
   'menu.image': 'Changed a dish photo',
@@ -76,6 +80,8 @@ export const AUDIT_GROUP_LABEL: Record<string, string> = {
   report: 'Reports',
   setup: 'Get started',
   errors: 'Errors',
+  data: 'Data exports',
+  privacy: 'Privacy',
 };
 
 // Fields that changed between two audit snapshots, for a short diff. The

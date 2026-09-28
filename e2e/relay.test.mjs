@@ -3879,6 +3879,124 @@ describe('error reporting', () => {
   });
 });
 
+describe('data export and customer privacy', () => {
+  const exportAll = async (className) => {
+    const rows = [];
+    let after = null;
+    do {
+      const page = await run('adminExportData', { className, after }, s.owner);
+      rows.push(...page.rows);
+      after = page.next;
+    } while (after);
+    return rows;
+  };
+
+  test('the owner downloads every record; team members come without credentials', async () => {
+    const summary = await run('adminExportSummary', {}, s.owner);
+    assert.ok(summary.classes.includes('Order'));
+    const orders = await exportAll('Order');
+    assert.equal(orders.length, summary.counts.Order);
+    assert.ok(orders.every((row) => row.objectId && !('ACL' in row)));
+    const users = await exportAll('_User');
+    assert.ok(users.some((row) => row.username === 'owner' && row.role === 'admin'));
+    for (const row of users)
+      for (const secret of ['password', '_hashed_password', 'sessionToken', 'authData'])
+        assert.ok(!(secret in row), `${secret} is not exported`);
+    await rejects(run('adminExportData', { className: 'Secret' }, s.owner), /Unknown kind/);
+    await rejects(run('adminExportData', { className: 'Order' }, s.pia), /admin role required/);
+    const log = await run('adminGetAuditLog', { group: 'data' }, s.owner);
+    assert.ok(log.rows.some((row) => row.action === 'data.exported'));
+  });
+
+  test('privacy settings appear on the public privacy notice', async () => {
+    await rejects(run('adminSavePrivacy', { retentionMonths: 5 }, s.owner), /how long/);
+    await run(
+      'adminSavePrivacy',
+      { retentionMonths: 12, privacyContact: 'privacy@example.com · 0700 000000' },
+      s.owner,
+    );
+    const info = await run('getAppInfo');
+    assert.deepEqual(info.privacy, {
+      contact: 'privacy@example.com · 0700 000000',
+      retentionMonths: 12,
+    });
+  });
+
+  test('a customer who asks is forgotten: finished orders lose their details, amounts stay', async () => {
+    const customers = await exportAll('Customer');
+    const orders = await exportAll('Order');
+    const target = customers.find(
+      (c) =>
+        c.phone &&
+        orders.some(
+          (o) =>
+            o.customerPhone === c.phone &&
+            ['DELIVERED', 'CANCELLED'].includes(o.status) &&
+            !['WITH_RIDER', 'HANDOVER_PENDING', 'DISPUTED'].includes(o.cashStatus),
+        ),
+    );
+    assert.ok(target, 'a customer with a finished order');
+    const preview = await run(
+      'adminForgetCustomer',
+      { phone: target.phone, dryRun: true },
+      s.owner,
+    );
+    assert.equal(preview.found, true);
+    assert.ok(preview.orders >= 1);
+    const before = orders.filter((o) => o.customerPhone === target.phone);
+    const done = await run('adminForgetCustomer', { phone: target.phone }, s.owner);
+    assert.equal(done.orders, preview.orders);
+    const after = await exportAll('Order');
+    for (const order of before) {
+      const now = after.find((o) => o.objectId === order.objectId);
+      if (!now.anonymisedAt) continue;
+      assert.equal(now.customerName, 'Customer (details removed)');
+      assert.equal(now.customerPhone, '');
+      assert.equal(now.deliveryAddress, '');
+      assert.ok(!now.location);
+      assert.equal(now.total, order.total, 'amounts stay for the books');
+    }
+    assert.equal(after.filter((o) => o.anonymisedAt).length >= done.orders, true);
+    if (!done.inProgress)
+      assert.ok(!(await exportAll('Customer')).some((c) => c.objectId === target.objectId));
+    await rejects(run('adminForgetCustomer', { phone: '12' }, s.owner), /phone number/);
+  });
+
+  test('retention removes details older than the chosen period, nothing newer', async () => {
+    const today = await run('adminApplyRetention', { dryRun: true }, s.owner);
+    assert.deepEqual([today.orders, today.customers], [0, 0], 'nothing is a year old yet');
+    // Two years from now, everything finished is past the 12 months.
+    const asOf = new Date(Date.now() + 2 * 365 * 86400000).toISOString();
+    const later = await Parse.Cloud.run(
+      'adminApplyRetention',
+      { asOf, dryRun: true },
+      { useMasterKey: true },
+    );
+    assert.ok(later.orders > 0 && later.customers > 0);
+    const applied = await Parse.Cloud.run('adminApplyRetention', { asOf }, { useMasterKey: true });
+    assert.equal(applied.orders, later.orders);
+    const orders = await exportAll('Order');
+    const finished = orders.filter(
+      (o) =>
+        ['DELIVERED', 'CANCELLED'].includes(o.status) &&
+        !['WITH_RIDER', 'HANDOVER_PENDING', 'DISPUTED'].includes(o.cashStatus) &&
+        o.billOpen !== true,
+    );
+    assert.ok(finished.every((o) => o.anonymisedAt && o.customerPhone === ''));
+    assert.ok(
+      orders
+        .filter((o) => !finished.includes(o))
+        .every((o) => !o.anonymisedAt || o.customerPhone === ''),
+    );
+    assert.equal((await exportAll('Customer')).length, 0);
+    // An order still in progress keeps its details.
+    const open = orders.find((o) => ['PLACED', 'ACCEPTED', 'READY'].includes(o.status));
+    if (open) assert.notEqual(open.customerName, 'Customer (details removed)');
+    await run('adminSavePrivacy', { retentionMonths: 0, privacyContact: '' }, s.owner);
+    await rejects(run('adminApplyRetention', {}, s.owner), /how long to keep/);
+  });
+});
+
 // Who may call each Cloud function. Every function the server registers must
 // be listed here, so a new function cannot ship without deciding who may use
 // it. public: anyone, signed in or not; signedIn: any active team member
@@ -3973,6 +4091,11 @@ const ACCESS = {
     'adminFinishSetup',
     'adminListErrors',
     'adminResolveErrors',
+    'adminExportData',
+    'adminExportSummary',
+    'adminSavePrivacy',
+    'adminApplyRetention',
+    'adminForgetCustomer',
   ],
 };
 const ALLOWED = {

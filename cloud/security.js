@@ -181,6 +181,8 @@ const SCHEMAS = {
     paidAtDoor: B,
     deliveryFeePaid: B,
     feePayout: ['Pointer', 'TillPayout'],
+    // Customer details removed (privacy retention or a request).
+    anonymisedAt: D,
   },
   OrderItem: {
     order: ['Pointer', 'Order'],
@@ -266,6 +268,8 @@ const SCHEMAS = {
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
     restaurantName: S,
+    retentionMonths: N,
+    privacyContact: S,
     setupDone: B,
     currencySymbol: S,
     currencyCode: S,

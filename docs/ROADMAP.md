@@ -106,6 +106,32 @@ Back4App **Parse app**:
 The frontend is pinned to Node 22 (`engines`); `vite.config.ts` lets `vite
 preview` answer on any host name (b4a.run URL or a custom domain).
 
+### Backups and a test copy (staging)
+
+**Backups.** Admin → Data & privacy → **Full backup (.json)** downloads every
+record (settings, team without PINs, menu, customers, orders, cash, shifts,
+Z-reports, audit log); keep one somewhere safe, e.g. weekly. Orders and
+customers also download as spreadsheets. Back4App keeps its own database
+backups on paid plans (dashboard → the app → Database → Backups); use those to
+roll the whole database back. A Relay backup file is for records and for
+rebuilding by hand; there is no "restore" button in the app.
+
+**A test copy** lets a new version be tried before the restaurant gets it:
+
+1. Create a second Back4App **Parse app**, e.g. "Relay staging". It gets its
+   own Application ID, keys and empty database.
+2. Upload the same `back4app/cloud/main.js` to it (Cloud Code → Upload).
+3. Create a second Back4App **Container** from this repo (same branch, or a
+   test branch) and give it the staging app's `VITE_PARSE_SERVER_URL`,
+   `VITE_PARSE_APP_ID` and `VITE_PARSE_JS_KEY` (§2 above).
+4. Open the staging site, create the first owner, then Settings → **Apply
+   security rules**. Use Get started to add a menu and test accounts.
+5. Try the change there first; deploy to production (upload + redeploy) once
+   it works. Never point the staging site at the production app ID.
+
+Push notifications, Cloud Jobs and email/Z-report settings are per app, so set
+them up in staging only if you are testing them.
+
 ### Back4App release checklist
 
 Do this on every environment (staging and production) after deploying Cloud
@@ -127,7 +153,8 @@ Code:
    integrity release adds `TillPayout` and PIN lockout fields).
    **Cash check job:** Back4App dashboard → Cloud Code → Jobs → schedule
    `cashCheck` nightly (e.g. 23:30). It notifies the owner if cash records
-   disagree.
+   disagree, and removes customer details past the retention period chosen in
+   Admin → Data & privacy.
    **Live updates (LiveQuery):** Back4App → App Settings → Server Settings →
    Web Hosting and Live Query: turn on Live Query with the classes `Order`,
    `CashHandover` and `Notification`, note the subdomain, and set
@@ -718,9 +745,9 @@ Owner's decisions 2026-09-27: the cashier picks the rider for call-in deliveries
 - [x] Mobile usability pass: 44 px tap targets, contrast, one-hand reach, gloves; test on low-end Android Chrome over 3G (_done 2026-09-28: every screen audited on a 360 px touch phone; no control under 44 px, no text under AA contrast; tested on emulated slow 3G with a 4× slower CPU. Real low-end devices still worth a look_)
 - [x] Performance: code-split the admin workspace (the bundle is 497 kB, 156 kB gzip) (_done 2026-09-28: per-role and per-section downloads, a long-cached vendor file_)
 - [x] Error reporting (e.g. Sentry) + a cloud-code structured log (_done 2026-09-28, built in rather than Sentry: Admin → Errors, `cloud/errors.js`, JSON log lines_)
-- [ ] Backups / export of the Back4App DB; staging vs. production apps with separate app IDs
+- [x] Backups / export of the Back4App DB; staging vs. production apps with separate app IDs (_done 2026-09-28: Admin → Data & privacy downloads; staging steps in §2_)
 - [x] Seed/onboarding wizard for a new restaurant (menu import CSV, first rider/cashier) (_done 2026-09-28: Admin → Get started; the CSV import is also on the Menu page_)
-- [ ] Legal: privacy notice (customer phone numbers are personal data), terms, data retention
+- [x] Legal: privacy notice (customer phone numbers are personal data), terms, data retention (_done 2026-09-28: /privacy page, retention period, forget a customer. The wording is a starting text: have it checked against the law that applies_)
 - [ ] Commercial: decide whether each client gets **a Back4App app per restaurant** (simplest, matches the single-vendor design) or a multi-tenant build later; white-label name/logo/colours from Configuration (_done 2026-09-27: Admin → Branding_); pricing & billing outside the app
 - [ ] Phase 2 features: mobile money via API (MTN MoMo / Airtel / Flutterwave), customer QR menu, rider GPS, native wrapper
 
@@ -738,9 +765,6 @@ Everything not built yet, from the sections above, in suggested order.
 **Small gaps in built features**
 
 **Release readiness (Phase 6)**
-
-- Backups / export, and a staging app separate from production
-- Privacy notice, terms, data retention (customer phone numbers)
 
 **Later / postponed (phase 2, needs decisions or credentials)**
 
@@ -862,3 +886,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-09-27 | Notification test now follows the push onto this device: the service worker reports back whether the test arrived and whether the browser showed it (`relay:push-shown` / `relay:push-error`), so the bell panel says "handed to the system" (then the device or browser is silencing it: Windows notification settings / Focus, Android app notifications / Do not disturb), "browser would not show it" with the reason, or "not reached this device yet" (network, battery saver). `sendTestPush` returns a `testId`. Shell cache bumped to `relay-shell-v3` so every device installs the new service worker.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | 2026-09-28 | Release readiness 3, 4 and 9. **Get started** (Admin, shown until the owner finishes it; a restaurant that already takes orders is not asked): restaurant name, currency and time zone, the menu, the first rider and cashier, the logo, with progress on the Overview. **Menu import from a spreadsheet** (Get started and Menu): pick a CSV (Excel / Google Sheets; comma, semicolon or tab; usual column names like Name / Dish, Price, Category / Section, Description, Prep time), see every row checked before saving, then import; all-or-nothing, dishes matched by name (skipped or updated), missing categories created, the six starter dishes can be archived (`adminImportMenu`, `getSetupProgress`, `adminFinishSetup`). **Errors** (Admin → Errors, with a count in the menu): app crashes (a friendly "Something went wrong" screen replaces the raw error) and unexpected server or job failures are recorded, grouped with a count, who and which device, and can be marked fixed; expected errors (wrong PIN, missing field) are not; every Cloud Code failure and job run is also logged as a JSON line (`cloud/errors.js`, `cloud/lib/log.js`, `src/lib/errors.ts`). **Permission matrix** e2e: every Cloud function × signed out, rider, cashier, owner and a deactivated member, and a new function fails the tests until it has an access rule. Run "Apply security rules" after deploying (new `ErrorLog` class, `setupDone` setting). |
 | 2026-09-28 | Release readiness 7 and 8. **Smaller, cached downloads:** each role's workspace and each owner section (other than the Overview) is its own file, fetched on first use (a rider never downloads the owner's reports); Parse, React and the router sit in a `vendor` file whose name only changes on a library upgrade, so phones keep it across deploys. What everyone downloads first went from 786 kB (241 kB compressed) to 44 kB of app code plus the 443 kB vendor file; after a deploy only the app code is fetched again. An open app that asks for a file removed by a deploy reloads once instead of crashing (`src/lib/lazy.ts`). `vite preview` now sends files under `/assets` with a one-year immutable cache (they are content-hashed); the page and service worker stay no-cache. **Phone pass** (audited on a 360 px touch phone, every rider, cashier and owner screen): all controls at least 44 px on touch screens (78 were smaller; the menu page's reorder buttons were squeezed to 3 px), channel pills and menu forms wrap instead of overflowing, bottom-tab labels 11–12 px instead of 10 px, and text on the accent colour uses `--on-accent` (white or the main colour, whichever reads better; white on a gold accent was 2:1) so no text is below WCAG AA contrast.                                                                                                                                                               |
+| 2026-09-28 | Release readiness 5 and 6. **Admin → Data & privacy.** Backups: a full backup file (.json) with every record — settings, team (no PINs or sessions), menu, customers, orders, cash, shifts, Z-reports, audit log — and orders / customers spreadsheets (.csv, formula-safe), fetched a page at a time (`adminExportData`, `adminExportSummary`; each download is in the audit log). Staging (a test copy on a second Back4App app) and backup steps in §2. Privacy: a public **Privacy and terms** page (`/privacy`, linked from sign-in) for customers and staff, with the restaurant's contact and retention period; the owner chooses how long customer details are kept (keep, 6, 12, 24 or 36 months) and the nightly `cashCheck` job removes names, phones, addresses and pins from finished, settled orders past it (amounts stay; `anonymisedAt`), deletes saved customers and old notifications (`adminSavePrivacy`, `adminApplyRetention` with a preview); a customer who asks is forgotten by phone number (`adminForgetCustomer`, preview first; orders in progress keep details until finished). Run "Apply security rules" after deploying (new fields).                                                                                                                                                                                                                                                                                          |
