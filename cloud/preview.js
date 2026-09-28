@@ -2,7 +2,7 @@
 // environment sets RELAY_ENABLE_PREVIEW=true. Demo rows live in DemoOrder and
 // never touch operational data.
 
-const { MASTER, forbidden, invalid } = require('./lib/core');
+const { MASTER, claimOnce, forbidden, invalid } = require('./lib/core');
 const { SEED_MENU } = require('./lib/seed');
 
 const previewEnabled = () => process.env.RELAY_ENABLE_PREVIEW === 'true';
@@ -47,36 +47,58 @@ Parse.Cloud.define('createPreviewOrder', async (request) => {
   return { id: row.id, orderCode: row.get('orderCode'), total: row.get('total') };
 });
 
-Parse.Cloud.define('getPreviewOrders', async () => {
-  requirePreview();
+const SEEDS = [
+  ['DEMO-0218', 'Joel M.', '2× Smoky chicken bowl · 1× Juice', 43000, 'PLACED'],
+  ['DEMO-0217', 'Sarah N.', '2× Garden rice plate', 32000, 'PREPARING'],
+  ['DEMO-0214', 'Joseph K.', '1× Chicken bowl · 1× Hibiscus', 24500, 'READY'],
+];
+
+function openDemoOrders() {
   const query = new Parse.Query('DemoOrder');
   query.notContainedIn('status', ['PICKED_UP', 'DELIVERED', 'CANCELLED']);
   query.descending('createdAt');
   query.limit(30);
-  let rows = await query.find(MASTER);
-  if (!rows.length) {
-    const seeds = [
-      ['DEMO-0218', 'Joel M.', '2× Smoky chicken bowl · 1× Juice', 43000, 'PLACED'],
-      ['DEMO-0217', 'Sarah N.', '2× Garden rice plate', 32000, 'PREPARING'],
-      ['DEMO-0214', 'Joseph K.', '1× Chicken bowl · 1× Hibiscus', 24500, 'READY'],
-    ];
-    rows = seeds.map(([code, customer, items, total, status]) => {
-      const row = new Parse.Object('DemoOrder');
-      row.set({
-        orderCode: code,
-        customerName: customer,
-        deliveryAddress: 'Kampala Central',
-        riderName: 'R-014 · Amina',
-        itemSummary: items,
-        total,
-        status,
-        restaurantStatus: String(status).toLowerCase(),
-        isDemo: true,
-      });
-      row.setACL(new Parse.ACL());
-      return row;
+  return query;
+}
+
+// Seeds the demo tickets when none are open. Two first loads at the same
+// moment must not both seed (U6): the claim is keyed by how many demo rows
+// exist, so only one caller seeds each time the board runs empty; the other
+// waits for its rows.
+async function seedDemoOrders() {
+  const total = await new Parse.Query('DemoOrder').count(MASTER);
+  if (!(await claimOnce(`preview:seed:${total}`))) {
+    for (let i = 0; i < 30; i += 1) {
+      if (await openDemoOrders().count(MASTER)) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return;
+  }
+  const rows = SEEDS.map(([code, customer, items, amount, status]) => {
+    const row = new Parse.Object('DemoOrder');
+    row.set({
+      orderCode: code,
+      customerName: customer,
+      deliveryAddress: 'Kampala Central',
+      riderName: 'R-014 · Amina',
+      itemSummary: items,
+      total: amount,
+      status,
+      restaurantStatus: String(status).toLowerCase(),
+      isDemo: true,
     });
-    await Parse.Object.saveAll(rows, MASTER);
+    row.setACL(new Parse.ACL());
+    return row;
+  });
+  await Parse.Object.saveAll(rows, MASTER);
+}
+
+Parse.Cloud.define('getPreviewOrders', async () => {
+  requirePreview();
+  let rows = await openDemoOrders().find(MASTER);
+  if (!rows.length) {
+    await seedDemoOrders();
+    rows = await openDemoOrders().find(MASTER);
   }
   return rows.map((row) => ({
     id: row.id,
