@@ -88,7 +88,13 @@ Parse.Cloud.define('adminGetPaymentSettings', async (request) => {
       lastTest: own.lastTest || null,
     };
   }
-  return { ...view, dialCode: values.momoDialCode || '256', currency: values.currencyCode };
+  return {
+    ...view,
+    dialCode: values.momoDialCode || '256',
+    currency: values.currencyCode,
+    // What each MTN test number does (test environment only).
+    mtnTestNumbers: api.MTN_TEST_NUMBERS,
+  };
 });
 
 // Owner: save one provider. Empty key fields keep what is stored, so keys
@@ -245,6 +251,8 @@ async function sendRequest(order) {
     config.momoDialCode || '256',
   );
   if (!msisdn) return fail('No usable phone number for the payment request');
+  if (provider === 'mtn' && api.isMtnTestNumber(msisdn) && own.environment === 'production')
+    return fail('MTN test numbers only work in the MTN test environment');
   const request = {
     amount: Number(order.get('total') || 0),
     currency: config.currencyCode,

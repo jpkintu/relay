@@ -45,6 +45,11 @@ type OrderPage = {
     paidAtDoor: boolean;
     amountCollected: number;
     cashStatus: string;
+    auto?: boolean;
+    requestStatus?: string;
+    requestReference?: string;
+    requestPhone?: string;
+    requestError?: string;
   };
   riderPay: {
     total: number;
@@ -334,8 +339,31 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
             </div>
             {p.reference && (
               <div>
-                <dt>Transaction ID</dt>
-                <dd>{p.reference}</dd>
+                <dt>{p.auto ? `${providerLabel(p.provider)} transaction ID` : 'Transaction ID'}</dt>
+                <dd>
+                  <span className="code">{p.reference}</span>
+                  {p.auto && (
+                    <small> · confirmed automatically by {providerLabel(p.provider)}</small>
+                  )}
+                </dd>
+              </div>
+            )}
+            {p.requestReference && (
+              <div>
+                <dt>Payment request</dt>
+                <dd>
+                  <span className="code">{p.requestReference}</span>
+                  <small>
+                    {' '}
+                    · sent to {p.requestPhone || 'the customer'}
+                    {p.requestStatus && ` · ${p.requestStatus}`}
+                    {p.requestError && ` · ${p.requestError}`}
+                  </small>
+                  <small className="muted block">
+                    Search this reference in the {providerLabel(p.provider)} portal to find the
+                    request.
+                  </small>
+                </dd>
               </div>
             )}
             <div>
