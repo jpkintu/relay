@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   UtensilsCrossed,
@@ -19,25 +19,32 @@ import {
   Bug,
 } from 'lucide-react';
 import Parse from '../parse';
-import { AdminOrders } from './AdminOrders';
-import { AdminProblems } from './AdminProblems';
-import { PaymentsLedger } from './reports/PaymentsLedger';
-import { Commissions } from './reports/Commissions';
-import { Reports } from './reports/Reports';
-import { AdminSetup } from './AdminSetup';
-import { AdminMember } from './AdminMember';
 import { AdminOverview } from './AdminOverview';
-import { AdminOrder } from './AdminOrder';
-import { AuditLog } from './AuditLog';
-import { AdminErrors } from './AdminErrors';
-import { AdminStart, STEP_COUNT, stepsDone, type SetupProgress } from './AdminStart';
-import { ZReportPage } from './reports/ZReport';
+import { STEP_COUNT, stepsDone, type SetupProgress } from '../lib/setup';
+import { lazyScreen } from '../lib/lazy';
 import { BrandMark } from './BrandMark';
 import { useConfig, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { useDevice } from '../lib/device';
 import { NotificationBell } from './NotificationBell';
 import { useLiveRefresh } from '../lib/live';
+
+// The Overview comes with the workspace; every other section is fetched the
+// first time it is opened.
+const AdminOrders = lazyScreen(() => import('./AdminOrders').then((m) => m.AdminOrders));
+const AdminProblems = lazyScreen(() => import('./AdminProblems').then((m) => m.AdminProblems));
+const PaymentsLedger = lazyScreen(() =>
+  import('./reports/PaymentsLedger').then((m) => m.PaymentsLedger),
+);
+const Commissions = lazyScreen(() => import('./reports/Commissions').then((m) => m.Commissions));
+const Reports = lazyScreen(() => import('./reports/Reports').then((m) => m.Reports));
+const AdminSetup = lazyScreen(() => import('./AdminSetup').then((m) => m.AdminSetup));
+const AdminMember = lazyScreen(() => import('./AdminMember').then((m) => m.AdminMember));
+const AdminOrder = lazyScreen(() => import('./AdminOrder').then((m) => m.AdminOrder));
+const AuditLog = lazyScreen(() => import('./AuditLog').then((m) => m.AuditLog));
+const AdminErrors = lazyScreen(() => import('./AdminErrors').then((m) => m.AdminErrors));
+const AdminStart = lazyScreen(() => import('./AdminStart').then((m) => m.AdminStart));
+const ZReportPage = lazyScreen(() => import('./reports/ZReport').then((m) => m.ZReportPage));
 
 const NAV = [
   [Rocket, 'Get started', 'start'],
@@ -226,46 +233,48 @@ export function AdminWorkspace() {
             )}
           </>
         )}
-        {section === 'Get started' &&
-          (preview ? (
-            <p className="info-card">Sign in as the owner to set up the restaurant.</p>
+        <Suspense fallback={<p className="section-loading">Loading…</p>}>
+          {section === 'Get started' &&
+            (preview ? (
+              <p className="info-card">Sign in as the owner to set up the restaurant.</p>
+            ) : (
+              <AdminStart onChanged={() => void load()} goTo={(label) => setSection(label)} />
+            ))}
+          {preview &&
+          [
+            'Reports',
+            'Orders',
+            'Problems',
+            'Payments ledger',
+            'Commissions',
+            'Audit log',
+            'Errors',
+          ].includes(section) ? (
+            <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
-            <AdminStart onChanged={() => void load()} goTo={(label) => setSection(label)} />
-          ))}
-        {preview &&
-        [
-          'Reports',
-          'Orders',
-          'Problems',
-          'Payments ledger',
-          'Commissions',
-          'Audit log',
-          'Errors',
-        ].includes(section) ? (
-          <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
-        ) : (
-          <>
-            {section === 'Reports' && (zDay ? <ZReportPage day={zDay} /> : <Reports />)}
-            {section === 'Orders' &&
-              (orderId ? (
-                <AdminOrder key={orderId} id={orderId} onChanged={() => void load()} />
-              ) : (
-                <AdminOrders />
-              ))}
-            {section === 'Audit log' && <AuditLog />}
-            {section === 'Errors' && <AdminErrors onChanged={() => void load()} />}
-            {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
-            {section === 'Payments ledger' && <PaymentsLedger />}
-            {section === 'Commissions' && <Commissions />}
-          </>
-        )}
-        {memberId && <AdminMember key={memberId} id={memberId} />}
-        {!memberId && ['Team', 'Menu', 'Branding', 'Settings'].includes(section) && (
-          <AdminSetup
-            section={section as 'Team' | 'Menu' | 'Branding' | 'Settings'}
-            preview={preview}
-          />
-        )}
+            <>
+              {section === 'Reports' && (zDay ? <ZReportPage day={zDay} /> : <Reports />)}
+              {section === 'Orders' &&
+                (orderId ? (
+                  <AdminOrder key={orderId} id={orderId} onChanged={() => void load()} />
+                ) : (
+                  <AdminOrders />
+                ))}
+              {section === 'Audit log' && <AuditLog />}
+              {section === 'Errors' && <AdminErrors onChanged={() => void load()} />}
+              {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
+              {section === 'Payments ledger' && <PaymentsLedger />}
+              {section === 'Commissions' && <Commissions />}
+            </>
+          )}
+          {memberId && <AdminMember key={memberId} id={memberId} />}
+          {!memberId && ['Team', 'Menu', 'Branding', 'Settings'].includes(section) && (
+            <AdminSetup
+              section={section as 'Team' | 'Menu' | 'Branding' | 'Settings'}
+              preview={preview}
+            />
+          )}
+        </Suspense>
       </section>
     </main>
   );

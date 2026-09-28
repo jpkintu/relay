@@ -40,6 +40,12 @@ export function themeProblems({ ink = '', accent = '' }: Partial<Theme>) {
   return problems;
 }
 
+export function onAccent({ ink = '', accent = '' }: Partial<Theme>) {
+  const main = ink || DEFAULT_THEME.ink;
+  const highlight = accent || DEFAULT_THEME.accent;
+  return contrast(highlight, '#ffffff') > contrast(highlight, main) ? '#ffffff' : main;
+}
+
 // Sets the colours on the page (and remembers them, so the next start does
 // not flash Relay's colours first). Invalid or blank values fall back.
 export function applyTheme(theme?: Partial<Theme> | null) {
@@ -62,6 +68,9 @@ export function applyTheme(theme?: Partial<Theme> | null) {
   }
   if (ok && accent) root.setProperty('--accent', accent);
   else root.removeProperty('--accent');
+  // Text on the accent colour (counts, avatars, accent buttons): white or the
+  // main colour, whichever reads better on this accent.
+  root.setProperty('--on-accent', onAccent(ok ? { ink, accent } : {}));
   document
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute('content', (ok && ink) || DEFAULT_THEME.ink);

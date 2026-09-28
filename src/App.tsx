@@ -1,13 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut } from 'lucide-react';
 import Parse from './parse';
 import { AuthScreen } from './components/AuthScreen';
-import { RiderWorkspace } from './components/RiderWorkspace';
-import { CashierWorkspace } from './components/CashierWorkspace';
-import { AdminWorkspace } from './components/AdminWorkspace';
 import { BrandMark } from './components/BrandMark';
+import { lazyScreen } from './lib/lazy';
 import { SessionProvider, homePath, useSession } from './lib/session';
 import type { Role } from './lib/session';
 import { useDeviceAttribute } from './lib/device';
@@ -25,6 +23,21 @@ export default function App() {
     </BrowserRouter>
   );
 }
+
+// Each workspace is its own download: a rider's phone never fetches the
+// owner's reports or the kitchen board.
+const loadRider = () => import('./components/RiderWorkspace').then((m) => m.RiderWorkspace);
+const loadCashier = () => import('./components/CashierWorkspace').then((m) => m.CashierWorkspace);
+const loadAdmin = () => import('./components/AdminWorkspace').then((m) => m.AdminWorkspace);
+const RiderWorkspace = lazyScreen(loadRider);
+const CashierWorkspace = lazyScreen(loadCashier);
+const AdminWorkspace = lazyScreen(loadAdmin);
+// Started as soon as the role is known, alongside the profile's other requests.
+const PRELOAD: Record<Role, () => Promise<unknown>> = {
+  rider: loadRider,
+  cashier: loadCashier,
+  admin: loadAdmin,
+};
 
 // Which roles may open each workspace. Admins can also run the kitchen board.
 const ACCESS: Record<string, Role[]> = {
@@ -54,6 +67,9 @@ function AppScreens() {
   const freshSignIn = useRef(!user);
   const role = profile?.role ?? null;
   useEffect(() => {
+    if (role) void PRELOAD[role]().catch(() => undefined);
+  }, [role]);
+  useEffect(() => {
     if (!user) freshSignIn.current = true;
     else if (role && freshSignIn.current) {
       freshSignIn.current = false;
@@ -73,12 +89,14 @@ function AppScreens() {
   return (
     <NotificationsProvider>
       <PinProvider>
-        <Routes>
-          <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
-          <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
-          <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
-          <Route path="*" element={<Navigate to={homePath(myRole)} replace />} />
-        </Routes>
+        <Suspense fallback={<Splash />}>
+          <Routes>
+            <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />
+            <Route path="/cashier/*" element={guard('cashier', <CashierWorkspace />)} />
+            <Route path="/admin/*" element={guard('admin', <AdminWorkspace />)} />
+            <Route path="*" element={<Navigate to={homePath(myRole)} replace />} />
+          </Routes>
+        </Suspense>
       </PinProvider>
     </NotificationsProvider>
   );
@@ -93,12 +111,14 @@ function PreviewApp() {
   );
   return (
     <div className="preview-app">
-      <Routes>
-        <Route path="/rider/*" element={<RiderWorkspace />} />
-        <Route path="/cashier/*" element={<CashierWorkspace />} />
-        <Route path="/admin/*" element={<AdminWorkspace />} />
-        <Route path="*" element={<Navigate to="/rider" replace />} />
-      </Routes>
+      <Suspense fallback={<Splash />}>
+        <Routes>
+          <Route path="/rider/*" element={<RiderWorkspace />} />
+          <Route path="/cashier/*" element={<CashierWorkspace />} />
+          <Route path="/admin/*" element={<AdminWorkspace />} />
+          <Route path="*" element={<Navigate to="/rider" replace />} />
+        </Routes>
+      </Suspense>
       <nav className="role-switch" aria-label="Preview role navigation">
         <strong>LIVE PREVIEW</strong>
         {(['rider', 'cashier', 'admin'] as Role[]).map((role) => (
