@@ -45,6 +45,14 @@ function publicConfig(values) {
   };
 }
 
+// Relay Hosted: what Relay's terms page (/terms) needs.
+const platformInfo = (platform) => ({
+  monthlyPrice: Number(platform.monthlyPrice) || 0,
+  currency: platform.currency,
+  graceDays: Number(platform.graceDays) || 0,
+  supportContact: platform.supportContact || '',
+});
+
 // Pre-login info for the sign-in screen. Relay Hosted: for the restaurant
 // named by { restaurant: '<code>' }; without one (or an unknown code) the app
 // shows "find your restaurant" and the sign-up page.
@@ -56,15 +64,21 @@ Parse.Cloud.define('getAppInfo', async () => {
       found: false,
       signUpOpen: true,
       trialDays: Number(platform.trialDays) || 0,
+      platform: platformInfo(platform),
       previewEnabled: previewEnabled(),
     };
   }
-  const [{ values }, restaurant] = await Promise.all([loadConfig(), restaurantSummary()]);
+  const [{ values }, restaurant, { values: platform }] = await Promise.all([
+    loadConfig(),
+    restaurantSummary(),
+    platformSettings(),
+  ]);
   return {
     hosted: true,
     found: true,
     signUpOpen: true,
     restaurant,
+    platform: platformInfo(platform),
     restaurantName: values.restaurantName,
     restaurantLogo: values.restaurantLogo,
     theme: { ink: values.themeInk, accent: values.themeAccent },

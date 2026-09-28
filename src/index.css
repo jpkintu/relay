@@ -7427,3 +7427,15 @@ table.data tr.selected td {
   color: var(--on-dark);
   border: 0;
 }
+.platform-reset {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+.platform-reset code {
+  font: 600 16px var(--font-mono);
+  letter-spacing: 0.04em;
+}

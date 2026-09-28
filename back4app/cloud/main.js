@@ -2149,6 +2149,7 @@ var require_restaurants = __commonJS({
       MASTER,
       audit,
       claimOnce,
+      endSessions,
       forbidden,
       invalid,
       readAcl,
@@ -2494,6 +2495,39 @@ var require_restaurants = __commonJS({
       );
       const { values: platform } = await platformSettings();
       return restaurantRow(row, platform);
+    });
+    function readablePassword(length = 10) {
+      const letters = "abcdefghjkmnpqrstuvwxyz23456789";
+      const bytes = require("crypto").randomBytes(length);
+      return Array.from(bytes, (byte) => letters[byte % letters.length]).join("");
+    }
+    Parse.Cloud.define("platformResetOwner", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const row = await tenancy.withoutTenant(() => new Parse.Query("Restaurant").get(String(p.id || ""), MASTER)).catch(() => null);
+      if (!row) throw invalid("Restaurant not found");
+      const result = await tenancy.runAs(
+        row.id,
+        async () => {
+          const role = await new Parse.Query(Parse.Role).equalTo("name", "admin").first(MASTER);
+          if (!role) throw invalid("This restaurant has no owner account");
+          const owners = await role.getUsers().query().ascending("createdAt").find(MASTER);
+          const wanted = String(p.username || "").trim().toLowerCase();
+          const owner = wanted ? owners.find((u) => u.getUsername() === wanted) : owners[0];
+          if (!owner) throw invalid(`No owner called \u201C${wanted}\u201D here`);
+          const password = readablePassword();
+          owner.set({ password, active: true });
+          await owner.save(null, MASTER);
+          await endSessions(owner);
+          return { owner, password };
+        },
+        row.get("code")
+      );
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.owner_reset", row, null, { username: result.owner.getUsername() })
+      );
+      log("info", "platform.owner_reset", { restaurant: row.id });
+      return { username: result.owner.getUsername(), password: result.password };
     });
     Parse.Cloud.define("platformSaveSettings", async (request) => {
       const actor = await requirePlatform(request);
@@ -16476,23 +16510,35 @@ var require_profile = __commonJS({
         restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName
       };
     }
+    var platformInfo = (platform) => ({
+      monthlyPrice: Number(platform.monthlyPrice) || 0,
+      currency: platform.currency,
+      graceDays: Number(platform.graceDays) || 0,
+      supportContact: platform.supportContact || ""
+    });
     Parse.Cloud.define("getAppInfo", async () => {
       if (!tenancy.current()) {
-        const { values: platform } = await platformSettings();
+        const { values: platform2 } = await platformSettings();
         return {
           hosted: true,
           found: false,
           signUpOpen: true,
-          trialDays: Number(platform.trialDays) || 0,
+          trialDays: Number(platform2.trialDays) || 0,
+          platform: platformInfo(platform2),
           previewEnabled: previewEnabled()
         };
       }
-      const [{ values }, restaurant] = await Promise.all([loadConfig(), restaurantSummary()]);
+      const [{ values }, restaurant, { values: platform }] = await Promise.all([
+        loadConfig(),
+        restaurantSummary(),
+        platformSettings()
+      ]);
       return {
         hosted: true,
         found: true,
         signUpOpen: true,
         restaurant,
+        platform: platformInfo(platform),
         restaurantName: values.restaurantName,
         restaurantLogo: values.restaurantLogo,
         theme: { ink: values.themeInk, accent: values.themeAccent },

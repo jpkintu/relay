@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { LogOut } from 'lucide-react';
 import Parse from '../parse';
 import { formatDate, formatMoney } from '../lib/format';
+import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
 import { useSession, type RestaurantSummary } from '../lib/session';
 import { BrandMark } from './BrandMark';
 
@@ -131,7 +132,9 @@ type Payment = {
   payer: string;
   message: string;
   reference: string;
+  periodStart: string | null;
   periodEnd: string | null;
+  paidAt: string | null;
 };
 type Billing = {
   restaurant: RestaurantSummary;
@@ -286,6 +289,15 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
                 <span className={`billing-status ${p.status}`}>
                   {p.status === 'paid' ? 'Paid' : p.status === 'failed' ? 'Not paid' : 'Waiting'}
                   {p.reference ? ` · ${p.reference}` : ''}
+                  {p.status === 'paid' && (
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => printSubscriptionReceipt(p, r, config.timezone)}
+                    >
+                      Receipt
+                    </button>
+                  )}
                 </span>
               </li>
             ))}

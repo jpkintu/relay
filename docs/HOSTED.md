@@ -136,6 +136,17 @@ and keep a private note. Platform settings: monthly price, currency, trial
 days, grace days and the support contact restaurants see. Every change is
 logged under Recent changes.
 
+**Owner locked out?** Console → the restaurant → **Reset owner password**
+gives the owner account a new password (shown once; read it out to them) and
+signs it out everywhere. They can change it under their profile.
+
+**Terms.** `/terms` shows Relay's terms for restaurants (trial, price, grace
+days, payments, their data, your support contact); the sign-up form links to
+it. Have the text checked against the law that applies before relying on it.
+
+**Receipts.** Every paid subscription payment has a printable receipt
+(Receipt, on the owner's Past payments and in the console's payment list).
+
 **What restaurants see.** During the grace days everyone gets a banner (the
 owner: renew within N days). Expired: staff see that the owner must renew; the
 owner can still sign in and sees the price and how to renew. Suspended: nobody

@@ -37,6 +37,9 @@ const PlatformConsole = lazyScreen(() =>
   import('./components/PlatformConsole').then((m) => m.PlatformConsole),
 );
 const PrivacyPage = lazyScreen(() => import('./components/PrivacyPage').then((m) => m.PrivacyPage));
+const PlatformTerms = lazyScreen(() =>
+  import('./components/PrivacyPage').then((m) => m.PlatformTerms),
+);
 // Started as soon as the role is known, alongside the profile's other requests.
 const PRELOAD: Record<Role, () => Promise<unknown>> = {
   rider: loadRider,
@@ -83,6 +86,13 @@ function AppScreens() {
     }
   }, [user, role, navigate]);
 
+  // Relay Hosted: Relay's terms for restaurants, open to everyone.
+  if (pathname === '/terms')
+    return (
+      <Suspense fallback={<Splash />}>
+        <PlatformTerms />
+      </Suspense>
+    );
   // The privacy notice is open to everyone, signed in or not.
   if (pathname === '/privacy')
     return (

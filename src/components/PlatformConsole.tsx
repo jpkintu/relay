@@ -5,6 +5,7 @@ import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
 import { BrandMark } from './BrandMark';
 import { daysLeft } from './Subscription';
+import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
 
 // Relay Hosted: the platform console for Relay's own staff. Every restaurant's
 // subscription and size, never its orders or customers (docs/HOSTED.md).
@@ -306,6 +307,25 @@ function RestaurantEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
+  const [reset, setReset] = useState<{ username: string; password: string } | null>(null);
+  const resetOwner = async () => {
+    if (
+      !window.confirm(
+        `Give ${row.name}'s owner a new password? They are signed out everywhere and must use the new one.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError('');
+    setReset(null);
+    try {
+      setReset(await Parse.Cloud.run('platformResetOwner', { id: row.id }));
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   // On phones the editor opens below the list: bring it into view.
   const panel = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -397,7 +417,21 @@ function RestaurantEditor({
           >
             {row.suspended ? 'Lift the suspension' : 'Suspend'}
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => void resetOwner()}
+          >
+            Reset owner password
+          </button>
         </div>
+        {reset && (
+          <p className="platform-reset" role="status">
+            New password for <b>{reset.username}</b>: <code>{reset.password}</code>. Tell the owner;
+            it is shown only now. They can change it under their profile after signing in.
+          </p>
+        )}
       </form>
       <Payments row={row} onRecorded={onSaved} />
     </section>
@@ -415,7 +449,9 @@ type Payment = {
   payer: string;
   message: string;
   reference: string;
+  periodStart: string | null;
   periodEnd: string | null;
+  paidAt: string | null;
 };
 
 // One restaurant's payments, and recording one received by hand.
@@ -521,7 +557,18 @@ function Payments({ row, onRecorded }: { row: Row; onRecorded: (row: Row) => voi
                       <small className="cell-sub">{p.message}</small>
                     )}
                   </td>
-                  <td>{p.reference || '—'}</td>
+                  <td>
+                    {p.reference || '—'}
+                    {p.status === 'paid' && (
+                      <button
+                        type="button"
+                        className="link-button cell-sub"
+                        onClick={() => printSubscriptionReceipt(p, row, TIMEZONE)}
+                      >
+                        Receipt
+                      </button>
+                    )}
+                  </td>
                   <td className="num">{p.months}</td>
                   <td className="num">{formatMoney(p.amount, p.currency)}</td>
                 </tr>

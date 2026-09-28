@@ -397,6 +397,13 @@ function SignUp({
             required
           />
         </label>
+        <p className="field-hint">
+          By creating a restaurant you accept{' '}
+          <a href="/terms" target="_blank" rel="noreferrer">
+            Relay’s terms
+          </a>
+          .
+        </p>
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button" disabled={busy || codeState?.free === false}>
           {busy ? 'Creating…' : 'Create restaurant'}

@@ -5,6 +5,7 @@ const {
   MASTER,
   audit,
   claimOnce,
+  endSessions,
   forbidden,
   invalid,
   readAcl,
@@ -439,6 +440,50 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
   );
   const { values: platform } = await platformSettings();
   return restaurantRow(row, platform);
+});
+
+// A password to read out over the phone: no look-alike letters or digits.
+function readablePassword(length = 10) {
+  const letters = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = require('crypto').randomBytes(length);
+  return Array.from(bytes, (byte) => letters[byte % letters.length]).join('');
+}
+
+// Platform: an owner who cannot sign in calls you. Gives the restaurant's
+// owner account (or the admin named { username }) a new temporary password,
+// signs it out everywhere and shows the password once. { id, username? }
+// → { username, password }
+Parse.Cloud.define('platformResetOwner', async (request) => {
+  const actor = await requirePlatform(request);
+  const p = request.params || {};
+  const row = await tenancy
+    .withoutTenant(() => new Parse.Query('Restaurant').get(String(p.id || ''), MASTER))
+    .catch(() => null);
+  if (!row) throw invalid('Restaurant not found');
+  const result = await tenancy.runAs(
+    row.id,
+    async () => {
+      const role = await new Parse.Query(Parse.Role).equalTo('name', 'admin').first(MASTER);
+      if (!role) throw invalid('This restaurant has no owner account');
+      const owners = await role.getUsers().query().ascending('createdAt').find(MASTER);
+      const wanted = String(p.username || '')
+        .trim()
+        .toLowerCase();
+      const owner = wanted ? owners.find((u) => u.getUsername() === wanted) : owners[0];
+      if (!owner) throw invalid(`No owner called “${wanted}” here`);
+      const password = readablePassword();
+      owner.set({ password, active: true });
+      await owner.save(null, MASTER);
+      await endSessions(owner);
+      return { owner, password };
+    },
+    row.get('code'),
+  );
+  await tenancy.withoutTenant(() =>
+    audit(actor, 'platform.owner_reset', row, null, { username: result.owner.getUsername() }),
+  );
+  log('info', 'platform.owner_reset', { restaurant: row.id });
+  return { username: result.owner.getUsername(), password: result.password };
 });
 
 // Platform: the flat price, currency, trial and grace days and the support

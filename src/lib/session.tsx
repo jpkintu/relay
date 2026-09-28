@@ -91,6 +91,8 @@ export type AppInfo = {
   found?: boolean;
   signUpOpen?: boolean;
   trialDays?: number;
+  // Relay Hosted: Relay's own terms (price, grace days, contact).
+  platform?: { monthlyPrice: number; currency: string; graceDays: number; supportContact: string };
   restaurant?: RestaurantSummary | null;
   // For the privacy notice (Admin → Data & privacy).
   privacy?: { contact: string; retentionMonths: number };

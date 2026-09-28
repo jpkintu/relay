@@ -4501,6 +4501,7 @@ const ACCESS = {
     'platformGetAudit',
     'platformRecordPayment',
     'platformListPayments',
+    'platformResetOwner',
     'createPreviewOrder',
     'getPreviewOrders',
     'transitionPreviewOrder',
@@ -4965,6 +4966,46 @@ describe('platform console and access (Relay Hosted)', () => {
     assert.equal(change.entityId, other.id);
     assert.equal(change.by, 'Relay Ops');
     await rejects(run('platformGetAudit', {}, s.owner), /platform role required/);
+  });
+
+  test('Relay gives a locked-out owner a new password', async () => {
+    await rejects(run('platformResetOwner', { id: other.id }, s.owner), /platform role required/);
+    await rejects(
+      run('platformResetOwner', { id: other.id, username: 'nobody' }, ops),
+      /No owner called/,
+    );
+    const reset = await run('platformResetOwner', { id: other.id }, ops);
+    assert.equal(reset.username, 'owner');
+    assert.match(reset.password, /^[a-z2-9]{10}$/);
+    // Signed out everywhere; the new password works, the old one does not.
+    await rejects(run('getMyProfile', {}, other.owner), /Invalid session token/);
+    await rejects(login('owner', PINS.owner, OTHER), /Invalid username\/password/);
+    const back = await login('owner', reset.password, OTHER);
+    assert.equal((await run('getMyProfile', {}, back)).restaurant.code, OTHER);
+    // The first restaurant's owner is untouched.
+    assert.equal((await run('getMyProfile', {}, s.owner)).role, 'admin');
+    // The owner sets their own password again (later tests use it).
+    await Parse.Cloud.run(
+      'changeMyPin',
+      { oldPin: reset.password, newPin: PINS.owner },
+      { sessionToken: back.getSessionToken() },
+    );
+    other.owner = await login('owner', PINS.owner, OTHER);
+    const { rows } = await run('platformGetAudit', {}, ops);
+    assert.ok(
+      rows.some((row) => row.action === 'platform.owner_reset' && row.entityId === other.id),
+    );
+  });
+
+  test('Relay’s terms page gets the price, grace days and contact', async () => {
+    const info = await run('getAppInfo');
+    assert.equal(info.platform.currency, 'UGX');
+    assert.ok(info.platform.monthlyPrice > 0);
+    assert.equal(typeof info.platform.graceDays, 'number');
+    assert.equal(
+      typeof (await run('getAppInfo', { restaurant: CODE })).platform.supportContact,
+      'string',
+    );
   });
 });
 

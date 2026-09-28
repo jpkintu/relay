@@ -1,5 +1,6 @@
 import { ArrowLeft } from 'lucide-react';
 import { useSession } from '../lib/session';
+import { formatMoney } from '../lib/format';
 import { BrandMark } from './BrandMark';
 
 // The privacy notice and terms of use (/privacy), readable without signing
@@ -8,6 +9,8 @@ import { BrandMark } from './BrandMark';
 // checked against the law that applies to them.
 export function PrivacyPage() {
   const { appInfo, user } = useSession();
+  // Relay Hosted: before a restaurant is chosen, Relay's own terms.
+  if (appInfo.hosted && !appInfo.found) return <PlatformTerms />;
   const name = appInfo.restaurantName || 'The restaurant';
   const contact = appInfo.privacy?.contact || '';
   const months = appInfo.privacy?.retentionMonths || 0;
@@ -97,6 +100,99 @@ export function PrivacyPage() {
           the Personal Data Protection Office).
         </p>
         <p className="muted small">Relay is software by Embiro Concepts, used by {name}.</p>
+      </article>
+    </main>
+  );
+}
+
+// Relay Hosted: the terms a restaurant accepts when it signs up. A starting
+// text; have it checked against the law that applies before relying on it.
+export function PlatformTerms() {
+  const { appInfo } = useSession();
+  const platform = appInfo.platform;
+  const trial = appInfo.trialDays || 0;
+  const price = platform ? formatMoney(platform.monthlyPrice, platform.currency) : '';
+  const contact = platform?.supportContact || '';
+  return (
+    <main className="privacy-page">
+      <header>
+        <BrandMark />
+        <a className="privacy-back" href="/">
+          <ArrowLeft aria-hidden /> Back
+        </a>
+      </header>
+      <article>
+        <h1>Relay terms for restaurants</h1>
+        <p className="lead">
+          Relay runs your restaurant’s orders, riders, kitchen and cash on our servers for a monthly
+          subscription. These terms apply when you create a restaurant on Relay.
+        </p>
+
+        <h2>Trial and subscription</h2>
+        <ul>
+          <li>
+            A new restaurant gets a free trial{trial ? ` of ${trial} days` : ''}. No payment is
+            taken during the trial.
+          </li>
+          <li>
+            After the trial, Relay costs {price ? <b>{price} a month</b> : 'a monthly fee'} unless
+            we agree a different price with you. The price is shown in the app before you pay.
+          </li>
+          <li>
+            You pay in the app with mobile money (through ioTec Pay), for 1 to 12 months at a time,
+            or directly to Relay by arrangement. Each payment extends your paid period; it is not
+            renewed automatically.
+          </li>
+          <li>
+            If a period ends unpaid, the app keeps working for{' '}
+            {platform?.graceDays ? `${platform.graceDays} more days` : 'a short grace period'}, then
+            closes for your team until you pay. The owner can always sign in to pay.
+          </li>
+        </ul>
+
+        <h2>Your information</h2>
+        <ul>
+          <li>
+            Your restaurant’s records (menu, team, orders, customers, cash) belong to you. Relay
+            keeps them separate from every other restaurant and uses them only to run the service
+            for you.
+          </li>
+          <li>
+            You can download a full copy at any time (Admin → Data & privacy). Nothing is deleted
+            when a subscription ends or is paused.
+          </li>
+          <li>
+            You are responsible for how your restaurant uses customers’ details. Your own privacy
+            notice for customers and staff is on your restaurant’s sign-in page.
+          </li>
+        </ul>
+
+        <h2>Using Relay</h2>
+        <ul>
+          <li>Keep your owner password safe; you are responsible for the accounts you create.</li>
+          <li>
+            Do not use Relay for anything unlawful or to harm others. We may pause a restaurant that
+            does, or that asks us to; paused restaurants cannot sign in and nothing is deleted.
+          </li>
+          <li>
+            We work to keep Relay available and correct, but cannot promise it will never be
+            interrupted. Keep your own records of money received.
+          </li>
+          <li>We may update these terms; the current version is always on this page.</li>
+        </ul>
+
+        <h2>Contact</h2>
+        <p>
+          {contact ? (
+            <>
+              Questions, payments by arrangement, or to pause or close your restaurant:{' '}
+              <b>{contact}</b>.
+            </>
+          ) : (
+            <>Questions: contact Relay through the person who set up your restaurant.</>
+          )}
+        </p>
+        <p className="muted small">Relay is software by Embiro Concepts.</p>
       </article>
     </main>
   );
