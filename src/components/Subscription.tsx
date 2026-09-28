@@ -263,7 +263,12 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
                 </button>
               )}
             </div>
-            {data.sandbox && <small className="muted">Test mode: no real money moves.</small>}
+            {data.sandbox && (
+              <small className="muted">
+                Test mode: no real money moves. Use an ioTec test number such as 256111777777; real
+                numbers are refused.
+              </small>
+            )}
           </form>
         )
       )}

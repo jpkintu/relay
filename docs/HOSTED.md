@@ -172,7 +172,8 @@ soon as ioTec says Success. Past payments are listed under the form.
 
 1. App Settings → Environment variables: `IOTEC_CLIENT_ID`,
    `IOTEC_CLIENT_SECRET`, `IOTEC_WALLET_ID` from your ioTec account; for
-   testing also `IOTEC_ENV=sandbox` (ITX test currency). Remove it to take
+   testing also `IOTEC_ENV=sandbox` (ITX test currency; pay from an ioTec test
+   number such as 256111777777, real numbers are refused). Remove it to take
    real money. Without the three keys the owner is told to contact you.
 2. Cloud Code → Jobs → schedule **`billing`** every 5 minutes (or as often as
    Back4App allows), and the existing `cashCheck` nightly.
