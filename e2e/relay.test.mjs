@@ -3736,3 +3736,327 @@ describe('reports agree across order sources', () => {
     assert.equal(c.collected, c.withRiders + c.handoverPending + c.reconciled + c.inTill);
   });
 });
+
+describe('getting started: setup progress and menu import', () => {
+  test('setup progress counts the restaurant own dishes and team', async () => {
+    const progress = await run('getSetupProgress', {}, s.owner);
+    assert.equal(progress.steps.riders, progress.riders > 0);
+    assert.equal(progress.steps.cashiers, progress.cashiers > 0);
+    assert.ok(progress.riders >= 1 && progress.cashiers >= 1);
+    assert.equal(typeof progress.complete, 'boolean');
+    // Orders already exist: a set-up restaurant is not asked to get started.
+    if (progress.complete) assert.equal(progress.finished, true);
+    await rejects(run('getSetupProgress', {}, s.dina), /admin role required/);
+  });
+
+  test('a menu import is checked first and saves nothing when a row is wrong', async () => {
+    const rows = [
+      { title: 'Import Pilau', price: '14,000', category: 'Import Mains', prepMinutes: '25' },
+      { title: 'Import Chai', price: 2500, category: 'import drinks', description: 'Spiced' },
+      { title: 'Import Chai', price: 3000 },
+      { title: 'Import Broken', price: 'n/a' },
+    ];
+    const dry = await run('adminImportMenu', { rows, dryRun: true }, s.owner);
+    assert.deepEqual(
+      dry.errors.map((e) => e.row),
+      [4, 5],
+    );
+    await rejects(run('adminImportMenu', { rows }, s.owner), /Row 4: .*already on row 3.*1 more/);
+    const { menu } = await run('adminListSetup', {}, s.owner);
+    assert.ok(!menu.some((item) => item.title.startsWith('Import ')), 'nothing was saved');
+  });
+
+  test('a clean import adds dishes and categories; existing dishes are skipped or updated', async () => {
+    const rows = [
+      { title: 'Import Pilau', price: '14,000', category: 'Import Mains', prepMinutes: '25' },
+      { title: 'Import Chai', price: 2500, category: 'Import Drinks', description: 'Spiced' },
+    ];
+    const first = await run('adminImportMenu', { rows }, s.owner);
+    assert.equal(first.created, 2);
+    // No categories were set up yet: the ones existing dishes use are created too.
+    for (const title of ['Import Drinks', 'Import Mains', 'Mains'])
+      assert.ok(first.categoriesCreated.includes(title), title);
+    let setup = await run('adminListSetup', {}, s.owner);
+    const pilau = setup.menu.find((item) => item.title === 'Import Pilau');
+    assert.equal(pilau.price, 14000);
+    assert.equal(pilau.prepMinutes, 25);
+    assert.ok(setup.categories.some((c) => c.title === 'Import Mains'));
+    // Same file again: skipped. With updateExisting: new prices, and a
+    // category typed in another case lands in the existing one.
+    const again = await run('adminImportMenu', { rows }, s.owner);
+    assert.deepEqual([again.created, again.skipped], [0, 2]);
+    const update = await run(
+      'adminImportMenu',
+      {
+        rows: [{ title: 'import pilau', price: 15000, category: 'IMPORT MAINS' }],
+        updateExisting: true,
+      },
+      s.owner,
+    );
+    assert.deepEqual([update.created, update.updated, update.categoriesCreated], [0, 1, []]);
+    setup = await run('adminListSetup', {}, s.owner);
+    const updated = setup.menu.find((item) => item.title === 'Import Pilau');
+    assert.equal(updated.price, 15000);
+    assert.equal(updated.category, 'Import Mains');
+    // The imported dishes can be ordered.
+    const menu = await run('getOperationalMenu', {}, s.pia);
+    assert.ok(menu.items.some((item) => item.title === 'Import Chai'));
+    const log = await run('adminGetAuditLog', { group: 'menu' }, s.owner);
+    assert.ok(log.rows.some((row) => row.action === 'menu.imported'));
+    await rejects(run('adminImportMenu', { rows }, s.pia), /admin role required/);
+  });
+
+  test('the owner marks setup finished and can reopen it', async () => {
+    assert.equal((await run('adminFinishSetup', {}, s.owner)).finished, true);
+    assert.equal((await run('getSetupProgress', {}, s.owner)).finished, true);
+    await run('adminFinishSetup', { done: false }, s.owner);
+    assert.equal((await run('getSetupProgress', {}, s.owner)).finished, false);
+  });
+});
+
+describe('error reporting', () => {
+  test('app crash reports are grouped, listed for the owner only and can be marked fixed', async () => {
+    const report = {
+      message: 'TypeError: order.items is undefined (id 8f3a9c21d0)',
+      where: 'RiderWorkspace',
+      stack: 'at RiderWorkspace (index.js:1:2)',
+      url: 'https://relay.example/rider',
+      appVersion: 'test',
+    };
+    assert.equal((await run('reportClientError', report, s.pia)).recorded, true);
+    // The same bug with another id is the same entry, counted twice.
+    await run(
+      'reportClientError',
+      { ...report, message: report.message.replace('8f3a9c21d0', 'aa11bb22cc33') },
+      s.dina,
+    );
+    // Signed out (the sign-in screen) may report too.
+    await run('reportClientError', { message: 'Sign-in screen crashed', where: 'AuthScreen' });
+    await rejects(run('reportClientError', { message: '' }), /Nothing to report/);
+
+    const list = await run('adminListErrors', {}, s.owner);
+    const entry = list.rows.find((row) => row.where === 'RiderWorkspace');
+    assert.equal(entry.count, 2);
+    assert.equal(entry.source, 'app');
+    assert.ok(['rider', 'cashier'].includes(entry.role));
+    assert.ok(list.rows.some((row) => row.role === 'signed out'));
+    assert.equal((await run('adminListErrors', { countOnly: true }, s.owner)).open, list.open);
+    await rejects(run('adminListErrors', {}, s.dina), /admin role required/);
+    // Clients cannot read the log directly.
+    await rejects(new Parse.Query('ErrorLog').find(as(s.owner)), /Permission denied|unauthorized/i);
+
+    const resolved = await run('adminResolveErrors', { ids: [entry.id] }, s.owner);
+    assert.equal(resolved.resolved, 1);
+    const after = await run('adminListErrors', {}, s.owner);
+    assert.ok(!after.rows.some((row) => row.id === entry.id));
+    const fixed = await run('adminListErrors', { state: 'fixed' }, s.owner);
+    assert.ok(fixed.rows.some((row) => row.id === entry.id && row.resolved));
+    // It happens again: a new open entry.
+    await run('reportClientError', report, s.pia);
+    const reopened = (await run('adminListErrors', {}, s.owner)).rows.find(
+      (row) => row.where === 'RiderWorkspace',
+    );
+    assert.ok(reopened && reopened.id !== entry.id && reopened.count === 1);
+  });
+
+  test('an unexpected failure in a Cloud function is recorded; expected errors are not', async () => {
+    // Registered after startup, so it goes through the same wrapper as every
+    // function in cloud/.
+    globalThis.Parse.Cloud.define('e2eCrash', async (request) => {
+      if (request.params.expected) throw new globalThis.Parse.Error(141, 'Expected problem');
+      return request.params.missing.field;
+    });
+    await rejects(run('e2eCrash', {}, s.pia), /Cannot read properties of undefined/);
+    await rejects(run('e2eCrash', { expected: true }, s.pia), /Expected problem/);
+    const rows = (await run('adminListErrors', {}, s.owner)).rows.filter(
+      (row) => row.where === 'e2eCrash',
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, 'server');
+    assert.match(rows[0].message, /Cannot read properties/);
+    await run('adminResolveErrors', { all: true }, s.owner);
+    assert.equal((await run('adminListErrors', { countOnly: true }, s.owner)).open, 0);
+  });
+});
+
+// Who may call each Cloud function. Every function the server registers must
+// be listed here, so a new function cannot ship without deciding who may use
+// it. public: anyone, signed in or not; signedIn: any active team member
+// (the function checks the person's own records); nobody: master key only,
+// or switched off (preview mode).
+const ACCESS = {
+  public: ['getAppInfo', 'reportClientError'],
+  nobody: [
+    'bootstrapOwner',
+    'recoverOwner',
+    'createPreviewOrder',
+    'getPreviewOrders',
+    'transitionPreviewOrder',
+  ],
+  signedIn: [
+    'getMyProfile',
+    'getPushConfig',
+    'savePushSubscription',
+    'removePushSubscription',
+    'sendTestPush',
+    'getNotifications',
+    'markNotificationsRead',
+    'changeMyPin',
+    'getMyShift',
+    'startShift',
+    'endShift',
+    'transitionOrder',
+    'setOrderLocation',
+    'flagOrderIssue',
+    'resubmitPayment',
+  ],
+  rider: ['createOrder', 'createHandover', 'getMyHandovers', 'getMyPay', 'setMyAvailability'],
+  riderOrAdmin: ['getRiderEarnings'],
+  anyRole: ['searchCustomers', 'getOperationalMenu'],
+  cashier: ['recordTillPayout'],
+  staff: [
+    'confirmHandover',
+    'disputeHandover',
+    'createCounterOrder',
+    'assignOrderRider',
+    'takeCounterPayment',
+    'getAssignableRiders',
+    'getReceipt',
+    'getStock',
+    'setAvailability',
+    'getOnShiftCashiers',
+    'transferOrder',
+    'verifyPayment',
+    'getMobileMoneyLedger',
+    'getRiderPay',
+    'payRider',
+    'getTillPayouts',
+    'getReportOptions',
+    'getPaymentsLedger',
+  ],
+  admin: [
+    'adminListSetup',
+    'adminCreateTeamMember',
+    'adminUpdateMember',
+    'adminChangeRole',
+    'adminSaveCategory',
+    'adminSortCategories',
+    'adminSaveMenuItem',
+    'adminSortMenu',
+    'adminSetMenuImage',
+    'adminSetRestaurantLogo',
+    'adminSaveAccompaniment',
+    'adminSaveBranding',
+    'adminSaveSettings',
+    'adminResolveHandover',
+    'reopenHandover',
+    'adminReceiveCash',
+    'adminRunCashCheck',
+    'resolveOrderIssue',
+    'adminListIssues',
+    'adminGetOrder',
+    'adminOverrideOrder',
+    'getDashboard',
+    'adminGetAuditLog',
+    'adminGetZReport',
+    'adminListZReports',
+    'adminSettleTillDifference',
+    'adminResetPin',
+    'adminGetMember',
+    'adminSearchOrders',
+    'getCommissionLedger',
+    'getOperationsReport',
+    'adminApplySecurity',
+    'getShiftReport',
+    'getSetupProgress',
+    'adminImportMenu',
+    'adminFinishSetup',
+    'adminListErrors',
+    'adminResolveErrors',
+  ],
+};
+const ALLOWED = {
+  public: ['anonymous', 'rider', 'cashier', 'admin'],
+  nobody: [],
+  signedIn: ['rider', 'cashier', 'admin'],
+  rider: ['rider'],
+  riderOrAdmin: ['rider', 'admin'],
+  anyRole: ['rider', 'cashier', 'admin'],
+  cashier: ['cashier'],
+  staff: ['cashier', 'admin'],
+  admin: ['admin'],
+};
+// How the server says "not you": no session, the wrong role, master key
+// only, or switched off. Other errors (a missing field, no open shift) mean
+// the caller got past the permission check.
+const DENIED =
+  /Sign in required|role required|Master key required|Preview mode is disabled|Owner already configured|Not allowed to start this shift|Account is inactive/;
+
+// Parameters a probe needs to reach the permission check at all.
+const PROBE_PARAMS = {
+  startShift: (who) => ({ kind: who === 'rider' ? 'rider' : 'cashier' }),
+};
+
+describe('permission matrix: every Cloud function × every role', () => {
+  const callers = {};
+  before(async () => {
+    for (const [username, pin, role] of [
+      ['matrix-rider', '7001', 'rider'],
+      ['matrix-cashier', '7002', 'cashier'],
+      ['matrix-gone', '7003', 'rider'],
+    ])
+      await run('adminCreateTeamMember', { name: username, username, pin, role }, s.owner);
+    callers.rider = await login('matrix-rider', '7001');
+    callers.cashier = await login('matrix-cashier', '7002');
+    callers.admin = s.owner;
+    // A deactivated member keeps a session token but may call nothing.
+    const gone = await login('matrix-gone', '7003');
+    const { team } = await run('adminListSetup', {}, s.owner);
+    await run(
+      'adminUpdateMember',
+      { id: team.find((m) => m.username === 'matrix-gone').id, active: false },
+      s.owner,
+    );
+    callers.inactive = gone;
+  });
+
+  test('every registered function has an access rule', async () => {
+    const { getFunctionNames } = require('parse-server/lib/triggers');
+    const listed = Object.values(ACCESS).flat();
+    assert.equal(new Set(listed).size, listed.length, 'a function is listed twice');
+    const registered = getFunctionNames(APP_ID).filter((name) => name !== 'e2eCrash');
+    assert.deepEqual(
+      registered.filter((name) => !listed.includes(name)),
+      [],
+      'functions without an access rule',
+    );
+    assert.deepEqual(
+      listed.filter((name) => !registered.includes(name)),
+      [],
+      'rules for functions that do not exist',
+    );
+  });
+
+  test('each role can call exactly what its rule allows', async () => {
+    const wrong = [];
+    for (const [rule, names] of Object.entries(ACCESS))
+      for (const name of names)
+        for (const who of ['anonymous', 'rider', 'cashier', 'admin', 'inactive']) {
+          const user = callers[who];
+          let denied = false;
+          let message = '';
+          try {
+            await Parse.Cloud.run(name, PROBE_PARAMS[name]?.(who) || {}, user ? as(user) : {});
+          } catch (error) {
+            message = String(error.message);
+            denied = error.code === Parse.Error.INVALID_SESSION_TOKEN || DENIED.test(message);
+          }
+          const expected = ALLOWED[rule].includes(who) && who !== 'inactive';
+          if (denied === expected)
+            wrong.push(
+              `${name} as ${who}: ${expected ? 'denied' : 'allowed'} (${message || 'ok'})`,
+            );
+        }
+    assert.deepEqual(wrong, []);
+  });
+});

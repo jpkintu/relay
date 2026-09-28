@@ -41,6 +41,9 @@ const ACTIONS: Record<string, string> = {
   'team.pin_reset': 'Reset a PIN',
   'rider.availability': 'Changed availability',
   'menu.saved': 'Saved a dish',
+  'menu.imported': 'Imported dishes from a spreadsheet',
+  'setup.finished': 'Finished or reopened Get started',
+  'errors.resolved': 'Marked errors as fixed',
   'menu.archived': 'Archived a dish',
   'menu.sorted': 'Reordered the menu',
   'menu.image': 'Changed a dish photo',
@@ -71,6 +74,8 @@ export const AUDIT_GROUP_LABEL: Record<string, string> = {
   security: 'Security',
   owner: 'Owner setup',
   report: 'Reports',
+  setup: 'Get started',
+  errors: 'Errors',
 };
 
 // Fields that changed between two audit snapshots, for a short diff. The

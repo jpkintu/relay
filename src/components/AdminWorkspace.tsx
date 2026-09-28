@@ -15,6 +15,8 @@ import {
   BarChart3,
   TriangleAlert,
   History,
+  Rocket,
+  Bug,
 } from 'lucide-react';
 import Parse from '../parse';
 import { AdminOrders } from './AdminOrders';
@@ -27,6 +29,8 @@ import { AdminMember } from './AdminMember';
 import { AdminOverview } from './AdminOverview';
 import { AdminOrder } from './AdminOrder';
 import { AuditLog } from './AuditLog';
+import { AdminErrors } from './AdminErrors';
+import { AdminStart, STEP_COUNT, stepsDone, type SetupProgress } from './AdminStart';
 import { ZReportPage } from './reports/ZReport';
 import { BrandMark } from './BrandMark';
 import { useConfig, useSession } from '../lib/session';
@@ -36,6 +40,7 @@ import { NotificationBell } from './NotificationBell';
 import { useLiveRefresh } from '../lib/live';
 
 const NAV = [
+  [Rocket, 'Get started', 'start'],
   [LayoutDashboard, 'Overview', ''],
   [BarChart3, 'Reports', 'reports'],
   [ClipboardList, 'Orders', 'orders'],
@@ -44,6 +49,7 @@ const NAV = [
   [CircleDollarSign, 'Commissions', 'commissions'],
   [Users, 'Team', 'team'],
   [History, 'Audit log', 'audit'],
+  [Bug, 'Errors', 'errors'],
   [ClipboardList, 'Menu', 'menu'],
   [Palette, 'Branding', 'branding'],
   [Settings, 'Settings', 'settings'],
@@ -75,13 +81,22 @@ export function AdminWorkspace() {
     navigate(`/admin/${NAV.find((entry) => entry[1] === label)?.[2] ?? ''}`);
   const [error, setError] = useState('');
   const [openIssues, setOpenIssues] = useState(0);
+  const [openErrors, setOpenErrors] = useState(0);
+  const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [version, setVersion] = useState(0);
-  // The Problems count in the menu; the Overview loads its own figures.
+  // The Problems and Errors counts in the menu and how far setup has got;
+  // the Overview loads its own figures.
   const load = useCallback(async () => {
     if (preview) return;
     try {
-      const issues: { open: number } = await Parse.Cloud.run('adminListIssues', { state: 'open' });
+      const [issues, errors, setup] = await Promise.all([
+        Parse.Cloud.run('adminListIssues', { state: 'open' }) as Promise<{ open: number }>,
+        Parse.Cloud.run('adminListErrors', { countOnly: true }) as Promise<{ open: number }>,
+        Parse.Cloud.run('getSetupProgress') as Promise<SetupProgress>,
+      ]);
       setOpenIssues(issues.open);
+      setOpenErrors(errors.open);
+      setProgress(setup);
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to load operations');
@@ -113,7 +128,12 @@ export function AdminWorkspace() {
           </button>
         )}
         <nav id="admin-nav" aria-label="Admin sections">
-          {NAV.map(([Icon, label]) => (
+          {NAV.filter(
+            ([, label]) =>
+              label !== 'Get started' ||
+              section === label ||
+              (!preview && progress !== null && !progress.finished),
+          ).map(([Icon, label]) => (
             <button
               key={label}
               className={section === label ? 'active' : ''}
@@ -127,6 +147,9 @@ export function AdminWorkspace() {
               {label}
               {label === 'Problems' && openIssues > 0 && (
                 <span className="nav-count">{openIssues}</span>
+              )}
+              {label === 'Errors' && openErrors > 0 && (
+                <span className="nav-count">{openErrors}</span>
               )}
             </button>
           ))}
@@ -173,7 +196,21 @@ export function AdminWorkspace() {
         {error && <p className="ops-error">{error}</p>}
         {section === 'Overview' && (
           <>
-            {restaurantNameSet === false && !preview && (
+            {progress && !progress.finished && !preview && (
+              <div className="setup-notice start-notice">
+                <span>
+                  <b>Get your restaurant ready:</b> {stepsDone(progress)} of {STEP_COUNT} steps
+                  done.{' '}
+                  {progress.complete
+                    ? 'Everything needed to take orders is set up.'
+                    : 'Add your menu and your team so orders can start.'}
+                </span>
+                <button onClick={() => setSection('Get started')}>
+                  {progress.complete ? 'Review' : 'Continue setup'}
+                </button>
+              </div>
+            )}
+            {restaurantNameSet === false && !preview && progress?.finished && (
               <div className="setup-notice">
                 <span>
                   Your restaurant name is not set, so riders and the sign-in screen show
@@ -189,10 +226,22 @@ export function AdminWorkspace() {
             )}
           </>
         )}
+        {section === 'Get started' &&
+          (preview ? (
+            <p className="info-card">Sign in as the owner to set up the restaurant.</p>
+          ) : (
+            <AdminStart onChanged={() => void load()} goTo={(label) => setSection(label)} />
+          ))}
         {preview &&
-        ['Reports', 'Orders', 'Problems', 'Payments ledger', 'Commissions', 'Audit log'].includes(
-          section,
-        ) ? (
+        [
+          'Reports',
+          'Orders',
+          'Problems',
+          'Payments ledger',
+          'Commissions',
+          'Audit log',
+          'Errors',
+        ].includes(section) ? (
           <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
         ) : (
           <>
@@ -204,6 +253,7 @@ export function AdminWorkspace() {
                 <AdminOrders />
               ))}
             {section === 'Audit log' && <AuditLog />}
+            {section === 'Errors' && <AdminErrors onChanged={() => void load()} />}
             {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
             {section === 'Payments ledger' && <PaymentsLedger />}
             {section === 'Commissions' && <Commissions />}

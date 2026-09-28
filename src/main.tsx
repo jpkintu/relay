@@ -9,12 +9,16 @@ import './parse';
 import { registerServiceWorker } from './lib/push';
 import { listenForInstall } from './lib/install';
 import { applyStoredTheme } from './lib/theme';
+import { listenForErrors, reportError } from './lib/errors';
 
 applyStoredTheme();
 
 registerServiceWorker();
 listenForInstall();
+listenForErrors();
 
+// A screen that crashes shows a plain message with a way back, and the
+// error is sent to the owner's Errors page.
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { error: Error | null }
@@ -27,33 +31,27 @@ class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[ErrorBoundary]', error, info);
+    const component = /at (\w+)/.exec(info.componentStack || '')?.[1];
+    reportError(error, component ? `${window.location.pathname} · ${component}` : '');
   }
 
   render() {
     if (this.state.error) {
       return (
-        <div
-          style={{
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-            padding: '24px',
-            background: '#1a1a1a',
-            color: '#ff6b6b',
-            minHeight: '100vh',
-            whiteSpace: 'pre-wrap',
-            fontSize: '13px',
-            lineHeight: 1.5,
-          }}
-        >
-          <div
-            style={{ color: '#f87171', fontWeight: 700, fontSize: '15px', marginBottom: '12px' }}
-          >
-            Runtime error in your React app:
-          </div>
-          <div style={{ color: '#fca5a5' }}>{this.state.error.message}</div>
-          <div style={{ color: '#9ca3af', marginTop: '12px', fontSize: '11px' }}>
-            {this.state.error.stack}
-          </div>
-        </div>
+        <main className="crash-screen" role="alert">
+          <h1>Something went wrong</h1>
+          <p>
+            Relay hit a problem on this screen. The owner has been sent the details. Reload to carry
+            on; nothing you saved is lost.
+          </p>
+          <button className="primary-button" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+          <details>
+            <summary>Details</summary>
+            <pre>{this.state.error.message}</pre>
+          </details>
+        </main>
       );
     }
     return this.props.children;

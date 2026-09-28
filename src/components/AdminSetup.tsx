@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, ChevronRight, ImagePlus, MapPin } from 'lucide-reac
 import { shrinkImage } from '../lib/image';
 import { DEFAULT_THEME, themeProblems, type Theme } from '../lib/theme';
 import Parse from '../parse';
+import { MenuImport } from './MenuImport';
 import { useMoney, useSession } from '../lib/session';
 import { ChangePin } from './Profile';
 import { PinSheet } from './MapPin';
@@ -585,6 +586,14 @@ export function AdminSetup({
       )}
       {section === 'Menu' && (
         <>
+          {!preview && (
+            <details className="admin-panel import-panel">
+              <summary>
+                <h2>Import dishes from a spreadsheet</h2>
+              </summary>
+              <MenuImport onImported={() => void load()} />
+            </details>
+          )}
           <div className="admin-panel">
             <h2>Categories</h2>
             <form

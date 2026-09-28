@@ -43,6 +43,7 @@ const PROTECTED_CLASSES = [
   'PushSubscription',
   'Secret',
   'ZReport',
+  'ErrorLog',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -52,6 +53,7 @@ const PRIVATE_CLASSES = [
   'PushSubscription',
   'Secret',
   'ZReport',
+  'ErrorLog',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -264,6 +266,7 @@ const SCHEMAS = {
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
     restaurantName: S,
+    setupDone: B,
     currencySymbol: S,
     currencyCode: S,
     timezone: S,
@@ -335,6 +338,25 @@ const SCHEMAS = {
     status: S,
     restaurantStatus: S,
     isDemo: B,
+  },
+  ErrorLog: {
+    source: S,
+    where: S,
+    message: S,
+    stack: S,
+    fingerprint: S,
+    count: N,
+    firstSeenAt: D,
+    lastSeenAt: D,
+    user,
+    userName: S,
+    role: S,
+    userAgent: S,
+    url: S,
+    appVersion: S,
+    resolved: B,
+    resolvedAt: D,
+    resolvedBy: user,
   },
   PushSubscription: {
     user,
