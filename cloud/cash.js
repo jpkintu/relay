@@ -448,10 +448,8 @@ async function pendingHandovers() {
 // longer than STALE_HOURS. Called from getNotifications (staff only), at most
 // every few minutes per server.
 const STALE_CHECK_MS = Number(process.env.RELAY_STALE_CHECK_MS ?? 180000);
-let lastStaleCheck = 0;
 async function staleHandoverAlerts(config) {
-  if (Date.now() - lastStaleCheck < STALE_CHECK_MS) return 0;
-  lastStaleCheck = Date.now();
+  if (!require('./lib/throttle').due('stale-handovers', STALE_CHECK_MS)) return 0;
   const cutoff = new Date(Date.now() - STALE_HOURS * 3600 * 1000);
   let sent = 0;
   for (const row of await pendingHandovers()) {

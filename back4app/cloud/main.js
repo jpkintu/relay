@@ -9403,6 +9403,25 @@ var require_payments = __commonJS({
   }
 });
 
+// cloud/lib/throttle.js
+var require_throttle = __commonJS({
+  "cloud/lib/throttle.js"(exports2, module2) {
+    "use strict";
+    var last = /* @__PURE__ */ new Map();
+    var scope = () => "";
+    function due(name, ms) {
+      if (!(ms >= 0)) return false;
+      const key = `${name}:${scope()}`;
+      const now = Date.now();
+      if (now - (last.get(key) || 0) < ms) return false;
+      last.set(key, now);
+      if (last.size > 1e4) last.clear();
+      return true;
+    }
+    module2.exports = { due };
+  }
+});
+
 // cloud/collections.js
 var require_collections = __commonJS({
   "cloud/collections.js"(exports2, module2) {
@@ -9696,10 +9715,8 @@ var require_collections = __commonJS({
       if (order.get("payRequestStatus") === "queued") await sendRequest(order);
       return pollRequest(order);
     });
-    var lastSweep = 0;
     async function sweepRequests(limit = 10) {
-      if (Date.now() - lastSweep < 5e3) return 0;
-      lastSweep = Date.now();
+      if (!require_throttle().due("payment-sweep", 5e3)) return 0;
       const query = new Parse.Query("Order");
       query.containedIn("payRequestStatus", ["queued", "pending"]);
       query.ascending("updatedAt");
@@ -10431,10 +10448,8 @@ var require_cash = __commonJS({
       return (await findAll(query)).sort((a, b) => a.get("handedOverAt") - b.get("handedOverAt"));
     }
     var STALE_CHECK_MS = Number(process.env.RELAY_STALE_CHECK_MS ?? 18e4);
-    var lastStaleCheck = 0;
     async function staleHandoverAlerts(config) {
-      if (Date.now() - lastStaleCheck < STALE_CHECK_MS) return 0;
-      lastStaleCheck = Date.now();
+      if (!require_throttle().due("stale-handovers", STALE_CHECK_MS)) return 0;
       const cutoff = new Date(Date.now() - STALE_HOURS * 3600 * 1e3);
       let sent = 0;
       for (const row of await pendingHandovers()) {
@@ -11577,10 +11592,8 @@ var require_owner = __commonJS({
       )}` : ""
     ].filter(Boolean).join(" \xB7 ");
     var Z_CHECK_MS = Number(process.env.RELAY_Z_CHECK_MS ?? 6e5);
-    var lastZCheck = 0;
     async function zReportDue(config, { force = false } = {}) {
-      if (!force && (Z_CHECK_MS < 0 || Date.now() - lastZCheck < Z_CHECK_MS)) return null;
-      lastZCheck = Date.now();
+      if (!force && !require_throttle().due("z-report", Z_CHECK_MS)) return null;
       const now = /* @__PURE__ */ new Date();
       if (localClock(now, config.timezone).hour < Number(config.zReportHour ?? 23)) return null;
       const day = isoDay(now, config.timezone);
@@ -11628,6 +11641,355 @@ var require_owner = __commonJS({
       }));
     });
     module2.exports = { zReportDue, buildZReport };
+  }
+});
+
+// cloud/privacy.js
+var require_privacy = __commonJS({
+  "cloud/privacy.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, audit, findAll, invalid, loadConfig, readAcl } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var RETENTION_CHOICES = [0, 6, 12, 24, 36];
+    var REMOVED_NAME = "Customer (details removed)";
+    var OPEN_CASH = ["WITH_RIDER", "HANDOVER_PENDING", "DISPUTED"];
+    function stripOrder(order) {
+      order.set({
+        customerName: REMOVED_NAME,
+        customerPhone: "",
+        deliveryAddress: "",
+        deliveryNotes: "",
+        anonymisedAt: /* @__PURE__ */ new Date()
+      });
+      for (const field of ["location", "customer"]) if (order.has(field)) order.unset(field);
+    }
+    async function saveInBatches(objects) {
+      for (let i = 0; i < objects.length; i += 200)
+        await Parse.Object.saveAll(objects.slice(i, i + 200), MASTER);
+    }
+    async function applyRetention({ months, now = /* @__PURE__ */ new Date(), dryRun = false }) {
+      if (!months) return { months: 0, orders: 0, customers: 0, notifications: 0 };
+      const cutoff = new Date(now);
+      cutoff.setMonth(cutoff.getMonth() - months);
+      const orderQuery = new Parse.Query("Order");
+      orderQuery.lessThan("createdAt", cutoff);
+      orderQuery.containedIn("status", ["DELIVERED", "CANCELLED"]);
+      orderQuery.doesNotExist("anonymisedAt");
+      const customerQuery = new Parse.Query("Customer");
+      customerQuery.lessThan("lastOrderAt", cutoff);
+      const noteQuery = new Parse.Query("Notification");
+      noteQuery.lessThan("createdAt", cutoff);
+      const [orders, customers, notes] = await Promise.all([
+        findAll(orderQuery).catch(() => []),
+        findAll(customerQuery).catch(() => []),
+        findAll(noteQuery).catch(() => [])
+      ]);
+      const due = orders.filter(
+        (order) => !OPEN_CASH.includes(order.get("cashStatus")) && order.get("billOpen") !== true
+      );
+      if (!dryRun) {
+        due.forEach(stripOrder);
+        await saveInBatches(due);
+        if (customers.length) await Parse.Object.destroyAll(customers, MASTER);
+        if (notes.length) await Parse.Object.destroyAll(notes, MASTER);
+      }
+      return {
+        months,
+        cutoff: cutoff.toISOString(),
+        orders: due.length,
+        customers: customers.length,
+        notifications: notes.length
+      };
+    }
+    async function runRetention() {
+      const { values } = await loadConfig();
+      const months = Number(values.retentionMonths) || 0;
+      const result = await applyRetention({ months });
+      if (result.orders || result.customers || result.notifications)
+        await audit(null, "privacy.retention", { className: "Privacy", id: "retention" }, null, result);
+      return result;
+    }
+    Parse.Cloud.define("adminSavePrivacy", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params || {};
+      const months = Number(p.retentionMonths);
+      if (!RETENTION_CHOICES.includes(months)) throw invalid("Choose how long to keep details");
+      const contact = String(p.privacyContact ?? "").trim().slice(0, 200);
+      const { object } = await loadConfig();
+      const config = object || new Parse.Object("Configuration");
+      const before = {
+        retentionMonths: config.get("retentionMonths") ?? 0,
+        privacyContact: config.get("privacyContact") || ""
+      };
+      config.set({ retentionMonths: months, privacyContact: contact });
+      config.setACL(readAcl(null, ["admin"]));
+      await config.save(null, MASTER);
+      await audit(actor, "privacy.settings_saved", config, before, {
+        retentionMonths: months,
+        privacyContact: contact
+      });
+      return { retentionMonths: months, privacyContact: contact };
+    });
+    Parse.Cloud.define("adminApplyRetention", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params || {};
+      const { values } = await loadConfig();
+      const months = Number(values.retentionMonths) || 0;
+      if (!months) throw invalid("Choose how long to keep customer details first");
+      const now = request.master && p.asOf ? new Date(p.asOf) : /* @__PURE__ */ new Date();
+      const result = await applyRetention({ months, now, dryRun: !!p.dryRun });
+      if (!p.dryRun)
+        await audit(
+          actor,
+          "privacy.retention",
+          { className: "Privacy", id: "retention" },
+          null,
+          result
+        );
+      return result;
+    });
+    Parse.Cloud.define("adminForgetCustomer", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params || {};
+      const phone = String(p.phone || "").replace(/[^\d+]/g, "");
+      if (p.customerId && !/^[A-Za-z0-9]{1,32}$/.test(String(p.customerId)))
+        throw invalid("Unknown customer");
+      if (!p.customerId && phone.length < 7) throw invalid("Enter the customer\u2019s phone number");
+      const customer = p.customerId ? await new Parse.Query("Customer").get(String(p.customerId), MASTER).catch(() => null) : await new Parse.Query("Customer").equalTo("phone", phone).first(MASTER);
+      const byPointer = customer ? new Parse.Query("Order").equalTo("customer", customer) : null;
+      const byPhone = phone || customer?.get("phone");
+      const queries = [
+        byPointer,
+        byPhone && new Parse.Query("Order").equalTo("customerPhone", byPhone)
+      ].filter(Boolean);
+      if (!queries.length) return { found: false, orders: 0, inProgress: 0 };
+      const orders = await findAll(Parse.Query.or(...queries));
+      const done = orders.filter(
+        (order) => ["DELIVERED", "CANCELLED"].includes(order.get("status")) && !OPEN_CASH.includes(order.get("cashStatus")) && order.get("billOpen") !== true && !order.get("anonymisedAt")
+      );
+      const inProgress = orders.filter((order) => !done.includes(order) && !order.get("anonymisedAt"));
+      const summary = {
+        found: !!customer || orders.length > 0,
+        name: customer?.get("name") || orders[0]?.get("customerName") || "",
+        orders: done.length,
+        inProgress: inProgress.length
+      };
+      if (p.dryRun || !summary.found) return summary;
+      done.forEach(stripOrder);
+      await saveInBatches(done);
+      if (customer && !inProgress.length) await customer.destroy(MASTER);
+      await audit(
+        actor,
+        "privacy.customer_forgotten",
+        { className: "Customer", id: customer?.id || "phone" },
+        null,
+        {
+          orders: done.length,
+          inProgress: inProgress.length
+        }
+      );
+      return summary;
+    });
+    module2.exports = { runRetention, applyRetention, RETENTION_CHOICES };
+  }
+});
+
+// cloud/serverAddress.js
+var require_serverAddress = __commonJS({
+  "cloud/serverAddress.js"(exports2, module2) {
+    "use strict";
+    var net = require("net");
+    var { MASTER } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var { log, errorMessage } = require_log();
+    var SECRET_KEY = "serverAddress";
+    var LOOKUPS = () => process.env.RELAY_IP_URL ? [process.env.RELAY_IP_URL] : ["https://api.ipify.org", "https://checkip.amazonaws.com", "https://ifconfig.me/ip"];
+    async function lookUp() {
+      for (const url of LOOKUPS()) {
+        try {
+          const response = await fetch(url, {
+            headers: { Accept: "text/plain" },
+            signal: AbortSignal.timeout(8e3)
+          });
+          const ip = (await response.text()).trim();
+          if (response.ok && net.isIP(ip)) return ip;
+        } catch (error) {
+          log("warn", "server_address.lookup_failed", { url, message: errorMessage(error) });
+        }
+      }
+      return "";
+    }
+    async function row() {
+      const query = new Parse.Query("Secret");
+      query.equalTo("key", SECRET_KEY);
+      query.ascending("createdAt");
+      return await query.first(MASTER) || (() => {
+        const created = new Parse.Object("Secret");
+        created.set({ key: SECRET_KEY, value: {} });
+        created.setACL(new Parse.ACL());
+        return created;
+      })();
+    }
+    async function checkServerAddress() {
+      const ip = await lookUp();
+      const record = await row();
+      const value = record.get("value") || {};
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const history = Array.isArray(value.history) ? value.history : [];
+      let changed = false;
+      if (ip) {
+        const last = history[0];
+        if (last && last.ip === ip) last.lastSeen = now;
+        else {
+          changed = !!last;
+          history.unshift({ ip, firstSeen: now, lastSeen: now });
+        }
+        record.set("value", {
+          history: history.slice(0, 10),
+          ...changed ? { changedAt: now } : value.changedAt ? { changedAt: value.changedAt } : {},
+          checkedAt: now
+        });
+        await record.save(null, MASTER);
+      }
+      const saved = record.get("value") || {};
+      return {
+        ip,
+        previous: saved.history?.[1]?.ip || "",
+        changedAt: saved.changedAt || null,
+        checkedAt: saved.checkedAt || now,
+        changed,
+        history: saved.history || []
+      };
+    }
+    Parse.Cloud.define("adminGetServerAddress", async (request) => {
+      await requireAdminUnlock(request);
+      return checkServerAddress();
+    });
+    async function watchServerAddress() {
+      const result = await checkServerAddress();
+      if (result.changed) {
+        const { notifyAdmins } = require_notifications();
+        await notifyAdmins({
+          kind: "server.address_changed",
+          tone: "alert",
+          title: "The server\u2019s address changed",
+          body: `Now ${result.ip} (was ${result.previous}). Add it to Airtel\u2019s Server IP Allowed List.`,
+          link: "/admin/site/payments"
+        });
+      }
+      return result;
+    }
+    module2.exports = { checkServerAddress, watchServerAddress };
+  }
+});
+
+// cloud/cashcheck.js
+var require_cashcheck = __commonJS({
+  "cloud/cashcheck.js"(exports2, module2) {
+    "use strict";
+    var { adminOnly, claimOnce, loadConfig, findAll } = require_core();
+    var { due } = require_throttle();
+    var { log, errorMessage } = require_log();
+    var { sumBy } = require_money();
+    var { dateKey } = require_dates();
+    var { money, notifyAdmins } = require_notifications();
+    var OPEN_SHIFT_HOURS = 16;
+    async function runCashCheck() {
+      const { values: config } = await loadConfig();
+      const since = new Date(Date.now() - 60 * 24 * 3600 * 1e3);
+      const problems = [];
+      const add = (kind, message) => problems.push({ kind, message });
+      const handovers = await findAll(
+        new Parse.Query("CashHandover").greaterThanOrEqualTo("handedOverAt", since)
+      );
+      const inHandover = /* @__PURE__ */ new Map();
+      const confirmedOrders = /* @__PURE__ */ new Set();
+      for (const row of handovers) {
+        const ids = (row.get("orders") || []).map((ptr) => ptr.id);
+        const returned = new Set((row.get("returnedOrders") || []).map((ptr) => ptr.id));
+        if (["pending", "disputed"].includes(row.get("status")))
+          for (const id of ids) inHandover.set(id, [...inHandover.get(id) || [], row]);
+        if (row.get("status") === "confirmed") {
+          for (const id of ids) if (!returned.has(id)) confirmedOrders.add(id);
+        }
+      }
+      const orders = await findAll(
+        new Parse.Query("Order").equalTo("status", "DELIVERED").equalTo("paymentMethod", "cash").greaterThanOrEqualTo("deliveredAt", since)
+      );
+      const byId = new Map(orders.map((order) => [order.id, order]));
+      for (const order of orders) {
+        const code = order.get("orderCode");
+        const status = order.get("cashStatus");
+        const waiting = inHandover.get(order.id) || [];
+        if (status === "HANDOVER_PENDING" && waiting.length !== 1)
+          add(
+            "order_handover",
+            waiting.length ? `${code} is in ${waiting.length} handovers at once` : `${code} is marked as handed over but is in no waiting handover`
+          );
+        if (status === "RECONCILED" && !confirmedOrders.has(order.id))
+          add("order_reconciled", `${code} is marked as received but no confirmed handover has it`);
+        if (status === "WITH_RIDER" && waiting.length)
+          add("order_with_rider", `${code} is with the rider but also in a waiting handover`);
+      }
+      for (const row of handovers) {
+        if (row.get("status") !== "pending") continue;
+        const code = row.get("handoverCode");
+        const rowOrders = (row.get("orders") || []).map((ptr) => byId.get(ptr.id)).filter(Boolean);
+        if (rowOrders.some((order) => order.get("cashStatus") !== "HANDOVER_PENDING"))
+          add("handover_orders", `${code} has orders that are no longer waiting for it`);
+        const sum = sumBy(rowOrders, (order) => order.get("amountCollected"));
+        if (rowOrders.length === (row.get("orders") || []).length && sum !== row.get("amount"))
+          add(
+            "handover_amount",
+            `${code} claims ${money(config, row.get("amount"))} but its orders add up to ${money(config, sum)}`
+          );
+      }
+      const staleShifts = await findAll(
+        new Parse.Query("Shift").equalTo("status", "open").lessThan("startedAt", new Date(Date.now() - OPEN_SHIFT_HOURS * 3600 * 1e3)).include("operator")
+      );
+      for (const shift of staleShifts)
+        add(
+          "shift_open",
+          `${shift.get("operator")?.get("name") || "A team member"}'s ${shift.get("kind")} shift has been open for over ${OPEN_SHIFT_HOURS} hours`
+        );
+      const checkedAt = /* @__PURE__ */ new Date();
+      if (problems.length)
+        await notifyAdmins({
+          kind: "cash.check",
+          tone: "alert",
+          key: `cash-check:${dateKey(checkedAt, config.timezone)}:${problems.length}`,
+          title: `Cash check: ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`,
+          body: problems.slice(0, 3).map((p) => p.message).join(" \xB7 "),
+          link: "/admin/payments"
+        });
+      return { checkedAt, ok: !problems.length, problems };
+    }
+    async function upkeep() {
+      const result = await runCashCheck();
+      const retention = await require_privacy().runRetention();
+      await require_serverAddress().watchServerAddress().catch(() => null);
+      return { result, retention };
+    }
+    var upkeepCheckMs = () => Number(process.env.RELAY_UPKEEP_CHECK_MS ?? 6e5);
+    function upkeepDue() {
+      if (!due("upkeep", upkeepCheckMs())) return;
+      void (async () => {
+        const { values: config } = await loadConfig();
+        if (!await claimOnce(`upkeep:${dateKey(/* @__PURE__ */ new Date(), config.timezone)}`)) return;
+        const { result } = await upkeep();
+        log("info", "upkeep.done", { problems: result.problems.length });
+      })().catch((error) => log("error", "upkeep.failed", { message: errorMessage(error) }));
+    }
+    Parse.Cloud.job("cashCheck", async () => {
+      const { result, retention } = await upkeep();
+      const cleaned = retention.orders || retention.customers || retention.notifications;
+      return `${result.ok ? "Cash records agree" : `${result.problems.length} problems found`}${cleaned ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers` : ""}`;
+    });
+    Parse.Cloud.define("adminRunCashCheck", async (request) => {
+      await adminOnly(request);
+      return runCashCheck();
+    });
+    module2.exports = { runCashCheck, upkeepDue };
   }
 });
 
@@ -11762,6 +12124,7 @@ var require_notifications = __commonJS({
         const { values: config } = await loadConfig();
         await staleHandoverAlerts(config);
         if (role === "admin") await require_owner().zReportDue(config);
+        require_cashcheck().upkeepDue();
       }
       const listQuery = new Parse.Query("Notification");
       listQuery.equalTo("recipient", user);
@@ -11904,95 +12267,6 @@ var require_customers = __commonJS({
       });
     });
     module2.exports = { recordCustomerOrder, pinCustomerAddress };
-  }
-});
-
-// cloud/serverAddress.js
-var require_serverAddress = __commonJS({
-  "cloud/serverAddress.js"(exports2, module2) {
-    "use strict";
-    var net = require("net");
-    var { MASTER } = require_core();
-    var { requireAdminUnlock } = require_adminLock();
-    var { log, errorMessage } = require_log();
-    var SECRET_KEY = "serverAddress";
-    var LOOKUPS = () => process.env.RELAY_IP_URL ? [process.env.RELAY_IP_URL] : ["https://api.ipify.org", "https://checkip.amazonaws.com", "https://ifconfig.me/ip"];
-    async function lookUp() {
-      for (const url of LOOKUPS()) {
-        try {
-          const response = await fetch(url, {
-            headers: { Accept: "text/plain" },
-            signal: AbortSignal.timeout(8e3)
-          });
-          const ip = (await response.text()).trim();
-          if (response.ok && net.isIP(ip)) return ip;
-        } catch (error) {
-          log("warn", "server_address.lookup_failed", { url, message: errorMessage(error) });
-        }
-      }
-      return "";
-    }
-    async function row() {
-      const query = new Parse.Query("Secret");
-      query.equalTo("key", SECRET_KEY);
-      query.ascending("createdAt");
-      return await query.first(MASTER) || (() => {
-        const created = new Parse.Object("Secret");
-        created.set({ key: SECRET_KEY, value: {} });
-        created.setACL(new Parse.ACL());
-        return created;
-      })();
-    }
-    async function checkServerAddress() {
-      const ip = await lookUp();
-      const record = await row();
-      const value = record.get("value") || {};
-      const now = (/* @__PURE__ */ new Date()).toISOString();
-      const history = Array.isArray(value.history) ? value.history : [];
-      let changed = false;
-      if (ip) {
-        const last = history[0];
-        if (last && last.ip === ip) last.lastSeen = now;
-        else {
-          changed = !!last;
-          history.unshift({ ip, firstSeen: now, lastSeen: now });
-        }
-        record.set("value", {
-          history: history.slice(0, 10),
-          ...changed ? { changedAt: now } : value.changedAt ? { changedAt: value.changedAt } : {},
-          checkedAt: now
-        });
-        await record.save(null, MASTER);
-      }
-      const saved = record.get("value") || {};
-      return {
-        ip,
-        previous: saved.history?.[1]?.ip || "",
-        changedAt: saved.changedAt || null,
-        checkedAt: saved.checkedAt || now,
-        changed,
-        history: saved.history || []
-      };
-    }
-    Parse.Cloud.define("adminGetServerAddress", async (request) => {
-      await requireAdminUnlock(request);
-      return checkServerAddress();
-    });
-    async function watchServerAddress() {
-      const result = await checkServerAddress();
-      if (result.changed) {
-        const { notifyAdmins } = require_notifications();
-        await notifyAdmins({
-          kind: "server.address_changed",
-          tone: "alert",
-          title: "The server\u2019s address changed",
-          body: `Now ${result.ip} (was ${result.previous}). Add it to Airtel\u2019s Server IP Allowed List.`,
-          link: "/admin/site/payments"
-        });
-      }
-      return result;
-    }
-    module2.exports = { checkServerAddress, watchServerAddress };
   }
 });
 
@@ -13159,250 +13433,6 @@ var require_menu = __commonJS({
       });
       return { id: row.id, available };
     });
-  }
-});
-
-// cloud/privacy.js
-var require_privacy = __commonJS({
-  "cloud/privacy.js"(exports2, module2) {
-    "use strict";
-    var { MASTER, audit, findAll, invalid, loadConfig, readAcl } = require_core();
-    var { requireAdminUnlock } = require_adminLock();
-    var RETENTION_CHOICES = [0, 6, 12, 24, 36];
-    var REMOVED_NAME = "Customer (details removed)";
-    var OPEN_CASH = ["WITH_RIDER", "HANDOVER_PENDING", "DISPUTED"];
-    function stripOrder(order) {
-      order.set({
-        customerName: REMOVED_NAME,
-        customerPhone: "",
-        deliveryAddress: "",
-        deliveryNotes: "",
-        anonymisedAt: /* @__PURE__ */ new Date()
-      });
-      for (const field of ["location", "customer"]) if (order.has(field)) order.unset(field);
-    }
-    async function saveInBatches(objects) {
-      for (let i = 0; i < objects.length; i += 200)
-        await Parse.Object.saveAll(objects.slice(i, i + 200), MASTER);
-    }
-    async function applyRetention({ months, now = /* @__PURE__ */ new Date(), dryRun = false }) {
-      if (!months) return { months: 0, orders: 0, customers: 0, notifications: 0 };
-      const cutoff = new Date(now);
-      cutoff.setMonth(cutoff.getMonth() - months);
-      const orderQuery = new Parse.Query("Order");
-      orderQuery.lessThan("createdAt", cutoff);
-      orderQuery.containedIn("status", ["DELIVERED", "CANCELLED"]);
-      orderQuery.doesNotExist("anonymisedAt");
-      const customerQuery = new Parse.Query("Customer");
-      customerQuery.lessThan("lastOrderAt", cutoff);
-      const noteQuery = new Parse.Query("Notification");
-      noteQuery.lessThan("createdAt", cutoff);
-      const [orders, customers, notes] = await Promise.all([
-        findAll(orderQuery).catch(() => []),
-        findAll(customerQuery).catch(() => []),
-        findAll(noteQuery).catch(() => [])
-      ]);
-      const due = orders.filter(
-        (order) => !OPEN_CASH.includes(order.get("cashStatus")) && order.get("billOpen") !== true
-      );
-      if (!dryRun) {
-        due.forEach(stripOrder);
-        await saveInBatches(due);
-        if (customers.length) await Parse.Object.destroyAll(customers, MASTER);
-        if (notes.length) await Parse.Object.destroyAll(notes, MASTER);
-      }
-      return {
-        months,
-        cutoff: cutoff.toISOString(),
-        orders: due.length,
-        customers: customers.length,
-        notifications: notes.length
-      };
-    }
-    async function runRetention() {
-      const { values } = await loadConfig();
-      const months = Number(values.retentionMonths) || 0;
-      const result = await applyRetention({ months });
-      if (result.orders || result.customers || result.notifications)
-        await audit(null, "privacy.retention", { className: "Privacy", id: "retention" }, null, result);
-      return result;
-    }
-    Parse.Cloud.define("adminSavePrivacy", async (request) => {
-      const actor = await requireAdminUnlock(request);
-      const p = request.params || {};
-      const months = Number(p.retentionMonths);
-      if (!RETENTION_CHOICES.includes(months)) throw invalid("Choose how long to keep details");
-      const contact = String(p.privacyContact ?? "").trim().slice(0, 200);
-      const { object } = await loadConfig();
-      const config = object || new Parse.Object("Configuration");
-      const before = {
-        retentionMonths: config.get("retentionMonths") ?? 0,
-        privacyContact: config.get("privacyContact") || ""
-      };
-      config.set({ retentionMonths: months, privacyContact: contact });
-      config.setACL(readAcl(null, ["admin"]));
-      await config.save(null, MASTER);
-      await audit(actor, "privacy.settings_saved", config, before, {
-        retentionMonths: months,
-        privacyContact: contact
-      });
-      return { retentionMonths: months, privacyContact: contact };
-    });
-    Parse.Cloud.define("adminApplyRetention", async (request) => {
-      const actor = await requireAdminUnlock(request);
-      const p = request.params || {};
-      const { values } = await loadConfig();
-      const months = Number(values.retentionMonths) || 0;
-      if (!months) throw invalid("Choose how long to keep customer details first");
-      const now = request.master && p.asOf ? new Date(p.asOf) : /* @__PURE__ */ new Date();
-      const result = await applyRetention({ months, now, dryRun: !!p.dryRun });
-      if (!p.dryRun)
-        await audit(
-          actor,
-          "privacy.retention",
-          { className: "Privacy", id: "retention" },
-          null,
-          result
-        );
-      return result;
-    });
-    Parse.Cloud.define("adminForgetCustomer", async (request) => {
-      const actor = await requireAdminUnlock(request);
-      const p = request.params || {};
-      const phone = String(p.phone || "").replace(/[^\d+]/g, "");
-      if (p.customerId && !/^[A-Za-z0-9]{1,32}$/.test(String(p.customerId)))
-        throw invalid("Unknown customer");
-      if (!p.customerId && phone.length < 7) throw invalid("Enter the customer\u2019s phone number");
-      const customer = p.customerId ? await new Parse.Query("Customer").get(String(p.customerId), MASTER).catch(() => null) : await new Parse.Query("Customer").equalTo("phone", phone).first(MASTER);
-      const byPointer = customer ? new Parse.Query("Order").equalTo("customer", customer) : null;
-      const byPhone = phone || customer?.get("phone");
-      const queries = [
-        byPointer,
-        byPhone && new Parse.Query("Order").equalTo("customerPhone", byPhone)
-      ].filter(Boolean);
-      if (!queries.length) return { found: false, orders: 0, inProgress: 0 };
-      const orders = await findAll(Parse.Query.or(...queries));
-      const done = orders.filter(
-        (order) => ["DELIVERED", "CANCELLED"].includes(order.get("status")) && !OPEN_CASH.includes(order.get("cashStatus")) && order.get("billOpen") !== true && !order.get("anonymisedAt")
-      );
-      const inProgress = orders.filter((order) => !done.includes(order) && !order.get("anonymisedAt"));
-      const summary = {
-        found: !!customer || orders.length > 0,
-        name: customer?.get("name") || orders[0]?.get("customerName") || "",
-        orders: done.length,
-        inProgress: inProgress.length
-      };
-      if (p.dryRun || !summary.found) return summary;
-      done.forEach(stripOrder);
-      await saveInBatches(done);
-      if (customer && !inProgress.length) await customer.destroy(MASTER);
-      await audit(
-        actor,
-        "privacy.customer_forgotten",
-        { className: "Customer", id: customer?.id || "phone" },
-        null,
-        {
-          orders: done.length,
-          inProgress: inProgress.length
-        }
-      );
-      return summary;
-    });
-    module2.exports = { runRetention, applyRetention, RETENTION_CHOICES };
-  }
-});
-
-// cloud/cashcheck.js
-var require_cashcheck = __commonJS({
-  "cloud/cashcheck.js"(exports2, module2) {
-    "use strict";
-    var { adminOnly, loadConfig, findAll } = require_core();
-    var { sumBy } = require_money();
-    var { dateKey } = require_dates();
-    var { money, notifyAdmins } = require_notifications();
-    var OPEN_SHIFT_HOURS = 16;
-    async function runCashCheck() {
-      const { values: config } = await loadConfig();
-      const since = new Date(Date.now() - 60 * 24 * 3600 * 1e3);
-      const problems = [];
-      const add = (kind, message) => problems.push({ kind, message });
-      const handovers = await findAll(
-        new Parse.Query("CashHandover").greaterThanOrEqualTo("handedOverAt", since)
-      );
-      const inHandover = /* @__PURE__ */ new Map();
-      const confirmedOrders = /* @__PURE__ */ new Set();
-      for (const row of handovers) {
-        const ids = (row.get("orders") || []).map((ptr) => ptr.id);
-        const returned = new Set((row.get("returnedOrders") || []).map((ptr) => ptr.id));
-        if (["pending", "disputed"].includes(row.get("status")))
-          for (const id of ids) inHandover.set(id, [...inHandover.get(id) || [], row]);
-        if (row.get("status") === "confirmed") {
-          for (const id of ids) if (!returned.has(id)) confirmedOrders.add(id);
-        }
-      }
-      const orders = await findAll(
-        new Parse.Query("Order").equalTo("status", "DELIVERED").equalTo("paymentMethod", "cash").greaterThanOrEqualTo("deliveredAt", since)
-      );
-      const byId = new Map(orders.map((order) => [order.id, order]));
-      for (const order of orders) {
-        const code = order.get("orderCode");
-        const status = order.get("cashStatus");
-        const waiting = inHandover.get(order.id) || [];
-        if (status === "HANDOVER_PENDING" && waiting.length !== 1)
-          add(
-            "order_handover",
-            waiting.length ? `${code} is in ${waiting.length} handovers at once` : `${code} is marked as handed over but is in no waiting handover`
-          );
-        if (status === "RECONCILED" && !confirmedOrders.has(order.id))
-          add("order_reconciled", `${code} is marked as received but no confirmed handover has it`);
-        if (status === "WITH_RIDER" && waiting.length)
-          add("order_with_rider", `${code} is with the rider but also in a waiting handover`);
-      }
-      for (const row of handovers) {
-        if (row.get("status") !== "pending") continue;
-        const code = row.get("handoverCode");
-        const rowOrders = (row.get("orders") || []).map((ptr) => byId.get(ptr.id)).filter(Boolean);
-        if (rowOrders.some((order) => order.get("cashStatus") !== "HANDOVER_PENDING"))
-          add("handover_orders", `${code} has orders that are no longer waiting for it`);
-        const sum = sumBy(rowOrders, (order) => order.get("amountCollected"));
-        if (rowOrders.length === (row.get("orders") || []).length && sum !== row.get("amount"))
-          add(
-            "handover_amount",
-            `${code} claims ${money(config, row.get("amount"))} but its orders add up to ${money(config, sum)}`
-          );
-      }
-      const staleShifts = await findAll(
-        new Parse.Query("Shift").equalTo("status", "open").lessThan("startedAt", new Date(Date.now() - OPEN_SHIFT_HOURS * 3600 * 1e3)).include("operator")
-      );
-      for (const shift of staleShifts)
-        add(
-          "shift_open",
-          `${shift.get("operator")?.get("name") || "A team member"}'s ${shift.get("kind")} shift has been open for over ${OPEN_SHIFT_HOURS} hours`
-        );
-      const checkedAt = /* @__PURE__ */ new Date();
-      if (problems.length)
-        await notifyAdmins({
-          kind: "cash.check",
-          tone: "alert",
-          key: `cash-check:${dateKey(checkedAt, config.timezone)}:${problems.length}`,
-          title: `Cash check: ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`,
-          body: problems.slice(0, 3).map((p) => p.message).join(" \xB7 "),
-          link: "/admin/payments"
-        });
-      return { checkedAt, ok: !problems.length, problems };
-    }
-    Parse.Cloud.job("cashCheck", async () => {
-      const result = await runCashCheck();
-      const retention = await require_privacy().runRetention();
-      await require_serverAddress().watchServerAddress().catch(() => null);
-      const cleaned = retention.orders || retention.customers || retention.notifications;
-      return `${result.ok ? "Cash records agree" : `${result.problems.length} problems found`}${cleaned ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers` : ""}`;
-    });
-    Parse.Cloud.define("adminRunCashCheck", async (request) => {
-      await adminOnly(request);
-      return runCashCheck();
-    });
-    module2.exports = { runCashCheck };
   }
 });
 
