@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRight, Eye, LockKeyhole } from 'lucide-react';
 import Parse from '../parse';
 import { startGoogleSignIn } from '../lib/googleSignIn';
@@ -10,6 +10,7 @@ import { useSession } from '../lib/session';
 import { BrandMark } from './BrandMark';
 import { RelayMark } from './RelayMark';
 import { useImageReady } from '../lib/imageReady';
+import { normaliseCode, rememberRestaurant, signInName } from '../lib/restaurant';
 
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
@@ -33,28 +34,24 @@ export function AuthScreen() {
     appInfo,
     serverError,
     previewAvailable,
+    restaurantCode,
+    chooseRestaurant,
     error: sessionError,
   } = useSession();
+  const [signingUp, setSigningUp] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(sessionError);
   const [busy, setBusy] = useState(false);
-  const [creating, setCreating] = useState(false);
   // Logo and name appear together, like the Relay mark and its credit.
   const logoReady = useImageReady(appInfo.restaurantLogo);
-  const [email, setEmail] = useState('');
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!username.trim() || !password) return;
     setBusy(true);
     setError('');
     try {
-      if (creating) {
-        const owner = new Parse.User();
-        owner.set({ username: username.trim().toLowerCase(), password, email: email.trim() });
-        await owner.signUp();
-        setUser(owner);
-      } else setUser(await logIn(username, password));
+      setUser(await logIn(signInName(username.trim(), restaurantCode), password));
     } catch (e) {
       setError(
         e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND
@@ -86,105 +83,325 @@ export function AuthScreen() {
         <div className="login-card">
           {/* Phones: with a logo, only the restaurant's logo and name show. */}
           {!appInfo.restaurantLogo && <BrandMark className="mobile-brand" />}
-          {creating ? (
-            <p className="eyebrow">Restaurant setup</p>
-          ) : (
-            // The restaurant's logo (Settings), else the Relay mark, with the
-            // restaurant's name under it.
-            <div
-              className={`login-identity${appInfo.restaurantLogo ? '' : ' no-logo'}${
-                logoReady ? '' : ' loading'
-              }`}
-            >
-              {appInfo.restaurantLogo ? <img src={appInfo.restaurantLogo} alt="" /> : <RelayMark />}
-              <span>{appInfo.restaurantName || 'Shift access'}</span>
-            </div>
-          )}
-          <h2>{creating ? 'Create owner account.' : 'Welcome back.'}</h2>
-          <p className="muted">
-            {creating
-              ? 'For the first restaurant owner only. Verify your email after registration.'
-              : 'Riders and cashiers sign in with their username and PIN.'}
-          </p>
-          <form onSubmit={login}>
-            <label>
-              Username
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. rider014"
-                autoComplete="username"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-            </label>
-            <label>
-              PIN or password
-              <div className="input-icon">
-                <LockKeyhole size={18} />
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••"
-                  autoComplete="current-password"
-                />
-              </div>
-            </label>
-            {creating && (
-              <label>
-                Email
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  autoComplete="email"
-                  placeholder="owner@restaurant.com"
-                />
-              </label>
-            )}
-            {error && <p className="form-error">{error}</p>}
-            {serverError && (
-              <p className="form-error">
-                Can't reach the Relay server functions ({serverError}). Sign-in may still work, but
-                ask your administrator to check the Cloud Code deployment.
-              </p>
-            )}
-            <button className="primary-button" disabled={busy}>
-              {busy ? 'Please wait…' : creating ? 'Create account' : 'Start shift'}
-              <ArrowRight size={19} />
-            </button>
-          </form>
-          {GOOGLE_SIGN_IN && (
-            <button className="google-button" onClick={() => startGoogleSignIn()}>
-              Continue with Google
-            </button>
-          )}
-          {previewAvailable && (
-            <button className="preview-button" onClick={startPreview}>
-              <Eye size={17} /> Preview rider workspace
-            </button>
-          )}
-          {(appInfo.ownerSetupOpen || creating) && (
-            <button
-              className="preview-button"
-              onClick={() => {
-                setCreating((p) => !p);
-                setError('');
+          {signingUp ? (
+            <SignUp
+              trialDays={appInfo.trialDays || 0}
+              onCancel={() => setSigningUp(false)}
+              onDone={async (code, fullUsername, pin) => {
+                rememberRestaurant(code);
+                await chooseRestaurant(code);
+                setSigningUp(false);
+                setUser(await Parse.User.logIn(fullUsername, pin));
               }}
-            >
-              {creating ? 'Already have an account? Sign in' : 'First owner? Create account'}
-            </button>
+            />
+          ) : appInfo.hosted && !appInfo.found ? (
+            <FindRestaurant
+              serverError={serverError}
+              onFind={chooseRestaurant}
+              onSignUp={() => setSigningUp(true)}
+            />
+          ) : (
+            <>
+              {/* The restaurant's logo (Settings), else the Relay mark, with the
+                restaurant's name under it. */}
+              <div
+                className={`login-identity${appInfo.restaurantLogo ? '' : ' no-logo'}${
+                  logoReady ? '' : ' loading'
+                }`}
+              >
+                {appInfo.restaurantLogo ? (
+                  <img src={appInfo.restaurantLogo} alt="" />
+                ) : (
+                  <RelayMark />
+                )}
+                <span>{appInfo.restaurantName || 'Shift access'}</span>
+              </div>
+              <h2>Welcome back.</h2>
+              <p className="muted">Sign in with your username and PIN.</p>
+              <form onSubmit={login}>
+                <label>
+                  Username
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="e.g. rider014"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  PIN or password
+                  <div className="input-icon">
+                    <LockKeyhole size={18} />
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••"
+                      autoComplete="current-password"
+                    />
+                  </div>
+                </label>
+                {error && <p className="form-error">{error}</p>}
+                {serverError && (
+                  <p className="form-error">
+                    Can't reach the Relay server functions ({serverError}). Sign-in may still work,
+                    but ask your administrator to check the Cloud Code deployment.
+                  </p>
+                )}
+                <button className="primary-button" disabled={busy}>
+                  {busy ? 'Please wait…' : 'Start shift'}
+                  <ArrowRight size={19} />
+                </button>
+              </form>
+              {GOOGLE_SIGN_IN && (
+                <button className="google-button" onClick={() => startGoogleSignIn()}>
+                  Continue with Google
+                </button>
+              )}
+              {previewAvailable && (
+                <button className="preview-button" onClick={startPreview}>
+                  <Eye size={17} /> Preview rider workspace
+                </button>
+              )}
+              {appInfo.hosted && (
+                <button
+                  className="preview-button"
+                  onClick={() => {
+                    setError('');
+                    void chooseRestaurant('');
+                  }}
+                >
+                  Not {appInfo.restaurantName}? Change restaurant
+                </button>
+              )}
+              <p className="support-copy">Need access? Ask your restaurant administrator.</p>
+            </>
           )}
-          <p className="support-copy">Need access? Ask your restaurant administrator.</p>
           <a className="privacy-link" href="/privacy">
             Privacy and terms
           </a>
         </div>
       </section>
     </main>
+  );
+}
+
+// Relay Hosted: the device does not know its restaurant yet.
+function FindRestaurant({
+  serverError,
+  onFind,
+  onSignUp,
+}: {
+  serverError: string;
+  onFind: (code: string) => Promise<{ found?: boolean }>;
+  onSignUp: () => void;
+}) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const find = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const wanted = normaliseCode(code);
+    if (wanted.length < 3) {
+      setError('Type your restaurant’s code, as your owner gave it to you.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const info = await onFind(wanted);
+      if (info.found === false) setError(`No restaurant uses the code “${wanted}”.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not look that up. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="login-identity no-logo">
+        <RelayMark />
+        <span>Relay</span>
+      </div>
+      <h2>Find your restaurant.</h2>
+      <p className="muted">
+        Type the restaurant code, or open your restaurant’s own link (relay…/r/your-code) once on
+        this device.
+      </p>
+      <form onSubmit={find}>
+        <label>
+          Restaurant code
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="e.g. mama-rose"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        {serverError && (
+          <p className="form-error">
+            Can’t reach the Relay server ({serverError}). Try again soon.
+          </p>
+        )}
+        <button className="primary-button" disabled={busy}>
+          {busy ? 'Looking…' : 'Continue'}
+          <ArrowRight size={19} />
+        </button>
+      </form>
+      <button className="preview-button" onClick={onSignUp}>
+        New restaurant? Start a free trial
+      </button>
+    </>
+  );
+}
+
+// Relay Hosted: a new restaurant and its owner's account, on a free trial.
+function SignUp({
+  trialDays,
+  onCancel,
+  onDone,
+}: {
+  trialDays: number;
+  onCancel: () => void;
+  onDone: (code: string, username: string, pin: string) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    restaurantName: '',
+    code: '',
+    ownerName: '',
+    phone: '',
+    username: '',
+    pin: '',
+  });
+  const [codeEdited, setCodeEdited] = useState(false);
+  const [codeState, setCodeState] = useState<{ code: string; free: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const code = codeEdited ? normaliseCode(form.code) : normaliseCode(form.restaurantName);
+  const set = (field: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [field]: e.target.value }));
+
+  // Whether the code is free, checked shortly after typing stops.
+  useEffect(() => {
+    if (code.length < 3) {
+      setCodeState(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      Parse.Cloud.run('checkRestaurantCode', { code })
+        .then(setCodeState)
+        .catch(() => setCodeState(null));
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [code]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const result: { code: string; username: string } = await Parse.Cloud.run('signUpRestaurant', {
+        ...form,
+        code,
+        username: form.username.trim().toLowerCase(),
+      });
+      await onDone(result.code, result.username, form.pin);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create the restaurant. Try again.');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p className="eyebrow">New restaurant</p>
+      <h2>Start your free trial.</h2>
+      <p className="muted">
+        {trialDays > 0 ? `${trialDays} days free, no payment now. ` : ''}You become the owner and
+        add your riders and cashiers afterwards.
+      </p>
+      <form onSubmit={submit}>
+        <label>
+          Restaurant name
+          <input value={form.restaurantName} onChange={set('restaurantName')} required />
+        </label>
+        <label>
+          Restaurant code
+          <input
+            value={codeEdited ? form.code : code}
+            onChange={(e) => {
+              setCodeEdited(true);
+              set('code')(e);
+            }}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+          />
+          <span className="field-hint">
+            {code.length < 3
+              ? 'Letters, digits and dashes; staff use it to find you.'
+              : codeState?.code === code
+                ? codeState.free
+                  ? `Free: your address will be /r/${code}`
+                  : `“${code}” is taken. Choose another.`
+                : `Your address will be /r/${code}`}
+          </span>
+        </label>
+        <label>
+          Your name
+          <input value={form.ownerName} onChange={set('ownerName')} autoComplete="name" required />
+        </label>
+        <label>
+          Your phone (for billing)
+          <input
+            type="tel"
+            value={form.phone}
+            onChange={set('phone')}
+            autoComplete="tel"
+            placeholder="07…"
+            required
+          />
+        </label>
+        <label>
+          Your username
+          <input
+            value={form.username}
+            onChange={set('username')}
+            autoComplete="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+          />
+        </label>
+        <label>
+          Password (6 characters or more)
+          <input
+            type="password"
+            value={form.pin}
+            onChange={set('pin')}
+            autoComplete="new-password"
+            minLength={6}
+            required
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <button className="primary-button" disabled={busy || codeState?.free === false}>
+          {busy ? 'Creating…' : 'Create restaurant'}
+          <ArrowRight size={19} />
+        </button>
+      </form>
+      <button className="preview-button" onClick={onCancel}>
+        Already have a restaurant? Sign in
+      </button>
+    </>
   );
 }

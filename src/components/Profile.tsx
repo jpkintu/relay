@@ -37,7 +37,9 @@ export function ChangePin() {
     setError('');
     try {
       await Parse.Cloud.run('changeMyPin', { oldPin, newPin });
-      const next = await Parse.User.logIn(profile.username, newPin);
+      // The stored username (name@restaurant-code in Relay Hosted).
+      const stored = Parse.User.current()?.get('username') || profile.username;
+      const next = await Parse.User.logIn(stored, newPin);
       reset();
       setOpen(false);
       setDone(`${isOwner ? 'Password' : 'PIN'} changed. Other devices were signed out.`);

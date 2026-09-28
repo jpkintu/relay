@@ -7,7 +7,7 @@ const {
   withRiderLimit,
 } = require('./lib/core');
 const tenancy = require('./lib/tenant');
-const { restaurantSummary } = require('./restaurants');
+const { platformSettings, restaurantSummary } = require('./restaurants');
 const { previewEnabled } = require('./preview');
 const { merchantAccounts } = require('./lib/mobileMoney');
 
@@ -49,8 +49,16 @@ function publicConfig(values) {
 // named by { restaurant: '<code>' }; without one (or an unknown code) the app
 // shows "find your restaurant" and the sign-up page.
 Parse.Cloud.define('getAppInfo', async () => {
-  if (!tenancy.current())
-    return { hosted: true, found: false, signUpOpen: true, previewEnabled: previewEnabled() };
+  if (!tenancy.current()) {
+    const { values: platform } = await platformSettings();
+    return {
+      hosted: true,
+      found: false,
+      signUpOpen: true,
+      trialDays: Number(platform.trialDays) || 0,
+      previewEnabled: previewEnabled(),
+    };
+  }
   const [{ values }, restaurant] = await Promise.all([loadConfig(), restaurantSummary()]);
   return {
     hosted: true,

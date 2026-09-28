@@ -3,6 +3,7 @@
 // Nothing is sent about what the person typed; only the error, where in the
 // app it happened, the page address and the browser.
 import Parse from '../parse';
+import { savedRestaurant } from './restaurant';
 
 const MAX_PER_VISIT = 10;
 const sent = new Set<string>();
@@ -34,6 +35,8 @@ export function reportError(error: unknown, where = '') {
     url: `${window.location.origin}${area()}`,
     userAgent: navigator.userAgent,
     appVersion: import.meta.env.VITE_APP_VERSION || '',
+    // Relay Hosted: which restaurant a signed-out report belongs to.
+    restaurant: savedRestaurant(),
   }).catch(() => undefined);
 }
 

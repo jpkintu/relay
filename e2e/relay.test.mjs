@@ -209,6 +209,7 @@ describe('restaurant sign-up (Relay Hosted)', () => {
     assert.equal(info.hosted, true);
     assert.equal(info.found, false);
     assert.equal(info.signUpOpen, true);
+    assert.equal(info.trialDays, 14);
     assert.equal(info.restaurantName, undefined);
     assert.equal((await run('getAppInfo', { restaurant: 'nobody-here' })).found, false);
   });

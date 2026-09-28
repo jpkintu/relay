@@ -15760,7 +15760,7 @@ var require_profile = __commonJS({
       withRiderLimit
     } = require_core();
     var tenancy = require_tenant();
-    var { restaurantSummary } = require_restaurants();
+    var { platformSettings, restaurantSummary } = require_restaurants();
     var { previewEnabled } = require_preview();
     var { merchantAccounts } = require_mobileMoney();
     function publicConfig(values) {
@@ -15795,8 +15795,16 @@ var require_profile = __commonJS({
       };
     }
     Parse.Cloud.define("getAppInfo", async () => {
-      if (!tenancy.current())
-        return { hosted: true, found: false, signUpOpen: true, previewEnabled: previewEnabled() };
+      if (!tenancy.current()) {
+        const { values: platform } = await platformSettings();
+        return {
+          hosted: true,
+          found: false,
+          signUpOpen: true,
+          trialDays: Number(platform.trialDays) || 0,
+          previewEnabled: previewEnabled()
+        };
+      }
       const [{ values }, restaurant] = await Promise.all([loadConfig(), restaurantSummary()]);
       return {
         hosted: true,

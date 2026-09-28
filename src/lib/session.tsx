@@ -5,6 +5,7 @@ import { completeGoogleSignIn } from './googleSignIn';
 import { formatMoney } from './format';
 import { forgetPush } from './push';
 import { applyTheme, type Theme } from './theme';
+import { rememberRestaurant, restaurantCode } from './restaurant';
 
 export type Role = 'admin' | 'cashier' | 'rider';
 
@@ -54,7 +55,20 @@ export type Profile = {
   available?: boolean | null;
   commission: { type: string; perOrder: number; percent: number } | null;
   canInitialize: boolean;
+  // Relay Hosted: the person's restaurant and its subscription.
+  restaurant?: RestaurantSummary | null;
   config: AppConfig;
+};
+
+export type RestaurantSummary = {
+  id: string;
+  code: string;
+  name: string;
+  status: 'trial' | 'active' | 'past_due' | 'expired' | 'suspended';
+  usable: boolean;
+  until: string | null;
+  trialEndsAt: string | null;
+  paidUntil: string | null;
 };
 
 export type AppInfo = {
@@ -66,6 +80,12 @@ export type AppInfo = {
   timezone: string;
   ownerSetupOpen: boolean;
   previewEnabled: boolean;
+  // Relay Hosted: false until the device knows a restaurant that exists.
+  hosted?: boolean;
+  found?: boolean;
+  signUpOpen?: boolean;
+  trialDays?: number;
+  restaurant?: RestaurantSummary | null;
   // For the privacy notice (Admin → Data & privacy).
   privacy?: { contact: string; retentionMonths: number };
 };
@@ -114,6 +134,10 @@ type Session = {
   preview: boolean;
   previewAvailable: boolean;
   error: string;
+  // Relay Hosted: the restaurant this device signs in to ('' when none).
+  restaurantCode: string;
+  // Switches to another restaurant (or none) and reloads its sign-in details.
+  chooseRestaurant: (code: string) => Promise<AppInfo>;
   setUser: (user: Parse.User) => void;
   startPreview: () => void;
   refresh: () => Promise<void>;
@@ -130,17 +154,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [loadingProfile, setLoadingProfile] = useState(!!user);
   const [error, setError] = useState('');
   const [serverError, setServerError] = useState('');
+  const [code, setCode] = useState(restaurantCode);
+
+  const loadInfo = useCallback(async (restaurant: string) => {
+    const info: AppInfo = await Parse.Cloud.run('getAppInfo', restaurant ? { restaurant } : {});
+    setAppInfo(info);
+    if (info.found !== false) rememberBrand(info);
+    return info;
+  }, []);
+
+  const chooseRestaurant = useCallback(
+    async (next: string) => {
+      const info = await loadInfo(next);
+      const known = next && info.found !== false ? next : '';
+      rememberRestaurant(known);
+      setCode(known);
+      return info;
+    },
+    [loadInfo],
+  );
 
   useEffect(() => {
-    Parse.Cloud.run('getAppInfo')
-      .then((info: AppInfo) => {
-        setAppInfo(info);
-        rememberBrand(info);
-      })
-      .catch((e) => setServerError(e instanceof Error ? e.message : String(e)));
+    loadInfo(code).catch((e) => setServerError(e instanceof Error ? e.message : String(e)));
     completeGoogleSignIn()
       .then((signedIn) => signedIn && setUserState(signedIn))
       .catch(() => undefined);
+    // Once, for the restaurant known at start; chooseRestaurant reloads later.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const logout = useCallback(async () => {
@@ -238,6 +278,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     profile,
     appInfo,
     serverError,
+    restaurantCode: code,
+    chooseRestaurant,
     config,
     preview,
     previewAvailable,

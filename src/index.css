@@ -158,6 +158,11 @@ button {
   display: grid;
   gap: 8px;
 }
+.login-card .field-hint {
+  font-weight: 400;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
 .login-card input,
 .customer-grid input,
 .search input {
