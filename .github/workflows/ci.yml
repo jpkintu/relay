@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # main: the self-hosted edition. hosted: the multi-restaurant edition, a
+    # permanent separate branch that is never merged into main (main is
+    # merged into it instead; docs/ROADMAP.md, "Two editions").
+    branches: [main, hosted]
   pull_request:
 
 jobs:
