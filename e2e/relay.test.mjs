@@ -4812,6 +4812,38 @@ describe('platform console and access (Relay Hosted)', () => {
     );
   });
 
+  test('the job creates the platform account from environment variables', async () => {
+    const run = (params) =>
+      fetch(`${SERVER_URL}/jobs/createPlatformAdmin`, {
+        method: 'POST',
+        headers: {
+          'X-Parse-Application-Id': APP_ID,
+          'X-Parse-Master-Key': MASTER_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(params),
+      });
+    Object.assign(process.env, {
+      RELAY_PLATFORM_USERNAME: 'ops2',
+      RELAY_PLATFORM_PASSWORD: 'ops2-pass-123',
+      RELAY_PLATFORM_NAME: 'Ops Two',
+    });
+    try {
+      assert.equal((await run({})).status, 200);
+      let signedIn = null;
+      for (let i = 0; i < 50 && !signedIn; i += 1) {
+        signedIn = await Parse.User.logIn('ops2', 'ops2-pass-123').catch(() => null);
+        if (!signedIn) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.ok(signedIn, 'the account was created');
+      assert.equal((await Parse.Cloud.run('getMyProfile', {}, as(signedIn))).platform, true);
+    } finally {
+      delete process.env.RELAY_PLATFORM_USERNAME;
+      delete process.env.RELAY_PLATFORM_PASSWORD;
+      delete process.env.RELAY_PLATFORM_NAME;
+    }
+  });
+
   test('only platform staff use the console', async () => {
     const profile = await run('getMyProfile', {}, ops);
     assert.equal(profile.platform, true);

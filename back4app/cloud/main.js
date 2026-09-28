@@ -2381,8 +2381,22 @@ var require_restaurants = __commonJS({
       if (!request.master) throw forbidden("Master key required");
       return createPlatformAdmin(request.params || {});
     });
+    function platformAdminFromEnv() {
+      const env = (name) => String(process.env[name] || "").trim();
+      return {
+        username: env("RELAY_PLATFORM_USERNAME"),
+        password: env("RELAY_PLATFORM_PASSWORD"),
+        name: env("RELAY_PLATFORM_NAME")
+      };
+    }
     Parse.Cloud.job("createPlatformAdmin", async (request) => {
-      const result = await createPlatformAdmin(request.params || {});
+      const given = request.params || {};
+      const params = given.username || given.password ? given : platformAdminFromEnv();
+      if (!params.username || !params.password)
+        throw invalid(
+          "Set RELAY_PLATFORM_USERNAME and RELAY_PLATFORM_PASSWORD (10+ characters) in App Settings \u2192 Environment Variables, then Run now again"
+        );
+      const result = await createPlatformAdmin(params);
       return `Platform account ready: ${result.username}`;
     });
     async function forEachRestaurant(work) {

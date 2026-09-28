@@ -114,10 +114,18 @@ transactionChargesCategory: "ChargeWallet" }`. The reply carries the
 ## Platform console
 
 Relay's own staff sign in at `/platform` with a platform account (no
-restaurant). Create one with the master key: Back4App dashboard → Cloud Code →
-Jobs → `createPlatformAdmin` with `{ "username": "…", "password": "…", "name":
-"…" }` (password at least 10 characters; running it again resets the
-password).
+restaurant). To create one (running it again resets the password):
+
+1. App Settings → Environment Variables: `RELAY_PLATFORM_USERNAME` (lowercase
+   letters, digits, `.` `-` `_`), `RELAY_PLATFORM_PASSWORD` (10+ characters),
+   optionally `RELAY_PLATFORM_NAME`.
+2. Cloud Code → Jobs → `createPlatformAdmin` → **Run now**. Its status reads
+   "Platform account ready: …".
+3. Remove `RELAY_PLATFORM_PASSWORD` once you can sign in.
+
+Or, with the master key, call the function `createPlatformAdmin` with `{
+"username": "…", "password": "…", "name": "…" }` (API console → REST → POST
+`functions/createPlatformAdmin`, Use Master Key).
 
 The console shows every restaurant's name, code, owner, billing phone, status,
 trial or paid-until date, price, staff count and orders in the last 30 days,
