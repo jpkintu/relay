@@ -39,6 +39,8 @@ export function AuthScreen() {
     error: sessionError,
   } = useSession();
   const [signingUp, setSigningUp] = useState(false);
+  // Relay's own staff sign in at /platform (no restaurant).
+  const platform = window.location.pathname.startsWith('/platform');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(sessionError);
@@ -83,7 +85,9 @@ export function AuthScreen() {
         <div className="login-card">
           {/* Phones: with a logo, only the restaurant's logo and name show. */}
           {!appInfo.restaurantLogo && <BrandMark className="mobile-brand" />}
-          {signingUp ? (
+          {platform ? (
+            <PlatformSignIn onSignedIn={setUser} />
+          ) : signingUp ? (
             <SignUp
               trialDays={appInfo.trialDays || 0}
               onCancel={() => setSigningUp(false)}
@@ -402,6 +406,67 @@ function SignUp({
       <button className="preview-button" onClick={onCancel}>
         Already have a restaurant? Sign in
       </button>
+    </>
+  );
+}
+
+// Relay's own staff: the platform console.
+function PlatformSignIn({ onSignedIn }: { onSignedIn: (user: Parse.User) => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      onSignedIn(await Parse.User.logIn(username.trim().toLowerCase(), password));
+    } catch (e) {
+      setError(
+        e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND
+          ? 'Wrong username or password.'
+          : e instanceof Error
+            ? e.message
+            : 'Could not sign in.',
+      );
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <p className="eyebrow">Relay platform</p>
+      <h2>Staff sign-in.</h2>
+      <p className="muted">For Relay’s own team. Restaurants sign in on the main page.</p>
+      <form onSubmit={submit}>
+        <label>
+          Username
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+          />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <button className="primary-button" disabled={busy}>
+          {busy ? 'Signing in…' : 'Sign in'}
+          <ArrowRight size={19} />
+        </button>
+      </form>
     </>
   );
 }

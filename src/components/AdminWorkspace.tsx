@@ -16,6 +16,7 @@ import {
   Rocket,
 } from 'lucide-react';
 import Parse from '../parse';
+import { SubscriptionNotice } from './Subscription';
 import { AdminOverview } from './AdminOverview';
 import { STEP_COUNT, stepsDone, type SetupProgress } from '../lib/setup';
 import { ADMIN_TABS, type AdminTab } from '../lib/adminTabs';
@@ -213,6 +214,7 @@ export function AdminWorkspace() {
         {error && <p className="ops-error">{error}</p>}
         {section === 'Overview' && (
           <>
+            {!preview && <SubscriptionNotice />}
             {progress && !progress.finished && !preview && (
               <div className="setup-notice start-notice">
                 <span>

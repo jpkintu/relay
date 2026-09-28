@@ -20,6 +20,8 @@ const DEFAULT_PLATFORM = {
   currency: 'UGX',
   trialDays: 14,
   graceDays: 7,
+  // Shown to restaurants that need to renew or are suspended.
+  supportContact: '',
 };
 
 // Platform-wide settings (the platform console changes them).
@@ -32,6 +34,62 @@ async function platformSettings() {
   }
   return { row, values };
 }
+
+// The same, cached briefly for the per-request access check.
+let cachedSettings = null;
+async function cachedPlatform() {
+  if (cachedSettings && Date.now() - cachedSettings.at < 30000) return cachedSettings.values;
+  const { values } = await platformSettings();
+  cachedSettings = { values, at: Date.now() };
+  return values;
+}
+
+// What a restaurant pays each month: its own price when you set one, else
+// the platform price.
+const priceOf = (row, platform) => {
+  const own = row.get('priceOverride');
+  return typeof own === 'number' && own >= 0 ? own : Number(platform.monthlyPrice) || 0;
+};
+
+// Functions an expired or suspended restaurant can still use: sign-in
+// details, the profile (which says why the app is closed), changing one's
+// own PIN, signing out, crash reports and (phase 3) paying.
+const OPEN_WHEN_CLOSED = new Set([
+  'getAppInfo',
+  'getMyProfile',
+  'changeMyPin',
+  'removePushSubscription',
+  'reportClientError',
+]);
+
+// Called for every Cloud function run for a restaurant (errors.js). Access
+// is worked out from the dates each time (lib/access.js).
+async function checkAccess(name, restaurant) {
+  if (OPEN_WHEN_CLOSED.has(name)) return;
+  const platform = await cachedPlatform();
+  const access = accessOf({ get: (key) => restaurant[key] }, platform.graceDays);
+  if (access.ok) return;
+  const contact = platform.supportContact ? ` (${platform.supportContact})` : '';
+  throw forbidden(
+    access.status === 'suspended'
+      ? `This restaurant is suspended. Contact Relay${contact}`
+      : 'This restaurant’s subscription has ended. The owner can renew it in the app',
+  );
+}
+
+// Suspended restaurants cannot sign in at all; expired ones can, so the
+// owner can renew.
+Parse.Cloud.beforeLogin(async (request) => {
+  const tenant = request.object.get('tenant');
+  if (!tenant) return;
+  const restaurant = await tenancy.lookUp('objectId', tenant.id);
+  if (restaurant?.suspended) {
+    const { supportContact } = await cachedPlatform();
+    throw forbidden(
+      `This restaurant is suspended. Contact Relay${supportContact ? ` (${supportContact})` : ''}`,
+    );
+  }
+});
 
 // Codes appear in the restaurant's web address and usernames: lower-case
 // letters, digits and dashes.
@@ -160,6 +218,10 @@ async function restaurantSummary() {
   );
   if (!row) return null;
   const { values: platform } = await platformSettings();
+  return summarise(row, platform);
+}
+
+function summarise(row, platform) {
   const access = accessOf(row, platform.graceDays);
   return {
     id: row.id,
@@ -171,18 +233,26 @@ async function restaurantSummary() {
     until: access.until?.toISOString() || null,
     trialEndsAt: row.get('trialEndsAt')?.toISOString() || null,
     paidUntil: row.get('paidUntil')?.toISOString() || null,
+    monthlyPrice: priceOf(row, platform),
+    currency: platform.currency,
+    graceDays: Number(platform.graceDays) || 0,
+    supportContact: platform.supportContact || '',
   };
 }
 
-// Platform staff: people with the "platform" role (not tied to a restaurant).
-async function requirePlatform(request) {
-  const user = requireUser(request);
-  if (user.get('tenant')) throw forbidden('platform role required');
+// Platform staff: people with the "platform" role, who belong to no
+// restaurant. Checked explicitly, never through a restaurant role.
+async function isPlatform(user) {
+  if (!user || user.get('tenant')) return false;
   const query = new Parse.Query(Parse.Role);
   query.equalTo('name', 'platform');
   query.equalTo('users', user);
-  if (!(await tenancy.withoutTenant(() => query.first(MASTER))))
-    throw forbidden('platform role required');
+  return !!(await tenancy.withoutTenant(() => query.first(MASTER)));
+}
+
+async function requirePlatform(request) {
+  const user = requireUser(request);
+  if (!(await isPlatform(user))) throw forbidden('platform role required');
   return user;
 }
 
@@ -253,7 +323,163 @@ async function forEachRestaurant(work) {
   return results;
 }
 
+// ---- Platform console (docs/HOSTED.md). Platform staff see every
+// restaurant's name, contact, subscription and size, never its orders or
+// customers.
+
+const DAY = 86400000;
+const pointerTo = (row) => ({ __type: 'Pointer', className: 'Restaurant', objectId: row.id });
+
+async function restaurantRow(row, platform) {
+  const since = new Date(Date.now() - 30 * DAY);
+  const staff = new Parse.Query(Parse.User);
+  staff.equalTo('tenant', pointerTo(row));
+  staff.notEqualTo('active', false);
+  const orders = new Parse.Query('Order');
+  orders.equalTo('tenant', pointerTo(row));
+  orders.greaterThanOrEqualTo('createdAt', since);
+  const [staffCount, orders30] = await Promise.all([staff.count(MASTER), orders.count(MASTER)]);
+  return {
+    ...summarise(row, platform),
+    ownerName: row.get('ownerName') || '',
+    billingPhone: row.get('billingPhone') || '',
+    priceOverride: typeof row.get('priceOverride') === 'number' ? row.get('priceOverride') : null,
+    suspended: row.get('suspended') === true,
+    note: row.get('note') || '',
+    createdAt: row.createdAt.toISOString(),
+    staff: staffCount,
+    orders30,
+  };
+}
+
+// Platform: every restaurant with its subscription and size. → { settings, rows }
+Parse.Cloud.define('platformListRestaurants', async (request) => {
+  await requirePlatform(request);
+  const { values: platform } = await platformSettings();
+  const query = new Parse.Query('Restaurant');
+  const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
+  rows.sort((a, b) => b.createdAt - a.createdAt);
+  return {
+    settings: platform,
+    rows: await Promise.all(rows.map((row) => restaurantRow(row, platform))),
+  };
+});
+
+const dateOrNull = (value, label) => {
+  if (value === null || value === '') return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw invalid(`${label}: not a date`);
+  return date;
+};
+
+// Platform: change one restaurant's price, trial, paid-until date,
+// suspension or note. Only the fields given change. { id, priceOverride?
+// (number, or null for the platform price), trialEndsAt?, paidUntil?,
+// suspended?, note? }
+Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
+  const actor = await requirePlatform(request);
+  const p = request.params || {};
+  const row = await tenancy.withoutTenant(() =>
+    new Parse.Query('Restaurant').get(String(p.id || ''), MASTER).catch(() => null),
+  );
+  if (!row) throw invalid('Restaurant not found');
+  const fields = ['priceOverride', 'trialEndsAt', 'paidUntil', 'suspended', 'note'];
+  const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
+  if ('priceOverride' in p) {
+    if (p.priceOverride === null || p.priceOverride === '') row.unset('priceOverride');
+    else {
+      const price = Number(p.priceOverride);
+      if (!Number.isFinite(price) || price < 0 || price > 100000000)
+        throw invalid('Price: a number from 0 up');
+      row.set('priceOverride', Math.round(price));
+    }
+  }
+  if ('trialEndsAt' in p) row.set('trialEndsAt', dateOrNull(p.trialEndsAt, 'Trial end'));
+  if ('paidUntil' in p) {
+    const paid = dateOrNull(p.paidUntil, 'Paid until');
+    if (paid) row.set('paidUntil', paid);
+    else row.unset('paidUntil');
+  }
+  if ('suspended' in p) row.set('suspended', p.suspended === true);
+  if ('note' in p)
+    row.set(
+      'note',
+      String(p.note || '')
+        .trim()
+        .slice(0, 500),
+    );
+  await tenancy.withoutTenant(() => row.save(null, MASTER));
+  tenancy.clearCache();
+  const after = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
+  await tenancy.withoutTenant(() =>
+    audit(actor, 'platform.restaurant_updated', row, before, after),
+  );
+  const { values: platform } = await platformSettings();
+  return restaurantRow(row, platform);
+});
+
+// Platform: the flat price, currency, trial and grace days and the support
+// contact restaurants see.
+Parse.Cloud.define('platformSaveSettings', async (request) => {
+  const actor = await requirePlatform(request);
+  const p = request.params || {};
+  const monthlyPrice = Number(p.monthlyPrice);
+  const trialDays = Number(p.trialDays);
+  const graceDays = Number(p.graceDays);
+  const currency = String(p.currency || '')
+    .trim()
+    .toUpperCase();
+  if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 100000000)
+    throw invalid('Monthly price: a number from 0 up');
+  if (!/^[A-Z]{3}$/.test(currency)) throw invalid('Currency: a 3-letter code such as UGX');
+  if (!Number.isInteger(trialDays) || trialDays < 0 || trialDays > 365)
+    throw invalid('Trial days: 0 to 365');
+  if (!Number.isInteger(graceDays) || graceDays < 0 || graceDays > 60)
+    throw invalid('Grace days: 0 to 60');
+  const { row: existing, values: before } = await platformSettings();
+  const row = existing || new Parse.Object('PlatformSettings');
+  if (!existing) row.setACL(new Parse.ACL());
+  row.set({
+    monthlyPrice: Math.round(monthlyPrice),
+    currency,
+    trialDays,
+    graceDays,
+    supportContact: String(p.supportContact || '')
+      .trim()
+      .slice(0, 120),
+  });
+  await tenancy.withoutTenant(() => row.save(null, MASTER));
+  cachedSettings = null;
+  const { values } = await platformSettings();
+  await tenancy.withoutTenant(() => audit(actor, 'platform.settings_saved', row, before, values));
+  return values;
+});
+
+// Platform: recent changes made in the console. → { rows }
+Parse.Cloud.define('platformGetAudit', async (request) => {
+  await requirePlatform(request);
+  const query = new Parse.Query('AuditLog');
+  query.startsWith('action', 'platform.');
+  query.doesNotExist('tenant');
+  query.descending('createdAt');
+  query.limit(100);
+  query.include('actor');
+  const rows = await tenancy.withoutTenant(() => query.find(MASTER));
+  return {
+    rows: rows.map((row) => ({
+      at: row.createdAt.toISOString(),
+      action: row.get('action'),
+      by: row.get('actor')?.get('name') || row.get('actor')?.getUsername() || '',
+      entityId: row.get('entityId'),
+      before: JSON.parse(row.get('beforeJson') || '{}'),
+      after: JSON.parse(row.get('afterJson') || '{}'),
+    })),
+  };
+});
+
 module.exports = {
+  checkAccess,
+  isPlatform,
   accessOf,
   platformSettings,
   restaurantSummary,

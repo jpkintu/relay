@@ -113,15 +113,34 @@ transactionChargesCategory: "ChargeWallet" }`. The reply carries the
 
 ## Platform console
 
-People with the platform `platform` role (you) see every restaurant: status,
-trial and billing, price override, suspend or reactivate, invoices, mark paid,
-and the platform settings (price, currency, trial days, grace days).
+Relay's own staff sign in at `/platform` with a platform account (no
+restaurant). Create one with the master key: Back4App dashboard → Cloud Code →
+Jobs → `createPlatformAdmin` with `{ "username": "…", "password": "…", "name":
+"…" }` (password at least 10 characters; running it again resets the
+password).
+
+The console shows every restaurant's name, code, owner, billing phone, status,
+trial or paid-until date, price, staff count and orders in the last 30 days,
+never its orders, customers or money. For each restaurant you can set its own
+price (empty = the platform price), move the trial end, set the paid-until date
+("+ one month" for a payment received by hand), suspend or lift a suspension,
+and keep a private note. Platform settings: monthly price, currency, trial
+days, grace days and the support contact restaurants see. Every change is
+logged under Recent changes.
+
+**What restaurants see.** During the grace days everyone gets a banner (the
+owner: renew within N days). Expired: staff see that the owner must renew; the
+owner can still sign in and sees the price and how to renew. Suspended: nobody
+can sign in. The server enforces all of this (`checkAccess` in
+`cloud/restaurants.js`, called for every function; `beforeLogin` for
+suspensions); only sign-in details, the profile, PIN changes, sign-out and crash
+reports stay open.
 
 ## Phases
 
-1. **Tenancy core**: context, scoped reads and writes, per-restaurant roles,
+1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,
    usernames, per-restaurant sign-in page, sign-up with trial, isolation tests.
-2. **Platform console**: restaurants list and details, status changes, price
-   overrides, platform settings.
+2. **Platform console** (done): restaurants list, price overrides, trial and
+   paid-until dates, suspension, platform settings, the access gate.
 3. **Billing**: invoices, the monthly billing job, ioTec collection requests and
    status checks, grace period and suspension, manual payments.

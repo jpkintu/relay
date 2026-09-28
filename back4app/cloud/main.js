@@ -253,7 +253,15 @@ var require_tenant = __commonJS({
       const query = new Parse.Query("Restaurant");
       query.equalTo(field, value);
       const row = await withoutTenant(() => query.first({ useMasterKey: true })).catch(() => null);
-      const restaurant = row ? { id: row.id, code: row.get("code"), name: row.get("name") } : null;
+      const restaurant = row ? {
+        id: row.id,
+        code: row.get("code"),
+        name: row.get("name"),
+        // What access is worked out from (lib/access.js).
+        suspended: row.get("suspended") === true,
+        trialEndsAt: row.get("trialEndsAt") || null,
+        paidUntil: row.get("paidUntil") || null
+      } : null;
       cache.set(key, { restaurant, at: Date.now() });
       if (cache.size > 5e3) cache.clear();
       return restaurant;
@@ -653,6 +661,29 @@ var require_log = __commonJS({
   }
 });
 
+// cloud/lib/access.js
+var require_access = __commonJS({
+  "cloud/lib/access.js"(exports2, module2) {
+    "use strict";
+    function accessOf(row, graceDays = 0, now = Date.now()) {
+      if (row.get("suspended") === true) return { status: "suspended", ok: false, until: null };
+      const trial = row.get("trialEndsAt");
+      const paid = row.get("paidUntil");
+      const end = Math.max(trial ? trial.getTime() : 0, paid ? paid.getTime() : 0);
+      if (end > now)
+        return {
+          status: paid && paid.getTime() === end ? "active" : "trial",
+          ok: true,
+          until: new Date(end)
+        };
+      const graceEnd = end + Number(graceDays || 0) * 864e5;
+      if (end && graceEnd > now) return { status: "past_due", ok: true, until: new Date(graceEnd) };
+      return { status: "expired", ok: false, until: end ? new Date(end) : null };
+    }
+    module2.exports = { accessOf };
+  }
+});
+
 // cloud/adminLock.js
 var require_adminLock = __commonJS({
   "cloud/adminLock.js"(exports2, module2) {
@@ -719,231 +750,6 @@ var require_adminLock = __commonJS({
       return { unlocked: false };
     });
     module2.exports = { requireAdminUnlock, LOCKED, UNLOCK_MINUTES };
-  }
-});
-
-// cloud/errors.js
-var require_errors = __commonJS({
-  "cloud/errors.js"(exports2, module2) {
-    "use strict";
-    var crypto = require("crypto");
-    var { MASTER, adminOnly, audit, findAll, getRoleName, invalid, readAcl } = require_core();
-    var { log, errorMessage, isUnexpected } = require_log();
-    var tenancy = require_tenant();
-    tenancy.install(Parse);
-    var clip = (value, max) => String(value ?? "").replace(/\s+$/g, "").slice(0, max);
-    var fingerprintOf = (source, where, message) => crypto.createHash("sha1").update(
-      [
-        source,
-        where,
-        message.replace(/https?:\/\/\S+/g, "").replace(/[0-9a-f]{8,}|\d+/gi, "#")
-      ].join("|")
-    ).digest("hex");
-    async function recordError({ source, where, message, stack, user, userAgent, url, appVersion }) {
-      const text = clip(message, 500) || "Unknown error";
-      const place = clip(where, 200);
-      const fingerprint = fingerprintOf(source, place, text);
-      const query = new Parse.Query("ErrorLog");
-      query.equalTo("fingerprint", fingerprint);
-      query.notEqualTo("resolved", true);
-      const existing = await query.first(MASTER);
-      const role = user ? await getRoleName(user).catch(() => null) : null;
-      const seen = {
-        lastSeenAt: /* @__PURE__ */ new Date(),
-        stack: clip(stack, 4e3),
-        userAgent: clip(userAgent, 300),
-        url: clip(url, 300),
-        appVersion: clip(appVersion, 40),
-        role: role || (user ? "unassigned" : "signed out"),
-        userName: user ? clip(user.get("name") || user.get("username"), 80) : "",
-        ...user && { user }
-      };
-      if (existing) {
-        existing.increment("count");
-        existing.set(seen);
-        await existing.save(null, MASTER);
-        return existing;
-      }
-      const row = new Parse.Object("ErrorLog");
-      row.set({
-        source,
-        where: place,
-        message: text,
-        fingerprint,
-        count: 1,
-        firstSeenAt: /* @__PURE__ */ new Date(),
-        resolved: false,
-        ...seen
-      });
-      row.setACL(readAcl(null, []));
-      await row.save(null, MASTER);
-      return row;
-    }
-    function recordQuietly(entry) {
-      return recordError(entry).catch(
-        (error) => log("error", "errorlog.failed", { message: errorMessage(error) })
-      );
-    }
-    async function guarded(name, handler, request) {
-      const started = Date.now();
-      try {
-        return await handler(request);
-      } catch (error) {
-        if (isUnexpected(error)) {
-          const message = errorMessage(error);
-          log("error", "function.failed", {
-            fn: name,
-            user: request.user?.id || null,
-            ms: Date.now() - started,
-            message
-          });
-          await recordQuietly({
-            source: "server",
-            where: name,
-            message,
-            stack: error?.stack,
-            user: request.user
-          });
-        }
-        throw error;
-      }
-    }
-    var define = Parse.Cloud.define.bind(Parse.Cloud);
-    Parse.Cloud.define = (name, handler, validator) => define(
-      name,
-      async (request) => {
-        const restaurant = await tenancy.restaurantFor(request);
-        return tenancy.runAs(restaurant?.id, () => guarded(name, handler, request), restaurant?.code);
-      },
-      validator
-    );
-    var job = Parse.Cloud.job.bind(Parse.Cloud);
-    Parse.Cloud.job = (name, handler) => job(name, async (request) => {
-      const started = Date.now();
-      log("info", "job.started", { job: name });
-      try {
-        const result = await handler(request);
-        log("info", "job.finished", { job: name, ms: Date.now() - started });
-        return result;
-      } catch (error) {
-        const message = errorMessage(error);
-        log("error", "job.failed", { job: name, ms: Date.now() - started, message });
-        await recordQuietly({ source: "job", where: name, message, stack: error?.stack });
-        throw error;
-      }
-    });
-    var REPORT_WINDOW_MS = 10 * 60 * 1e3;
-    var REPORT_LIMIT = 20;
-    var recent = /* @__PURE__ */ new Map();
-    function allowReport(key) {
-      const now = Date.now();
-      const times = (recent.get(key) || []).filter((time) => now - time < REPORT_WINDOW_MS);
-      if (times.length >= REPORT_LIMIT) return false;
-      times.push(now);
-      recent.set(key, times);
-      if (recent.size > 5e3) recent.clear();
-      return true;
-    }
-    Parse.Cloud.define("reportClientError", async (request) => {
-      const p = request.params || {};
-      const message = clip(p.message, 500);
-      if (!message) throw invalid("Nothing to report");
-      const key = request.user?.id || request.ip || "unknown";
-      if (!allowReport(key)) return { recorded: false };
-      if (request.user?.get("active") === false) return { recorded: false };
-      log("warn", "app.error", { user: request.user?.id || null, where: clip(p.where, 200), message });
-      const row = await recordError({
-        source: "app",
-        where: p.where,
-        message,
-        stack: p.stack,
-        user: request.user,
-        userAgent: p.userAgent || request.headers?.["user-agent"],
-        url: p.url,
-        appVersion: p.appVersion
-      });
-      return { recorded: true, id: row.id };
-    });
-    var OPEN_DAYS = 90;
-    var FIXED_DAYS = 30;
-    Parse.Cloud.define("adminListErrors", async (request) => {
-      if (request.params?.countOnly) await adminOnly(request);
-      else await require_adminLock().requireAdminUnlock(request);
-      const state = request.params?.state === "fixed" ? "fixed" : "open";
-      const now = Date.now();
-      const stale = await findAll(new Parse.Query("ErrorLog"));
-      const expired = stale.filter((row) => {
-        const age = (now - (row.get("lastSeenAt") || row.createdAt)) / 864e5;
-        return age > (row.get("resolved") ? FIXED_DAYS : OPEN_DAYS);
-      });
-      if (expired.length) await Parse.Object.destroyAll(expired, MASTER);
-      const rows = stale.filter((row) => !expired.includes(row));
-      const open = rows.filter((row) => !row.get("resolved"));
-      if (request.params?.countOnly) return { open: open.length };
-      const shown = (state === "fixed" ? rows.filter((row) => row.get("resolved")) : open).sort((a, b) => (b.get("lastSeenAt") || 0) - (a.get("lastSeenAt") || 0)).slice(0, 200);
-      return {
-        open: open.length,
-        rows: shown.map((row) => ({
-          id: row.id,
-          source: row.get("source"),
-          where: row.get("where") || "",
-          message: row.get("message"),
-          stack: row.get("stack") || "",
-          count: Number(row.get("count") || 1),
-          firstSeenAt: row.get("firstSeenAt")?.toISOString() || row.createdAt.toISOString(),
-          lastSeenAt: row.get("lastSeenAt")?.toISOString() || row.createdAt.toISOString(),
-          role: row.get("role") || "",
-          userName: row.get("userName") || "",
-          userAgent: row.get("userAgent") || "",
-          url: row.get("url") || "",
-          appVersion: row.get("appVersion") || "",
-          resolved: !!row.get("resolved"),
-          resolvedAt: row.get("resolvedAt")?.toISOString() || null
-        }))
-      };
-    });
-    Parse.Cloud.define("adminResolveErrors", async (request) => {
-      const actor = await require_adminLock().requireAdminUnlock(request);
-      const p = request.params || {};
-      const query = new Parse.Query("ErrorLog");
-      query.notEqualTo("resolved", true);
-      if (!p.all) {
-        const ids = Array.isArray(p.ids) ? p.ids.map(String).slice(0, 500) : [];
-        if (!ids.length) throw invalid("Choose the errors to mark as fixed");
-        query.containedIn("objectId", ids);
-      }
-      const rows = await findAll(query);
-      for (const row of rows) row.set({ resolved: true, resolvedAt: /* @__PURE__ */ new Date(), resolvedBy: actor });
-      if (rows.length) {
-        await Parse.Object.saveAll(rows, MASTER);
-        await audit(actor, "errors.resolved", rows[0], null, { count: rows.length });
-      }
-      return { resolved: rows.length };
-    });
-    module2.exports = { recordError };
-  }
-});
-
-// cloud/lib/access.js
-var require_access = __commonJS({
-  "cloud/lib/access.js"(exports2, module2) {
-    "use strict";
-    function accessOf(row, graceDays = 0, now = Date.now()) {
-      if (row.get("suspended") === true) return { status: "suspended", ok: false, until: null };
-      const trial = row.get("trialEndsAt");
-      const paid = row.get("paidUntil");
-      const end = Math.max(trial ? trial.getTime() : 0, paid ? paid.getTime() : 0);
-      if (end > now)
-        return {
-          status: paid && paid.getTime() === end ? "active" : "trial",
-          ok: true,
-          until: new Date(end)
-        };
-      const graceEnd = end + Number(graceDays || 0) * 864e5;
-      if (end && graceEnd > now) return { status: "past_due", ok: true, until: new Date(graceEnd) };
-      return { status: "expired", ok: false, until: end ? new Date(end) : null };
-    }
-    module2.exports = { accessOf };
   }
 });
 
@@ -1439,9 +1245,16 @@ var require_security = __commonJS({
         ownerName: S,
         billingPhone: S,
         priceOverride: N,
-        paidUntil: D
+        paidUntil: D,
+        note: S
       },
-      PlatformSettings: { monthlyPrice: N, currency: S, trialDays: N, graceDays: N },
+      PlatformSettings: {
+        monthlyPrice: N,
+        currency: S,
+        trialDays: N,
+        graceDays: N,
+        supportContact: S
+      },
       Notification: {
         recipient: user,
         kind: S,
@@ -2321,7 +2134,9 @@ var require_restaurants = __commonJS({
       monthlyPrice: 5e4,
       currency: "UGX",
       trialDays: 14,
-      graceDays: 7
+      graceDays: 7,
+      // Shown to restaurants that need to renew or are suspended.
+      supportContact: ""
     };
     async function platformSettings() {
       const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
@@ -2332,6 +2147,45 @@ var require_restaurants = __commonJS({
       }
       return { row, values };
     }
+    var cachedSettings = null;
+    async function cachedPlatform() {
+      if (cachedSettings && Date.now() - cachedSettings.at < 3e4) return cachedSettings.values;
+      const { values } = await platformSettings();
+      cachedSettings = { values, at: Date.now() };
+      return values;
+    }
+    var priceOf = (row, platform) => {
+      const own = row.get("priceOverride");
+      return typeof own === "number" && own >= 0 ? own : Number(platform.monthlyPrice) || 0;
+    };
+    var OPEN_WHEN_CLOSED = /* @__PURE__ */ new Set([
+      "getAppInfo",
+      "getMyProfile",
+      "changeMyPin",
+      "removePushSubscription",
+      "reportClientError"
+    ]);
+    async function checkAccess(name, restaurant) {
+      if (OPEN_WHEN_CLOSED.has(name)) return;
+      const platform = await cachedPlatform();
+      const access = accessOf({ get: (key) => restaurant[key] }, platform.graceDays);
+      if (access.ok) return;
+      const contact = platform.supportContact ? ` (${platform.supportContact})` : "";
+      throw forbidden(
+        access.status === "suspended" ? `This restaurant is suspended. Contact Relay${contact}` : "This restaurant\u2019s subscription has ended. The owner can renew it in the app"
+      );
+    }
+    Parse.Cloud.beforeLogin(async (request) => {
+      const tenant = request.object.get("tenant");
+      if (!tenant) return;
+      const restaurant = await tenancy.lookUp("objectId", tenant.id);
+      if (restaurant?.suspended) {
+        const { supportContact } = await cachedPlatform();
+        throw forbidden(
+          `This restaurant is suspended. Contact Relay${supportContact ? ` (${supportContact})` : ""}`
+        );
+      }
+    });
     var codeFrom = (text) => String(text || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
     var RESERVED = /* @__PURE__ */ new Set(["admin", "api", "app", "platform", "relay", "signup", "www", "help"]);
     async function codeTaken(code) {
@@ -2426,6 +2280,9 @@ var require_restaurants = __commonJS({
       );
       if (!row) return null;
       const { values: platform } = await platformSettings();
+      return summarise(row, platform);
+    }
+    function summarise(row, platform) {
       const access = accessOf(row, platform.graceDays);
       return {
         id: row.id,
@@ -2436,17 +2293,23 @@ var require_restaurants = __commonJS({
         // When the trial, the paid month or the grace days end.
         until: access.until?.toISOString() || null,
         trialEndsAt: row.get("trialEndsAt")?.toISOString() || null,
-        paidUntil: row.get("paidUntil")?.toISOString() || null
+        paidUntil: row.get("paidUntil")?.toISOString() || null,
+        monthlyPrice: priceOf(row, platform),
+        currency: platform.currency,
+        graceDays: Number(platform.graceDays) || 0,
+        supportContact: platform.supportContact || ""
       };
     }
-    async function requirePlatform(request) {
-      const user = requireUser(request);
-      if (user.get("tenant")) throw forbidden("platform role required");
+    async function isPlatform(user) {
+      if (!user || user.get("tenant")) return false;
       const query = new Parse.Query(Parse.Role);
       query.equalTo("name", "platform");
       query.equalTo("users", user);
-      if (!await tenancy.withoutTenant(() => query.first(MASTER)))
-        throw forbidden("platform role required");
+      return !!await tenancy.withoutTenant(() => query.first(MASTER));
+    }
+    async function requirePlatform(request) {
+      const user = requireUser(request);
+      if (!await isPlatform(user)) throw forbidden("platform role required");
       return user;
     }
     async function createPlatformAdmin(params) {
@@ -2507,7 +2370,138 @@ var require_restaurants = __commonJS({
       }
       return results;
     }
+    var DAY = 864e5;
+    var pointerTo = (row) => ({ __type: "Pointer", className: "Restaurant", objectId: row.id });
+    async function restaurantRow(row, platform) {
+      const since = new Date(Date.now() - 30 * DAY);
+      const staff = new Parse.Query(Parse.User);
+      staff.equalTo("tenant", pointerTo(row));
+      staff.notEqualTo("active", false);
+      const orders = new Parse.Query("Order");
+      orders.equalTo("tenant", pointerTo(row));
+      orders.greaterThanOrEqualTo("createdAt", since);
+      const [staffCount, orders30] = await Promise.all([staff.count(MASTER), orders.count(MASTER)]);
+      return {
+        ...summarise(row, platform),
+        ownerName: row.get("ownerName") || "",
+        billingPhone: row.get("billingPhone") || "",
+        priceOverride: typeof row.get("priceOverride") === "number" ? row.get("priceOverride") : null,
+        suspended: row.get("suspended") === true,
+        note: row.get("note") || "",
+        createdAt: row.createdAt.toISOString(),
+        staff: staffCount,
+        orders30
+      };
+    }
+    Parse.Cloud.define("platformListRestaurants", async (request) => {
+      await requirePlatform(request);
+      const { values: platform } = await platformSettings();
+      const query = new Parse.Query("Restaurant");
+      const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
+      rows.sort((a, b) => b.createdAt - a.createdAt);
+      return {
+        settings: platform,
+        rows: await Promise.all(rows.map((row) => restaurantRow(row, platform)))
+      };
+    });
+    var dateOrNull = (value, label) => {
+      if (value === null || value === "") return null;
+      const date = new Date(String(value));
+      if (Number.isNaN(date.getTime())) throw invalid(`${label}: not a date`);
+      return date;
+    };
+    Parse.Cloud.define("platformUpdateRestaurant", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(String(p.id || ""), MASTER).catch(() => null)
+      );
+      if (!row) throw invalid("Restaurant not found");
+      const fields = ["priceOverride", "trialEndsAt", "paidUntil", "suspended", "note"];
+      const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
+      if ("priceOverride" in p) {
+        if (p.priceOverride === null || p.priceOverride === "") row.unset("priceOverride");
+        else {
+          const price = Number(p.priceOverride);
+          if (!Number.isFinite(price) || price < 0 || price > 1e8)
+            throw invalid("Price: a number from 0 up");
+          row.set("priceOverride", Math.round(price));
+        }
+      }
+      if ("trialEndsAt" in p) row.set("trialEndsAt", dateOrNull(p.trialEndsAt, "Trial end"));
+      if ("paidUntil" in p) {
+        const paid = dateOrNull(p.paidUntil, "Paid until");
+        if (paid) row.set("paidUntil", paid);
+        else row.unset("paidUntil");
+      }
+      if ("suspended" in p) row.set("suspended", p.suspended === true);
+      if ("note" in p)
+        row.set(
+          "note",
+          String(p.note || "").trim().slice(0, 500)
+        );
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      tenancy.clearCache();
+      const after = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.restaurant_updated", row, before, after)
+      );
+      const { values: platform } = await platformSettings();
+      return restaurantRow(row, platform);
+    });
+    Parse.Cloud.define("platformSaveSettings", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const monthlyPrice = Number(p.monthlyPrice);
+      const trialDays = Number(p.trialDays);
+      const graceDays = Number(p.graceDays);
+      const currency = String(p.currency || "").trim().toUpperCase();
+      if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 1e8)
+        throw invalid("Monthly price: a number from 0 up");
+      if (!/^[A-Z]{3}$/.test(currency)) throw invalid("Currency: a 3-letter code such as UGX");
+      if (!Number.isInteger(trialDays) || trialDays < 0 || trialDays > 365)
+        throw invalid("Trial days: 0 to 365");
+      if (!Number.isInteger(graceDays) || graceDays < 0 || graceDays > 60)
+        throw invalid("Grace days: 0 to 60");
+      const { row: existing, values: before } = await platformSettings();
+      const row = existing || new Parse.Object("PlatformSettings");
+      if (!existing) row.setACL(new Parse.ACL());
+      row.set({
+        monthlyPrice: Math.round(monthlyPrice),
+        currency,
+        trialDays,
+        graceDays,
+        supportContact: String(p.supportContact || "").trim().slice(0, 120)
+      });
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      cachedSettings = null;
+      const { values } = await platformSettings();
+      await tenancy.withoutTenant(() => audit(actor, "platform.settings_saved", row, before, values));
+      return values;
+    });
+    Parse.Cloud.define("platformGetAudit", async (request) => {
+      await requirePlatform(request);
+      const query = new Parse.Query("AuditLog");
+      query.startsWith("action", "platform.");
+      query.doesNotExist("tenant");
+      query.descending("createdAt");
+      query.limit(100);
+      query.include("actor");
+      const rows = await tenancy.withoutTenant(() => query.find(MASTER));
+      return {
+        rows: rows.map((row) => ({
+          at: row.createdAt.toISOString(),
+          action: row.get("action"),
+          by: row.get("actor")?.get("name") || row.get("actor")?.getUsername() || "",
+          entityId: row.get("entityId"),
+          before: JSON.parse(row.get("beforeJson") || "{}"),
+          after: JSON.parse(row.get("afterJson") || "{}")
+        }))
+      };
+    });
     module2.exports = {
+      checkAccess,
+      isPlatform,
       accessOf,
       platformSettings,
       restaurantSummary,
@@ -2515,6 +2509,210 @@ var require_restaurants = __commonJS({
       forEachRestaurant,
       codeFrom
     };
+  }
+});
+
+// cloud/errors.js
+var require_errors = __commonJS({
+  "cloud/errors.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var { MASTER, adminOnly, audit, findAll, getRoleName, invalid, readAcl } = require_core();
+    var { log, errorMessage, isUnexpected } = require_log();
+    var tenancy = require_tenant();
+    tenancy.install(Parse);
+    var clip = (value, max) => String(value ?? "").replace(/\s+$/g, "").slice(0, max);
+    var fingerprintOf = (source, where, message) => crypto.createHash("sha1").update(
+      [
+        source,
+        where,
+        message.replace(/https?:\/\/\S+/g, "").replace(/[0-9a-f]{8,}|\d+/gi, "#")
+      ].join("|")
+    ).digest("hex");
+    async function recordError({ source, where, message, stack, user, userAgent, url, appVersion }) {
+      const text = clip(message, 500) || "Unknown error";
+      const place = clip(where, 200);
+      const fingerprint = fingerprintOf(source, place, text);
+      const query = new Parse.Query("ErrorLog");
+      query.equalTo("fingerprint", fingerprint);
+      query.notEqualTo("resolved", true);
+      const existing = await query.first(MASTER);
+      const role = user ? await getRoleName(user).catch(() => null) : null;
+      const seen = {
+        lastSeenAt: /* @__PURE__ */ new Date(),
+        stack: clip(stack, 4e3),
+        userAgent: clip(userAgent, 300),
+        url: clip(url, 300),
+        appVersion: clip(appVersion, 40),
+        role: role || (user ? "unassigned" : "signed out"),
+        userName: user ? clip(user.get("name") || user.get("username"), 80) : "",
+        ...user && { user }
+      };
+      if (existing) {
+        existing.increment("count");
+        existing.set(seen);
+        await existing.save(null, MASTER);
+        return existing;
+      }
+      const row = new Parse.Object("ErrorLog");
+      row.set({
+        source,
+        where: place,
+        message: text,
+        fingerprint,
+        count: 1,
+        firstSeenAt: /* @__PURE__ */ new Date(),
+        resolved: false,
+        ...seen
+      });
+      row.setACL(readAcl(null, []));
+      await row.save(null, MASTER);
+      return row;
+    }
+    function recordQuietly(entry) {
+      return recordError(entry).catch(
+        (error) => log("error", "errorlog.failed", { message: errorMessage(error) })
+      );
+    }
+    async function guarded(name, handler, request) {
+      const started = Date.now();
+      try {
+        return await handler(request);
+      } catch (error) {
+        if (isUnexpected(error)) {
+          const message = errorMessage(error);
+          log("error", "function.failed", {
+            fn: name,
+            user: request.user?.id || null,
+            ms: Date.now() - started,
+            message
+          });
+          await recordQuietly({
+            source: "server",
+            where: name,
+            message,
+            stack: error?.stack,
+            user: request.user
+          });
+        }
+        throw error;
+      }
+    }
+    var define = Parse.Cloud.define.bind(Parse.Cloud);
+    Parse.Cloud.define = (name, handler, validator) => define(
+      name,
+      async (request) => {
+        const restaurant = await tenancy.restaurantFor(request);
+        if (restaurant && !request.master)
+          await require_restaurants().checkAccess(name, restaurant);
+        return tenancy.runAs(restaurant?.id, () => guarded(name, handler, request), restaurant?.code);
+      },
+      validator
+    );
+    var job = Parse.Cloud.job.bind(Parse.Cloud);
+    Parse.Cloud.job = (name, handler) => job(name, async (request) => {
+      const started = Date.now();
+      log("info", "job.started", { job: name });
+      try {
+        const result = await handler(request);
+        log("info", "job.finished", { job: name, ms: Date.now() - started });
+        return result;
+      } catch (error) {
+        const message = errorMessage(error);
+        log("error", "job.failed", { job: name, ms: Date.now() - started, message });
+        await recordQuietly({ source: "job", where: name, message, stack: error?.stack });
+        throw error;
+      }
+    });
+    var REPORT_WINDOW_MS = 10 * 60 * 1e3;
+    var REPORT_LIMIT = 20;
+    var recent = /* @__PURE__ */ new Map();
+    function allowReport(key) {
+      const now = Date.now();
+      const times = (recent.get(key) || []).filter((time) => now - time < REPORT_WINDOW_MS);
+      if (times.length >= REPORT_LIMIT) return false;
+      times.push(now);
+      recent.set(key, times);
+      if (recent.size > 5e3) recent.clear();
+      return true;
+    }
+    Parse.Cloud.define("reportClientError", async (request) => {
+      const p = request.params || {};
+      const message = clip(p.message, 500);
+      if (!message) throw invalid("Nothing to report");
+      const key = request.user?.id || request.ip || "unknown";
+      if (!allowReport(key)) return { recorded: false };
+      if (request.user?.get("active") === false) return { recorded: false };
+      log("warn", "app.error", { user: request.user?.id || null, where: clip(p.where, 200), message });
+      const row = await recordError({
+        source: "app",
+        where: p.where,
+        message,
+        stack: p.stack,
+        user: request.user,
+        userAgent: p.userAgent || request.headers?.["user-agent"],
+        url: p.url,
+        appVersion: p.appVersion
+      });
+      return { recorded: true, id: row.id };
+    });
+    var OPEN_DAYS = 90;
+    var FIXED_DAYS = 30;
+    Parse.Cloud.define("adminListErrors", async (request) => {
+      if (request.params?.countOnly) await adminOnly(request);
+      else await require_adminLock().requireAdminUnlock(request);
+      const state = request.params?.state === "fixed" ? "fixed" : "open";
+      const now = Date.now();
+      const stale = await findAll(new Parse.Query("ErrorLog"));
+      const expired = stale.filter((row) => {
+        const age = (now - (row.get("lastSeenAt") || row.createdAt)) / 864e5;
+        return age > (row.get("resolved") ? FIXED_DAYS : OPEN_DAYS);
+      });
+      if (expired.length) await Parse.Object.destroyAll(expired, MASTER);
+      const rows = stale.filter((row) => !expired.includes(row));
+      const open = rows.filter((row) => !row.get("resolved"));
+      if (request.params?.countOnly) return { open: open.length };
+      const shown = (state === "fixed" ? rows.filter((row) => row.get("resolved")) : open).sort((a, b) => (b.get("lastSeenAt") || 0) - (a.get("lastSeenAt") || 0)).slice(0, 200);
+      return {
+        open: open.length,
+        rows: shown.map((row) => ({
+          id: row.id,
+          source: row.get("source"),
+          where: row.get("where") || "",
+          message: row.get("message"),
+          stack: row.get("stack") || "",
+          count: Number(row.get("count") || 1),
+          firstSeenAt: row.get("firstSeenAt")?.toISOString() || row.createdAt.toISOString(),
+          lastSeenAt: row.get("lastSeenAt")?.toISOString() || row.createdAt.toISOString(),
+          role: row.get("role") || "",
+          userName: row.get("userName") || "",
+          userAgent: row.get("userAgent") || "",
+          url: row.get("url") || "",
+          appVersion: row.get("appVersion") || "",
+          resolved: !!row.get("resolved"),
+          resolvedAt: row.get("resolvedAt")?.toISOString() || null
+        }))
+      };
+    });
+    Parse.Cloud.define("adminResolveErrors", async (request) => {
+      const actor = await require_adminLock().requireAdminUnlock(request);
+      const p = request.params || {};
+      const query = new Parse.Query("ErrorLog");
+      query.notEqualTo("resolved", true);
+      if (!p.all) {
+        const ids = Array.isArray(p.ids) ? p.ids.map(String).slice(0, 500) : [];
+        if (!ids.length) throw invalid("Choose the errors to mark as fixed");
+        query.containedIn("objectId", ids);
+      }
+      const rows = await findAll(query);
+      for (const row of rows) row.set({ resolved: true, resolvedAt: /* @__PURE__ */ new Date(), resolvedBy: actor });
+      if (rows.length) {
+        await Parse.Object.saveAll(rows, MASTER);
+        await audit(actor, "errors.resolved", rows[0], null, { count: rows.length });
+      }
+      return { resolved: rows.length };
+    });
+    module2.exports = { recordError };
   }
 });
 
@@ -15760,7 +15958,7 @@ var require_profile = __commonJS({
       withRiderLimit
     } = require_core();
     var tenancy = require_tenant();
-    var { platformSettings, restaurantSummary } = require_restaurants();
+    var { isPlatform, platformSettings, restaurantSummary } = require_restaurants();
     var { previewEnabled } = require_preview();
     var { merchantAccounts } = require_mobileMoney();
     function publicConfig(values) {
@@ -15851,6 +16049,8 @@ var require_profile = __commonJS({
           percent: user.get("commissionPercent") || 0
         } : null,
         canInitialize: false,
+        // Relay Hosted: platform staff (no restaurant) get the platform console.
+        platform: !restaurant && role === null ? await isPlatform(user) : false,
         config: publicConfig(role === "rider" ? withRiderLimit(values, user) : values)
       };
     });

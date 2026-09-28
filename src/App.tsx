@@ -13,6 +13,7 @@ import { NotificationsProvider } from './lib/notifications';
 import { PinProvider } from './lib/pin';
 import { useOnline } from './lib/online';
 import { OfflineBanner } from './components/InstallPrompt';
+import { ClosedScreen, SubscriptionBanner } from './components/Subscription';
 
 export default function App() {
   return (
@@ -32,6 +33,9 @@ const loadAdmin = () => import('./components/AdminWorkspace').then((m) => m.Admi
 const RiderWorkspace = lazyScreen(loadRider);
 const CashierWorkspace = lazyScreen(loadCashier);
 const AdminWorkspace = lazyScreen(loadAdmin);
+const PlatformConsole = lazyScreen(() =>
+  import('./components/PlatformConsole').then((m) => m.PlatformConsole),
+);
 const PrivacyPage = lazyScreen(() => import('./components/PrivacyPage').then((m) => m.PrivacyPage));
 // Started as soon as the role is known, alongside the profile's other requests.
 const PRELOAD: Record<Role, () => Promise<unknown>> = {
@@ -90,6 +94,14 @@ function AppScreens() {
   if (!user) return <AuthScreen />;
   if (status === 'loading' && !profile) return <Splash />;
   if (!profile) return <AccountProblem />;
+  // Relay Hosted: Relay's own staff, and restaurants that must renew first.
+  if (profile.platform)
+    return (
+      <Suspense fallback={<Splash />}>
+        <PlatformConsole />
+      </Suspense>
+    );
+  if (profile.restaurant && !profile.restaurant.usable) return <ClosedScreen />;
   if (!profile.role) return <NoRole />;
 
   const myRole = profile.role;
@@ -98,6 +110,7 @@ function AppScreens() {
   return (
     <NotificationsProvider>
       <PinProvider>
+        <SubscriptionBanner />
         <Suspense fallback={<Splash />}>
           <Routes>
             <Route path="/rider/*" element={guard('rider', <RiderWorkspace />)} />

@@ -119,6 +119,10 @@ Parse.Cloud.define = (name, handler, validator) =>
       // Each function runs for the caller's restaurant (lib/tenant.js), so
       // what it records on failure belongs to that restaurant too.
       const restaurant = await tenancy.restaurantFor(request);
+      // Relay Hosted: an expired or suspended restaurant can only reach what
+      // it needs to sign in and renew (restaurants.js).
+      if (restaurant && !request.master)
+        await require('./restaurants').checkAccess(name, restaurant);
       return tenancy.runAs(restaurant?.id, () => guarded(name, handler, request), restaurant?.code);
     },
     validator,

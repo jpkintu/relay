@@ -4438,6 +4438,11 @@ const ACCESS = {
     'bootstrapOwner',
     'recoverOwner',
     'createPlatformAdmin',
+    // Platform staff only (tested in "platform console and access").
+    'platformListRestaurants',
+    'platformUpdateRestaurant',
+    'platformSaveSettings',
+    'platformGetAudit',
     'createPreviewOrder',
     'getPreviewOrders',
     'transitionPreviewOrder',
@@ -4718,5 +4723,153 @@ describe('restaurants are kept apart (Relay Hosted)', () => {
     await rejects(run('adminGetOrder', { id: created.id }, s.owner), /not found/i);
     const firstNotes = await run('getNotifications', {}, s.owner);
     assert.ok(firstNotes.items.every((row) => !JSON.stringify(row).includes('Kato Customer')));
+  });
+});
+
+describe('platform console and access (Relay Hosted)', () => {
+  const M = { useMasterKey: true };
+  const OTHER = 'kato-grill';
+  const DAY = 86400000;
+  const when = (days) => new Date(Date.now() + days * DAY).toISOString();
+  const other = {};
+  let ops;
+  const update = (params) => run('platformUpdateRestaurant', { id: other.id, ...params }, ops);
+
+  before(async () => {
+    await Parse.Cloud.run(
+      'createPlatformAdmin',
+      { username: 'ops', password: 'ops-pass-123', name: 'Relay Ops' },
+      M,
+    );
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+    other.owner = await login('owner', PINS.owner, OTHER);
+    other.rider = await login('rita', PINS.rita, OTHER);
+  });
+
+  after(async () => {
+    await run(
+      'platformSaveSettings',
+      { monthlyPrice: 50000, currency: 'UGX', trialDays: 14, graceDays: 7, supportContact: '' },
+      ops,
+    );
+  });
+
+  test('only platform staff use the console', async () => {
+    const profile = await run('getMyProfile', {}, ops);
+    assert.equal(profile.platform, true);
+    assert.equal(profile.role, null);
+    assert.equal(profile.restaurant, null);
+    assert.equal((await run('getMyProfile', {}, s.owner)).platform, false);
+    await rejects(run('platformListRestaurants', {}, s.owner), /platform role required/);
+    await rejects(run('platformListRestaurants', {}, other.rider), /platform role required/);
+    await rejects(
+      run('createPlatformAdmin', { username: 'x', password: 'long-enough-1' }, ops),
+      /Master key required/,
+    );
+
+    const { rows, settings } = await run('platformListRestaurants', {}, ops);
+    assert.equal(settings.monthlyPrice, 50000);
+    assert.deepEqual(rows.map((row) => row.code).sort(), [OTHER, CODE]);
+    const mine = rows.find((row) => row.code === CODE);
+    const theirs = rows.find((row) => row.code === OTHER);
+    other.id = theirs.id;
+    assert.ok(mine.staff >= 5);
+    assert.ok(mine.orders30 > 0);
+    assert.equal(theirs.orders30, 1);
+    assert.equal(theirs.staff, 2);
+    assert.equal(theirs.status, 'trial');
+    assert.equal(theirs.monthlyPrice, 50000);
+    assert.equal(theirs.priceOverride, null);
+    assert.equal(theirs.billingPhone, '0701234567');
+    // Size and subscription only: no orders, customers or money.
+    assert.deepEqual(
+      Object.keys(theirs).filter((key) => /order(?!s30)|customer|cash|revenue/i.test(key)),
+      [],
+    );
+  });
+
+  test('platform settings are checked, saved and shown to restaurants', async () => {
+    const base = { monthlyPrice: 60000, currency: 'ugx', trialDays: 21, graceDays: 5 };
+    await rejects(run('platformSaveSettings', { ...base, monthlyPrice: -1 }, ops), /Monthly price/);
+    await rejects(run('platformSaveSettings', { ...base, currency: 'shillings' }, ops), /Currency/);
+    await rejects(run('platformSaveSettings', { ...base, graceDays: 90 }, ops), /Grace days/);
+    await rejects(run('platformSaveSettings', base, s.owner), /platform role required/);
+    const saved = await run(
+      'platformSaveSettings',
+      { ...base, supportContact: 'Relay support 0700 000000' },
+      ops,
+    );
+    assert.equal(saved.currency, 'UGX');
+    assert.equal((await run('getAppInfo')).trialDays, 21);
+    const { restaurant } = await run('getMyProfile', {}, s.owner);
+    assert.equal(restaurant.monthlyPrice, 60000);
+    assert.equal(restaurant.graceDays, 5);
+    assert.equal(restaurant.supportContact, 'Relay support 0700 000000');
+  });
+
+  test('each restaurant can have its own price, higher or lower', async () => {
+    await rejects(update({ priceOverride: -5 }), /Price/);
+    await rejects(
+      run('platformUpdateRestaurant', { id: 'nope', priceOverride: 1 }, ops),
+      /not found/,
+    );
+    assert.equal((await update({ priceOverride: 35000 })).monthlyPrice, 35000);
+    assert.equal((await run('getMyProfile', {}, other.owner)).restaurant.monthlyPrice, 35000);
+    assert.equal((await run('getMyProfile', {}, s.owner)).restaurant.monthlyPrice, 60000);
+    assert.equal((await update({ priceOverride: 90000 })).monthlyPrice, 90000);
+    const back = await update({ priceOverride: null });
+    assert.equal(back.priceOverride, null);
+    assert.equal(back.monthlyPrice, 60000);
+  });
+
+  test('after the trial: grace days keep it working, then only the owner signs in', async () => {
+    // Two days past the trial, inside the five grace days.
+    const late = await update({ trialEndsAt: when(-2) });
+    assert.equal(late.status, 'past_due');
+    assert.equal(late.usable, true);
+    assert.ok((await run('getOperationalMenu', {}, other.rider)).items.length > 0);
+
+    const expired = await update({ trialEndsAt: when(-10) });
+    assert.equal(expired.status, 'expired');
+    await rejects(run('getOperationalMenu', {}, other.rider), /subscription has ended/);
+    await rejects(run('adminListSetup', {}, other.owner), /subscription has ended/);
+    const profile = await run('getMyProfile', {}, other.owner);
+    assert.equal(profile.restaurant.status, 'expired');
+    assert.equal(profile.restaurant.usable, false);
+    assert.equal(profile.role, 'admin');
+    // The owner can still sign in (to renew); the first restaurant is unaffected.
+    other.owner = await login('owner', PINS.owner, OTHER);
+    assert.ok((await run('getOperationalMenu', {}, s.rider)).items.length > 0);
+
+    // Paid by hand until next month: open again.
+    const paid = await update({ paidUntil: when(30) });
+    assert.equal(paid.status, 'active');
+    assert.ok((await run('getOperationalMenu', {}, other.rider)).items.length > 0);
+  });
+
+  test('a suspended restaurant cannot sign in or work until it is lifted', async () => {
+    const suspended = await update({ suspended: true, note: 'Asked to pause' });
+    assert.equal(suspended.status, 'suspended');
+    assert.equal(suspended.note, 'Asked to pause');
+    await rejects(login('owner', PINS.owner, OTHER), /suspended.*0700 000000/);
+    await rejects(run('getOperationalMenu', {}, other.rider), /suspended/);
+    assert.equal((await run('getMyProfile', {}, other.rider)).restaurant.status, 'suspended');
+    // Signing in to the first restaurant is unaffected.
+    await login('carl', PINS.carl);
+
+    assert.equal((await update({ suspended: false })).status, 'active');
+    other.owner = await login('owner', PINS.owner, OTHER);
+    assert.ok((await run('getOperationalMenu', {}, other.rider)).items.length > 0);
+  });
+
+  test('console changes are audited for platform staff only', async () => {
+    const { rows } = await run('platformGetAudit', {}, ops);
+    assert.ok(rows.some((row) => row.action === 'platform.settings_saved'));
+    const change = rows.find(
+      (row) => row.action === 'platform.restaurant_updated' && row.after.suspended === true,
+    );
+    assert.equal(change.entityId, other.id);
+    assert.equal(change.by, 'Relay Ops');
+    await rejects(run('platformGetAudit', {}, s.owner), /platform role required/);
   });
 });

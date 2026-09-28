@@ -397,8 +397,15 @@ const SCHEMAS = {
     billingPhone: S,
     priceOverride: N,
     paidUntil: D,
+    note: S,
   },
-  PlatformSettings: { monthlyPrice: N, currency: S, trialDays: N, graceDays: N },
+  PlatformSettings: {
+    monthlyPrice: N,
+    currency: S,
+    trialDays: N,
+    graceDays: N,
+    supportContact: S,
+  },
   Notification: {
     recipient: user,
     kind: S,

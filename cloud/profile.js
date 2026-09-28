@@ -7,7 +7,7 @@ const {
   withRiderLimit,
 } = require('./lib/core');
 const tenancy = require('./lib/tenant');
-const { platformSettings, restaurantSummary } = require('./restaurants');
+const { isPlatform, platformSettings, restaurantSummary } = require('./restaurants');
 const { previewEnabled } = require('./preview');
 const { merchantAccounts } = require('./lib/mobileMoney');
 
@@ -111,6 +111,8 @@ Parse.Cloud.define('getMyProfile', async (request) => {
           }
         : null,
     canInitialize: false,
+    // Relay Hosted: platform staff (no restaurant) get the platform console.
+    platform: !restaurant && role === null ? await isPlatform(user) : false,
     config: publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
   };
 });

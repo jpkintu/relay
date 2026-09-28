@@ -57,6 +57,8 @@ export type Profile = {
   canInitialize: boolean;
   // Relay Hosted: the person's restaurant and its subscription.
   restaurant?: RestaurantSummary | null;
+  // Relay Hosted: Relay's own staff (no restaurant) get the platform console.
+  platform?: boolean;
   config: AppConfig;
 };
 
@@ -69,6 +71,10 @@ export type RestaurantSummary = {
   until: string | null;
   trialEndsAt: string | null;
   paidUntil: string | null;
+  monthlyPrice: number;
+  currency: string;
+  graceDays: number;
+  supportContact: string;
 };
 
 export type AppInfo = {

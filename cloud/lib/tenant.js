@@ -150,7 +150,17 @@ async function lookUp(field, value) {
   const query = new Parse.Query('Restaurant');
   query.equalTo(field, value);
   const row = await withoutTenant(() => query.first({ useMasterKey: true })).catch(() => null);
-  const restaurant = row ? { id: row.id, code: row.get('code'), name: row.get('name') } : null;
+  const restaurant = row
+    ? {
+        id: row.id,
+        code: row.get('code'),
+        name: row.get('name'),
+        // What access is worked out from (lib/access.js).
+        suspended: row.get('suspended') === true,
+        trialEndsAt: row.get('trialEndsAt') || null,
+        paidUntil: row.get('paidUntil') || null,
+      }
+    : null;
   cache.set(key, { restaurant, at: Date.now() });
   if (cache.size > 5000) cache.clear();
   return restaurant;
