@@ -9,9 +9,13 @@ Relay comes in two editions from one codebase:
 | Sign-up | The first owner sets it up                          | Self sign-up with a free trial                 |
 | Billing | None in the app                                     | Monthly, collected with ioTec Pay              |
 
-`hosted` is a long-lived branch made from `main`. Fixes and features land on
-`main` first and are merged into `hosted` regularly (`git merge main`), so both
-editions stay current. Only the multi-restaurant parts live here.
+`hosted` is the hosted edition's permanent home: a long-lived branch made from
+`main` that is **never merged into `main`** (that would turn every self-hosted
+restaurant into the multi-restaurant edition). Fixes and features for both
+editions land on `main` first (pull request, green CI) and `main` is then
+merged into `hosted` (`git merge main`), so both stay current. Only the
+multi-restaurant parts live here. CI runs on every push to `hosted`; there is
+no open pull request from `hosted` into `main`.
 
 ## How restaurants are kept apart
 
