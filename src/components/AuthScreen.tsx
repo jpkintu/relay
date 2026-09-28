@@ -174,6 +174,9 @@ export function AuthScreen() {
             </button>
           )}
           <p className="support-copy">Need access? Ask your restaurant administrator.</p>
+          <a className="privacy-link" href="/privacy">
+            Privacy and terms
+          </a>
         </div>
       </section>
     </main>

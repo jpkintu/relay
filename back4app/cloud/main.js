@@ -185,6 +185,10 @@ var require_core = __commonJS({
       // Where the map opens (the restaurant); Kampala until the owner pins it.
       restaurantLat: 0.3476,
       restaurantLng: 32.5825,
+      // Privacy (Admin → Data & privacy): months to keep customer details on
+      // finished orders (0 = keep), and who customers contact about their data.
+      retentionMonths: 0,
+      privacyContact: "",
       // Admin → Get started: true once the owner finishes it, false when they
       // reopen it, null (not set) to decide from the restaurant's state.
       setupDone: null
@@ -850,7 +854,9 @@ var require_security = __commonJS({
         commissionPayout: ["Pointer", "TillPayout"],
         paidAtDoor: B,
         deliveryFeePaid: B,
-        feePayout: ["Pointer", "TillPayout"]
+        feePayout: ["Pointer", "TillPayout"],
+        // Customer details removed (privacy retention or a request).
+        anonymisedAt: D
       },
       OrderItem: {
         order: ["Pointer", "Order"],
@@ -936,6 +942,8 @@ var require_security = __commonJS({
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
         restaurantName: S,
+        retentionMonths: N,
+        privacyContact: S,
         setupDone: B,
         currencySymbol: S,
         currencyCode: S,
@@ -10480,7 +10488,9 @@ var require_owner = __commonJS({
       "owner",
       "report",
       "setup",
-      "errors"
+      "errors",
+      "data",
+      "privacy"
     ];
     var PAGE = 100;
     var parseJson = (json) => {
@@ -12365,6 +12375,155 @@ var require_menu = __commonJS({
   }
 });
 
+// cloud/privacy.js
+var require_privacy = __commonJS({
+  "cloud/privacy.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, adminOnly, audit, findAll, invalid, loadConfig, readAcl } = require_core();
+    var RETENTION_CHOICES = [0, 6, 12, 24, 36];
+    var REMOVED_NAME = "Customer (details removed)";
+    var OPEN_CASH = ["WITH_RIDER", "HANDOVER_PENDING", "DISPUTED"];
+    function stripOrder(order) {
+      order.set({
+        customerName: REMOVED_NAME,
+        customerPhone: "",
+        deliveryAddress: "",
+        deliveryNotes: "",
+        anonymisedAt: /* @__PURE__ */ new Date()
+      });
+      for (const field of ["location", "customer"]) if (order.has(field)) order.unset(field);
+    }
+    async function saveInBatches(objects) {
+      for (let i = 0; i < objects.length; i += 200)
+        await Parse.Object.saveAll(objects.slice(i, i + 200), MASTER);
+    }
+    async function applyRetention({ months, now = /* @__PURE__ */ new Date(), dryRun = false }) {
+      if (!months) return { months: 0, orders: 0, customers: 0, notifications: 0 };
+      const cutoff = new Date(now);
+      cutoff.setMonth(cutoff.getMonth() - months);
+      const orderQuery = new Parse.Query("Order");
+      orderQuery.lessThan("createdAt", cutoff);
+      orderQuery.containedIn("status", ["DELIVERED", "CANCELLED"]);
+      orderQuery.doesNotExist("anonymisedAt");
+      const customerQuery = new Parse.Query("Customer");
+      customerQuery.lessThan("lastOrderAt", cutoff);
+      const noteQuery = new Parse.Query("Notification");
+      noteQuery.lessThan("createdAt", cutoff);
+      const [orders, customers, notes] = await Promise.all([
+        findAll(orderQuery).catch(() => []),
+        findAll(customerQuery).catch(() => []),
+        findAll(noteQuery).catch(() => [])
+      ]);
+      const due = orders.filter(
+        (order) => !OPEN_CASH.includes(order.get("cashStatus")) && order.get("billOpen") !== true
+      );
+      if (!dryRun) {
+        due.forEach(stripOrder);
+        await saveInBatches(due);
+        if (customers.length) await Parse.Object.destroyAll(customers, MASTER);
+        if (notes.length) await Parse.Object.destroyAll(notes, MASTER);
+      }
+      return {
+        months,
+        cutoff: cutoff.toISOString(),
+        orders: due.length,
+        customers: customers.length,
+        notifications: notes.length
+      };
+    }
+    async function runRetention() {
+      const { values } = await loadConfig();
+      const months = Number(values.retentionMonths) || 0;
+      const result = await applyRetention({ months });
+      if (result.orders || result.customers || result.notifications)
+        await audit(null, "privacy.retention", { className: "Privacy", id: "retention" }, null, result);
+      return result;
+    }
+    Parse.Cloud.define("adminSavePrivacy", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params || {};
+      const months = Number(p.retentionMonths);
+      if (!RETENTION_CHOICES.includes(months)) throw invalid("Choose how long to keep details");
+      const contact = String(p.privacyContact ?? "").trim().slice(0, 200);
+      const { object } = await loadConfig();
+      const config = object || new Parse.Object("Configuration");
+      const before = {
+        retentionMonths: config.get("retentionMonths") ?? 0,
+        privacyContact: config.get("privacyContact") || ""
+      };
+      config.set({ retentionMonths: months, privacyContact: contact });
+      config.setACL(readAcl(null, ["admin"]));
+      await config.save(null, MASTER);
+      await audit(actor, "privacy.settings_saved", config, before, {
+        retentionMonths: months,
+        privacyContact: contact
+      });
+      return { retentionMonths: months, privacyContact: contact };
+    });
+    Parse.Cloud.define("adminApplyRetention", async (request) => {
+      const actor = request.master ? null : await adminOnly(request);
+      const p = request.params || {};
+      const { values } = await loadConfig();
+      const months = Number(values.retentionMonths) || 0;
+      if (!months) throw invalid("Choose how long to keep customer details first");
+      const now = request.master && p.asOf ? new Date(p.asOf) : /* @__PURE__ */ new Date();
+      const result = await applyRetention({ months, now, dryRun: !!p.dryRun });
+      if (!p.dryRun)
+        await audit(
+          actor,
+          "privacy.retention",
+          { className: "Privacy", id: "retention" },
+          null,
+          result
+        );
+      return result;
+    });
+    Parse.Cloud.define("adminForgetCustomer", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params || {};
+      const phone = String(p.phone || "").replace(/[^\d+]/g, "");
+      if (p.customerId && !/^[A-Za-z0-9]{1,32}$/.test(String(p.customerId)))
+        throw invalid("Unknown customer");
+      if (!p.customerId && phone.length < 7) throw invalid("Enter the customer\u2019s phone number");
+      const customer = p.customerId ? await new Parse.Query("Customer").get(String(p.customerId), MASTER).catch(() => null) : await new Parse.Query("Customer").equalTo("phone", phone).first(MASTER);
+      const byPointer = customer ? new Parse.Query("Order").equalTo("customer", customer) : null;
+      const byPhone = phone || customer?.get("phone");
+      const queries = [
+        byPointer,
+        byPhone && new Parse.Query("Order").equalTo("customerPhone", byPhone)
+      ].filter(Boolean);
+      if (!queries.length) return { found: false, orders: 0, inProgress: 0 };
+      const orders = await findAll(Parse.Query.or(...queries));
+      const done = orders.filter(
+        (order) => ["DELIVERED", "CANCELLED"].includes(order.get("status")) && !OPEN_CASH.includes(order.get("cashStatus")) && order.get("billOpen") !== true && !order.get("anonymisedAt")
+      );
+      const inProgress = orders.filter((order) => !done.includes(order) && !order.get("anonymisedAt"));
+      const summary = {
+        found: !!customer || orders.length > 0,
+        name: customer?.get("name") || orders[0]?.get("customerName") || "",
+        orders: done.length,
+        inProgress: inProgress.length
+      };
+      if (p.dryRun || !summary.found) return summary;
+      done.forEach(stripOrder);
+      await saveInBatches(done);
+      if (customer && !inProgress.length) await customer.destroy(MASTER);
+      await audit(
+        actor,
+        "privacy.customer_forgotten",
+        { className: "Customer", id: customer?.id || "phone" },
+        null,
+        {
+          orders: done.length,
+          inProgress: inProgress.length
+        }
+      );
+      return summary;
+    });
+    module2.exports = { runRetention, applyRetention, RETENTION_CHOICES };
+  }
+});
+
 // cloud/cashcheck.js
 var require_cashcheck = __commonJS({
   "cloud/cashcheck.js"(exports2, module2) {
@@ -12446,7 +12605,9 @@ var require_cashcheck = __commonJS({
     }
     Parse.Cloud.job("cashCheck", async () => {
       const result = await runCashCheck();
-      return result.ok ? "Cash records agree" : `${result.problems.length} problems found`;
+      const retention = await require_privacy().runRetention();
+      const cleaned = retention.orders || retention.customers || retention.notifications;
+      return `${result.ok ? "Cash records agree" : `${result.problems.length} problems found`}${cleaned ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers` : ""}`;
     });
     Parse.Cloud.define("adminRunCashCheck", async (request) => {
       await adminOnly(request);
@@ -13843,6 +14004,87 @@ var require_onboarding = __commonJS({
   }
 });
 
+// cloud/data.js
+var require_data = __commonJS({
+  "cloud/data.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, adminOnly, audit, invalid, getRoleName } = require_core();
+    var EXPORT_CLASSES = [
+      "Configuration",
+      "_User",
+      "MenuCategory",
+      "MenuItem",
+      "Accompaniment",
+      "Customer",
+      "Order",
+      "OrderItem",
+      "CashHandover",
+      "TillPayout",
+      "Shift",
+      "ZReport",
+      "AuditLog"
+    ];
+    var PAGE = 500;
+    var USER_FIELDS = [
+      "username",
+      "name",
+      "phone",
+      "email",
+      "active",
+      "riderCode",
+      "cashierCode",
+      "commissionType",
+      "commissionPerOrder",
+      "commissionPercent",
+      "maxFloat",
+      "available"
+    ];
+    function plain(object) {
+      const json = object.toJSON();
+      delete json.ACL;
+      return json;
+    }
+    async function userRow(user) {
+      const row = { objectId: user.id, createdAt: user.createdAt, updatedAt: user.updatedAt };
+      for (const field of USER_FIELDS) if (user.get(field) !== void 0) row[field] = user.get(field);
+      row.role = await getRoleName(user) || "unassigned";
+      return row;
+    }
+    Parse.Cloud.define("adminExportData", async (request) => {
+      const actor = await adminOnly(request);
+      const { className, after } = request.params || {};
+      if (!EXPORT_CLASSES.includes(className)) throw invalid("Unknown kind of record");
+      if (after !== void 0 && after !== null && !/^[A-Za-z0-9]{1,32}$/.test(String(after)))
+        throw invalid("Bad page");
+      const query = new Parse.Query(className);
+      query.ascending("objectId");
+      query.limit(PAGE);
+      if (after) query.greaterThan("objectId", String(after));
+      const found = await query.find(MASTER).catch((error) => {
+        if (/does not exist|not found/i.test(String(error?.message))) return [];
+        throw error;
+      });
+      const rows = className === "_User" ? await Promise.all(found.map(userRow)) : found.map((row) => plain(row));
+      if (!after)
+        await audit(actor, "data.exported", { className: "Export", id: className }, null, {
+          className
+        });
+      return { rows, next: found.length === PAGE ? found[found.length - 1].id : null };
+    });
+    Parse.Cloud.define("adminExportSummary", async (request) => {
+      await adminOnly(request);
+      const counts = {};
+      for (const className of EXPORT_CLASSES) {
+        const query = new Parse.Query(className);
+        query.exists("objectId");
+        counts[className] = await query.count(MASTER).catch(() => 0);
+      }
+      return { classes: EXPORT_CLASSES, counts };
+    });
+    module2.exports = { EXPORT_CLASSES };
+  }
+});
+
 // cloud/preview.js
 var require_preview = __commonJS({
   "cloud/preview.js"(exports2, module2) {
@@ -14337,6 +14579,11 @@ var require_profile = __commonJS({
         currencyCode: values.currencyCode,
         timezone: values.timezone,
         ownerSetupOpen: users === 0,
+        // For the privacy notice (/privacy), which anyone can read.
+        privacy: {
+          contact: values.privacyContact || "",
+          retentionMonths: Number(values.retentionMonths) || 0
+        },
         previewEnabled: previewEnabled()
       };
     });
@@ -14382,6 +14629,8 @@ require_shifts();
 require_people();
 require_admin();
 require_onboarding();
+require_data();
+require_privacy();
 require_preview();
 require_reports2();
 require_owner();

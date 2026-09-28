@@ -32,6 +32,7 @@ const loadAdmin = () => import('./components/AdminWorkspace').then((m) => m.Admi
 const RiderWorkspace = lazyScreen(loadRider);
 const CashierWorkspace = lazyScreen(loadCashier);
 const AdminWorkspace = lazyScreen(loadAdmin);
+const PrivacyPage = lazyScreen(() => import('./components/PrivacyPage').then((m) => m.PrivacyPage));
 // Started as soon as the role is known, alongside the profile's other requests.
 const PRELOAD: Record<Role, () => Promise<unknown>> = {
   rider: loadRider,
@@ -61,6 +62,7 @@ function AppScreens() {
   const session = useSession();
   const { user, profile, preview, status } = session;
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   // After signing in, everyone starts on their home page: riders on Home,
   // cashiers on the kitchen board, the owner on the Overview. A reload with a
   // live session keeps the page (and links from notifications still work).
@@ -77,6 +79,13 @@ function AppScreens() {
     }
   }, [user, role, navigate]);
 
+  // The privacy notice is open to everyone, signed in or not.
+  if (pathname === '/privacy')
+    return (
+      <Suspense fallback={<Splash />}>
+        <PrivacyPage />
+      </Suspense>
+    );
   if (preview) return <PreviewApp />;
   if (!user) return <AuthScreen />;
   if (status === 'loading' && !profile) return <Splash />;

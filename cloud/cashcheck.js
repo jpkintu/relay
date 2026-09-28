@@ -98,7 +98,15 @@ async function runCashCheck() {
 
 Parse.Cloud.job('cashCheck', async () => {
   const result = await runCashCheck();
-  return result.ok ? 'Cash records agree' : `${result.problems.length} problems found`;
+  // The nightly run also removes customer details past the owner's
+  // retention period (Admin → Data & privacy).
+  const retention = await require('./privacy').runRetention();
+  const cleaned = retention.orders || retention.customers || retention.notifications;
+  return `${result.ok ? 'Cash records agree' : `${result.problems.length} problems found`}${
+    cleaned
+      ? `; customer details removed from ${retention.orders} orders, ${retention.customers} customers`
+      : ''
+  }`;
 });
 
 Parse.Cloud.define('adminRunCashCheck', async (request) => {

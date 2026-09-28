@@ -58,6 +58,8 @@ export type AppInfo = {
   timezone: string;
   ownerSetupOpen: boolean;
   previewEnabled: boolean;
+  // For the privacy notice (Admin → Data & privacy).
+  privacy?: { contact: string; retentionMonths: number };
 };
 
 // The restaurant's name and logo from the last visit, so they show at once

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { MENU_TEMPLATE, menuRowsFromCsv, parseCsv } from './csv';
+import { MENU_TEMPLATE, menuRowsFromCsv, parseCsv, toCsv } from './csv';
 
 describe('parseCsv', () => {
   test('quoted cells, escaped quotes, line breaks and Windows endings', () => {
@@ -40,5 +40,27 @@ describe('menuRowsFromCsv', () => {
   test('says which required column is missing', () => {
     expect(menuRowsFromCsv(parseCsv('Dish,Category\nTea,Drinks')).problem).toMatch(/"Price"/);
     expect(menuRowsFromCsv(parseCsv('Name,Price')).problem).toMatch(/at least one dish/);
+  });
+});
+
+describe('toCsv', () => {
+  test('quotes what needs it, keeps numbers, and reads back', () => {
+    const text = toCsv(
+      ['Name', 'Total'],
+      [
+        ['Stew, "big"', 15000],
+        ['Tea\nhot', null],
+      ],
+    );
+    expect(text.startsWith(String.fromCharCode(0xfeff))).toBe(true);
+    expect(parseCsv(text)).toEqual([
+      ['Name', 'Total'],
+      ['Stew, "big"', '15000'],
+      ['Tea\nhot', ''],
+    ]);
+  });
+  test('never lets a spreadsheet run a cell as a formula', () => {
+    expect(toCsv(['A'], [['=HYPERLINK("x")'], ['-5'], ['+256700']])).toContain("'=HYPERLINK");
+    expect(toCsv(['A'], [['+256700']])).toContain("'+256700");
   });
 });

@@ -17,6 +17,7 @@ import {
   History,
   Rocket,
   Bug,
+  Database,
 } from 'lucide-react';
 import Parse from '../parse';
 import { AdminOverview } from './AdminOverview';
@@ -42,6 +43,7 @@ const AdminSetup = lazyScreen(() => import('./AdminSetup').then((m) => m.AdminSe
 const AdminMember = lazyScreen(() => import('./AdminMember').then((m) => m.AdminMember));
 const AdminOrder = lazyScreen(() => import('./AdminOrder').then((m) => m.AdminOrder));
 const AuditLog = lazyScreen(() => import('./AuditLog').then((m) => m.AuditLog));
+const AdminData = lazyScreen(() => import('./AdminData').then((m) => m.AdminData));
 const AdminErrors = lazyScreen(() => import('./AdminErrors').then((m) => m.AdminErrors));
 const AdminStart = lazyScreen(() => import('./AdminStart').then((m) => m.AdminStart));
 const ZReportPage = lazyScreen(() => import('./reports/ZReport').then((m) => m.ZReportPage));
@@ -57,6 +59,7 @@ const NAV = [
   [Users, 'Team', 'team'],
   [History, 'Audit log', 'audit'],
   [Bug, 'Errors', 'errors'],
+  [Database, 'Data & privacy', 'data'],
   [ClipboardList, 'Menu', 'menu'],
   [Palette, 'Branding', 'branding'],
   [Settings, 'Settings', 'settings'],
@@ -249,6 +252,7 @@ export function AdminWorkspace() {
             'Commissions',
             'Audit log',
             'Errors',
+            'Data & privacy',
           ].includes(section) ? (
             <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
@@ -262,6 +266,7 @@ export function AdminWorkspace() {
                 ))}
               {section === 'Audit log' && <AuditLog />}
               {section === 'Errors' && <AdminErrors onChanged={() => void load()} />}
+              {section === 'Data & privacy' && <AdminData />}
               {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
               {section === 'Payments ledger' && <PaymentsLedger />}
               {section === 'Commissions' && <Commissions />}

@@ -18,6 +18,8 @@
 //   people.js    PIN change/reset, rider availability, the owner's member page
 //   admin.js     owner setup, team, menu, settings
 //   onboarding.js Get started: setup progress, menu import, finish setup
+//   data.js      owner's data export (backups, spreadsheets)
+//   privacy.js   customer data retention, forget a customer
 //   reports.js   payments ledger, order/commission ledgers, earnings, reports
 //   owner.js     dashboard, audit log, daily Z-report (Cloud Job "dailyZReport")
 //   overrides.js the owner's order page and overrides
@@ -39,6 +41,8 @@ require('./shifts');
 require('./people');
 require('./admin');
 require('./onboarding');
+require('./data');
+require('./privacy');
 require('./preview');
 require('./reports');
 require('./owner');

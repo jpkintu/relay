@@ -226,6 +226,8 @@ const AUDIT_GROUPS = [
   'report',
   'setup',
   'errors',
+  'data',
+  'privacy',
 ];
 const PAGE = 100;
 

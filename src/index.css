@@ -6814,3 +6814,129 @@ a {
   color: #fff;
   text-shadow: 0 1px 2px rgb(0 0 0 / 35%);
 }
+
+/* Admin → Data & privacy */
+.data-page {
+  display: grid;
+  gap: 16px;
+  max-width: 880px;
+}
+.data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+.data-actions svg {
+  width: 17px;
+  height: 17px;
+  vertical-align: -3px;
+}
+.data-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.data-forget {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 12px 0;
+}
+.data-forget .setup-field {
+  flex: 1 1 220px;
+}
+.data-forget .setup-secondary {
+  min-height: 46px;
+}
+.panel-title h2 .inline-icon {
+  width: 22px;
+  height: 22px;
+  vertical-align: -3px;
+}
+
+/* The privacy notice (/privacy). */
+.privacy-page {
+  min-height: 100vh;
+  background: var(--cream);
+  color: var(--ink);
+  padding: 24px 16px 64px;
+}
+.privacy-page header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 720px;
+  margin: 0 auto 24px;
+}
+.privacy-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.privacy-back svg {
+  width: 18px;
+  height: 18px;
+}
+.privacy-page article {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: var(--surface);
+  line-height: 1.6;
+}
+.privacy-page h1 {
+  margin: 0 0 12px;
+  font: 600 32px/1.15 var(--font-display);
+}
+.privacy-page h2 {
+  margin: 28px 0 8px;
+  font: 600 20px var(--font-display);
+}
+.privacy-page p,
+.privacy-page li {
+  overflow-wrap: anywhere;
+}
+.privacy-page .lead {
+  font-size: 17px;
+}
+@media (max-width: 599px) {
+  .privacy-page article {
+    padding: 20px 16px;
+  }
+}
+.privacy-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.privacy-page article p {
+  margin: 0 0 12px;
+}
+.privacy-page article ul {
+  margin: 0 0 12px;
+  padding-left: 22px;
+  list-style: disc;
+}
+.privacy-page article li {
+  margin-bottom: 6px;
+}
+.data-actions .setup-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
