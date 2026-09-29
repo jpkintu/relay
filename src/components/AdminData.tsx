@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Download, ShieldCheck } from 'lucide-react';
+import { Download, ShieldCheck, Upload } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig } from '../lib/session';
 import { formatDate } from '../lib/format';
@@ -239,10 +239,10 @@ export function AdminData() {
         {error && <p className="ops-error">{error}</p>}
         <p className="muted small">
           Back4App also keeps its own copies of the database on paid plans (Back4App dashboard →
-          your app → Database → Backups). Putting a backup back into Relay is done by whoever
-          maintains it; a backup file cannot be loaded from here.
+          your app → Database → Backups).
         </p>
       </section>
+      <RestoreBackup onRestored={summary.reload} />
       {setup.data && (
         <PrivacySettings
           key={JSON.stringify(setup.data.settings)}
@@ -464,6 +464,225 @@ function ForgetCustomer() {
         ))}
       {notice && <p className="setup-notice">{notice}</p>}
       {error && <p className="ops-error">{error}</p>}
+    </section>
+  );
+}
+
+// The order the server restores in: records a record links to come first
+// (cloud/restore.js).
+const RESTORE_ORDER = [
+  'Configuration',
+  '_User',
+  'MenuCategory',
+  'Accompaniment',
+  'MenuItem',
+  'Customer',
+  'Shift',
+  'TillPayout',
+  'Order',
+  'OrderItem',
+  'CashHandover',
+  'ZReport',
+  'AuditLog',
+];
+const RESTORE_BATCH = 200;
+type Backup = { exportedAt: string; classes: Record<string, Row[]> };
+type Pin = { username: string; name: string; role: string; pin: string };
+type Outcome = Record<string, { created: number; updated: number; skipped: number }>;
+
+// Owner: put records back from a full backup file. Records still here are
+// left as they are; only missing ones come back, linked as before.
+function RestoreBackup({ onRestored }: { onRestored: () => void }) {
+  const { timezone } = useConfig();
+  const [backup, setBackup] = useState<Backup | null>(null);
+  const [fileError, setFileError] = useState('');
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [pins, setPins] = useState<Pin[]>([]);
+
+  const read = async (file: File | undefined) => {
+    setBackup(null);
+    setOutcome(null);
+    setPins([]);
+    setSure(false);
+    setError('');
+    setFileError('');
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data?.app !== 'Relay' || !data.classes || typeof data.classes !== 'object')
+        throw new Error('This is not a Relay backup file.');
+      setBackup({ exportedAt: String(data.exportedAt || ''), classes: data.classes });
+    } catch (e) {
+      setFileError(
+        e instanceof SyntaxError
+          ? 'This file is not a Relay backup (.json).'
+          : String((e as Error).message),
+      );
+    }
+  };
+
+  const restore = async () => {
+    if (!backup) return;
+    setError('');
+    setOutcome(null);
+    setPins([]);
+    const done: Outcome = {};
+    const newPins: Pin[] = [];
+    try {
+      for (const className of RESTORE_ORDER) {
+        const rows = Array.isArray(backup.classes[className]) ? backup.classes[className] : [];
+        const total = { created: 0, updated: 0, skipped: 0 };
+        for (let i = 0; i < rows.length; i += RESTORE_BATCH) {
+          setBusy(
+            `Restoring ${LABELS[className] || className}: ${Math.min(i + RESTORE_BATCH, rows.length).toLocaleString()} of ${rows.length.toLocaleString()}…`,
+          );
+          const part = await Parse.Cloud.run('adminRestoreData', {
+            className,
+            rows: rows.slice(i, i + RESTORE_BATCH),
+          });
+          total.created += part.created;
+          total.updated += part.updated;
+          total.skipped += part.skipped;
+          newPins.push(...(part.pins || []));
+        }
+        done[className] = total;
+      }
+      setBusy('Linking records and applying the access rules…');
+      const counts = Object.fromEntries(
+        Object.entries(done).map(([name, t]) => [name, t.created + t.updated]),
+      );
+      for (let step = 0; step < 1000; step += 1) {
+        const result = await Parse.Cloud.run('adminRestoreFinish', { counts });
+        if (result.done) break;
+      }
+      setOutcome(done);
+      setPins(newPins);
+      onRestored();
+    } catch (e) {
+      setError(
+        `${e instanceof Error ? e.message : 'The restore stopped'}. Nothing restored so far is lost; run the restore again with the same file to continue.`,
+      );
+      setOutcome(done);
+      setPins(newPins);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const counts = backup
+    ? RESTORE_ORDER.filter((name) => backup.classes[name]?.length).map(
+        (name) => `${backup.classes[name].length.toLocaleString()} ${LABELS[name] || name}`,
+      )
+    : [];
+  const restoredTotal = outcome
+    ? Object.values(outcome).reduce((n, t) => n + t.created + t.updated, 0)
+    : 0;
+  return (
+    <section className="admin-panel">
+      <div className="panel-title">
+        <h2>Restore from a backup</h2>
+      </div>
+      <p className="muted small">
+        Puts records back from a full backup file (.json) made here. Records that are still here are
+        left as they are; only missing ones come back, linked to each other as before, with their
+        original dates. Restoring into a new, empty app brings the whole restaurant back. Team
+        members who come back get a new PIN each (a backup holds no PINs).
+      </p>
+      <label className="setup-field restore-file">
+        Backup file
+        <input
+          type="file"
+          accept="application/json,.json"
+          disabled={!!busy}
+          onChange={(e) => void read(e.target.files?.[0])}
+        />
+      </label>
+      {fileError && <p className="ops-error">{fileError}</p>}
+      {backup && !outcome && (
+        <>
+          <p className="small">
+            Backup from{' '}
+            <b>
+              {backup.exportedAt
+                ? formatDate(backup.exportedAt, timezone, {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })
+                : 'an unknown date'}
+            </b>
+            : {counts.join(' · ') || 'no records'}.
+          </p>
+          <label className="setup-checkbox">
+            <input type="checkbox" checked={sure} onChange={(e) => setSure(e.target.checked)} />
+            Restore missing records from this file. Settings are replaced only if the backup comes
+            from another app.
+          </label>
+          <div className="data-actions">
+            <button
+              className="setup-submit"
+              disabled={!sure || !!busy}
+              onClick={() => void restore()}
+            >
+              <Upload aria-hidden /> Restore
+            </button>
+          </div>
+        </>
+      )}
+      {busy && <p className="muted small">{busy}</p>}
+      {error && <p className="ops-error">{error}</p>}
+      {outcome && (
+        <div className="restore-result">
+          <p className="setup-notice">
+            {restoredTotal
+              ? `Restored ${restoredTotal.toLocaleString()} records.`
+              : 'Nothing was missing: every record in the backup is still here.'}
+          </p>
+          <ul className="small">
+            {RESTORE_ORDER.filter((name) => outcome[name]).map((name) => (
+              <li key={name}>
+                {LABELS[name] || name}: {outcome[name].created + outcome[name].updated} restored,{' '}
+                {outcome[name].skipped} already here
+              </li>
+            ))}
+          </ul>
+          {pins.length > 0 && (
+            <div className="restore-pins">
+              <h3>New PINs for restored team members</h3>
+              <p className="muted small">
+                Shown only now. Give each person their PIN; they can change it under their profile.
+              </p>
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>New PIN</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pins.map((p) => (
+                    <tr key={p.username}>
+                      <td>{p.name}</td>
+                      <td>{p.username}</td>
+                      <td>{p.role}</td>
+                      <td>
+                        <code>{p.pin}</code>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="setup-secondary" onClick={() => window.print()}>
+                Print
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

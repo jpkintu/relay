@@ -544,6 +544,50 @@ Parse.Cloud.define('adminSetRestaurantLogo', async (request) => {
   return { logo: logo || '' };
 });
 
+// Owner: the pictures beside the sign-in form (Admin → Branding), shown in
+// turn under a wash of the restaurant's colour. Up to 6. { add: base64
+// image, caption? } | { remove: index } | { caption, index } | { move: index,
+// to: index } → { images: [{ url, caption }] }
+const MAX_LOGIN_IMAGES = 6;
+Parse.Cloud.define('adminSetLoginImages', async (request) => {
+  const actor = await requireAdminUnlock(request);
+  const p = request.params || {};
+  let { object: config } = await loadConfig();
+  if (!config) {
+    config = new Parse.Object('Configuration');
+    config.setACL(readAcl(null, ['admin']));
+  }
+  const images = [...(config.get('loginImages') || [])];
+  const index = Number(p.index ?? p.remove ?? p.move);
+  const at = (i) => {
+    if (!Number.isInteger(i) || i < 0 || i >= images.length) throw invalid('No such picture');
+    return i;
+  };
+  const caption = (text) =>
+    String(text || '')
+      .trim()
+      .slice(0, 80);
+  if (p.add !== undefined) {
+    if (images.length >= MAX_LOGIN_IMAGES)
+      throw invalid(`At most ${MAX_LOGIN_IMAGES} pictures; remove one first`);
+    images.push({ file: await imageFile(p.add, 'signin'), caption: caption(p.caption) });
+  } else if (p.remove !== undefined) images.splice(at(index), 1);
+  else if (p.move !== undefined) {
+    const [picked] = images.splice(at(index), 1);
+    images.splice(Math.max(0, Math.min(images.length, Number(p.to) || 0)), 0, picked);
+  } else if (p.caption !== undefined)
+    images[at(index)] = { ...images[at(index)], caption: caption(p.caption) };
+  else throw invalid('Nothing to change');
+  config.set('loginImages', images);
+  await config.save(null, MASTER);
+  const saved = images.map((entry) => ({
+    url: fileUrl(entry.file) || '',
+    caption: entry.caption || '',
+  }));
+  await audit(actor, 'configuration.login_images', config, null, { count: saved.length });
+  return { images: saved };
+});
+
 // Accompaniments are free sides (matooke, rice, ...) attached to dishes in
 // groups. `available` is the day-to-day sold-out switch cashiers also use.
 Parse.Cloud.define('adminSaveAccompaniment', async (request) => {

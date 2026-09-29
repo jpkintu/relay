@@ -23,6 +23,7 @@
 //   onboarding.js Get started: setup progress, menu import, finish setup
 //   data.js      owner's data export (backups, spreadsheets)
 //   privacy.js   customer data retention, forget a customer
+//   restore.js   putting records back from a backup file
 //   reports.js   payments ledger, order/commission ledgers, earnings, reports
 //   owner.js     dashboard, audit log, daily Z-report (Cloud Job "dailyZReport")
 //   overrides.js the owner's order page and overrides
@@ -49,6 +50,7 @@ require('./admin');
 require('./onboarding');
 require('./data');
 require('./privacy');
+require('./restore');
 require('./preview');
 require('./reports');
 require('./owner');

@@ -401,7 +401,7 @@ Parse.Cloud.define('getReceipt', async (request) => {
     status: order.get('status'),
     table: order.get('tableLabel') || '',
     channel: order.get('channel') || '',
-    placedAt: order.createdAt,
+    placedAt: require('./lib/placed').placedAt(order),
     customer: order.get('customerName') || '',
     phone: order.get('customerPhone') || '',
     address: type === 'delivery' ? order.get('deliveryAddress') || '' : '',

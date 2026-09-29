@@ -95,7 +95,7 @@ const openOrderJSON = (order) => ({
   customer: order.get('customerName') || '',
   total: Number(order.get('total') || 0),
   paymentMethod: order.get('paymentMethod'),
-  createdAt: order.createdAt,
+  createdAt: require('./lib/placed').placedAt(order),
 });
 
 // Every delivered and cancelled order the rider has had, summed.

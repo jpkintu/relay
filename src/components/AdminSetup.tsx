@@ -7,7 +7,7 @@ import { DEFAULT_THEME, themeProblems, type Theme } from '../lib/theme';
 import Parse from '../parse';
 import { MenuImport } from './MenuImport';
 import { useAdminRun } from '../lib/adminRun';
-import { useMoney, useSession } from '../lib/session';
+import { useMoney, useSession, type LoginImage } from '../lib/session';
 import { ChangePin } from './Profile';
 import { PinSheet } from './MapPin';
 
@@ -251,6 +251,143 @@ function RestaurantLogo({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// Pictures beside the sign-in form (and the paused and account screens),
+// under a wash of the brand colour. None: Relay's own slides run instead.
+const MAX_LOGIN_IMAGES = 6;
+const MAX_UPLOAD = 680000; // the server takes about 500 KB
+
+async function sidePicture(file: File) {
+  // Wide enough for a large screen, small enough for the 500 KB limit.
+  for (const [size, quality] of [
+    [1600, 0.78],
+    [1280, 0.72],
+    [1000, 0.68],
+  ]) {
+    const image = await shrinkImage(file, size, quality);
+    if (image.length <= MAX_UPLOAD) return image;
+  }
+  throw new Error('This photo is too detailed to upload; try another');
+}
+
+function LoginPictures({
+  images,
+  disabled,
+  onDone,
+  onError,
+}: {
+  images: LoginImage[];
+  disabled: boolean;
+  onDone: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const adminRun = useAdminRun();
+  const [busy, setBusy] = useState(false);
+  const [captions, setCaptions] = useState<string[]>(images.map((image) => image.caption));
+  useEffect(() => setCaptions(images.map((image) => image.caption)), [images]);
+  const run = async (params: Record<string, unknown>, done: string, failed: string) => {
+    setBusy(true);
+    try {
+      await adminRun('adminSetLoginImages', params);
+      onDone(done);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : failed);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const add = await sidePicture(file);
+      await run({ add }, 'Picture added.', 'Could not save the picture');
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Could not read the picture');
+    }
+  };
+  const off = disabled || busy;
+  return (
+    <div className="login-pictures">
+      {images.length > 0 && (
+        <ul>
+          {images.map((image, index) => (
+            <li key={`${index}:${image.url}`}>
+              <img src={image.url} alt="" />
+              <input
+                aria-label={`Caption for picture ${index + 1}`}
+                placeholder="Caption (optional)"
+                maxLength={80}
+                value={captions[index] ?? ''}
+                disabled={off}
+                onChange={(e) =>
+                  setCaptions((all) => all.map((text, i) => (i === index ? e.target.value : text)))
+                }
+                onBlur={() => {
+                  if ((captions[index] ?? '') !== image.caption)
+                    void run(
+                      { index, caption: captions[index] ?? '' },
+                      'Caption saved.',
+                      'Could not save the caption',
+                    );
+                }}
+              />
+              <div className="login-picture-actions">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Move earlier"
+                  disabled={off || index === 0}
+                  onClick={() =>
+                    void run({ move: index, to: index - 1 }, 'Order saved.', 'Could not move it')
+                  }
+                >
+                  <ArrowUp size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Move later"
+                  disabled={off || index === images.length - 1}
+                  onClick={() =>
+                    void run({ move: index, to: index + 1 }, 'Order saved.', 'Could not move it')
+                  }
+                >
+                  <ArrowDown size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="setup-secondary"
+                  disabled={off}
+                  onClick={() =>
+                    void run({ remove: index }, 'Picture removed.', 'Could not remove the picture')
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {images.length < MAX_LOGIN_IMAGES ? (
+        <label className={`setup-secondary file-button ${off ? 'disabled' : ''}`}>
+          <ImagePlus /> {busy ? 'Saving…' : 'Add a picture'}
+          <input
+            type="file"
+            accept="image/*"
+            disabled={off}
+            onChange={(e) => {
+              void upload(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+      ) : (
+        <p className="muted">That's the most ({MAX_LOGIN_IMAGES}); remove one to add another.</p>
+      )}
     </div>
   );
 }
@@ -1223,6 +1360,25 @@ export function AdminSetup({
             onDone={() => {
               setNotice('Logo saved.');
               void load();
+              void refresh();
+            }}
+            onError={setError}
+          />
+        </div>
+      )}
+      {section === 'Branding' && !preview && (
+        <div className="admin-panel">
+          <h2>Sign-in pictures</h2>
+          <p className="muted">
+            Up to {MAX_LOGIN_IMAGES} photos of your food or restaurant, shown one after another
+            beside the sign-in form under a wash of your main colour. Landscape photos work best.
+            Without any, a short introduction to Relay plays there instead.
+          </p>
+          <LoginPictures
+            images={config.loginImages ?? []}
+            disabled={busy}
+            onDone={(message) => {
+              setNotice(message);
               void refresh();
             }}
             onError={setError}
