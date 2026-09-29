@@ -312,6 +312,8 @@ const SCHEMAS = {
     receiptFooter: S,
     autoPrintKitchen: B,
     restaurantLogo: 'File',
+    // Sign-in screen pictures: [{ file, caption }] (adminSetLoginImages).
+    loginImages: 'Array',
     themeInk: S,
     themeAccent: S,
   },
@@ -446,7 +448,31 @@ const USER_FIELDS = {
   payRound: N,
   available: B,
   maxFloat: N,
+  // Restored from a backup (restore.js).
+  restoredFrom: S,
+  restoredCreatedAt: D,
 };
+
+// Records restored from a backup (restore.js, lib/placed.js): the id and
+// creation time they had in the backup, and links still to be rebuilt.
+for (const className of [
+  'Order',
+  'OrderItem',
+  'CashHandover',
+  'TillPayout',
+  'Shift',
+  'AuditLog',
+  'MenuItem',
+  'MenuCategory',
+  'Accompaniment',
+  'Customer',
+  'ZReport',
+])
+  Object.assign(SCHEMAS[className], {
+    restoredFrom: S,
+    restoredCreatedAt: D,
+    restoreLinks: 'Object',
+  });
 
 // Creates missing classes with their fields, adds any missing fields to
 // existing ones, and (re)applies class-level permissions to all of them.

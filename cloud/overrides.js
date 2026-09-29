@@ -156,7 +156,7 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
           }
         : null,
     times: {
-      placed: order.createdAt,
+      placed: require('./lib/placed').placedAt(order),
       accepted: at('acceptedAt'),
       ready: at('readyAt'),
       pickedUp: at('pickedUpAt'),

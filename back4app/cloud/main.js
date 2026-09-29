@@ -427,6 +427,7 @@ var require_core = __commonJS({
         }
       }
       values.restaurantLogo = fileUrl(object?.get("restaurantLogo")) || "";
+      values.loginImages = (object?.get("loginImages") || []).map((entry) => ({ url: fileUrl(entry?.file) || "", caption: String(entry?.caption || "") })).filter((entry) => entry.url);
       return { object, values };
     }
     function countUsers() {
@@ -1170,6 +1171,8 @@ var require_security = __commonJS({
         receiptFooter: S,
         autoPrintKitchen: B,
         restaurantLogo: "File",
+        // Sign-in screen pictures: [{ file, caption }] (adminSetLoginImages).
+        loginImages: "Array",
         themeInk: S,
         themeAccent: S
       },
@@ -1300,8 +1303,29 @@ var require_security = __commonJS({
       pinLockedUntil: D,
       payRound: N,
       available: B,
-      maxFloat: N
+      maxFloat: N,
+      // Restored from a backup (restore.js).
+      restoredFrom: S,
+      restoredCreatedAt: D
     };
+    for (const className of [
+      "Order",
+      "OrderItem",
+      "CashHandover",
+      "TillPayout",
+      "Shift",
+      "AuditLog",
+      "MenuItem",
+      "MenuCategory",
+      "Accompaniment",
+      "Customer",
+      "ZReport"
+    ])
+      Object.assign(SCHEMAS[className], {
+        restoredFrom: S,
+        restoredCreatedAt: D,
+        restoreLinks: "Object"
+      });
     async function applySchemas() {
       const existing = new Map((await Parse.Schema.all()).map((schema) => [schema.className, schema]));
       const created = [];
@@ -2017,6 +2041,42 @@ var require_admin = __commonJS({
       const logo = fileUrl(config.get("restaurantLogo"));
       await audit(actor, "configuration.logo", config, before, { logo });
       return { logo: logo || "" };
+    });
+    var MAX_LOGIN_IMAGES = 6;
+    Parse.Cloud.define("adminSetLoginImages", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params || {};
+      let { object: config } = await loadConfig();
+      if (!config) {
+        config = new Parse.Object("Configuration");
+        config.setACL(readAcl(null, ["admin"]));
+      }
+      const images = [...config.get("loginImages") || []];
+      const index = Number(p.index ?? p.remove ?? p.move);
+      const at = (i) => {
+        if (!Number.isInteger(i) || i < 0 || i >= images.length) throw invalid("No such picture");
+        return i;
+      };
+      const caption = (text) => String(text || "").trim().slice(0, 80);
+      if (p.add !== void 0) {
+        if (images.length >= MAX_LOGIN_IMAGES)
+          throw invalid(`At most ${MAX_LOGIN_IMAGES} pictures; remove one first`);
+        images.push({ file: await imageFile(p.add, "signin"), caption: caption(p.caption) });
+      } else if (p.remove !== void 0) images.splice(at(index), 1);
+      else if (p.move !== void 0) {
+        const [picked] = images.splice(at(index), 1);
+        images.splice(Math.max(0, Math.min(images.length, Number(p.to) || 0)), 0, picked);
+      } else if (p.caption !== void 0)
+        images[at(index)] = { ...images[at(index)], caption: caption(p.caption) };
+      else throw invalid("Nothing to change");
+      config.set("loginImages", images);
+      await config.save(null, MASTER);
+      const saved = images.map((entry) => ({
+        url: fileUrl(entry.file) || "",
+        caption: entry.caption || ""
+      }));
+      await audit(actor, "configuration.login_images", config, null, { count: saved.length });
+      return { images: saved };
     });
     Parse.Cloud.define("adminSaveAccompaniment", async (request) => {
       const actor = await adminOnly(request);
@@ -10728,6 +10788,26 @@ var require_mobileMoney = __commonJS({
   }
 });
 
+// cloud/lib/placed.js
+var require_placed = __commonJS({
+  "cloud/lib/placed.js"(exports2, module2) {
+    "use strict";
+    var placedAt = (row) => row?.get?.("restoredCreatedAt") || row?.createdAt || null;
+    function createdIn(className, { start, end } = {}) {
+      const live = new Parse.Query(className);
+      if (start) live.greaterThanOrEqualTo("createdAt", start);
+      if (end) live.lessThan("createdAt", end);
+      live.doesNotExist("restoredCreatedAt");
+      const restored = new Parse.Query(className);
+      restored.exists("restoredCreatedAt");
+      if (start) restored.greaterThanOrEqualTo("restoredCreatedAt", start);
+      if (end) restored.lessThan("restoredCreatedAt", end);
+      return Parse.Query.or(live, restored);
+    }
+    module2.exports = { placedAt, createdIn };
+  }
+});
+
 // cloud/payments.js
 var require_payments = __commonJS({
   "cloud/payments.js"(exports2, module2) {
@@ -10905,7 +10985,7 @@ var require_payments = __commonJS({
         amount: order.get("total"),
         paymentStatus: order.get("paymentStatus"),
         orderStatus: order.get("status"),
-        createdAt: order.createdAt,
+        createdAt: require_placed().placedAt(order),
         checkedAt: order.get("paymentCheckedAt") || null,
         checkedBy: nameOf(order.get("paymentCheckedBy")),
         rejectReason: order.get("paymentRejectReason") || "",
@@ -12200,6 +12280,7 @@ var require_reports2 = __commonJS({
     var { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require_dates();
     var R = require_reports();
     var { orderRiderPay } = require_money();
+    var { placedAt, createdIn } = require_placed();
     var { payOwed } = require_payouts();
     var MAX_ROWS = 2e3;
     var PERIODS = ["day", "week", "month"];
@@ -12228,9 +12309,11 @@ var require_reports2 = __commonJS({
       return range.days <= 31 ? "day" : range.days <= 120 ? "week" : "month";
     }
     function ordersIn(range, field, riderId) {
-      const query = new Parse.Query("Order");
-      query.greaterThanOrEqualTo(field, range.start);
-      query.lessThan(field, range.end);
+      const query = field === "createdAt" ? createdIn("Order", range) : new Parse.Query("Order");
+      if (field !== "createdAt") {
+        query.greaterThanOrEqualTo(field, range.start);
+        query.lessThan(field, range.end);
+      }
       const rider = riderPointer(riderId);
       if (rider) query.equalTo("createdBy", rider);
       query.include("createdBy");
@@ -12265,7 +12348,7 @@ var require_reports2 = __commonJS({
         paymentStatus: order.get("paymentStatus") || "",
         amountCollected: Number(order.get("amountCollected") || 0),
         cashStatus: order.get("cashStatus") || "",
-        createdAt: order.createdAt,
+        createdAt: placedAt(order),
         deliveredAt: order.get("deliveredAt") || null
       };
     }
@@ -12301,9 +12384,10 @@ var require_reports2 = __commonJS({
       const momoQuery = ordersIn(range, "createdAt", p.riderId);
       momoQuery.equalTo("paymentMethod", "mobile_money");
       momoQuery.include("paymentCheckedBy");
-      const handoverQuery = new Parse.Query("CashHandover");
-      handoverQuery.greaterThanOrEqualTo("createdAt", new Date(range.start.getTime() - 7 * 864e5));
-      handoverQuery.lessThan("createdAt", new Date(range.end.getTime() + 7 * 864e5));
+      const handoverQuery = createdIn("CashHandover", {
+        start: new Date(range.start.getTime() - 7 * 864e5),
+        end: new Date(range.end.getTime() + 7 * 864e5)
+      });
       if (p.riderId) handoverQuery.equalTo("rider", riderPointer(p.riderId));
       handoverQuery.include(["rider", "cashier"]);
       const [cashOrders, momoOrders, handovers] = await Promise.all([
@@ -12357,7 +12441,7 @@ var require_reports2 = __commonJS({
       const sum = (rows, test) => rows.filter(test).reduce((n, row) => n + row.amount, 0);
       const count = (rows, test) => rows.filter(test).length;
       const liveMomo = momoRows.filter((r) => r.orderStatus !== "CANCELLED" || r.status === "VERIFIED");
-      const handoverRows = handovers.filter((h) => h.createdAt >= range.start && h.createdAt < range.end).sort((a, b) => b.createdAt - a.createdAt).map((h) => ({
+      const handoverRows = handovers.filter((h) => placedAt(h) >= range.start && placedAt(h) < range.end).sort((a, b) => placedAt(b) - placedAt(a)).map((h) => ({
         id: h.id,
         code: h.get("handoverCode"),
         riderId: h.get("rider")?.id || "",
@@ -12368,7 +12452,7 @@ var require_reports2 = __commonJS({
         orderCount: h.get("orderCount") || 0,
         status: h.get("status"),
         reason: h.get("disputeReason") || "",
-        createdAt: h.createdAt,
+        createdAt: placedAt(h),
         confirmedAt: h.get("confirmedAt") || null,
         returnedAmount: Number(h.get("returnedAmount") || 0),
         shortage: Number(h.get("shortage") || 0),
@@ -12674,6 +12758,7 @@ var require_owner = __commonJS({
     } = require_dates();
     var R = require_reports();
     var { sumBy } = require_money();
+    var { placedAt, createdIn } = require_placed();
     var { factOf, findAll, ordersIn, orderLines } = require_reports2();
     var { payOwed } = require_payouts();
     var { money, notifyAdmins } = require_notifications();
@@ -12908,14 +12993,13 @@ var require_owner = __commonJS({
       const { values: config } = await loadConfig();
       const range = resolveRange(p, config.timezone, { defaultDays: 7, maxDays: 366 });
       if (range.error) throw invalid(range.error);
-      const query = new Parse.Query("AuditLog");
-      query.greaterThanOrEqualTo("createdAt", range.start);
-      query.lessThan("createdAt", range.end);
+      let end = range.end;
       if (p.before) {
         const before = new Date(p.before);
         if (Number.isNaN(before.getTime())) throw invalid("Bad page");
-        query.lessThan("createdAt", before < range.end ? before : range.end);
+        if (before < end) end = before;
       }
+      const query = createdIn("AuditLog", { start: range.start, end });
       if (p.actorId) {
         if (!/^[A-Za-z0-9]{1,32}$/.test(String(p.actorId))) throw invalid("Unknown person");
         query.equalTo("actor", Parse.User.createWithoutData(String(p.actorId)));
@@ -12939,7 +13023,7 @@ var require_owner = __commonJS({
         groups: AUDIT_GROUPS,
         rows: rows.map((row) => ({
           id: row.id,
-          at: row.createdAt,
+          at: placedAt(row),
           action: row.get("action"),
           actorId: row.get("actor")?.id || "",
           actor: personName(row.get("actor")) || "System",
@@ -12949,7 +13033,7 @@ var require_owner = __commonJS({
           before: parseJson(row.get("beforeJson")),
           after: parseJson(row.get("afterJson"))
         })),
-        next: found.length > PAGE ? rows[rows.length - 1].createdAt : null
+        next: found.length > PAGE ? placedAt(rows[rows.length - 1]) : null
       };
     });
     async function buildZReport(day, config) {
@@ -13170,8 +13254,7 @@ var require_privacy = __commonJS({
       if (!months) return { months: 0, orders: 0, customers: 0, notifications: 0 };
       const cutoff = new Date(now);
       cutoff.setMonth(cutoff.getMonth() - months);
-      const orderQuery = new Parse.Query("Order");
-      orderQuery.lessThan("createdAt", cutoff);
+      const orderQuery = require_placed().createdIn("Order", { end: cutoff });
       orderQuery.containedIn("status", ["DELIVERED", "CANCELLED"]);
       orderQuery.doesNotExist("anonymisedAt");
       const customerQuery = new Parse.Query("Customer");
@@ -15039,7 +15122,7 @@ var require_counter = __commonJS({
         status: order.get("status"),
         table: order.get("tableLabel") || "",
         channel: order.get("channel") || "",
-        placedAt: order.createdAt,
+        placedAt: require_placed().placedAt(order),
         customer: order.get("customerName") || "",
         phone: order.get("customerPhone") || "",
         address: type === "delivery" ? order.get("deliveryAddress") || "" : "",
@@ -15551,7 +15634,7 @@ var require_people = __commonJS({
       customer: order.get("customerName") || "",
       total: Number(order.get("total") || 0),
       paymentMethod: order.get("paymentMethod"),
-      createdAt: order.createdAt
+      createdAt: require_placed().placedAt(order)
     });
     async function riderLifetime(rider) {
       const query = new Parse.Query("Order");
@@ -15994,6 +16077,329 @@ var require_data = __commonJS({
   }
 });
 
+// cloud/restore.js
+var require_restore = __commonJS({
+  "cloud/restore.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var { MASTER, audit, ensureRole, invalid, userAcl } = require_core();
+    var { fullUsername, displayUsername } = require_tenant();
+    var { requireAdminUnlock } = require_adminLock();
+    var { EXPORT_CLASSES } = require_data();
+    var { applySecurity } = require_security();
+    var ORDER = [
+      "Configuration",
+      "_User",
+      "MenuCategory",
+      "Accompaniment",
+      "MenuItem",
+      "Customer",
+      "Shift",
+      "TillPayout",
+      "Order",
+      "OrderItem",
+      "CashHandover",
+      "ZReport",
+      "AuditLog"
+    ];
+    var BATCH = 200;
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    var SKIP_FIELDS = /* @__PURE__ */ new Set([
+      "objectId",
+      "createdAt",
+      "updatedAt",
+      "ACL",
+      "tenant",
+      "restoredFrom",
+      "restoredCreatedAt",
+      "restoreLinks",
+      "sessionToken",
+      "authData",
+      "password",
+      "_hashed_password"
+    ]);
+    var USER_FIELDS = [
+      "name",
+      "phone",
+      "email",
+      "active",
+      "riderCode",
+      "cashierCode",
+      "commissionType",
+      "commissionPerOrder",
+      "commissionPercent",
+      "maxFloat",
+      "available"
+    ];
+    var ROLES = ["admin", "cashier", "rider"];
+    var ARRAY_LINKS = {
+      CashHandover: { orders: "Order", returnedOrders: "Order" },
+      TillPayout: { orders: "Order", shortages: "CashHandover" }
+    };
+    async function fieldsOf(className) {
+      const schema = await new Parse.Schema(className).get(MASTER).catch(() => null);
+      return schema?.fields || {};
+    }
+    var idOf = (value) => value && typeof value === "object" && typeof value.objectId === "string" ? value.objectId : null;
+    function normalise(className, row, fields) {
+      const out = {};
+      for (const [field, value] of Object.entries(row)) {
+        if (value === null || value === void 0) continue;
+        const type = fields[field];
+        const listOf = ARRAY_LINKS[className]?.[field];
+        if (listOf && Array.isArray(value))
+          out[field] = value.map((entry) => idOf(entry) ? pointer(listOf, idOf(entry)) : entry);
+        else if (type?.type === "Pointer" && idOf(value))
+          out[field] = pointer(type.targetClass, idOf(value));
+        else if (type?.type === "Date" && typeof value === "string")
+          out[field] = { __type: "Date", iso: value };
+        else if (type?.type === "File" && value && typeof value === "object" && !value.__type)
+          out[field] = { __type: "File", name: value.name, url: value.url };
+        else if (type?.type === "GeoPoint" && value && typeof value === "object" && !value.__type)
+          out[field] = { __type: "GeoPoint", latitude: value.latitude, longitude: value.longitude };
+        else out[field] = value;
+      }
+      return out;
+    }
+    var isPointer = (value) => value && typeof value === "object" && value.__type === "Pointer" && ID.test(value.objectId);
+    var pointer = (className, objectId) => ({ __type: "Pointer", className, objectId });
+    function withIdPointers(className, row) {
+      const out = { ...row };
+      if (className === "OrderItem" && Array.isArray(row.accompanimentIds))
+        out.accompanimentIds = row.accompanimentIds.map((id) => pointer("Accompaniment", String(id)));
+      if (className === "MenuItem" && Array.isArray(row.accompanimentGroups))
+        out.accompanimentGroups = row.accompanimentGroups.map((group) => ({
+          ...group,
+          options: (group?.options || []).map((id) => pointer("Accompaniment", String(id)))
+        }));
+      return out;
+    }
+    function withoutIdPointers(className, fields) {
+      const out = { ...fields };
+      if (className === "OrderItem" && Array.isArray(out.accompanimentIds))
+        out.accompanimentIds = out.accompanimentIds.map((p) => isPointer(p) ? p.objectId : p);
+      if (className === "MenuItem" && Array.isArray(out.accompanimentGroups))
+        out.accompanimentGroups = out.accompanimentGroups.map((group) => ({
+          ...group,
+          options: (group.options || []).map((p) => isPointer(p) ? p.objectId : p)
+        }));
+      return out;
+    }
+    function collectPointers(value, into) {
+      if (Array.isArray(value)) value.forEach((entry) => collectPointers(entry, into));
+      else if (isPointer(value)) {
+        if (!into.has(value.className)) into.set(value.className, /* @__PURE__ */ new Set());
+        into.get(value.className).add(value.objectId);
+      } else if (value && typeof value === "object" && !value.__type)
+        Object.values(value).forEach((entry) => collectPointers(entry, into));
+    }
+    async function resolveIds(wanted) {
+      const map = /* @__PURE__ */ new Map();
+      for (const [className, ids] of wanted) {
+        const list = [...ids];
+        const found = /* @__PURE__ */ new Map();
+        for (let i = 0; i < list.length; i += 500) {
+          const part = list.slice(i, i + 500);
+          const kept = new Parse.Query(className === "_User" ? Parse.User : className);
+          kept.containedIn("objectId", part);
+          kept.select("objectId");
+          kept.limit(part.length);
+          const restored = new Parse.Query(className === "_User" ? Parse.User : className);
+          restored.containedIn("restoredFrom", part);
+          restored.select("restoredFrom");
+          restored.limit(part.length);
+          const [a, b] = await Promise.all([
+            kept.find(MASTER).catch(() => []),
+            restored.find(MASTER).catch(() => [])
+          ]);
+          for (const row of a) found.set(row.id, row.id);
+          for (const row of b) found.set(row.get("restoredFrom"), row.id);
+        }
+        map.set(className, found);
+      }
+      return map;
+    }
+    function relink(value, map, missing) {
+      if (Array.isArray(value)) return value.map((entry) => relink(entry, map, missing));
+      if (isPointer(value)) {
+        const id = map.get(value.className)?.get(value.objectId);
+        if (id) return pointer(value.className, id);
+        missing.found = true;
+        return value;
+      }
+      if (value && typeof value === "object" && !value.__type) {
+        const out = {};
+        for (const [key, entry] of Object.entries(value)) out[key] = relink(entry, map, missing);
+        return out;
+      }
+      return value;
+    }
+    var decode = (field, value) => Parse._decode(field, value);
+    var dateOf = (value) => {
+      const iso = typeof value === "string" ? value : value?.iso;
+      const date = iso ? new Date(iso) : null;
+      return date && !Number.isNaN(date.getTime()) ? date : null;
+    };
+    var newPin = () => String(crypto.randomInt(0, 1e6)).padStart(6, "0");
+    async function restoreSettings(rows) {
+      const row = rows[0];
+      if (!row) return { created: 0, updated: 0, skipped: 0 };
+      const here = new Parse.Query("Configuration");
+      if (ID.test(String(row.objectId || ""))) {
+        const same = await here.get(String(row.objectId), MASTER).catch(() => null);
+        if (same) return { created: 0, updated: 0, skipped: 1 };
+      }
+      const config = await new Parse.Query("Configuration").first(MASTER) || new Parse.Object("Configuration");
+      const fields = await fieldsOf("Configuration");
+      for (const [field, value] of Object.entries(normalise("Configuration", row, fields)))
+        if (!SKIP_FIELDS.has(field)) config.set(field, decode(field, value));
+      if (!config.id) config.setACL(new Parse.ACL());
+      await config.save(null, MASTER);
+      return { created: 0, updated: 1, skipped: 0 };
+    }
+    async function restoreTeam(rows) {
+      const result = { created: 0, updated: 0, skipped: 0, pins: [] };
+      const fullName = (name) => fullUsername(displayUsername(name));
+      for (const row of rows) {
+        const oldId = String(row.objectId || "");
+        if (!ID.test(oldId)) continue;
+        if (await new Parse.Query(Parse.User).get(oldId, MASTER).catch(() => null)) {
+          result.skipped += 1;
+          continue;
+        }
+        const restored = await new Parse.Query(Parse.User).equalTo("restoredFrom", oldId).first(MASTER).catch(() => null);
+        if (restored) {
+          result.skipped += 1;
+          continue;
+        }
+        const username = String(row.username || "").trim().toLowerCase();
+        if (!/^[-a-z0-9_.@]{3,64}$/.test(username)) continue;
+        const existing = await new Parse.Query(Parse.User).equalTo("username", fullName(username)).first(MASTER);
+        if (existing) {
+          existing.set("restoredFrom", oldId);
+          await existing.save(null, MASTER);
+          result.updated += 1;
+          continue;
+        }
+        const role = ROLES.includes(row.role) ? row.role : null;
+        const pin = newPin();
+        const user = new Parse.User();
+        user.set({ username: fullName(username), password: pin, restoredFrom: oldId });
+        for (const field of USER_FIELDS) if (row[field] !== void 0) user.set(field, row[field]);
+        const created = dateOf(row.createdAt);
+        if (created) user.set("restoredCreatedAt", created);
+        await user.signUp(null, MASTER);
+        user.setACL(userAcl(user, role));
+        await user.save(null, MASTER);
+        if (role) {
+          const roleRow = await ensureRole(role);
+          roleRow.getUsers().add(user);
+          await roleRow.save(null, MASTER);
+        }
+        result.created += 1;
+        result.pins.push({ username, name: row.name || username, role: role || "none", pin });
+      }
+      return result;
+    }
+    async function restoreRecords(className, rows) {
+      const result = { created: 0, updated: 0, skipped: 0 };
+      const valid = rows.filter((row) => ID.test(String(row?.objectId || "")));
+      const ids = valid.map((row) => String(row.objectId));
+      const [kept, done] = await Promise.all([
+        new Parse.Query(className).containedIn("objectId", ids).select("objectId").limit(ids.length).find(MASTER),
+        new Parse.Query(className).containedIn("restoredFrom", ids).select("restoredFrom").limit(ids.length).find(MASTER)
+      ]);
+      const skip = /* @__PURE__ */ new Set([...kept.map((r) => r.id), ...done.map((r) => r.get("restoredFrom"))]);
+      const todo = valid.filter((row) => !skip.has(String(row.objectId)));
+      result.skipped = valid.length - todo.length;
+      if (!todo.length) return result;
+      const fields = await fieldsOf(className);
+      const prepared = todo.map((row) => withIdPointers(className, normalise(className, row, fields)));
+      const wanted = /* @__PURE__ */ new Map();
+      for (const row of prepared)
+        for (const [field, value] of Object.entries(row))
+          if (!SKIP_FIELDS.has(field)) collectPointers(value, wanted);
+      const map = await resolveIds(wanted);
+      const objects = prepared.map((row) => {
+        const object = new Parse.Object(className);
+        const links = {};
+        const fields2 = {};
+        for (const [field, value] of Object.entries(row)) {
+          if (SKIP_FIELDS.has(field) || value === void 0) continue;
+          const missing = { found: false };
+          fields2[field] = relink(value, map, missing);
+          if (missing.found) links[field] = value;
+        }
+        for (const [field, value] of Object.entries(withoutIdPointers(className, fields2)))
+          if (!(field in links)) object.set(field, decode(field, value));
+        object.set("restoredFrom", String(row.objectId));
+        const created = dateOf(row.createdAt);
+        if (created) object.set("restoredCreatedAt", created);
+        if (Object.keys(links).length) object.set("restoreLinks", { json: JSON.stringify(links) });
+        object.setACL(new Parse.ACL());
+        return object;
+      });
+      await Parse.Object.saveAll(objects, MASTER);
+      result.created = objects.length;
+      return result;
+    }
+    Parse.Cloud.define("adminRestoreData", async (request) => {
+      await requireAdminUnlock(request);
+      const { className, rows } = request.params || {};
+      if (!ORDER.includes(className) || !EXPORT_CLASSES.includes(className))
+        throw invalid("Unknown kind of record");
+      if (!Array.isArray(rows)) throw invalid("No records");
+      if (rows.length > BATCH) throw invalid(`At most ${BATCH} records at a time`);
+      if (className === "Configuration") return restoreSettings(rows);
+      if (className === "_User") return restoreTeam(rows);
+      return restoreRecords(className, rows);
+    });
+    function linksOf(row) {
+      try {
+        return JSON.parse(row.get("restoreLinks")?.json || "{}");
+      } catch {
+        return {};
+      }
+    }
+    Parse.Cloud.define("adminRestoreFinish", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      let fixed = 0;
+      for (const className of ORDER.slice(2)) {
+        const query = new Parse.Query(className);
+        query.exists("restoreLinks");
+        query.limit(BATCH);
+        const rows = await query.find(MASTER).catch(() => []);
+        if (!rows.length) continue;
+        const wanted = /* @__PURE__ */ new Map();
+        for (const row of rows) collectPointers(linksOf(row), wanted);
+        const map = await resolveIds(wanted);
+        for (const row of rows) {
+          const links = linksOf(row);
+          const fields = {};
+          for (const [field, value] of Object.entries(links)) {
+            const missing = { found: false };
+            const linked = relink(value, map, missing);
+            if (!missing.found) fields[field] = linked;
+          }
+          for (const [field, value] of Object.entries(withoutIdPointers(className, fields)))
+            row.set(field, decode(field, value));
+          row.unset("restoreLinks");
+        }
+        await Parse.Object.saveAll(rows, MASTER);
+        fixed += rows.length;
+        return { fixed, remaining: true, done: false };
+      }
+      const security = await applySecurity();
+      await audit(actor, "data.restored", { className: "Restore", id: "backup" }, null, {
+        counts: request.params?.counts || {},
+        security
+      });
+      return { fixed, remaining: false, done: true };
+    });
+    module2.exports = { RESTORE_ORDER: ORDER };
+  }
+});
+
 // cloud/preview.js
 var require_preview = __commonJS({
   "cloud/preview.js"(exports2, module2) {
@@ -16264,7 +16670,7 @@ var require_overrides = __commonJS({
           feePaid: order.get("deliveryFeePaid") === true
         } : null,
         times: {
-          placed: order.createdAt,
+          placed: require_placed().placedAt(order),
           accepted: at("acceptedAt"),
           ready: at("readyAt"),
           pickedUp: at("pickedUpAt"),
@@ -16500,6 +16906,7 @@ var require_profile = __commonJS({
       return {
         restaurantName: values.restaurantName,
         restaurantLogo: values.restaurantLogo,
+        loginImages: values.loginImages,
         theme: { ink: values.themeInk, accent: values.themeAccent },
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
@@ -16558,6 +16965,7 @@ var require_profile = __commonJS({
         platform: platformInfo(platform),
         restaurantName: values.restaurantName,
         restaurantLogo: values.restaurantLogo,
+        loginImages: values.loginImages,
         theme: { ink: values.themeInk, accent: values.themeAccent },
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
@@ -16628,6 +17036,7 @@ require_admin();
 require_onboarding();
 require_data();
 require_privacy();
+require_restore();
 require_preview();
 require_reports2();
 require_owner();

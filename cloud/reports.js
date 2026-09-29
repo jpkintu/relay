@@ -10,6 +10,7 @@ const { merchantAccounts } = require('./lib/mobileMoney');
 const { resolveRange, previousRange, bucketOf, bucketKeys, localClock } = require('./lib/dates');
 const R = require('./lib/reports');
 const { orderRiderPay } = require('./lib/money');
+const { placedAt, createdIn } = require('./lib/placed');
 const { payOwed } = require('./payouts');
 
 const MAX_ROWS = 2000;
@@ -51,9 +52,12 @@ function periodOf(params, range) {
 
 // Orders whose `field` falls inside the range (optionally one rider's).
 function ordersIn(range, field, riderId) {
-  const query = new Parse.Query('Order');
-  query.greaterThanOrEqualTo(field, range.start);
-  query.lessThan(field, range.end);
+  // Placed time counts restored orders by their original time (lib/placed.js).
+  const query = field === 'createdAt' ? createdIn('Order', range) : new Parse.Query('Order');
+  if (field !== 'createdAt') {
+    query.greaterThanOrEqualTo(field, range.start);
+    query.lessThan(field, range.end);
+  }
   const rider = riderPointer(riderId);
   if (rider) query.equalTo('createdBy', rider);
   query.include('createdBy');
@@ -93,7 +97,7 @@ function factOf(order) {
     paymentStatus: order.get('paymentStatus') || '',
     amountCollected: Number(order.get('amountCollected') || 0),
     cashStatus: order.get('cashStatus') || '',
-    createdAt: order.createdAt,
+    createdAt: placedAt(order),
     deliveredAt: order.get('deliveredAt') || null,
   };
 }
@@ -136,9 +140,10 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
   const momoQuery = ordersIn(range, 'createdAt', p.riderId);
   momoQuery.equalTo('paymentMethod', 'mobile_money');
   momoQuery.include('paymentCheckedBy');
-  const handoverQuery = new Parse.Query('CashHandover');
-  handoverQuery.greaterThanOrEqualTo('createdAt', new Date(range.start.getTime() - 7 * 864e5));
-  handoverQuery.lessThan('createdAt', new Date(range.end.getTime() + 7 * 864e5));
+  const handoverQuery = createdIn('CashHandover', {
+    start: new Date(range.start.getTime() - 7 * 864e5),
+    end: new Date(range.end.getTime() + 7 * 864e5),
+  });
   if (p.riderId) handoverQuery.equalTo('rider', riderPointer(p.riderId));
   handoverQuery.include(['rider', 'cashier']);
 
@@ -200,8 +205,8 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
   // A pending payment on a cancelled order is no longer waiting for money.
   const liveMomo = momoRows.filter((r) => r.orderStatus !== 'CANCELLED' || r.status === 'VERIFIED');
   const handoverRows = handovers
-    .filter((h) => h.createdAt >= range.start && h.createdAt < range.end)
-    .sort((a, b) => b.createdAt - a.createdAt)
+    .filter((h) => placedAt(h) >= range.start && placedAt(h) < range.end)
+    .sort((a, b) => placedAt(b) - placedAt(a))
     .map((h) => ({
       id: h.id,
       code: h.get('handoverCode'),
@@ -213,7 +218,7 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
       orderCount: h.get('orderCount') || 0,
       status: h.get('status'),
       reason: h.get('disputeReason') || '',
-      createdAt: h.createdAt,
+      createdAt: placedAt(h),
       confirmedAt: h.get('confirmedAt') || null,
       returnedAmount: Number(h.get('returnedAmount') || 0),
       shortage: Number(h.get('shortage') || 0),

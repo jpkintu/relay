@@ -24,6 +24,7 @@ const {
 } = require('./lib/dates');
 const R = require('./lib/reports');
 const { sumBy } = require('./lib/money');
+const { placedAt, createdIn } = require('./lib/placed');
 const { factOf, findAll, ordersIn, orderLines } = require('./reports');
 const { payOwed } = require('./payouts');
 const { money, notifyAdmins } = require('./notifications');
@@ -281,14 +282,14 @@ Parse.Cloud.define('adminGetAuditLog', async (request) => {
   const { values: config } = await loadConfig();
   const range = resolveRange(p, config.timezone, { defaultDays: 7, maxDays: 366 });
   if (range.error) throw invalid(range.error);
-  const query = new Parse.Query('AuditLog');
-  query.greaterThanOrEqualTo('createdAt', range.start);
-  query.lessThan('createdAt', range.end);
+  let end = range.end;
   if (p.before) {
     const before = new Date(p.before);
     if (Number.isNaN(before.getTime())) throw invalid('Bad page');
-    query.lessThan('createdAt', before < range.end ? before : range.end);
+    if (before < end) end = before;
   }
+  // Restored entries count by their original time (lib/placed.js).
+  const query = createdIn('AuditLog', { start: range.start, end });
   if (p.actorId) {
     if (!/^[A-Za-z0-9]{1,32}$/.test(String(p.actorId))) throw invalid('Unknown person');
     query.equalTo('actor', Parse.User.createWithoutData(String(p.actorId)));
@@ -312,7 +313,7 @@ Parse.Cloud.define('adminGetAuditLog', async (request) => {
     groups: AUDIT_GROUPS,
     rows: rows.map((row) => ({
       id: row.id,
-      at: row.createdAt,
+      at: placedAt(row),
       action: row.get('action'),
       actorId: row.get('actor')?.id || '',
       actor: personName(row.get('actor')) || 'System',
@@ -322,7 +323,7 @@ Parse.Cloud.define('adminGetAuditLog', async (request) => {
       before: parseJson(row.get('beforeJson')),
       after: parseJson(row.get('afterJson')),
     })),
-    next: found.length > PAGE ? rows[rows.length - 1].createdAt : null,
+    next: found.length > PAGE ? placedAt(rows[rows.length - 1]) : null,
   };
 });
 

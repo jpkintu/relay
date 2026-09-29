@@ -152,6 +152,10 @@ async function loadConfig() {
   }
   // The restaurant's own logo (Settings), as a public URL; '' when none.
   values.restaurantLogo = fileUrl(object?.get('restaurantLogo')) || '';
+  // The sign-in screen's pictures, as public URLs with their captions.
+  values.loginImages = (object?.get('loginImages') || [])
+    .map((entry) => ({ url: fileUrl(entry?.file) || '', caption: String(entry?.caption || '') }))
+    .filter((entry) => entry.url);
   return { object, values };
 }
 

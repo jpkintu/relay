@@ -4,6 +4,7 @@ import Parse from '../parse';
 import { formatDate, formatMoney } from '../lib/format';
 import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
 import { useSession, type RestaurantSummary } from '../lib/session';
+import { AuthSide } from './AuthSide';
 import { BrandMark } from './BrandMark';
 
 // Relay Hosted: the restaurant's subscription as the app shows it.
@@ -74,6 +75,7 @@ export function ClosedScreen() {
   const contact = r.supportContact ? ` (${r.supportContact})` : '';
   return (
     <main className="auth-shell">
+      <AuthSide />
       <section className="auth-panel">
         <div className="login-card">
           <BrandMark className="mobile-brand" />

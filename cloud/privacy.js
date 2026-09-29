@@ -34,8 +34,8 @@ async function applyRetention({ months, now = new Date(), dryRun = false }) {
   if (!months) return { months: 0, orders: 0, customers: 0, notifications: 0 };
   const cutoff = new Date(now);
   cutoff.setMonth(cutoff.getMonth() - months);
-  const orderQuery = new Parse.Query('Order');
-  orderQuery.lessThan('createdAt', cutoff);
+  // Restored orders count by their original time (lib/placed.js).
+  const orderQuery = require('./lib/placed').createdIn('Order', { end: cutoff });
   orderQuery.containedIn('status', ['DELIVERED', 'CANCELLED']);
   orderQuery.doesNotExist('anonymisedAt');
   const customerQuery = new Parse.Query('Customer');

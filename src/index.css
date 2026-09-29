@@ -7439,3 +7439,178 @@ table.data tr.selected td {
   font: 600 16px var(--font-mono);
   letter-spacing: 0.04em;
 }
+.restore-file input {
+  height: auto;
+  padding: 10px 12px;
+}
+.restore-result ul {
+  margin: 10px 0;
+  padding-left: 18px;
+}
+.restore-pins h3 {
+  font: 600 18px var(--font-display);
+  margin: 16px 0 4px;
+}
+.restore-pins code {
+  font: 600 15px var(--font-mono);
+  letter-spacing: 0.05em;
+}
+.restore-pins .setup-secondary {
+  margin-top: 12px;
+}
+
+/* Sign-in side panel: the restaurant's pictures under a wash of its brand
+   colour, or Relay's own slides. */
+.auth-side {
+  isolation: isolate;
+}
+.auth-side > .brand-mark,
+.auth-side .side-copy,
+.side-dots {
+  position: relative;
+  z-index: 2;
+}
+.side-slide {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.9s ease;
+  z-index: 0;
+}
+.side-slide.shown {
+  opacity: 1;
+}
+.side-slide img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.04);
+  transition: transform 7s ease-out;
+}
+.side-slide.shown img {
+  transform: scale(1);
+}
+.auth-side.with-images:before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ink) 70%, transparent) 0%,
+    color-mix(in srgb, var(--ink) 50%, transparent) 45%,
+    color-mix(in srgb, var(--ink) 92%, transparent) 100%
+  );
+}
+.side-copy {
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  animation: side-in 0.6s ease;
+}
+.auth-side .side-copy > p.side-caption {
+  font: 600 clamp(26px, 3vw, 40px) / 1.15 var(--font-display);
+  letter-spacing: -0.02em;
+  color: var(--on-dark);
+  max-width: 560px;
+  margin: 0;
+}
+.side-tip {
+  max-width: 480px;
+}
+.side-tip-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  margin-bottom: 18px;
+}
+.side-tip .eyebrow {
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+.side-tip p:last-child {
+  font: 500 clamp(22px, 2.4vw, 32px) / 1.3 var(--font-display);
+  color: var(--on-dark);
+  margin: 0;
+}
+.side-dots {
+  display: flex;
+  gap: 8px;
+  margin-top: 26px;
+}
+.side-dots button {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--on-dark) 40%, transparent);
+  cursor: pointer;
+  transition:
+    width 0.3s ease,
+    background 0.3s ease;
+}
+.side-dots button.active {
+  width: 26px;
+  background: var(--accent);
+}
+@keyframes side-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-slide,
+  .side-slide img,
+  .side-copy {
+    transition: none;
+    animation: none;
+  }
+}
+.login-pictures ul {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.login-pictures li {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.login-pictures img {
+  width: 96px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.login-picture-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+@media (max-width: 599px) {
+  .login-pictures li {
+    grid-template-columns: 80px 1fr;
+  }
+  .login-picture-actions {
+    grid-column: 1 / -1;
+  }
+}
+.login-pictures input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line, #d9dce3);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+}

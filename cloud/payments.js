@@ -225,7 +225,7 @@ function paymentRow(order) {
     amount: order.get('total'),
     paymentStatus: order.get('paymentStatus'),
     orderStatus: order.get('status'),
-    createdAt: order.createdAt,
+    createdAt: require('./lib/placed').placedAt(order),
     checkedAt: order.get('paymentCheckedAt') || null,
     checkedBy: nameOf(order.get('paymentCheckedBy')),
     rejectReason: order.get('paymentRejectReason') || '',

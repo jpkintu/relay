@@ -17,6 +17,7 @@ function publicConfig(values) {
   return {
     restaurantName: values.restaurantName,
     restaurantLogo: values.restaurantLogo,
+    loginImages: values.loginImages,
     theme: { ink: values.themeInk, accent: values.themeAccent },
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
@@ -81,6 +82,7 @@ Parse.Cloud.define('getAppInfo', async () => {
     platform: platformInfo(platform),
     restaurantName: values.restaurantName,
     restaurantLogo: values.restaurantLogo,
+    loginImages: values.loginImages,
     theme: { ink: values.themeInk, accent: values.themeAccent },
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
