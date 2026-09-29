@@ -1250,7 +1250,9 @@ var require_security = __commonJS({
         appVersion: S,
         resolved: B,
         resolvedAt: D,
-        resolvedBy: user
+        resolvedBy: user,
+        // Relay Hosted: marked fixed from the platform console.
+        resolvedByPlatform: B
       },
       PushSubscription: {
         user,
@@ -2898,7 +2900,9 @@ var require_errors = __commonJS({
           url: row.get("url") || "",
           appVersion: row.get("appVersion") || "",
           resolved: !!row.get("resolved"),
-          resolvedAt: row.get("resolvedAt")?.toISOString() || null
+          resolvedAt: row.get("resolvedAt")?.toISOString() || null,
+          // Relay Hosted: marked fixed by Relay for every restaurant it hit.
+          resolvedByRelay: !!row.get("resolvedByPlatform")
         }))
       };
     });
@@ -2913,12 +2917,127 @@ var require_errors = __commonJS({
         query.containedIn("objectId", ids);
       }
       const rows = await findAll(query);
-      for (const row of rows) row.set({ resolved: true, resolvedAt: /* @__PURE__ */ new Date(), resolvedBy: actor });
+      for (const row of rows)
+        row.set({
+          resolved: true,
+          resolvedAt: /* @__PURE__ */ new Date(),
+          resolvedBy: actor,
+          resolvedByPlatform: false
+        });
       if (rows.length) {
         await Parse.Object.saveAll(rows, MASTER);
         await audit(actor, "errors.resolved", rows[0], null, { count: rows.length });
       }
       return { resolved: rows.length };
+    });
+    var errorRow = (row) => ({
+      id: row.id,
+      source: row.get("source"),
+      where: row.get("where") || "",
+      message: row.get("message"),
+      stack: row.get("stack") || "",
+      count: Number(row.get("count") || 1),
+      firstSeenAt: row.get("firstSeenAt")?.toISOString() || row.createdAt.toISOString(),
+      lastSeenAt: row.get("lastSeenAt")?.toISOString() || row.createdAt.toISOString(),
+      role: row.get("role") || "",
+      userName: row.get("userName") || "",
+      userAgent: row.get("userAgent") || "",
+      url: row.get("url") || "",
+      appVersion: row.get("appVersion") || "",
+      resolved: !!row.get("resolved"),
+      resolvedAt: row.get("resolvedAt")?.toISOString() || null
+    });
+    var restaurantOf = (row) => {
+      const tenant = row.get("tenant");
+      return tenant ? { id: tenant.id, name: tenant.get("name") || "", code: tenant.get("code") || "" } : { id: "none", name: "Relay (no restaurant)", code: "" };
+    };
+    Parse.Cloud.define("platformListErrors", async (request) => {
+      await require_restaurants().requirePlatform(request);
+      const p = request.params || {};
+      const state = p.state === "fixed" ? "fixed" : "open";
+      const wanted = String(p.restaurant || "");
+      return tenancy.withoutTenant(async () => {
+        const query = new Parse.Query("ErrorLog");
+        query.include("tenant");
+        const all = await findAll(query).catch(() => []);
+        const restaurants = /* @__PURE__ */ new Map();
+        for (const row of all) {
+          const r = restaurantOf(row);
+          const entry = restaurants.get(r.id) || { ...r, open: 0 };
+          if (!row.get("resolved")) entry.open += 1;
+          restaurants.set(r.id, entry);
+        }
+        const group = (rows2) => {
+          const groups = /* @__PURE__ */ new Map();
+          for (const row of rows2) {
+            const key = row.get("fingerprint") || row.id;
+            const g = groups.get(key) || { rows: [], hits: /* @__PURE__ */ new Map() };
+            g.rows.push(row);
+            const r = restaurantOf(row);
+            g.hits.set(r.id, r);
+            groups.set(key, g);
+          }
+          return [...groups.entries()].map(([fingerprint, g]) => {
+            const latest = g.rows.reduce(
+              (a, b) => (b.get("lastSeenAt") || 0) > (a.get("lastSeenAt") || 0) ? b : a
+            );
+            const first = g.rows.reduce(
+              (a, b) => (b.get("firstSeenAt") || b.createdAt) < (a.get("firstSeenAt") || a.createdAt) ? b : a
+            );
+            return {
+              ...errorRow(latest),
+              id: fingerprint,
+              count: g.rows.reduce((sum, row) => sum + Number(row.get("count") || 1), 0),
+              firstSeenAt: first.get("firstSeenAt")?.toISOString() || first.createdAt.toISOString(),
+              restaurants: [...g.hits.values()]
+            };
+          });
+        };
+        const open = group(all.filter((row) => !row.get("resolved")));
+        const inState = state === "fixed" ? group(all.filter((row) => row.get("resolved"))) : open;
+        const rows = inState.filter((row) => !wanted || row.restaurants.some((r) => r.id === wanted)).sort((a, b) => a.lastSeenAt < b.lastSeenAt ? 1 : -1).slice(0, 300);
+        return {
+          open: open.length,
+          rows,
+          restaurants: [...restaurants.values()].sort(
+            (a, b) => b.open - a.open || a.name.localeCompare(b.name)
+          )
+        };
+      });
+    });
+    Parse.Cloud.define("platformResolveErrors", async (request) => {
+      const actor = await require_restaurants().requirePlatform(request);
+      const p = request.params || {};
+      return tenancy.withoutTenant(async () => {
+        const query = new Parse.Query("ErrorLog");
+        query.notEqualTo("resolved", true);
+        if (p.all) {
+          const wanted = String(p.restaurant || "");
+          if (wanted === "none") query.doesNotExist("tenant");
+          else if (wanted)
+            query.equalTo("tenant", { __type: "Pointer", className: "Restaurant", objectId: wanted });
+        } else {
+          const ids = Array.isArray(p.ids) ? p.ids.map(String).slice(0, 500) : [];
+          if (!ids.length) throw invalid("Choose the errors to mark as fixed");
+          query.containedIn("fingerprint", ids);
+        }
+        const rows = await findAll(query);
+        for (const row of rows)
+          row.set({
+            resolved: true,
+            resolvedAt: /* @__PURE__ */ new Date(),
+            resolvedBy: actor,
+            resolvedByPlatform: true
+          });
+        if (rows.length) {
+          await Parse.Object.saveAll(rows, MASTER);
+          await audit(actor, "platform.errors_resolved", rows[0], null, {
+            count: rows.length,
+            restaurants: new Set(rows.map((row) => row.get("tenant")?.id || "none")).size
+          });
+        }
+        return { resolved: rows.length };
+      });
     });
     module2.exports = { recordError };
   }

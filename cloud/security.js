@@ -389,6 +389,8 @@ const SCHEMAS = {
     resolved: B,
     resolvedAt: D,
     resolvedBy: user,
+    // Relay Hosted: marked fixed from the platform console.
+    resolvedByPlatform: B,
   },
   PushSubscription: {
     user,

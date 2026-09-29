@@ -4941,6 +4941,8 @@ const ACCESS = {
     'platformListPayments',
     'platformResetOwner',
     'platformApplySecurity',
+    'platformListErrors',
+    'platformResolveErrors',
     'createPreviewOrder',
     'getPreviewOrders',
     'transitionPreviewOrder',
@@ -5457,6 +5459,57 @@ describe('platform console and access (Relay Hosted)', () => {
     const { rows } = await run('platformGetAudit', {}, ops);
     assert.equal(rows[0].action, 'platform.security_applied');
     assert.equal(rows[0].after.restaurants, restaurants.length);
+  });
+
+  test('Relay sees every restaurant’s errors; fixing one fixes it in each restaurant', async () => {
+    const crash = {
+      message: 'TypeError: chart failed for report 7c1d2e3f4a',
+      where: 'Reports',
+      stack: 'at Reports (index.js:9:9)',
+      appVersion: 'test',
+    };
+    await run('reportClientError', crash, s.owner);
+    await run(
+      'reportClientError',
+      { ...crash, message: crash.message.replace('7c1d2e3f4a', '0b9a8c7d6e') },
+      other.owner,
+    );
+    await rejects(run('platformListErrors', {}, other.owner), /platform role required/);
+    await rejects(run('platformResolveErrors', { all: true }, s.owner), /platform role required/);
+
+    const list = await run('platformListErrors', {}, ops);
+    const entry = list.rows.find((row) => row.message.startsWith('TypeError: chart failed'));
+    assert.ok(entry, 'the problem is listed once for all restaurants');
+    assert.equal(
+      list.rows.filter((row) => row.message.startsWith('TypeError: chart failed')).length,
+      1,
+    );
+    assert.equal(entry.count, 2);
+    assert.deepEqual(entry.restaurants.map((r) => r.code).sort(), [CODE, OTHER].sort());
+    const mine = list.restaurants.find((r) => r.code === OTHER);
+    const filtered = await run('platformListErrors', { restaurant: mine.id }, ops);
+    assert.ok(filtered.rows.every((row) => row.restaurants.some((r) => r.id === mine.id)));
+
+    const ownOpen = (user) =>
+      run('adminListErrors', {}, user).then((r) =>
+        r.rows.filter((row) => row.message.startsWith('TypeError: chart failed')),
+      );
+    assert.equal((await ownOpen(s.owner)).length, 1);
+    assert.equal((await ownOpen(other.owner)).length, 1);
+
+    const done = await run('platformResolveErrors', { ids: [entry.id] }, ops);
+    assert.equal(done.resolved, 2);
+    // Fixed on each restaurant's own page too, marked as done by Relay.
+    assert.equal((await ownOpen(s.owner)).length, 0);
+    assert.equal((await ownOpen(other.owner)).length, 0);
+    const fixed = (await run('adminListErrors', { state: 'fixed' }, other.owner)).rows.find((row) =>
+      row.message.startsWith('TypeError: chart failed'),
+    );
+    assert.equal(fixed.resolvedByRelay, true);
+    const after = await run('platformListErrors', { state: 'fixed' }, ops);
+    assert.ok(after.rows.some((row) => row.id === entry.id));
+    const { rows } = await run('platformGetAudit', {}, ops);
+    assert.equal(rows[0].action, 'platform.errors_resolved');
   });
 
   test('Relay gives a locked-out owner a new password', async () => {

@@ -3,6 +3,7 @@ import { LogOut, RefreshCw } from 'lucide-react';
 import Parse from '../parse';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
+import { AdminErrors } from './AdminErrors';
 import { BrandMark } from './BrandMark';
 import { daysLeft } from './Subscription';
 import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
@@ -240,6 +241,13 @@ export function PlatformConsole() {
 
         <section className="admin-panel">
           <div className="panel-title">
+            <h2>Errors</h2>
+          </div>
+          <AdminErrors platform />
+        </section>
+
+        <section className="admin-panel">
+          <div className="panel-title">
             <h2>Recent changes</h2>
           </div>
           {changes.length === 0 ? (
@@ -251,18 +259,20 @@ export function PlatformConsole() {
                   <span>{formatDate(c.at, TIMEZONE)}</span>
                   <span>
                     <b>{c.by}</b>{' '}
-                    {c.action === 'platform.settings_saved'
-                      ? 'changed the platform settings'
-                      : c.action === 'platform.security_applied'
-                        ? `applied the security rules for all restaurants (${String(c.after.restaurants ?? '')})`
-                        : c.action === 'platform.payment_recorded'
-                          ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
-                              Number(c.after.amount) || 0,
-                              currency,
-                            )} for ${String(c.after.months)} month(s)${
-                              c.after.reference ? ` (${String(c.after.reference)})` : ''
-                            }`
-                          : `changed ${names.get(c.entityId) || 'a restaurant'}`}
+                    {c.action === 'platform.errors_resolved'
+                      ? `marked ${String(c.after.count ?? '')} error(s) fixed in ${String(c.after.restaurants ?? '')} place(s)`
+                      : c.action === 'platform.settings_saved'
+                        ? 'changed the platform settings'
+                        : c.action === 'platform.security_applied'
+                          ? `applied the security rules for all restaurants (${String(c.after.restaurants ?? '')})`
+                          : c.action === 'platform.payment_recorded'
+                            ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
+                                Number(c.after.amount) || 0,
+                                currency,
+                              )} for ${String(c.after.months)} month(s)${
+                                c.after.reference ? ` (${String(c.after.reference)})` : ''
+                              }`
+                            : `changed ${names.get(c.entityId) || 'a restaurant'}`}
                     {c.action === 'platform.restaurant_updated' ||
                     c.action === 'platform.settings_saved'
                       ? describe(c)

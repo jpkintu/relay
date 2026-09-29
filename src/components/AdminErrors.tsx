@@ -20,7 +20,12 @@ type ErrorRow = {
   appVersion: string;
   resolved: boolean;
   resolvedAt: string | null;
+  // Relay Hosted: fixed from the platform console, for every restaurant.
+  resolvedByRelay?: boolean;
+  // Platform console only: the restaurants the problem hit.
+  restaurants?: Restaurant[];
 };
+type Restaurant = { id: string; name: string; code: string; open?: number };
 
 const SOURCE_LABEL = { app: 'In the app', server: 'On the server', job: 'Scheduled job' };
 
@@ -53,20 +58,35 @@ function deviceName(userAgent: string) {
 // Crashes in the app and failures on the server, grouped: the same problem
 // is one entry with a count. Marking one fixed moves it to Fixed; if it
 // happens again it comes back.
-export function AdminErrors({ onChanged }: { onChanged?: () => void }) {
+//
+// Relay Hosted: with `platform`, the platform console's view of every
+// restaurant's errors, one entry per problem; marking it fixed fixes it in
+// every restaurant it hit.
+export function AdminErrors({
+  onChanged,
+  platform = false,
+}: {
+  onChanged?: () => void;
+  platform?: boolean;
+}) {
   const [state, setState] = useState<'open' | 'fixed'>('open');
+  const [restaurant, setRestaurant] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
-  const { data, error, loading, reload } = useCloud<{ open: number; rows: ErrorRow[] }>(
-    'adminListErrors',
-    { state },
-  );
+  const { data, error, loading, reload } = useCloud<{
+    open: number;
+    rows: ErrorRow[];
+    restaurants?: Restaurant[];
+  }>(platform ? 'platformListErrors' : 'adminListErrors', {
+    state,
+    ...(platform && restaurant && { restaurant }),
+  });
   const rows = data?.rows ?? [];
-  const resolve = async (params: { ids?: string[]; all?: boolean }) => {
+  const resolve = async (params: { ids?: string[]; all?: boolean; restaurant?: string }) => {
     setBusy(true);
     setActionError('');
     try {
-      await Parse.Cloud.run('adminResolveErrors', params);
+      await Parse.Cloud.run(platform ? 'platformResolveErrors' : 'adminResolveErrors', params);
       reload();
       onChanged?.();
     } catch (e) {
@@ -77,11 +97,19 @@ export function AdminErrors({ onChanged }: { onChanged?: () => void }) {
   };
   return (
     <div className={loading ? 'report busy' : 'report'}>
-      <p className="section-intro">
-        Problems Relay ran into on anyone&apos;s phone or computer, and on the server. Mistakes
-        people are told about on screen (a wrong PIN, a missing field) are not listed. Send this
-        list to whoever maintains Relay; mark an entry fixed once the fix is deployed.
-      </p>
+      {platform ? (
+        <p className="section-intro">
+          Problems in every restaurant, and on the sign-in screen and this console. The same problem
+          in several restaurants is one entry. Marking it fixed (once the fix is deployed) marks it
+          fixed in each of those restaurants too; if it happens again it comes back.
+        </p>
+      ) : (
+        <p className="section-intro">
+          Problems Relay ran into on anyone&apos;s phone or computer, and on the server. Mistakes
+          people are told about on screen (a wrong PIN, a missing field) are not listed. Send this
+          list to whoever maintains Relay; mark an entry fixed once the fix is deployed.
+        </p>
+      )}
       <div className="filter-bar">
         <div className="filter-toggle" role="group" aria-label="Show errors">
           {(
@@ -101,11 +129,27 @@ export function AdminErrors({ onChanged }: { onChanged?: () => void }) {
             </button>
           ))}
         </div>
+        {platform && data?.restaurants && data.restaurants.length > 0 && (
+          <select
+            aria-label="Restaurant"
+            value={restaurant}
+            onChange={(e) => setRestaurant(e.target.value)}
+          >
+            <option value="">All restaurants</option>
+            {data.restaurants.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+                {r.code ? ` (${r.code})` : ''}
+                {r.open ? ` · ${r.open} open` : ''}
+              </option>
+            ))}
+          </select>
+        )}
         {state === 'open' && rows.length > 1 && (
           <button
             className="link-button"
             disabled={busy}
-            onClick={() => void resolve({ all: true })}
+            onClick={() => void resolve({ all: true, ...(restaurant && { restaurant }) })}
           >
             Mark all fixed
           </button>
@@ -154,6 +198,14 @@ function ErrorCard({
       </header>
       <p className="issue-note">{row.message}</p>
       <dl>
+        {row.restaurants && (
+          <div>
+            <dt>{row.restaurants.length === 1 ? 'Restaurant' : 'Restaurants'}</dt>
+            <dd>
+              {row.restaurants.map((r) => r.name + (r.code ? ` (${r.code})` : '')).join(', ')}
+            </dd>
+          </div>
+        )}
         <div>
           <dt>Where</dt>
           <dd>{row.where || '—'}</dd>
@@ -183,7 +235,10 @@ function ErrorCard({
         {row.resolved && (
           <div>
             <dt>Marked fixed</dt>
-            <dd>{when(row.resolvedAt)}</dd>
+            <dd>
+              {when(row.resolvedAt)}
+              {row.resolvedByRelay && ' · by Relay'}
+            </dd>
           </div>
         )}
       </dl>

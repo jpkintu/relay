@@ -149,6 +149,14 @@ with progress; a restaurant that fails is listed and the rest carry on
 not need to do anything; their own "Apply security rules" button only redoes
 their records.
 
+**Errors.** Console → Errors lists problems from every restaurant, and from
+the sign-in screen, the console and jobs, with a filter per restaurant. The
+same problem in several restaurants is one entry (grouped by fingerprint),
+with its total count and the restaurants it hit. Once the fix is deployed,
+**Mark fixed** marks it fixed in each of those restaurants too; their own
+Admin → Errors page shows it fixed "by Relay". If it happens again it comes
+back as open (`platformListErrors`, `platformResolveErrors`; audited).
+
 **Owner locked out?** Console → the restaurant → **Reset owner password**
 gives the owner account a new password (shown once; read it out to them) and
 signs it out everywhere. They can change it under their profile.
