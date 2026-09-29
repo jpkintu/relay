@@ -61,8 +61,9 @@ export function AccessRules() {
           <h2>Apply security rules</h2>
         </div>
         <p className="muted small">
-          Re-applies database permissions, adds new fields and assigns missing rider and cashier
-          codes. Run it once after each deployment that changes Cloud Code; it is safe to run again.
+          Relay applies these for every restaurant after each update, so you do not need to. Use
+          this only if Relay support asks you to: it re-applies your records' permissions and
+          assigns missing rider and cashier codes. It is safe to run again.
         </p>
         <button
           className="setup-submit"

@@ -4546,6 +4546,7 @@ const ACCESS = {
     'platformRecordPayment',
     'platformListPayments',
     'platformResetOwner',
+    'platformApplySecurity',
     'createPreviewOrder',
     'getPreviewOrders',
     'transitionPreviewOrder',
@@ -5014,6 +5015,49 @@ describe('platform console and access (Relay Hosted)', () => {
     assert.equal(change.entityId, other.id);
     assert.equal(change.by, 'Relay Ops');
     await rejects(run('platformGetAudit', {}, s.owner), /platform role required/);
+  });
+
+  test('Relay applies the security rules for every restaurant, one at a time', async () => {
+    await rejects(run('platformApplySecurity', {}, other.owner), /platform role required/);
+    await rejects(run('platformApplySecurity', { after: '../x' }, ops), /Bad restaurant/);
+    // Another restaurant's order that lost its permissions, and one here.
+    const restaurants = await new Parse.Query('Restaurant').ascending('objectId').find(M);
+    const broken = [];
+    for (const restaurant of restaurants) {
+      const order = await new Parse.Query('Order')
+        .equalTo('tenant', restaurant)
+        .exists('createdBy')
+        .first(M);
+      if (!order) continue;
+      order.setACL(new Parse.ACL());
+      await order.save(null, M);
+      broken.push(order);
+    }
+    assert.ok(broken.length >= 2, 'orders in two restaurants');
+
+    const seen = [];
+    let step = await run('platformApplySecurity', {}, ops);
+    assert.equal(step.total, restaurants.length);
+    for (;;) {
+      assert.equal(step.failed, '');
+      seen.push(step.restaurant.code);
+      if (!step.next) break;
+      step = await run('platformApplySecurity', { after: step.next }, ops);
+      assert.equal(step.total, null, 'counted on the first call only');
+    }
+    assert.deepEqual(
+      seen,
+      restaurants.map((r) => r.get('code')),
+      'every restaurant once, suspended ones too',
+    );
+    for (const order of broken) {
+      await order.fetch(M);
+      const reader = order.get('createdBy').id;
+      assert.equal(order.getACL().getReadAccess(reader), true, 'the rider reads it again');
+    }
+    const { rows } = await run('platformGetAudit', {}, ops);
+    assert.equal(rows[0].action, 'platform.security_applied');
+    assert.equal(rows[0].after.restaurants, restaurants.length);
   });
 
   test('Relay gives a locked-out owner a new password', async () => {

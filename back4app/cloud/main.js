@@ -889,6 +889,7 @@ var require_security = __commonJS({
     var {
       MASTER,
       forbidden,
+      invalid,
       getRoleName,
       readAcl,
       userAcl,
@@ -1375,8 +1376,8 @@ var require_security = __commonJS({
       await object.save(null, MASTER);
       return true;
     }
-    async function applySecurity() {
-      const updated = { createdClasses: await applySchemas() };
+    async function applySecurity({ schemas = true } = {}) {
+      const updated = { createdClasses: schemas ? await applySchemas() : [] };
       updated.Order = await eachObject("Order", (o) => saveAcl(o, readAcl(o.get("createdBy"))));
       updated.OrderItem = await eachObject(
         "OrderItem",
@@ -1505,6 +1506,56 @@ var require_security = __commonJS({
       const updated = await applySecurity();
       await audit(actor, "security.applied", { className: "Security", id: "all" }, null, updated);
       return updated;
+    });
+    Parse.Cloud.define("platformApplySecurity", async (request) => {
+      const { requirePlatform } = require_restaurants();
+      const tenancy = require_tenant();
+      const actor = await requirePlatform(request);
+      const after = request.params?.after;
+      if (after !== void 0 && after !== null && !/^[A-Za-z0-9]{1,32}$/.test(String(after)))
+        throw invalid("Bad restaurant");
+      let createdClasses = [];
+      if (!after) createdClasses = await tenancy.withoutTenant(() => applySchemas());
+      const [row, following] = await tenancy.withoutTenant(() => {
+        const query = new Parse.Query("Restaurant");
+        query.ascending("objectId");
+        if (after) query.greaterThan("objectId", String(after));
+        query.limit(2);
+        return query.find(MASTER);
+      });
+      const total = after ? null : await tenancy.withoutTenant(
+        () => (
+          // A filter keeps Postgres from answering with an estimate.
+          new Parse.Query("Restaurant").exists("objectId").count(MASTER)
+        )
+      );
+      let updated = null;
+      let failed = "";
+      if (row)
+        try {
+          updated = await tenancy.runAs(
+            row.id,
+            () => applySecurity({ schemas: false }),
+            row.get("code")
+          );
+        } catch (error) {
+          failed = String(error?.message || error).slice(0, 200);
+        }
+      if (!after)
+        await tenancy.withoutTenant(
+          () => audit(actor, "platform.security_applied", { className: "Security", id: "all" }, null, {
+            restaurants: total,
+            createdClasses
+          })
+        );
+      return {
+        createdClasses,
+        total,
+        restaurant: row ? { id: row.id, name: row.get("name") || "", code: row.get("code") || "" } : null,
+        updated,
+        failed,
+        next: following ? row.id : null
+      };
     });
     module2.exports = { applySecurity };
   }

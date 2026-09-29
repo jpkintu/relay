@@ -236,6 +236,8 @@ export function PlatformConsole() {
           />
         )}
 
+        <ApplySecurity onDone={() => void load()} />
+
         <section className="admin-panel">
           <div className="panel-title">
             <h2>Recent changes</h2>
@@ -251,14 +253,16 @@ export function PlatformConsole() {
                     <b>{c.by}</b>{' '}
                     {c.action === 'platform.settings_saved'
                       ? 'changed the platform settings'
-                      : c.action === 'platform.payment_recorded'
-                        ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
-                            Number(c.after.amount) || 0,
-                            currency,
-                          )} for ${String(c.after.months)} month(s)${
-                            c.after.reference ? ` (${String(c.after.reference)})` : ''
-                          }`
-                        : `changed ${names.get(c.entityId) || 'a restaurant'}`}
+                      : c.action === 'platform.security_applied'
+                        ? `applied the security rules for all restaurants (${String(c.after.restaurants ?? '')})`
+                        : c.action === 'platform.payment_recorded'
+                          ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
+                              Number(c.after.amount) || 0,
+                              currency,
+                            )} for ${String(c.after.months)} month(s)${
+                              c.after.reference ? ` (${String(c.after.reference)})` : ''
+                            }`
+                          : `changed ${names.get(c.entityId) || 'a restaurant'}`}
                     {c.action === 'platform.restaurant_updated' ||
                     c.action === 'platform.settings_saved'
                       ? describe(c)
@@ -578,6 +582,87 @@ function Payments({ row, onRecorded }: { row: Row; onRecorded: (row: Row) => voi
         </div>
       )}
     </div>
+  );
+}
+
+// After each Cloud Code upload: the database rules and new fields for the
+// whole app, then each restaurant's records, one restaurant per call.
+type SecurityStep = {
+  total: number | null;
+  restaurant: { id: string; name: string; code: string } | null;
+  failed: string;
+  next: string | null;
+};
+
+function ApplySecurity({ onDone }: { onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [error, setError] = useState('');
+  const [failed, setFailed] = useState<string[]>([]);
+  const run = async () => {
+    setBusy(true);
+    setError('');
+    setFailed([]);
+    setProgress('Updating the database rules…');
+    let after: string | null = null;
+    let total = 0;
+    let done = 0;
+    const missed: string[] = [];
+    try {
+      for (;;) {
+        const step: SecurityStep = await Parse.Cloud.run(
+          'platformApplySecurity',
+          after ? { after } : {},
+        );
+        if (step.total !== null) total = step.total;
+        if (step.restaurant) {
+          done += 1;
+          if (step.failed) missed.push(`${step.restaurant.name}: ${step.failed}`);
+          setProgress(`Applied for ${done} of ${total}: ${step.restaurant.name}`);
+        }
+        if (!step.next) break;
+        after = step.next;
+      }
+      setFailed(missed);
+      setProgress(
+        total === 0
+          ? 'Database rules updated. There are no restaurants yet.'
+          : `Done: security rules applied for ${done - missed.length} of ${total} restaurant(s).`,
+      );
+      onDone();
+    } catch (e) {
+      setProgress('');
+      setError(`${message(e)}. Run it again to finish.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="admin-panel">
+      <div className="panel-title">
+        <h2>Security rules</h2>
+      </div>
+      <p className="muted small">
+        After uploading a new <code>main.js</code>, apply the security rules once here: it adds new
+        database fields and re-applies permissions for every restaurant, including suspended ones.
+        Restaurants do not need to do anything. It is safe to run again.
+      </p>
+      <button className="primary-button" disabled={busy} onClick={() => void run()}>
+        {busy ? 'Applying…' : 'Apply security rules to all restaurants'}
+      </button>
+      {progress && <p className="form-success">{progress}</p>}
+      {failed.length > 0 && (
+        <div className="form-error">
+          Not applied for:
+          <ul>
+            {failed.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {error && <p className="form-error">{error}</p>}
+    </section>
   );
 }
 

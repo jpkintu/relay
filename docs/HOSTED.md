@@ -140,6 +140,15 @@ and keep a private note. Platform settings: monthly price, currency, trial
 days, grace days and the support contact restaurants see. Every change is
 logged under Recent changes.
 
+**After each upload of `main.js`:** console → **Apply security rules to all
+restaurants**, once. It adds new database fields and class permissions (shared
+by the whole app, done on the first step), then re-applies record permissions,
+staff codes and repairs for each restaurant in turn, suspended ones included,
+with progress; a restaurant that fails is listed and the rest carry on
+(`platformApplySecurity`, one restaurant per call; audited). Restaurants do
+not need to do anything; their own "Apply security rules" button only redoes
+their records.
+
 **Owner locked out?** Console → the restaurant → **Reset owner password**
 gives the owner account a new password (shown once; read it out to them) and
 signs it out everywhere. They can change it under their profile.

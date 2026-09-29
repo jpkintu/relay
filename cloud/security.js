@@ -13,6 +13,7 @@
 const {
   MASTER,
   forbidden,
+  invalid,
   getRoleName,
   readAcl,
   userAcl,
@@ -532,8 +533,8 @@ async function saveAcl(object, acl) {
   return true;
 }
 
-async function applySecurity() {
-  const updated = { createdClasses: await applySchemas() };
+async function applySecurity({ schemas = true } = {}) {
+  const updated = { createdClasses: schemas ? await applySchemas() : [] };
   updated.Order = await eachObject('Order', (o) => saveAcl(o, readAcl(o.get('createdBy'))));
   updated.OrderItem = await eachObject(
     'OrderItem',
@@ -670,6 +671,66 @@ Parse.Cloud.define('adminApplySecurity', async (request) => {
   const updated = await applySecurity();
   await audit(actor, 'security.applied', { className: 'Security', id: 'all' }, null, updated);
   return updated;
+});
+
+// Relay Hosted: platform staff apply the rules for every restaurant after a
+// deploy, one restaurant per call so no call runs long. The class rules and
+// fields are shared, so they are applied once, on the first call; each call
+// then repairs one restaurant's records (suspended ones too).
+// { after } → { restaurant, updated, next, total }; call again with
+// after: next until next is null.
+Parse.Cloud.define('platformApplySecurity', async (request) => {
+  const { requirePlatform } = require('./restaurants');
+  const tenancy = require('./lib/tenant');
+  const actor = await requirePlatform(request);
+  const after = request.params?.after;
+  if (after !== undefined && after !== null && !/^[A-Za-z0-9]{1,32}$/.test(String(after)))
+    throw invalid('Bad restaurant');
+  let createdClasses = [];
+  if (!after) createdClasses = await tenancy.withoutTenant(() => applySchemas());
+  const [row, following] = await tenancy.withoutTenant(() => {
+    const query = new Parse.Query('Restaurant');
+    query.ascending('objectId');
+    if (after) query.greaterThan('objectId', String(after));
+    query.limit(2);
+    return query.find(MASTER);
+  });
+  const total = after
+    ? null
+    : await tenancy.withoutTenant(() =>
+        // A filter keeps Postgres from answering with an estimate.
+        new Parse.Query('Restaurant').exists('objectId').count(MASTER),
+      );
+  let updated = null;
+  let failed = '';
+  if (row)
+    try {
+      updated = await tenancy.runAs(
+        row.id,
+        () => applySecurity({ schemas: false }),
+        row.get('code'),
+      );
+    } catch (error) {
+      // Reported and skipped, so one restaurant cannot hold up the others.
+      failed = String(error?.message || error).slice(0, 200);
+    }
+  if (!after)
+    await tenancy.withoutTenant(() =>
+      audit(actor, 'platform.security_applied', { className: 'Security', id: 'all' }, null, {
+        restaurants: total,
+        createdClasses,
+      }),
+    );
+  return {
+    createdClasses,
+    total,
+    restaurant: row
+      ? { id: row.id, name: row.get('name') || '', code: row.get('code') || '' }
+      : null,
+    updated,
+    failed,
+    next: following ? row.id : null,
+  };
 });
 
 module.exports = { applySecurity };
