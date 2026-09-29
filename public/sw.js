@@ -8,18 +8,36 @@
 // picked up on the next load; built assets have hashed names and never change.
 // Data (the Parse API) is never cached here.
 
-const SHELL = 'relay-shell-v3';
+// v4: drops caches that may hold an HTML page stored as a script (see keep).
+const SHELL = 'relay-shell-v4';
 const PRECACHE = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
+
+// Only real files are kept. Some hosts answer a missing file with the app's
+// page (status 200); kept as a script, that page would break every later
+// load of it (e.g. the charts after a deploy), so it is never stored.
+const EXPECTED = { js: /javascript/, css: /css/, woff2: /font|octet/, woff: /font|octet/ };
+function keep(url, response) {
+  if (!response || !response.ok) return false;
+  const type = response.headers.get('content-type') || '';
+  const ext = new URL(url, self.location.origin).pathname.split('.').pop();
+  if (EXPECTED[ext]) return EXPECTED[ext].test(type);
+  return !/text\/html/.test(type) || url === '/';
+}
+
+async function store(cache, url) {
+  const response = await fetch(url);
+  if (keep(url, response)) await cache.put(url, response);
+}
 
 // Caches the page and the scripts and styles it loads, so the very next
 // start works offline even if this visit was the first.
 async function precache() {
   const cache = await caches.open(SHELL);
-  await cache.addAll(PRECACHE);
+  await Promise.all(PRECACHE.map((url) => store(cache, url).catch(() => undefined)));
   const page = await cache.match('/');
   const html = page ? await page.text() : '';
   const assets = [...new Set(html.match(/\/assets\/[^"'\s>]+/g) || [])];
-  await cache.addAll(assets);
+  await Promise.all(assets.map((asset) => store(cache, asset).catch(() => undefined)));
 }
 
 self.addEventListener('install', (event) => {
@@ -55,7 +73,7 @@ async function networkFirstPage(request) {
             assets.map((asset) =>
               cache
                 .match(asset, { ignoreVary: true })
-                .then((hit) => hit || cache.add(asset).catch(() => undefined)),
+                .then((hit) => hit || store(cache, asset).catch(() => undefined)),
             ),
           );
         })
@@ -72,9 +90,10 @@ async function cacheFirst(request) {
   // Scripts load in CORS mode (with an Origin header) and hosts send
   // "Vary: Origin", so match on the URL alone.
   const cached = await cache.match(request, { ignoreVary: true, ignoreSearch: false });
-  if (cached) return cached;
+  if (cached && keep(request.url, cached)) return cached;
+  if (cached) await cache.delete(request, { ignoreVary: true });
   const response = await fetch(request);
-  if (response.ok) await cache.put(request, response.clone());
+  if (keep(request.url, response)) await cache.put(request, response.clone());
   return response;
 }
 

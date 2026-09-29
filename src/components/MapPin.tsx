@@ -2,17 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import type { Map as LeafletMap, Marker } from 'leaflet';
 import { Crosshair, MapPin, Navigation, X } from 'lucide-react';
 import { useConfig } from '../lib/session';
+import { loadOnce } from '../lib/lazy';
 
 export type LatLng = { lat: number; lng: number };
 
 const FALLBACK_CENTER: LatLng = { lat: 0.3476, lng: 32.5825 };
 
 // Leaflet (~150 KB) and its CSS load with the first map, not with the app.
-let leaflet: Promise<typeof import('leaflet')> | null = null;
-const loadLeaflet = () =>
-  (leaflet ??= Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')]).then(
+// After a new deploy, an open app reloads to the new version (lib/lazy.ts).
+const loadLeaflet = loadOnce(() =>
+  Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')]).then(
     ([module]) => (module as { default?: typeof import('leaflet') }).default ?? module,
-  ));
+  ),
+);
 
 // Directions in the phone's maps app (Google Maps on Android and in browsers).
 export const directionsUrl = ({ lat, lng }: LatLng) =>
