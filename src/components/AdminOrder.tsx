@@ -70,6 +70,14 @@ type OrderPage = {
     before: Record<string, unknown>;
     after: Record<string, unknown>;
   }[];
+  efris: {
+    status: 'issued' | 'failed' | 'pending' | 'not_due';
+    fdn: string;
+    verification: string;
+    issuedAt: string | null;
+    error: string;
+    test: boolean;
+  } | null;
   can: {
     cancel: boolean;
     deliver: boolean;
@@ -408,6 +416,14 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
             )}
           </dl>
         </section>
+        {o.efris && o.efris.status !== 'not_due' && (
+          <EfrisPanel
+            orderId={o.id}
+            view={o.efris}
+            cancelled={o.status === 'CANCELLED'}
+            onDone={reload}
+          />
+        )}
       </div>
 
       <section className="admin-panel admin-section-panel">
@@ -566,5 +582,81 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
         </ol>
       </section>
     </div>
+  );
+}
+
+// Tax (EFRIS): the sale's fiscal document, or why it is not issued yet.
+function EfrisPanel({
+  orderId,
+  view,
+  cancelled,
+  onDone,
+}: {
+  orderId: string;
+  view: NonNullable<OrderPage['efris']>;
+  cancelled: boolean;
+  onDone: () => void;
+}) {
+  const { timezone } = useConfig();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const send = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('issueEfrisReceipt', { orderId });
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not send');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="admin-panel admin-section-panel">
+      <div className="panel-title">
+        <h2>Tax (EFRIS){view.test ? ' · test' : ''}</h2>
+      </div>
+      {view.status === 'issued' ? (
+        <dl className="member-lifetime single">
+          <div>
+            <dt>FDN</dt>
+            <dd>
+              <span className="code">{view.fdn}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Verification code</dt>
+            <dd>
+              <span className="code">{view.verification}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Issued</dt>
+            <dd>
+              {formatDate(view.issuedAt, timezone, { dateStyle: 'medium', timeStyle: 'short' })}
+            </dd>
+          </div>
+        </dl>
+      ) : (
+        <>
+          <p className="muted small">
+            {view.status === 'failed'
+              ? `Not issued yet: ${view.error || 'EFRIS could not be reached'}. Relay tries again on its own.`
+              : 'Being sent to EFRIS.'}
+          </p>
+          <button className="setup-secondary" disabled={busy} onClick={() => void send()}>
+            {busy ? 'Sending…' : 'Send to EFRIS now'}
+          </button>
+        </>
+      )}
+      {cancelled && view.status === 'issued' && (
+        <p className="ops-error">
+          This order was cancelled after its fiscal receipt was issued. Apply for a credit note for
+          FDN {view.fdn} on the EFRIS portal.
+        </p>
+      )}
+      {error && <p className="ops-error">{error}</p>}
+    </section>
   );
 }

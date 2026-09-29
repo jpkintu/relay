@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import QRCode from 'qrcode';
 import Parse from '../parse';
 import { useConfig } from './session';
 import { formatDate, formatMoney } from './format';
@@ -50,6 +51,17 @@ type Receipt = {
     state: 'paid' | 'unpaid' | 'on_delivery' | 'checking';
     paidAt: string | null;
   };
+  // Tax (EFRIS), when switched on: the sale's fiscal document.
+  efris?: {
+    status: 'issued' | 'failed' | 'pending' | 'not_due';
+    fdn: string;
+    verification: string;
+    qr: string;
+    tin: string;
+    legalName: string;
+    kind: 'invoice' | 'receipt';
+    test: boolean;
+  } | null;
 };
 
 const TYPE: Record<string, string> = { delivery: 'DELIVERY', eat_in: 'EAT IN', pickup: 'PICK UP' };
@@ -76,6 +88,7 @@ function styles(width: number) {
     .big { font-size: 1.6em; font-weight: 700; text-align: center; margin: 1mm 0; }
     .center { text-align: center; }
     .muted { font-size: 0.9em; }
+    .qr { display: block; width: 30mm; height: 30mm; margin: 1mm auto; }
     hr { border: 0; border-top: 1px dashed #000; margin: 2mm 0; }
     table { width: 100%; border-collapse: collapse; }
     td { vertical-align: top; padding: 0.4mm 0; }
@@ -125,7 +138,28 @@ function dishAmount(line: Receipt['lines'][number]) {
   return line.total - sides * line.qty;
 }
 
-function customerReceipt(r: Receipt, timezone: string, symbol: string) {
+// The fiscal part of a receipt (URA EFRIS): FDN, verification code and QR.
+function fiscalBlock(r: Receipt, qr: string) {
+  const e = r.efris;
+  if (!e) return '';
+  if (e.status !== 'issued')
+    return e.status === 'not_due'
+      ? ''
+      : `<hr><div class="center muted">EFRIS ${e.kind} pending: ask for it again later</div>`;
+  return `
+    <hr>
+    <div class="center"><b>EFRIS ${e.kind === 'invoice' ? 'TAX INVOICE' : 'E-RECEIPT'}</b>${
+      e.test ? ' (TEST)' : ''
+    }</div>
+    <div>${escape(e.legalName)}</div>
+    <div>TIN: ${escape(e.tin)}</div>
+    <div>FDN: <b>${escape(e.fdn)}</b></div>
+    <div>Verification code: ${escape(e.verification)}</div>
+    ${qr ? `<img class="qr" src="${qr}" alt="">` : ''}
+    <div class="center muted">Verify on the URA EFRIS portal or app</div>`;
+}
+
+function customerReceipt(r: Receipt, timezone: string, symbol: string, qr = '') {
   const money = (n: number) => escape(formatMoney(n, symbol));
   const when = formatDate(r.placedAt, timezone, { dateStyle: 'medium', timeStyle: 'short' });
   const where = [TYPE[r.type] || r.type, r.table].filter(Boolean).join(' · ');
@@ -178,6 +212,7 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string) {
     </table>
     <div class="stamp">${payment}</div>
     ${r.staff ? `<div class="muted">Served by ${escape(r.staff)}</div>` : ''}
+    ${fiscalBlock(r, qr)}
     ${r.footer ? `<hr><div class="center">${lines(r.footer)}</div>` : ''}`;
 }
 
@@ -188,10 +223,14 @@ export async function printOrder(
   { timezone, currencySymbol }: { timezone: string; currencySymbol: string },
 ) {
   const receipt: Receipt = await Parse.Cloud.run('getReceipt', { orderId });
+  const qr =
+    kind === 'receipt' && receipt.efris?.qr
+      ? await QRCode.toDataURL(receipt.efris.qr, { margin: 0, width: 240 }).catch(() => '')
+      : '';
   const body =
     kind === 'kitchen'
       ? kitchenTicket(receipt, timezone)
-      : customerReceipt(receipt, timezone, currencySymbol);
+      : customerReceipt(receipt, timezone, currencySymbol, qr);
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.cssText =

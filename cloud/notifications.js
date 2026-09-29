@@ -158,6 +158,10 @@ Parse.Cloud.define('getNotifications', async (request) => {
     if (role === 'admin') await require('./owner').zReportDue(config);
     // Once a day: cash check, retention, server address (cashcheck.js).
     require('./cashcheck').upkeepDue();
+    // Sales EFRIS refused or could not be reached for, a few at a time.
+    require('./efris')
+      .sweepEfris()
+      .catch(() => 0);
   }
   // The bell lists unread notifications only; reading one clears it.
   const listQuery = new Parse.Query('Notification');

@@ -24,6 +24,7 @@
 //   data.js      owner's data export (backups, spreadsheets)
 //   privacy.js   customer data retention, forget a customer
 //   restore.js   putting records back from a backup file
+//   efris.js     URA EFRIS fiscal receipts (Admin → Tax)
 //   reports.js   payments ledger, order/commission ledgers, earnings, reports
 //   owner.js     dashboard, audit log, daily Z-report (Cloud Job "dailyZReport")
 //   overrides.js the owner's order page and overrides
@@ -51,6 +52,7 @@ require('./onboarding');
 require('./data');
 require('./privacy');
 require('./restore');
+require('./efris');
 require('./preview');
 require('./reports');
 require('./owner');

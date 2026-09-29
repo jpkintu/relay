@@ -3,6 +3,7 @@ export const ADMIN_TABS = [
   ['settings', 'Settings'],
   ['branding', 'Branding'],
   ['payments', 'Payments'],
+  ['tax', 'Tax (EFRIS)'],
   ['access', 'Access rules'],
   ['audit', 'Audit log'],
   ['errors', 'Errors'],

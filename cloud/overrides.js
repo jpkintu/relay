@@ -175,6 +175,8 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
     history,
     // What the owner may do now (see adminOverrideOrder).
     can: overrideOptions(order),
+    // Tax (EFRIS): the sale's fiscal receipt, if EFRIS is on.
+    efris: await require('./efris').receiptView(order, (await loadConfig()).values),
   };
 });
 

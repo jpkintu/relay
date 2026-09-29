@@ -7,6 +7,7 @@
 
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +48,19 @@ const MOMO_PORT = 1341;
 process.env.RELAY_MTN_URL = `http://localhost:${MOMO_PORT}/mtn`;
 process.env.RELAY_AIRTEL_URL = `http://localhost:${MOMO_PORT}/airtel`;
 process.env.RELAY_IP_URL = `http://localhost:${MOMO_PORT}/ip`;
+process.env.RELAY_EFRIS_URL = `http://localhost:${MOMO_PORT}/efris`;
+process.env.RELAY_EFRIS_DELAY_MS = '300';
+// A stand-in for URA's EFRIS: the taxpayer's key pair (the public half is
+// what the taxpayer uploads to the EFRIS portal), and what it has recorded.
+const EFRIS_KEYS = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const efris = {
+  aes: null,
+  goods: new Map(),
+  invoices: new Map(),
+  calls: [],
+  lostAnswers: 0,
+  badSignatures: 0,
+};
 const momo = { mtn: new Map(), airtel: new Map(), polls: new Map(), ip: '203.0.113.10' };
 let momoServer;
 function startMomoMock() {
@@ -121,6 +135,174 @@ function startMomoMock() {
   });
   // The server's public address, as a "what is my IP" service reports it.
   app.get('/ip', (req, res) => res.type('text/plain').send(momo.ip));
+  // EFRIS: one endpoint; the interface code is in the envelope.
+  const aesKey = () => efris.aes;
+  const cipher = (encrypt, buffer) => {
+    const c = encrypt
+      ? crypto.createCipheriv('aes-128-ecb', aesKey(), null)
+      : crypto.createDecipheriv('aes-128-ecb', aesKey(), null);
+    return Buffer.concat([c.update(buffer), c.final()]);
+  };
+  const answer = (res, body, { encrypted = true, code = '00', message = 'SUCCESS' } = {}) => {
+    const json = body === null ? '' : JSON.stringify(body);
+    res.json({
+      data: {
+        content: !json
+          ? ''
+          : encrypted
+            ? cipher(true, Buffer.from(json)).toString('base64')
+            : Buffer.from(json).toString('base64'),
+        signature: '',
+        dataDescription: {
+          codeType: encrypted && json ? '1' : '0',
+          encryptCode: '2',
+          zipCode: '0',
+        },
+      },
+      globalInfo: {},
+      returnStateInfo: { returnCode: code, returnMessage: message },
+    });
+  };
+  const refuse = (res, code, message) => answer(res, null, { code, message });
+  app.post('/efris', (req, res) => {
+    const { data = {}, globalInfo = {} } = req.body || {};
+    const code = globalInfo.interfaceCode;
+    efris.calls.push(code);
+    if (globalInfo.appId !== 'AP04' || globalInfo.tin !== '1000029771')
+      return refuse(res, '05', 'AppID error');
+    if (globalInfo.deviceNo !== 'TCS9e0df01728335239')
+      return refuse(res, '400', 'Device does not exist');
+    const time = new Date(`${globalInfo.requestTime.replace(' ', 'T')}+03:00`);
+    if (!(Math.abs(time - Date.now()) < 600000))
+      return refuse(
+        res,
+        '28',
+        'RequestTime differs from the current time by more than ten minutes',
+      );
+    if (data.content) {
+      const signed = crypto.verify(
+        'sha1',
+        Buffer.from(data.content),
+        EFRIS_KEYS.publicKey,
+        Buffer.from(String(data.signature || ''), 'base64'),
+      );
+      if (!signed) {
+        efris.badSignatures += 1;
+        return refuse(res, '38', 'Signature value is invalid!');
+      }
+    }
+    let body = null;
+    if (data.content)
+      body = JSON.parse(
+        data.dataDescription?.codeType === '1'
+          ? cipher(false, Buffer.from(data.content, 'base64')).toString()
+          : Buffer.from(data.content, 'base64').toString(),
+      );
+    if (code === 'T104') {
+      efris.aes = crypto.randomBytes(16);
+      const passowrdDes = crypto
+        .publicEncrypt(
+          { key: EFRIS_KEYS.publicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+          Buffer.from(efris.aes.toString('base64')),
+        )
+        .toString('base64');
+      return answer(res, { passowrdDes, sign: 'x' }, { encrypted: false });
+    }
+    if (!efris.aes) return refuse(res, '402', 'Device key expired');
+    if (code === 'T103')
+      return answer(res, {
+        device: { deviceNo: globalInfo.deviceNo, deviceStatus: '252' },
+        taxpayer: {
+          tin: '1000029771',
+          ninBrn: '80020000000001',
+          legalName: 'MAMA ROSE KITCHEN LIMITED',
+          businessName: 'Mama Rose Kitchen',
+          contactEmail: 'tax@mamarose.example',
+          contactMobile: '0772000000',
+          placeOfBusiness: 'Plot 1 Kampala Road',
+        },
+        taxType: [{ taxTypeName: 'Value Added Tax', taxTypeCode: '301' }],
+        environment: '1',
+      });
+    if (code === 'T115')
+      return answer(res, {
+        rateUnit: [
+          { value: 'PP', name: 'Piece' },
+          { value: '101', name: 'per stick' },
+        ],
+        currencyType: [
+          { value: '101', name: 'UGX' },
+          { value: '102', name: 'USD' },
+        ],
+      });
+    if (code === 'T130') {
+      const failures = [];
+      for (const goods of body) {
+        const known = efris.goods.has(goods.goodsCode);
+        const problem =
+          goods.commodityCategoryId !== '90101501'
+            ? ['616', 'commodityCategoryId: invalid field value!']
+            : goods.measureUnit !== 'PP'
+              ? ['606', 'measureUnit:Invalid field value']
+              : known && goods.operationType === '101'
+                ? ['602', 'goodsCode already exists']
+                : !known && goods.operationType === '102'
+                  ? ['684', 'product does not exist!']
+                  : null;
+        if (problem) failures.push({ ...goods, returnCode: problem[0], returnMessage: problem[1] });
+        else efris.goods.set(goods.goodsCode, goods.goodsName);
+      }
+      return answer(res, failures.length ? failures : null);
+    }
+    if (code === 'T109') {
+      const reference = body.sellerDetails.referenceNo;
+      if (efris.invoices.has(reference))
+        return refuse(res, '2253', "The seller's reference number already exists!");
+      for (const line of body.goodsDetails)
+        if (efris.goods.get(line.itemCode) !== line.item)
+          return refuse(
+            res,
+            '2122',
+            `goodsDetails-->itemCode:Item code and Name is not configured with URA. item code ${line.itemCode}, item name ${line.item}.`,
+          );
+      const [tax] = body.taxDetails;
+      if (Math.abs(Number(tax.netAmount) + Number(tax.taxAmount) - Number(tax.grossAmount)) > 0.001)
+        return refuse(res, '1342', "'netAmount' plus 'taxAmount' must equal 'grossAmount'!");
+      const number = String(322000150000 + efris.invoices.size + 1);
+      const record = {
+        body,
+        basicInformation: {
+          ...body.basicInformation,
+          invoiceId: `id${number}`,
+          invoiceNo: number,
+          antifakeCode: `3135${number}`,
+        },
+        summary: { ...body.summary, qrCode: `https://efris.example/verify/${number}` },
+      };
+      efris.invoices.set(reference, record);
+      // The answer is lost on its way back (the invoice was still issued).
+      if (efris.lostAnswers > 0) {
+        efris.lostAnswers -= 1;
+        return res.status(502).send('Bad gateway');
+      }
+      return answer(res, { ...body, ...record, body: undefined });
+    }
+    if (code === 'T106') {
+      const record = efris.invoices.get(body.referenceNo);
+      return answer(res, {
+        page: { pageNo: '1', pageSize: '10', totalSize: record ? '1' : '0' },
+        records: record ? [{ invoiceNo: record.basicInformation.invoiceNo }] : [],
+      });
+    }
+    if (code === 'T108') {
+      const record = [...efris.invoices.values()].find(
+        (r) => r.basicInformation.invoiceNo === body.invoiceNo,
+      );
+      if (!record) return refuse(res, '1561', 'invoiceNo:Invoice does not exist!');
+      return answer(res, { basicInformation: record.basicInformation, summary: record.summary });
+    }
+    return refuse(res, '01', 'Interface coding error');
+  });
   momoServer = app.listen(MOMO_PORT);
 }
 
@@ -4148,6 +4330,218 @@ describe('data export and customer privacy', () => {
   });
 });
 
+describe('tax: EFRIS fiscal receipts', () => {
+  const pem = EFRIS_KEYS.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const KEY = Buffer.from(pem).toString('base64');
+  const connection = {
+    environment: 'test',
+    tin: '1000029771',
+    deviceNo: 'TCS9e0df01728335239',
+    key: KEY,
+    keyName: 'relay.pem',
+  };
+  let item;
+  let settings;
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run('adminSaveSettings', { ...settings, moduleCounter: true }, s.owner);
+  });
+  after(async () => {
+    await run('adminSaveEfrisSettings', { enabled: false }, s.owner);
+    await run('adminSaveSettings', settings, s.owner);
+  });
+  const paidOrder = (params = {}) =>
+    run(
+      'createCounterOrder',
+      {
+        orderType: 'pickup',
+        items: [{ id: item.id, quantity: 2 }],
+        customerName: 'Jane Achan',
+        ...params,
+      },
+      s.owner,
+    );
+  // The background issue runs just after the order is saved.
+  const settled = async (orderId) => {
+    for (let i = 0; i < 40; i += 1) {
+      const order = await new Parse.Query('Order').get(orderId, { useMasterKey: true });
+      if (['issued', 'failed'].includes(order.get('efrisStatus'))) return order;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error('EFRIS never answered for the order');
+  };
+
+  test('only the owner sets it up; the key is checked and never sent back', async () => {
+    await rejects(run('adminGetEfrisSettings', {}, s.dina), /admin role required/);
+    await rejects(run('adminSaveEfrisSettings', connection, s.dina), /admin role required/);
+    await rejects(
+      run('adminSaveEfrisSettings', { enabled: true }, s.owner),
+      /Add the TIN, device number, private key/,
+    );
+    await rejects(
+      run('adminSaveEfrisSettings', { ...connection, tin: '123' }, s.owner),
+      /10 digits/,
+    );
+    await rejects(
+      run(
+        'adminSaveEfrisSettings',
+        { ...connection, key: Buffer.from('nope').toString('base64') },
+        s.owner,
+      ),
+      /keystore|private key/,
+    );
+    const saved = await run('adminSaveEfrisSettings', connection, s.owner);
+    assert.equal(saved.keyLoaded, true);
+    assert.equal(saved.keyName, 'relay.pem');
+    assert.equal(JSON.stringify(saved).includes('PRIVATE KEY'), false, 'key stays on the server');
+    assert.equal(saved.enabled, false);
+    await rejects(
+      run('adminSaveEfrisSettings', { enabled: true }, s.owner),
+      /Add the legal name, email address, commodity category, unit of measure/,
+    );
+  });
+
+  test('testing the connection signs, agrees a key and reads the taxpayer', async () => {
+    const calls = efris.calls.length;
+    const tested = await run('adminTestEfris', {}, s.owner);
+    assert.equal(tested.lastTest.ok, true, tested.lastTest.message);
+    assert.equal(tested.lastTest.vatRegistered, true);
+    assert.equal(tested.lastTest.taxpayer, 'MAMA ROSE KITCHEN LIMITED');
+    assert.deepEqual(efris.calls.slice(calls), ['T104', 'T103', 'T115']);
+    assert.equal(efris.badSignatures, 0);
+    // Filled from EFRIS where the owner had typed nothing.
+    assert.equal(tested.legalName, 'MAMA ROSE KITCHEN LIMITED');
+    assert.equal(tested.emailAddress, 'tax@mamarose.example');
+    assert.equal(tested.invoiceKind, 'invoice');
+    assert.equal(tested.taxCategory, 'standard');
+    assert.deepEqual(
+      tested.units.map((u) => u.value),
+      ['PP', '101'],
+    );
+    // Another device: not tested any more.
+    const moved = await run('adminSaveEfrisSettings', { deviceNo: 'TCS000' }, s.owner);
+    assert.equal(moved.lastTest, null);
+    const failed = await run('adminTestEfris', {}, s.owner);
+    assert.equal(failed.lastTest.ok, false);
+    assert.match(failed.lastTest.message, /Device does not exist \(400\)/);
+    await run('adminSaveEfrisSettings', { deviceNo: connection.deviceNo }, s.owner);
+    assert.equal((await run('adminTestEfris', {}, s.owner)).lastTest.ok, true);
+  });
+
+  test('the menu is registered as goods; a wrong category is reported per dish', async () => {
+    await run(
+      'adminSaveEfrisSettings',
+      { commodityCategoryId: '12345678', unitOfMeasure: 'PP' },
+      s.owner,
+    );
+    const wrong = await run('adminRegisterEfrisGoods', {}, s.owner);
+    assert.ok(wrong.failures.length > 0);
+    assert.match(wrong.failures[0].message, /commodityCategoryId: invalid field value! \(616\)/);
+    await run('adminSaveEfrisSettings', { commodityCategoryId: '90101501' }, s.owner);
+    const done = await run('adminRegisterEfrisGoods', {}, s.owner);
+    assert.deepEqual(done.failures, []);
+    assert.equal(efris.goods.get(`RLY-${item.id}`), item.title);
+    assert.ok(efris.goods.has('RELAY-DELIVERY'));
+    // Again: nothing new to send; all: updated, not duplicated (602 → modify).
+    const calls = efris.calls.length;
+    await run('adminRegisterEfrisGoods', {}, s.owner);
+    assert.equal(efris.calls.slice(calls).includes('T130'), false);
+    assert.deepEqual((await run('adminRegisterEfrisGoods', { all: true }, s.owner)).failures, []);
+  });
+
+  test('sales before switching on are never issued; paid sales after are', async () => {
+    const before = await paidOrder();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const on = await run('adminSaveEfrisSettings', { enabled: true }, s.owner);
+    assert.equal(on.enabled, true);
+    assert.ok(on.since);
+    const old = await run('getReceipt', { orderId: before.id }, s.owner);
+    assert.equal(old.efris.status, 'not_due');
+    assert.equal(old.efris.fdn, '');
+
+    const placed = await paidOrder({ customerPhone: '0772123456' });
+    const order = await settled(placed.id);
+    assert.equal(order.get('efrisStatus'), 'issued', order.get('efrisError'));
+    const record = efris.invoices.get(placed.orderCode);
+    assert.equal(order.get('efrisFdn'), record.basicInformation.invoiceNo);
+    const invoice = record.body;
+    assert.equal(invoice.sellerDetails.isCheckReferenceNo, '1');
+    assert.equal(invoice.sellerDetails.legalName, 'MAMA ROSE KITCHEN LIMITED');
+    assert.equal(invoice.basicInformation.invoiceKind, '1');
+    assert.equal(invoice.buyerDetails.buyerLegalName, 'Jane Achan');
+    assert.equal(Number(invoice.summary.grossAmount), placed.total);
+    assert.equal(invoice.goodsDetails[0].item, item.title);
+    assert.equal(invoice.goodsDetails[0].qty, '2');
+    assert.equal(invoice.payWay[0].paymentMode, '102');
+
+    const receipt = await run('getReceipt', { orderId: placed.id }, s.dina);
+    assert.equal(receipt.efris.status, 'issued');
+    assert.equal(receipt.efris.fdn, record.basicInformation.invoiceNo);
+    assert.equal(receipt.efris.verification, record.basicInformation.antifakeCode);
+    assert.equal(receipt.efris.qr, record.summary.qrCode);
+    assert.equal(receipt.efris.tin, '1000029771');
+    assert.equal(receipt.efris.kind, 'invoice');
+    const detail = await run('adminGetOrder', { id: placed.id }, s.owner);
+    assert.equal(detail.efris.fdn, record.basicInformation.invoiceNo);
+    // Printing again never issues again.
+    const issued = efris.invoices.size;
+    await run('getReceipt', { orderId: placed.id }, s.dina);
+    await run('issueEfrisReceipt', { orderId: placed.id }, s.dina);
+    assert.equal(efris.invoices.size, issued);
+  });
+
+  test('an open bill is issued when it is paid, not before', async () => {
+    const bill = await paidOrder({ payLater: true });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal((await run('getReceipt', { orderId: bill.id }, s.owner)).efris.status, 'not_due');
+    await rejects(run('issueEfrisReceipt', { orderId: bill.id }, s.owner), /not complete yet/);
+    assert.equal(efris.invoices.has(bill.orderCode), false);
+    await run('takeCounterPayment', { orderId: bill.id, paymentMethod: 'cash' }, s.owner);
+    const receipt = await run('getReceipt', { orderId: bill.id }, s.owner);
+    assert.equal(receipt.efris.status, 'issued');
+    assert.ok(efris.invoices.has(bill.orderCode));
+  });
+
+  test('a lost answer is recovered from EFRIS, never issued twice', async () => {
+    efris.lostAnswers = 1;
+    const placed = await paidOrder();
+    const order = await settled(placed.id);
+    assert.equal(order.get('efrisStatus'), 'failed');
+    assert.match(order.get('efrisError'), /EFRIS/);
+    assert.equal((await run('adminGetOrder', { id: placed.id }, s.owner)).efris.status, 'failed');
+    const view = await run('issueEfrisReceipt', { orderId: placed.id }, s.dina);
+    assert.equal(view.status, 'issued', view.error);
+    assert.equal(view.fdn, efris.invoices.get(placed.orderCode).basicInformation.invoiceNo);
+    assert.equal([...efris.invoices.keys()].filter((code) => code === placed.orderCode).length, 1);
+  });
+
+  test('a renamed dish is renamed in EFRIS before its next sale', async () => {
+    const dish = (await run('adminListSetup', {}, s.owner)).menu.find((i) => i.id === item.id);
+    await run('adminSaveMenuItem', { ...dish, title: `${dish.title} Deluxe` }, s.owner);
+    try {
+      const placed = await paidOrder();
+      const order = await settled(placed.id);
+      assert.equal(order.get('efrisStatus'), 'issued', order.get('efrisError'));
+      assert.equal(efris.goods.get(`RLY-${item.id}`), `${dish.title} Deluxe`);
+    } finally {
+      await run('adminSaveMenuItem', dish, s.owner);
+    }
+  });
+
+  test('switched off: receipts carry nothing and no sale goes to EFRIS', async () => {
+    const off = await run('adminSaveEfrisSettings', { enabled: false }, s.owner);
+    assert.equal(off.enabled, false);
+    const placed = await paidOrder();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal((await run('getReceipt', { orderId: placed.id }, s.owner)).efris, null);
+    assert.equal(efris.invoices.has(placed.orderCode), false);
+    await rejects(run('issueEfrisReceipt', { orderId: placed.id }, s.owner), /not switched on/);
+  });
+});
+
 describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
   let item;
   let settings;
@@ -4452,8 +4846,13 @@ const ACCESS = {
     'getTillPayouts',
     'getReportOptions',
     'getPaymentsLedger',
+    'issueEfrisReceipt',
   ],
   admin: [
+    'adminGetEfrisSettings',
+    'adminSaveEfrisSettings',
+    'adminTestEfris',
+    'adminRegisterEfrisGoods',
     'adminRestoreData',
     'adminRestoreFinish',
     'adminListSetup',

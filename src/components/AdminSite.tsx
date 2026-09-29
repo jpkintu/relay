@@ -8,6 +8,7 @@ import { ADMIN_TABS, type AdminTab } from '../lib/adminTabs';
 
 const AdminSetup = lazyScreen(() => import('./AdminSetup').then((m) => m.AdminSetup));
 const AdminPayments = lazyScreen(() => import('./AdminPayments').then((m) => m.AdminPayments));
+const AdminEfris = lazyScreen(() => import('./AdminEfris').then((m) => m.AdminEfris));
 const AccessRules = lazyScreen(() => import('./AccessRules').then((m) => m.AccessRules));
 const AuditLog = lazyScreen(() => import('./AuditLog').then((m) => m.AuditLog));
 const AdminErrors = lazyScreen(() => import('./AdminErrors').then((m) => m.AdminErrors));
@@ -69,8 +70,9 @@ export function AdminSite({
         <LockKeyhole aria-hidden className="admin-gate-icon" />
         <h2>Admin is locked</h2>
         <p className="muted">
-          Settings, branding, payment keys, access rules, the audit log, errors and customer data
-          need your PIN again. Admin stays open for {state.minutes} minutes after you last use it.
+          Settings, branding, payment and tax keys, access rules, the audit log, errors and customer
+          data need your PIN again. Admin stays open for {state.minutes} minutes after you last use
+          it.
         </p>
         <label className="setup-field">
           Your PIN
@@ -126,6 +128,7 @@ export function AdminSite({
         {tab === 'settings' && <AdminSetup section="Settings" preview={false} />}
         {tab === 'branding' && <AdminSetup section="Branding" preview={false} />}
         {tab === 'payments' && <AdminPayments />}
+        {tab === 'tax' && <AdminEfris />}
         {tab === 'access' && <AccessRules />}
         {tab === 'audit' && <AuditLog />}
         {tab === 'errors' && <AdminErrors onChanged={onChanged} />}
