@@ -12,6 +12,7 @@ jobs:
   check:
     name: Typecheck, lint, unit tests, build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,6 +33,9 @@ jobs:
   e2e:
     name: Cloud Code end-to-end (Parse Server + MongoDB)
     runs-on: ubuntu-latest
+    # The suite takes about 2 minutes; a hang fails here with its logs
+    # instead of running for GitHub's 6-hour default.
+    timeout-minutes: 15
     services:
       mongo:
         image: mongo:7.0
