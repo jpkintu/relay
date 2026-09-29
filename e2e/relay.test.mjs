@@ -4721,6 +4721,7 @@ describe('restore from a backup file', () => {
     const lost = backup.Order.find(
       (row) =>
         row.status === 'DELIVERED' &&
+        row.createdBy &&
         backup.OrderItem.some((i) => i.order?.objectId === row.objectId),
     );
     const lines = backup.OrderItem.filter((i) => i.order?.objectId === lost.objectId);
