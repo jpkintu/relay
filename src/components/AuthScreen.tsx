@@ -7,6 +7,7 @@ import { startGoogleSignIn } from '../lib/googleSignIn';
 // username and PIN. Build with VITE_ENABLE_GOOGLE_SIGNIN=true to show it again.
 const GOOGLE_SIGN_IN = import.meta.env.VITE_ENABLE_GOOGLE_SIGNIN === 'true';
 import { useSession } from '../lib/session';
+import { AuthSide } from './AuthSide';
 import { BrandMark } from './BrandMark';
 import { RelayMark } from './RelayMark';
 import { useImageReady } from '../lib/imageReady';
@@ -69,19 +70,7 @@ export function AuthScreen() {
   };
   return (
     <main className="auth-shell">
-      <section className="auth-story">
-        <BrandMark onDark />
-        <div className="story-copy">
-          <h1>
-            From kitchen
-            <br />
-            to doorstep.
-            <br />
-            <em>Cash accounted.</em>
-          </h1>
-          <p>Orders, riders and every handover — connected in one fast operating system.</p>
-        </div>
-      </section>
+      <AuthSide />
       <section className="auth-panel">
         <div className="login-card">
           {/* Phones: with a logo, only the restaurant's logo and name show. */}

@@ -3235,6 +3235,46 @@ describe('owner reporting and control', () => {
     assert.equal((await run('getAppInfo')).restaurantLogo, '');
   });
 
+  test('the owner picks the sign-in pictures, up to six, in order', async () => {
+    const JPEG =
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAAA//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z';
+    await rejects(run('adminSetLoginImages', { add: JPEG }, s.dina), /admin role required/);
+    await rejects(run('adminSetLoginImages', { add: 'aGVsbG8=' }, s.owner), /JPEG, PNG or WebP/);
+    await rejects(run('adminSetLoginImages', {}, s.owner), /Nothing to change/);
+    assert.deepEqual((await run('getAppInfo')).loginImages, []);
+    for (const caption of ['Grilled tilapia', 'Rolex', 'Our terrace'])
+      await run('adminSetLoginImages', { add: JPEG, caption }, s.owner);
+    let { images } = await run('adminSetLoginImages', { move: 2, to: 0 }, s.owner);
+    assert.deepEqual(
+      images.map((i) => i.caption),
+      ['Our terrace', 'Grilled tilapia', 'Rolex'],
+    );
+    assert.match(images[0].url, /^https?:\/\/.+signin\.jpg$/);
+    ({ images } = await run(
+      'adminSetLoginImages',
+      { index: 2, caption: '  Rolex, rolled fresh ' },
+      s.owner,
+    ));
+    assert.equal(images[2].caption, 'Rolex, rolled fresh');
+    await rejects(run('adminSetLoginImages', { remove: 7 }, s.owner), /No such picture/);
+    ({ images } = await run('adminSetLoginImages', { remove: 1 }, s.owner));
+    assert.deepEqual(
+      images.map((i) => i.caption),
+      ['Our terrace', 'Rolex, rolled fresh'],
+    );
+    const info = await run('getAppInfo');
+    assert.deepEqual(info.loginImages, images, 'shown before sign-in');
+    assert.deepEqual((await run('getMyProfile', {}, s.val)).config.loginImages, images);
+    for (let i = images.length; i < 6; i += 1)
+      await run('adminSetLoginImages', { add: JPEG }, s.owner);
+    await rejects(run('adminSetLoginImages', { add: JPEG }, s.owner), /At most 6/);
+    const settings = (await run('adminListSetup', {}, s.owner)).settings;
+    await run('adminSaveSettings', settings, s.owner);
+    assert.equal((await run('getAppInfo')).loginImages.length, 6, 'saving settings keeps them');
+    for (let i = 0; i < 6; i += 1) await run('adminSetLoginImages', { remove: 0 }, s.owner);
+    assert.deepEqual((await run('getAppInfo')).loginImages, []);
+  });
+
   test('the owner sets theme colours, checked for readable contrast', async () => {
     await rejects(run('adminSaveBranding', { ink: '#123524' }, s.dina), /admin role required/);
     await rejects(run('adminSaveBranding', { ink: 'green' }, s.owner), /must look like/);
@@ -4414,6 +4454,8 @@ const ACCESS = {
     'getPaymentsLedger',
   ],
   admin: [
+    'adminRestoreData',
+    'adminRestoreFinish',
     'adminListSetup',
     'adminCreateTeamMember',
     'adminUpdateMember',
@@ -4424,6 +4466,7 @@ const ACCESS = {
     'adminSortMenu',
     'adminSetMenuImage',
     'adminSetRestaurantLogo',
+    'adminSetLoginImages',
     'adminSaveAccompaniment',
     'adminSaveBranding',
     'adminSaveSettings',
@@ -4590,5 +4633,165 @@ describe('daily upkeep without scheduled jobs', () => {
       process.env.RELAY_UPKEEP_CHECK_MS = '-1';
       momo.ip = before;
     }
+  });
+});
+
+describe('restore from a backup file', () => {
+  const M = { useMasterKey: true };
+  const CLASSES = [
+    'Configuration',
+    '_User',
+    'MenuCategory',
+    'Accompaniment',
+    'MenuItem',
+    'Customer',
+    'Shift',
+    'TillPayout',
+    'Order',
+    'OrderItem',
+    'CashHandover',
+    'ZReport',
+    'AuditLog',
+  ];
+  const backup = {};
+  const exportAll = async () => {
+    for (const className of CLASSES) {
+      const rows = [];
+      let after = null;
+      do {
+        const page = await run('adminExportData', { className, after }, s.owner);
+        rows.push(...page.rows);
+        after = page.next;
+      } while (after);
+      // As the app's backup file holds them (JSON), not as SDK objects.
+      backup[className] = JSON.parse(JSON.stringify(rows));
+    }
+  };
+  const restore = async (className, rows = backup[className]) => {
+    const total = { created: 0, updated: 0, skipped: 0, pins: [] };
+    for (let i = 0; i < rows.length; i += 200) {
+      const part = await run(
+        'adminRestoreData',
+        { className, rows: rows.slice(i, i + 200) },
+        s.owner,
+      );
+      total.created += part.created;
+      total.updated += part.updated;
+      total.skipped += part.skipped;
+      total.pins.push(...(part.pins || []));
+    }
+    return total;
+  };
+  const finish = async () => {
+    for (let i = 0; i < 50; i += 1) {
+      const step = await run('adminRestoreFinish', { counts: {} }, s.owner);
+      if (step.done) return step;
+    }
+    throw new Error('restore did not finish');
+  };
+
+  before(async () => {
+    await exportAll();
+  });
+
+  test('only the owner can restore', async () => {
+    await rejects(
+      run('adminRestoreData', { className: 'Order', rows: [] }, s.rider),
+      /admin role required/,
+    );
+    await rejects(
+      run('adminRestoreData', { className: 'Secret', rows: [] }, s.owner),
+      /Unknown kind/,
+    );
+    await rejects(
+      run('adminRestoreData', { className: 'Order', rows: new Array(201).fill({}) }, s.owner),
+      /At most 200/,
+    );
+  });
+
+  test('restoring into the same app changes nothing: every record is still here', async () => {
+    for (const className of CLASSES) {
+      const result = await restore(className);
+      assert.equal(result.created, 0, `${className} created nothing`);
+    }
+  });
+
+  test('lost records come back, linked, with their original times', async () => {
+    // An order with lines, lost.
+    const lost = backup.Order.find(
+      (row) =>
+        row.status === 'DELIVERED' &&
+        backup.OrderItem.some((i) => i.order?.objectId === row.objectId),
+    );
+    const lines = backup.OrderItem.filter((i) => i.order?.objectId === lost.objectId);
+    const order = await new Parse.Query('Order').get(lost.objectId, M);
+    const items = await new Parse.Query('OrderItem').equalTo('order', order).find(M);
+    await Parse.Object.destroyAll([...items, order], M);
+
+    // As if the backup were old: the order was placed ten days ago.
+    const placed = new Date(Date.now() - 10 * 864e5);
+    placed.setUTCHours(9, 0, 0, 0);
+    const oldRows = backup.Order.map((row) =>
+      row.objectId === lost.objectId ? { ...row, createdAt: placed.toISOString() } : row,
+    );
+
+    const orders = await restore('Order', oldRows);
+    assert.equal(orders.created, 1);
+    assert.equal(orders.skipped, backup.Order.length - 1);
+    const back = await new Parse.Query('Order').equalTo('restoredFrom', lost.objectId).first(M);
+    assert.equal(back.get('orderCode'), lost.orderCode);
+    assert.equal(back.get('total'), lost.total);
+    assert.equal(back.get('createdBy').id, lost.createdBy.objectId, 'still the same rider');
+    assert.equal(back.get('restoredCreatedAt').toISOString(), placed.toISOString());
+
+    const restoredLines = await restore('OrderItem');
+    assert.equal(restoredLines.created, lines.length);
+    const newLines = await new Parse.Query('OrderItem').equalTo('order', back).find(M);
+    assert.equal(newLines.length, lines.length);
+    // Sent again: nothing is created twice.
+    assert.equal((await restore('Order', oldRows)).created, 0);
+    assert.equal((await restore('OrderItem')).created, 0);
+
+    await finish();
+    assert.equal(await new Parse.Query('Order').exists('restoreLinks').count(M), 0);
+    // Normal access again: the rider who took it can read it.
+    const riderName = backup._User.find((u) => u.objectId === lost.createdBy.objectId).username;
+    const rider = await login(riderName, PINS[riderName]);
+    assert.equal((await new Parse.Query('Order').get(back.id, as(rider))).id, back.id);
+    // Reports count it on the day it was placed, not the day it came back.
+    const kampala = (date) => new Date(date.getTime() + 3 * 3600e3).toISOString().slice(0, 10);
+    const then = kampala(placed);
+    const today = kampala(new Date());
+    const onThatDay = await run('adminSearchOrders', { from: then, to: then }, s.owner);
+    assert.ok(
+      onThatDay.rows.some((row) => row.id === back.id),
+      'listed on the day it was placed',
+    );
+    const onToday = await run('adminSearchOrders', { from: today, to: today }, s.owner);
+    assert.ok(
+      onToday.rows.every((row) => row.id !== back.id),
+      'not listed as today',
+    );
+  });
+
+  test('a lost team member comes back with a new PIN and their role', async () => {
+    const created = await run(
+      'adminCreateTeamMember',
+      { name: 'Lost Rider', username: 'lostrider', pin: '4455', role: 'rider' },
+      s.owner,
+    );
+    await exportAll();
+    await Parse.Object.destroyAll([await new Parse.Query(Parse.User).get(created.id, M)], M);
+    const team = await restore('_User');
+    assert.equal(team.created, 1);
+    assert.equal(team.pins.length, 1);
+    assert.equal(team.pins[0].username, 'lostrider');
+    assert.equal(team.pins[0].role, 'rider');
+    assert.match(team.pins[0].pin, /^\d{6}$/);
+    await finish();
+    const back = await login('lostrider', team.pins[0].pin);
+    assert.equal((await run('getMyProfile', {}, back)).role, 'rider');
+    // Everyone else was matched, not duplicated.
+    assert.equal(team.skipped + team.updated, backup._User.length - 1);
   });
 });

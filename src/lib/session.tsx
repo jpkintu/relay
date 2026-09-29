@@ -31,7 +31,11 @@ export type AppConfig = {
   modules?: { riderOrders: boolean; callIn: boolean; counter: boolean };
   // Printed receipts (Settings → Receipts).
   receipt?: { width: number; header: string; footer: string; autoPrintKitchen: boolean };
+  // Pictures beside the sign-in form (Admin → Branding).
+  loginImages?: LoginImage[];
 };
+
+export type LoginImage = { url: string; caption: string };
 
 export type MerchantAccount = {
   provider: string;
@@ -68,6 +72,7 @@ export type AppInfo = {
   previewEnabled: boolean;
   // For the privacy notice (Admin → Data & privacy).
   privacy?: { contact: string; retentionMonths: number };
+  loginImages?: LoginImage[];
 };
 
 // The restaurant's name and logo from the last visit, so they show at once
@@ -222,6 +227,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         defaultDeliveryFee: 0,
         maxRiderFloat: 0,
         allowBatching: false,
+        loginImages: appInfo.loginImages,
       },
     [profile, appInfo],
   );

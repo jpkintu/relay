@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from
 import { LogOut } from 'lucide-react';
 import Parse from './parse';
 import { AuthScreen } from './components/AuthScreen';
+import { AuthSide } from './components/AuthSide';
 import { BrandMark } from './components/BrandMark';
 import { lazyScreen } from './lib/lazy';
 import { SessionProvider, homePath, useSession } from './lib/session';
@@ -225,6 +226,7 @@ function CenteredCard({ title, children }: { title: string; children: ReactNode 
   const { config } = useSession();
   return (
     <main className="auth-shell">
+      <AuthSide />
       <section className="auth-panel">
         <div className="login-card">
           <BrandMark className="mobile-brand" />
