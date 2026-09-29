@@ -104,4 +104,36 @@ describe('printed receipts', () => {
       receiptHtml.kitchenTicket({ ...receipt, logo: 'x.png' }, 'Africa/Kampala'),
     ).not.toContain('<img');
   });
+
+  test('the EFRIS part: FDN, verification code and QR once issued, a note while pending', () => {
+    const efris = {
+      status: 'issued' as const,
+      fdn: '322000150744',
+      verification: '31359767222004350398',
+      qr: 'https://efris.example/verify',
+      tin: '1000029771',
+      legalName: 'Mama Rose Kitchen Ltd',
+      kind: 'invoice' as const,
+      test: false,
+    };
+    const html = receiptHtml.customerReceipt(
+      { ...receipt, efris },
+      'Africa/Kampala',
+      'UGX',
+      'data:image/png;base64,AAA',
+    );
+    expect(html).toContain('EFRIS TAX INVOICE');
+    expect(html).toContain('FDN: <b>322000150744</b>');
+    expect(html).toContain('Verification code: 31359767222004350398');
+    expect(html).toContain('TIN: 1000029771');
+    expect(html).toContain('<img class="qr" src="data:image/png;base64,AAA"');
+    const pending = receiptHtml.customerReceipt(
+      { ...receipt, efris: { ...efris, status: 'failed', fdn: '' } },
+      'Africa/Kampala',
+      'UGX',
+    );
+    expect(pending).toContain('EFRIS invoice pending');
+    expect(receiptHtml.customerReceipt(receipt, 'Africa/Kampala', 'UGX')).not.toContain('EFRIS');
+    expect(receiptHtml.kitchenTicket({ ...receipt, efris }, 'Africa/Kampala')).not.toContain('FDN');
+  });
 });

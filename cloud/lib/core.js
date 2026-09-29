@@ -53,6 +53,9 @@ const DEFAULT_CONFIG = {
   retentionMonths: 0,
   // Automatic mobile money (Admin → Payments); the keys are in Secret.
   mtnAutoCollect: false,
+  // Tax (EFRIS): on/off and the day it was switched on (cloud/efris.js).
+  efrisEnabled: false,
+  efrisFrom: null,
   airtelAutoCollect: false,
   momoDialCode: '256',
   privacyContact: '',
