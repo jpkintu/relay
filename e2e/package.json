@@ -4,7 +4,7 @@
   "type": "module",
   "description": "End-to-end tests: runs cloud/ on a real Parse Server",
   "scripts": {
-    "test": "node --test --test-concurrency=1"
+    "test": "node --test --test-concurrency=1 --test-force-exit"
   },
   "devDependencies": {
     "express": "^4.21.2",
