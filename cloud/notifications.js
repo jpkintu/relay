@@ -160,6 +160,10 @@ Parse.Cloud.define('getNotifications', async (request) => {
     require('./cashcheck').upkeepDue();
     // Relay Hosted: the subscription's payments and reminders (billing.js).
     if (role === 'admin') require('./billing').billingDue();
+    // Sales EFRIS refused or could not be reached for, a few at a time.
+    require('./efris')
+      .sweepEfris()
+      .catch(() => 0);
   }
   // The bell lists unread notifications only; reading one clears it.
   const listQuery = new Parse.Query('Notification');

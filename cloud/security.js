@@ -119,6 +119,16 @@ const D = 'Date';
 const user = ['Pointer', '_User'];
 const SCHEMAS = {
   Order: {
+    // Tax (EFRIS): the fiscal document for the sale (cloud/efris.js).
+    efrisStatus: S,
+    efrisFdn: S,
+    efrisVerification: S,
+    efrisInvoiceId: S,
+    efrisQr: S,
+    efrisIssuedAt: D,
+    efrisError: S,
+    efrisAttempts: N,
+    efrisAttemptAt: D,
     orderCode: S,
     // Longest prep time of its dishes when placed (minutes; 0 = not set).
     prepMinutes: N,
@@ -279,6 +289,8 @@ const SCHEMAS = {
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
     restaurantName: S,
+    efrisEnabled: B,
+    efrisFrom: D,
     mtnAutoCollect: B,
     airtelAutoCollect: B,
     momoDialCode: S,

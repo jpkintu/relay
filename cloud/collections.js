@@ -325,6 +325,8 @@ async function pollRequest(order) {
 
 // Queued requests are sent as soon as the order is saved.
 Parse.Cloud.afterSave('Order', async (request) => {
+  // Completed sales get their EFRIS fiscal receipt (cloud/efris.js).
+  require('./efris').orderSaved(request.object);
   if (request.object.get('payRequestStatus') !== 'queued') return;
   try {
     // Relay Hosted: triggers run outside the request; work as the order's restaurant.

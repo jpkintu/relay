@@ -379,6 +379,9 @@ Parse.Cloud.define('getReceipt', async (request) => {
   const order = await query.get(idOf(request.params.orderId) || 'none', MASTER);
   const items = await new Parse.Query('OrderItem').equalTo('order', order).limit(200).find(MASTER);
   const { values: config } = await loadConfig();
+  // Tax (EFRIS): a completed sale without its fiscal receipt yet is issued now.
+  const efris = require('./efris');
+  const fiscal = efris.due(order, config) ? (await efris.issue(order)) || order : order;
   const type = order.get('orderType') || 'delivery';
   const method = order.get('paymentMethod');
   const paid = order.get('billOpen')
@@ -427,6 +430,7 @@ Parse.Cloud.define('getReceipt', async (request) => {
       state: paid,
       paidAt: order.get('paidAt') || null,
     },
+    efris: await efris.receiptView(fiscal, config),
   };
 });
 

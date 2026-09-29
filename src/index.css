@@ -7614,3 +7614,9 @@ table.data tr.selected td {
   background: #fff;
   font: inherit;
 }
+/* Admin → Tax: the numbered steps inside one form. */
+.efris-step {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line-soft, #e5e9f1);
+}
