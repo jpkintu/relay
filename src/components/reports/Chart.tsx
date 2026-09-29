@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Config, Data, Layout } from 'plotly.js';
+import { loadOnce } from '../../lib/lazy';
 
 // Plotly.js is ~1 MB, so it loads on the first chart, not with the app.
 type PlotlyModule = typeof import('plotly.js');
-let plotly: Promise<PlotlyModule> | null = null;
-const loadPlotly = () =>
-  (plotly ??= import('plotly.js-basic-dist-min').then(
-    (m) => ((m as { default?: PlotlyModule }).default ?? m) as PlotlyModule,
-  ));
+// After a new deploy, an open app reloads to the new version (lib/lazy.ts).
+let plotly: PlotlyModule | null = null;
+const loadPlotly = loadOnce(() =>
+  import('plotly.js-basic-dist-min').then(
+    (m) => (plotly = ((m as { default?: PlotlyModule }).default ?? m) as PlotlyModule),
+  ),
+);
 
 // Chart colors: Embiro blue and orange first, then the reference palette
 // (validated for colour blindness on the light surface).
@@ -152,7 +155,7 @@ export function Chart({ data, layout, height = 260, bars, horizontal, label, bus
   useEffect(() => {
     const el = ref.current;
     return () => {
-      if (el && plotly) void plotly.then((Plotly) => Plotly.purge(el));
+      if (el && plotly) plotly.purge(el);
     };
   }, []);
 
