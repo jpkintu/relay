@@ -200,6 +200,7 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       onShift: onShift.has(user.id),
       cashHeld: cashHeld[user.id] || 0,
       cashLimit: typeof user.get('maxFloat') === 'number' ? user.get('maxFloat') : null,
+      branchId: user.get('branch')?.id || '',
     })),
     menu: menu.map((item) => ({
       id: item.id,
@@ -208,6 +209,8 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       category: item.get('category'),
       active: item.get('active') !== false,
       availableToday: item.get('availableToday') !== false,
+      branchIds: item.get('branchIds') || [],
+      soldOutAt: item.get('soldOutAt') || [],
       accompanimentGroups: item.get('accompanimentGroups') || [],
       description: item.get('description') || '',
       image: fileUrl(item.get('image')),
@@ -244,7 +247,16 @@ Parse.Cloud.define('adminCreateTeamMember', async (request) => {
   if (!name || !/^[-a-z0-9_.]{3,32}$/.test(username) || pin.length < 4 || pin.length > 32)
     throw invalid('Enter a name, valid username and PIN of at least 4 characters');
   const { values: config } = await loadConfig();
+  await require('./lib/limits').checkMemberLimit(roleName);
+  // Riders and cashiers work at one branch (the main one unless chosen);
+  // finance sees every branch. Only once the restaurant has branches.
+  const branches = require('./branches');
+  const branch =
+    roleName !== 'finance' && (p.branchId || (await branches.mainBranch()))
+      ? await branches.assignableBranch(p.branchId, actor)
+      : null;
   const user = new Parse.User();
+  if (branch) user.set('branch', branch);
   user.set({
     username,
     password: pin,
@@ -281,6 +293,7 @@ Parse.Cloud.define('adminUpdateMember', async (request) => {
     commissionPerOrder: user.get('commissionPerOrder'),
     commissionPercent: user.get('commissionPercent'),
     maxFloat: user.get('maxFloat'),
+    branchId: user.get('branch')?.id || '',
   });
   const before = snapshot();
   if (p.name !== undefined) {
@@ -305,6 +318,14 @@ Parse.Cloud.define('adminUpdateMember', async (request) => {
         throw invalid('Invalid cash limit');
       user.set('maxFloat', Math.round(limit));
     }
+  }
+  if (p.branchId !== undefined) {
+    const branch = await require('./branches').assignableBranch(p.branchId, actor);
+    user.set('branch', branch);
+  }
+  if (p.active === true && user.get('active') === false) {
+    const role = await require('./lib/core').getRoleName(user);
+    if (role && role !== 'admin') await require('./lib/limits').checkMemberLimit(role);
   }
   const deactivating = p.active === false && user.get('active') !== false;
   if (typeof p.active === 'boolean') user.set('active', p.active);
@@ -355,6 +376,7 @@ Parse.Cloud.define('adminChangeRole', async (request) => {
       await role.save(null, MASTER);
     }
   }
+  await require('./lib/limits').checkMemberLimit(next);
   const destination = await ensureRole(next);
   destination.getUsers().add(user);
   await destination.save(null, MASTER);
@@ -449,6 +471,13 @@ Parse.Cloud.define('adminSaveMenuItem', async (request) => {
     ...(prep !== undefined && { prepMinutes: prep }),
   });
   if (p.description !== undefined) item.set('description', merchantField(p.description, 300));
+  // Branches that offer it (empty: every branch).
+  if (p.branchIds !== undefined) {
+    const wanted = Array.isArray(p.branchIds) ? [...new Set(p.branchIds.map(String))] : [];
+    const known = new Set((await findAll(new Parse.Query('Branch'))).map((row) => row.id));
+    if (wanted.some((id) => !known.has(id))) throw invalid('Unknown branch');
+    item.set('branchIds', wanted);
+  }
   // A new dish goes to the end of the menu.
   if (!p.id && item.get('sortOrder') === undefined) {
     const last = await new Parse.Query('MenuItem').descending('sortOrder').first(MASTER);

@@ -61,6 +61,11 @@ export type Profile = {
   commission: { type: string; perOrder: number; percent: number } | null;
   canInitialize: boolean;
   config: AppConfig;
+  // Where a rider or cashier works; how many open branches there are.
+  branch?: { id: string; name: string } | null;
+  branchCount?: number;
+  // Parts of the app this restaurant has (plan limits on Relay Hosted).
+  features?: { branches: boolean; finance: boolean; accounting: boolean };
 };
 
 export type AppInfo = {

@@ -785,6 +785,207 @@ var require_errors = __commonJS({
   }
 });
 
+// cloud/lib/limits.js
+var require_limits = __commonJS({
+  "cloud/lib/limits.js"(exports2, module2) {
+    "use strict";
+    async function checkBranchLimit() {
+    }
+    async function checkMemberLimit() {
+    }
+    async function features() {
+      return { branches: true, finance: true, accounting: true };
+    }
+    module2.exports = { checkBranchLimit, checkMemberLimit, features };
+  }
+});
+
+// cloud/branches.js
+var require_branches = __commonJS({
+  "cloud/branches.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireRole,
+      adminOnly,
+      audit,
+      findAll,
+      claimOnce,
+      readAcl
+    } = require_core();
+    var CLASS = "Branch";
+    var TAGGED = ["Order", "Shift", "CashHandover", "TillPayout"];
+    var ROLES = ["admin", "finance", "cashier", "rider"];
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    async function allBranches() {
+      const rows = await findAll(new Parse.Query(CLASS));
+      return rows.sort(
+        (a, b) => Number(a.get("sortOrder") || 0) - Number(b.get("sortOrder") || 0) || a.createdAt - b.createdAt
+      );
+    }
+    async function mainBranch() {
+      return new Parse.Query(CLASS).equalTo("main", true).first(MASTER);
+    }
+    async function ensureColumns() {
+      const existing = new Map((await Parse.Schema.all()).map((s) => [s.className, s]));
+      for (const className of [...TAGGED, "_User"]) {
+        const current = existing.get(className);
+        if (!current || current.fields?.branch) continue;
+        const schema = new Parse.Schema(className);
+        schema.addPointer("branch", CLASS);
+        await schema.update().catch(() => void 0);
+      }
+    }
+    async function backfill(branch) {
+      const counts = {};
+      for (const className of [...TAGGED, "_User"]) {
+        const query = new Parse.Query(className);
+        query.doesNotExist("branch");
+        let count = 0;
+        await query.each(
+          async (row) => {
+            row.set("branch", branch);
+            await row.save(null, MASTER);
+            count += 1;
+          },
+          { ...MASTER, batchSize: 200 }
+        );
+        counts[className] = count;
+      }
+      return counts;
+    }
+    async function ensureMainBranch(actor) {
+      let main = await mainBranch();
+      if (main) return main;
+      if (await claimOnce("branch:main")) {
+        main = new Parse.Object(CLASS);
+        main.set({
+          name: "Main branch",
+          address: "",
+          phone: "",
+          active: true,
+          main: true,
+          sortOrder: 0
+        });
+        main.setACL(readAcl(null, ROLES));
+        await main.save(null, MASTER);
+        await ensureColumns();
+        const moved = await backfill(main);
+        await audit(actor, "branch.created", main, null, { name: "Main branch", main: true, moved });
+        return main;
+      }
+      for (let i = 0; i < 50 && !main; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        main = await mainBranch();
+      }
+      if (!main) throw invalid("Branches are being set up. Try again in a moment");
+      return main;
+    }
+    async function branchFor(user) {
+      if (!user) return mainBranch();
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER).catch(() => null);
+      const own = fresh?.get("branch");
+      if (own) return own;
+      return mainBranch();
+    }
+    async function branchParam(id) {
+      if (id === void 0 || id === null || id === "" || id === "all") return null;
+      if (typeof id !== "string" || !ID.test(id)) throw invalid("Unknown branch");
+      const branch = await new Parse.Query(CLASS).get(id, MASTER).catch(() => null);
+      if (!branch) throw invalid("Unknown branch");
+      return branch;
+    }
+    function inBranch(query, branch) {
+      if (branch) query.equalTo("branch", branch);
+      return query;
+    }
+    var view = (row, members = {}) => ({
+      id: row.id,
+      name: row.get("name"),
+      address: row.get("address") || "",
+      phone: row.get("phone") || "",
+      active: row.get("active") !== false,
+      main: row.get("main") === true,
+      members: members[row.id] || { riders: 0, cashiers: 0 }
+    });
+    Parse.Cloud.define("getBranches", async (request) => {
+      const { user, role } = await requireRole(request, ROLES);
+      const rows = await allBranches();
+      if (["admin", "finance"].includes(role)) return { branches: rows.map((row) => view(row)) };
+      const own = (await branchFor(user))?.id;
+      return { branches: rows.filter((row) => row.id === own).map((row) => view(row)) };
+    });
+    Parse.Cloud.define("adminListBranches", async (request) => {
+      const actor = await adminOnly(request);
+      await ensureMainBranch(actor);
+      const rows = await allBranches();
+      const members = {};
+      for (const role of ["rider", "cashier"]) {
+        const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
+        if (!roleRow) continue;
+        for (const user of await findAll(roleRow.getUsers().query())) {
+          if (user.get("active") === false) continue;
+          const id = user.get("branch")?.id;
+          if (!id) continue;
+          members[id] ||= { riders: 0, cashiers: 0 };
+          members[id][role === "rider" ? "riders" : "cashiers"] += 1;
+        }
+      }
+      return { branches: rows.map((row) => view(row, members)) };
+    });
+    Parse.Cloud.define("adminSaveBranch", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      await ensureMainBranch(actor);
+      const name = clean(p.name, 60);
+      if (name.length < 2) throw invalid("Give the branch a name");
+      const rows = await allBranches();
+      if (rows.some((row2) => row2.id !== p.id && row2.get("name").toLowerCase() === name.toLowerCase()))
+        throw invalid(`There is already a branch called "${name}"`);
+      const row = p.id ? rows.find((r) => r.id === p.id) : new Parse.Object(CLASS);
+      if (!row) throw invalid("Unknown branch");
+      const before = p.id ? view(row) : null;
+      const active = p.active === void 0 ? row.get("active") !== false : p.active === true;
+      if (!active && row.get("main")) throw forbidden("The main branch cannot be closed");
+      if (!active && row.get("active") !== false) {
+        const staff = await new Parse.Query(Parse.User).equalTo("branch", row).notEqualTo("active", false).count(MASTER);
+        if (staff) throw invalid(`Move its ${staff} team member(s) to another branch first`);
+      }
+      if (!p.id) await require_limits().checkBranchLimit(rows.length + 1);
+      row.set({
+        name,
+        address: clean(p.address, 200),
+        phone: clean(p.phone, 30),
+        active,
+        main: row.get("main") === true,
+        sortOrder: p.id ? row.get("sortOrder") || 0 : rows.length
+      });
+      row.setACL(readAcl(null, ROLES));
+      await row.save(null, MASTER);
+      await audit(actor, p.id ? "branch.updated" : "branch.created", row, before, view(row));
+      return view(row);
+    });
+    async function assignableBranch(id, actor) {
+      const branch = id ? await branchParam(id) : await ensureMainBranch(actor);
+      if (branch.get("active") === false) throw invalid("That branch is closed");
+      return branch;
+    }
+    module2.exports = {
+      mainBranch,
+      ensureMainBranch,
+      branchFor,
+      branchParam,
+      inBranch,
+      assignableBranch,
+      backfill,
+      TAGGED
+    };
+  }
+});
+
 // cloud/security.js
 var require_security = __commonJS({
   "cloud/security.js"(exports2, module2) {
@@ -822,7 +1023,8 @@ var require_security = __commonJS({
       "Secret",
       "ZReport",
       "ErrorLog",
-      "AdminUnlock"
+      "AdminUnlock",
+      "Branch"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -879,8 +1081,12 @@ var require_security = __commonJS({
     var B = "Boolean";
     var D = "Date";
     var user = ["Pointer", "_User"];
+    var branch = ["Pointer", "Branch"];
     var SCHEMAS = {
+      // Outlets of the restaurant (branches.js).
+      Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N },
       Order: {
+        branch,
         // Tax (EFRIS): the fiscal document for the sale (cloud/efris.js).
         efrisStatus: S,
         efrisFdn: S,
@@ -983,6 +1189,7 @@ var require_security = __commonJS({
         extrasPerUnit: N
       },
       CashHandover: {
+        branch,
         handoverCode: S,
         rider: user,
         cashier: user,
@@ -1011,6 +1218,7 @@ var require_security = __commonJS({
         receivedByOwner: B
       },
       TillPayout: {
+        branch,
         payoutCode: S,
         kind: S,
         rider: user,
@@ -1027,6 +1235,7 @@ var require_security = __commonJS({
         paidAt: D
       },
       Shift: {
+        branch,
         operator: user,
         kind: S,
         status: S,
@@ -1102,6 +1311,9 @@ var require_security = __commonJS({
         category: S,
         active: B,
         availableToday: B,
+        // Branches that offer it (none: all) and where it is sold out today.
+        branchIds: "Array",
+        soldOutAt: "Array",
         sortOrder: N,
         accompanimentGroups: "Array",
         description: S,
@@ -1111,7 +1323,14 @@ var require_security = __commonJS({
         prepMinutes: N
       },
       ZReport: { day: S, data: "Object", generatedAt: D, auto: B },
-      Accompaniment: { title: S, active: B, available: B, sortOrder: N, price: N },
+      Accompaniment: {
+        title: S,
+        active: B,
+        available: B,
+        sortOrder: N,
+        price: N,
+        soldOutAt: "Array"
+      },
       Customer: {
         key: S,
         name: S,
@@ -1188,6 +1407,9 @@ var require_security = __commonJS({
       payRound: N,
       available: B,
       maxFloat: N,
+      financeCode: S,
+      // Where they work (branches.js).
+      branch: ["Pointer", "Branch"],
       // Restored from a backup (restore.js).
       restoredFrom: S,
       restoredCreatedAt: D
@@ -1203,7 +1425,8 @@ var require_security = __commonJS({
       "MenuCategory",
       "Accompaniment",
       "Customer",
-      "ZReport"
+      "ZReport",
+      "Branch"
     ])
       Object.assign(SCHEMAS[className], {
         restoredFrom: S,
@@ -1233,7 +1456,9 @@ var require_security = __commonJS({
       const missing = Object.entries(USER_FIELDS).filter(([field]) => !userFields.includes(field));
       if (missing.length) {
         const schema = new Parse.Schema("_User");
-        for (const [field, type] of missing) schema.addField(field, type);
+        for (const [field, type] of missing)
+          if (Array.isArray(type)) schema.addField(field, type[0], { targetClass: type[1] });
+          else schema.addField(field, type);
         await schema.update();
       }
       return created;
@@ -1322,6 +1547,10 @@ var require_security = __commonJS({
         "AuditLog"
       ])
         updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ["admin"])));
+      updated.Branch = await eachObject(
+        "Branch",
+        (o) => saveAcl(o, readAcl(null, ["admin", "finance", "cashier", "rider"]))
+      );
       updated._User = await eachObject(Parse.User, async (user2) => {
         const role = await getRoleName(user2);
         let changed = false;
@@ -1339,6 +1568,9 @@ var require_security = __commonJS({
         return changed;
       });
       updated.repairedCodes = await repairCodes();
+      const branches = require_branches();
+      const main = await branches.mainBranch();
+      if (main) updated.branchless = await branches.backfill(main);
       return updated;
     }
     async function repairCodes() {
@@ -9470,16 +9702,19 @@ var require_payments = __commonJS({
       };
     }
     Parse.Cloud.define("getMobileMoneyLedger", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const branch = role === "cashier" ? (await user.fetch(MASTER)).get("branch") : null;
       await require_collections().sweepRequests();
       const { values: config } = await loadConfig();
       const pendingQuery = new Parse.Query("Order");
       pendingQuery.equalTo("paymentStatus", PENDING);
       pendingQuery.include(["createdBy"]);
+      if (branch) pendingQuery.equalTo("branch", branch);
       const checkedQuery = new Parse.Query("Order");
       checkedQuery.containedIn("paymentStatus", ["VERIFIED", "REJECTED"]);
       checkedQuery.greaterThanOrEqualTo("paymentCheckedAt", new Date(Date.now() - 48 * 3600 * 1e3));
       checkedQuery.include(["createdBy", "paymentCheckedBy"]);
+      if (branch) checkedQuery.equalTo("branch", branch);
       const [pending, checked] = await Promise.all([
         findAll(pendingQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
         findAll(checkedQuery).then(
@@ -28783,6 +29018,10 @@ var require_payouts = __commonJS({
     });
     async function newPayout(fields, config) {
       const row = new Parse.Object("TillPayout");
+      const branch = await require_branches().branchFor(
+        fields.shift ? fields.paidBy : fields.rider || fields.paidBy
+      );
+      if (branch) row.set("branch", branch);
       row.set({
         payoutCode: await nextDailyCode("PO", 3, config.timezone, {
           className: "TillPayout",
@@ -29006,6 +29245,8 @@ var require_cash = __commonJS({
     }
     async function newHandover({ rider, orders, config, notes, requestId, cashier }) {
       const row = new Parse.Object("CashHandover");
+      const branch = await require_branches().branchFor(rider);
+      if (branch) row.set("branch", branch);
       row.set({
         handoverCode: await nextDailyCode("HO", 3, config.timezone, {
           className: "CashHandover",
@@ -29531,6 +29772,26 @@ var require_reports = __commonJS({
       }
       return [...byKey.values()].sort((a, b) => b.amount - a.amount);
     }
+    function branchMix(facts, names = {}) {
+      const rows = /* @__PURE__ */ new Map();
+      for (const fact of facts) {
+        const key = fact.branchId || "";
+        const row = rows.get(key) || {
+          key,
+          name: names[key] || "No branch",
+          orders: 0,
+          delivered: 0,
+          amount: 0
+        };
+        row.orders += 1;
+        if (isDelivered(fact)) {
+          row.delivered += 1;
+          row.amount += round(fact.total);
+        }
+        rows.set(key, row);
+      }
+      return [...rows.values()].sort((a, b) => b.amount - a.amount);
+    }
     function typeMix(facts) {
       const rows = { delivery: 0, eat_in: 0, pickup: 0 };
       const amounts = { delivery: 0, eat_in: 0, pickup: 0 };
@@ -29577,6 +29838,7 @@ var require_reports = __commonJS({
       };
     }
     module2.exports = {
+      branchMix,
       tillTrend,
       growth,
       summarize,
@@ -29603,6 +29865,7 @@ var require_reports2 = __commonJS({
     var { orderRiderPay } = require_money();
     var { placedAt, createdIn } = require_placed();
     var { payOwed } = require_payouts();
+    var { branchParam } = require_branches();
     var MAX_ROWS = 2e3;
     var PERIODS = ["day", "week", "month"];
     var nameOf = (user) => user ? [
@@ -29632,7 +29895,7 @@ var require_reports2 = __commonJS({
       }
       return range.days <= 31 ? "day" : range.days <= 120 ? "week" : "month";
     }
-    function ordersIn(range, field, riderId) {
+    function ordersIn(range, field, riderId, branch) {
       const query = field === "createdAt" ? createdIn("Order", range) : new Parse.Query("Order");
       if (field !== "createdAt") {
         query.greaterThanOrEqualTo(field, range.start);
@@ -29640,6 +29903,7 @@ var require_reports2 = __commonJS({
       }
       const rider = riderPointer(riderId);
       if (rider) query.equalTo("createdBy", rider);
+      if (branch) query.equalTo("branch", branch);
       query.include("createdBy");
       return query;
     }
@@ -29660,6 +29924,7 @@ var require_reports2 = __commonJS({
         customerKey: order.get("customer")?.id || (phone ? `tel:${phone}` : !fromCounter && name ? `name:${name}` : ""),
         riderId: rider?.id || "",
         rider: nameOf(rider),
+        branchId: order.get("branch")?.id || "",
         total: Number(order.get("total") || 0),
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
@@ -29694,7 +29959,7 @@ var require_reports2 = __commonJS({
       };
     });
     Parse.Cloud.define("getPaymentsLedger", async (request) => {
-      await requireRole(request, ["cashier", "admin", "finance"]);
+      const { user, role } = await requireRole(request, ["cashier", "admin", "finance"]);
       const p = request.params;
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 7 });
@@ -29702,14 +29967,15 @@ var require_reports2 = __commonJS({
       const wantCash = ["all", "cash"].includes(method);
       const wantMomo = ["all", "mobile_money"].includes(method);
       const wantCard = ["all", "card"].includes(method);
-      const cashQuery = ordersIn(range, "deliveredAt", p.riderId);
+      const branch = role === "cashier" ? (await user.fetch({ useMasterKey: true })).get("branch") || null : await branchParam(p.branchId);
+      const cashQuery = ordersIn(range, "deliveredAt", p.riderId, branch);
       cashQuery.equalTo("paymentMethod", "cash");
       cashQuery.equalTo("status", "DELIVERED");
       cashQuery.include("tillCashier");
-      const momoQuery = ordersIn(range, "createdAt", p.riderId);
+      const momoQuery = ordersIn(range, "createdAt", p.riderId, branch);
       momoQuery.equalTo("paymentMethod", "mobile_money");
       momoQuery.include("paymentCheckedBy");
-      const cardQuery = ordersIn(range, "createdAt", p.riderId);
+      const cardQuery = ordersIn(range, "createdAt", p.riderId, branch);
       cardQuery.equalTo("paymentMethod", "card");
       cardQuery.include("paymentCheckedBy");
       const handoverQuery = createdIn("CashHandover", {
@@ -29717,6 +29983,7 @@ var require_reports2 = __commonJS({
         end: new Date(range.end.getTime() + 7 * 864e5)
       });
       if (p.riderId) handoverQuery.equalTo("rider", riderPointer(p.riderId));
+      if (branch) handoverQuery.equalTo("branch", branch);
       handoverQuery.include(["rider", "cashier"]);
       const [cashOrders, momoOrders, cardOrders, handovers] = await Promise.all([
         wantCash ? findAll(cashQuery) : [],
@@ -29861,7 +30128,7 @@ var require_reports2 = __commonJS({
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 7 });
       const method = methodOf(p);
-      const query = ordersIn(range, "createdAt", p.riderId);
+      const query = ordersIn(range, "createdAt", p.riderId, await branchParam(p.branchId));
       if (method !== "all") query.equalTo("paymentMethod", method);
       if (p.status) {
         if (!ORDER_STATUSES.includes(p.status)) throw invalid("Unknown status filter");
@@ -29900,7 +30167,7 @@ var require_reports2 = __commonJS({
       if (!PAID_FILTERS.includes(paidFilter)) throw invalid("Show all, paid or owed");
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 7 });
-      const query = ordersIn(range, "deliveredAt", p.riderId);
+      const query = ordersIn(range, "deliveredAt", p.riderId, await branchParam(p.branchId));
       query.equalTo("status", "DELIVERED");
       query.exists("createdBy");
       const all = (await findAll(query)).map((order) => {
@@ -30032,9 +30299,11 @@ var require_reports2 = __commonJS({
       const range = rangeOf(p, config, { defaultDays: 30 });
       const period = periodOf(p, range);
       const before = previousRange(range, tz);
-      const [facts, previousFacts] = await Promise.all([
-        findAll(ordersIn(range, "createdAt", p.riderId)).then((rows) => rows.map(factOf)),
-        findAll(ordersIn(before, "createdAt", p.riderId)).then((rows) => rows.map(factOf))
+      const branch = await branchParam(p.branchId);
+      const [facts, previousFacts, branches] = await Promise.all([
+        findAll(ordersIn(range, "createdAt", p.riderId, branch)).then((rows) => rows.map(factOf)),
+        findAll(ordersIn(before, "createdAt", p.riderId, branch)).then((rows) => rows.map(factOf)),
+        findAll(new Parse.Query("Branch"))
       ]);
       const delivered = facts.filter((f) => f.status === "DELIVERED");
       const lines = await orderLines(delivered.map((f) => f.id));
@@ -30066,6 +30335,8 @@ var require_reports2 = __commonJS({
         riders: R.riderStats(facts),
         payments: R.paymentMix(facts),
         channels: R.channelMix(facts),
+        // Sales per branch (when the restaurant has more than one).
+        branches: branches.length > 1 ? R.branchMix(facts, Object.fromEntries(branches.map((b) => [b.id, b.get("name")]))) : [],
         ...R.timeOfDay(facts, (f) => localClock(f.createdAt, tz))
       };
     });
@@ -30103,14 +30374,16 @@ var require_owner = __commonJS({
     var { factOf, findAll, ordersIn, orderLines } = require_reports2();
     var { payOwed } = require_payouts();
     var { money, notifyAdmins } = require_notifications();
+    var { branchParam } = require_branches();
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
     var dayRange = (day, timezone) => {
       const range = resolveRange({ from: day, to: day }, timezone);
       if (range.error) throw invalid(range.error);
       return range;
     };
-    async function cashWithRiders() {
-      const query = new Parse.Query("Order");
+    var scoped = (query, branch) => branch ? query.equalTo("branch", branch) : query;
+    async function cashWithRiders(branch) {
+      const query = scoped(new Parse.Query("Order"), branch);
       query.equalTo("status", "DELIVERED");
       query.containedIn("cashStatus", ["WITH_RIDER", "HANDOVER_PENDING"]);
       query.select("amountCollected", "cashStatus", "createdBy");
@@ -30128,7 +30401,7 @@ var require_owner = __commonJS({
         riders: new Set(orders.map((o) => o.get("createdBy")?.id)).size
       };
     }
-    async function cashReceived(range) {
+    async function cashReceived(range, branch) {
       const counted = new Parse.Query("CashHandover");
       counted.greaterThanOrEqualTo("tillAt", range.start);
       counted.lessThan("tillAt", range.end);
@@ -30137,7 +30410,7 @@ var require_owner = __commonJS({
       legacy.doesNotExist("tillAt");
       legacy.greaterThanOrEqualTo("confirmedAt", range.start);
       legacy.lessThan("confirmedAt", range.end);
-      const query = Parse.Query.or(counted, legacy);
+      const query = scoped(Parse.Query.or(counted, legacy), branch);
       query.include(["rider", "cashier"]);
       const rows = await findAll(query);
       return rows.map((h) => ({
@@ -30146,54 +30419,58 @@ var require_owner = __commonJS({
         status: h.get("status")
       }));
     }
-    async function counterCash(range) {
-      const query = new Parse.Query("Order");
+    async function counterCash(range, branch) {
+      const query = scoped(new Parse.Query("Order"), branch);
       query.equalTo("cashStatus", "IN_TILL");
       query.greaterThanOrEqualTo("paidAt", range.start);
       query.lessThan("paidAt", range.end);
       query.select("amountCollected");
       return sumBy(await findAll(query).catch(orNone([])), (o) => o.get("amountCollected"));
     }
-    async function riderPayOwed() {
-      const orders = new Parse.Query("Order");
+    async function riderPayOwed(branch) {
+      const orders = scoped(new Parse.Query("Order"), branch);
       orders.equalTo("status", "DELIVERED");
       orders.notEqualTo("commissionPaid", true);
-      const shortages = new Parse.Query("CashHandover");
+      const shortages = scoped(new Parse.Query("CashHandover"), branch);
       shortages.equalTo("shortageStatus", "owed");
       const [unpaid, owed] = await Promise.all([findAll(orders), findAll(shortages)]);
       return sumBy(unpaid, payOwed) - sumBy(owed, (h) => h.get("shortage"));
     }
     Parse.Cloud.define("getDashboard", async (request) => {
       await requireRole(request, ["admin", "finance"]);
+      const branch = await branchParam(request.params.branchId);
       const { values: config } = await loadConfig();
       const tz = config.timezone;
       const today = isoDay(/* @__PURE__ */ new Date(), tz);
       const todayRange = dayRange(today, tz);
       const monthRange = resolveRange({ from: addDays(today, -29), to: today }, tz);
-      const pendingMomo = new Parse.Query("Order");
+      const pendingMomo = scoped(new Parse.Query("Order"), branch);
       pendingMomo.equalTo("paymentStatus", "PENDING_VERIFICATION");
       pendingMomo.notEqualTo("status", "CANCELLED");
-      const pendingHandovers = new Parse.Query("CashHandover").equalTo("status", "pending");
-      const disputed = new Parse.Query("CashHandover").equalTo("status", "disputed");
-      const issues = new Parse.Query("Order").equalTo("disputeFlag", true);
-      const recent = new Parse.Query("Order");
+      const pendingHandovers = scoped(new Parse.Query("CashHandover"), branch).equalTo(
+        "status",
+        "pending"
+      );
+      const disputed = scoped(new Parse.Query("CashHandover"), branch).equalTo("status", "disputed");
+      const issues = scoped(new Parse.Query("Order"), branch).equalTo("disputeFlag", true);
+      const recent = scoped(new Parse.Query("Order"), branch);
       recent.include("createdBy");
       recent.descending("createdAt");
       recent.limit(15);
-      const onShift = new Parse.Query("Shift").equalTo("status", "open").include("operator");
+      const onShift = scoped(new Parse.Query("Shift"), branch).equalTo("status", "open").include("operator");
       onShift.limit(200);
       const [todayFacts, deliveredToday, monthFacts, cash, received, owed, counts, recentRows, shifts] = await Promise.all([
-        findAll(ordersIn(todayRange, "createdAt")).then((rows) => rows.map(factOf)),
-        findAll(ordersIn(todayRange, "deliveredAt").equalTo("status", "DELIVERED")).then(
-          (rows) => rows.map(factOf)
-        ),
-        findAll(ordersIn(monthRange, "createdAt")).then((rows) => rows.map(factOf)),
-        cashWithRiders(),
-        cashReceived(todayRange).then(async (rows) => [
+        findAll(ordersIn(todayRange, "createdAt", null, branch)).then((rows) => rows.map(factOf)),
+        findAll(
+          ordersIn(todayRange, "deliveredAt", null, branch).equalTo("status", "DELIVERED")
+        ).then((rows) => rows.map(factOf)),
+        findAll(ordersIn(monthRange, "createdAt", null, branch)).then((rows) => rows.map(factOf)),
+        cashWithRiders(branch),
+        cashReceived(todayRange, branch).then(async (rows) => [
           ...rows,
-          { riderId: "", amount: await counterCash(todayRange), status: "counter" }
+          { riderId: "", amount: await counterCash(todayRange, branch), status: "counter" }
         ]),
-        riderPayOwed(),
+        riderPayOwed(branch),
         Promise.all([
           pendingMomo.count(MASTER),
           pendingHandovers.count(MASTER),
@@ -30377,22 +30654,28 @@ var require_owner = __commonJS({
         next: found.length > PAGE ? placedAt(rows[rows.length - 1]) : null
       };
     });
-    async function buildZReport(day, config) {
+    async function buildZReport(day, config, branch = null) {
       const tz = config.timezone;
       const range = dayRange(day, tz);
-      const placedQuery = ordersIn(range, "createdAt");
-      const deliveredQuery = ordersIn(range, "deliveredAt").equalTo("status", "DELIVERED");
-      const cancelledQuery = ordersIn(range, "cancelledAt").equalTo("status", "CANCELLED");
-      const payoutQuery = new Parse.Query("TillPayout");
+      const placedQuery = ordersIn(range, "createdAt", null, branch);
+      const deliveredQuery = ordersIn(range, "deliveredAt", null, branch).equalTo(
+        "status",
+        "DELIVERED"
+      );
+      const cancelledQuery = ordersIn(range, "cancelledAt", null, branch).equalTo(
+        "status",
+        "CANCELLED"
+      );
+      const payoutQuery = scoped(new Parse.Query("TillPayout"), branch);
       payoutQuery.greaterThanOrEqualTo("paidAt", range.start);
       payoutQuery.lessThan("paidAt", range.end);
-      const shiftQuery = new Parse.Query("Shift");
+      const shiftQuery = scoped(new Parse.Query("Shift"), branch);
       shiftQuery.equalTo("kind", "cashier");
       shiftQuery.equalTo("status", "closed");
       shiftQuery.greaterThanOrEqualTo("endedAt", range.start);
       shiftQuery.lessThan("endedAt", range.end);
       shiftQuery.include("operator");
-      const disputeQuery = new Parse.Query("CashHandover");
+      const disputeQuery = scoped(new Parse.Query("CashHandover"), branch);
       disputeQuery.equalTo("status", "disputed");
       disputeQuery.greaterThanOrEqualTo("handedOverAt", range.start);
       disputeQuery.lessThan("handedOverAt", range.end);
@@ -30402,12 +30685,12 @@ var require_owner = __commonJS({
         cancelledQuery.count(MASTER),
         findAll(payoutQuery),
         findAll(shiftQuery),
-        cashReceived(range).then(async (rows) => [
+        cashReceived(range, branch).then(async (rows) => [
           ...rows,
-          { riderId: "", amount: await counterCash(range), status: "counter" }
+          { riderId: "", amount: await counterCash(range, branch), status: "counter" }
         ]),
         disputeQuery.count(MASTER),
-        cashWithRiders()
+        cashWithRiders(branch)
       ]);
       const sales = R.summarize(delivered);
       const lines = await orderLines(delivered.map((f) => f.id));
@@ -30547,8 +30830,15 @@ var require_owner = __commonJS({
       const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
       const day = request.params.day || today;
       if (!isDay(day) || day > today) throw invalid("Choose a day up to today");
-      if (day === today)
-        return { day, live: true, savedAt: null, report: await buildZReport(day, config) };
+      const branch = await branchParam(request.params.branchId);
+      if (day === today || branch)
+        return {
+          day,
+          live: true,
+          savedAt: null,
+          branchId: branch?.id || "",
+          report: await buildZReport(day, config, branch)
+        };
       let row = await storedZReport(day);
       if (!row) row = await saveZReport(day, await buildZReport(day, config), actor);
       return { day, live: false, savedAt: row.get("generatedAt"), report: row.get("data") };
@@ -31309,12 +31599,18 @@ var require_orders = __commonJS({
     var MAX_LINES = 30;
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
-    async function servableAccompaniments() {
+    var offeredAt = (row, branchId) => {
+      const ids = row.get("branchIds") || [];
+      return !branchId || !ids.length || ids.includes(branchId);
+    };
+    var inStockAt = (row, branchId) => !branchId || !(row.get("soldOutAt") || []).includes(branchId);
+    async function servableAccompaniments(branchId) {
       const query = new Parse.Query("Accompaniment");
       query.equalTo("active", true);
       query.equalTo("available", true);
       query.limit(1e3);
-      return new Map((await query.find(MASTER)).map((row) => [row.id, row]));
+      const rows = (await query.find(MASTER)).filter((row) => inStockAt(row, branchId));
+      return new Map(rows.map((row) => [row.id, row]));
     }
     async function saveLines(order, lines, rider) {
       const children = lines.map((line) => {
@@ -31337,7 +31633,7 @@ var require_orders = __commonJS({
       });
       await Parse.Object.saveAll(children, MASTER);
     }
-    async function priceLines(items) {
+    async function priceLines(items, branchId) {
       if (!Array.isArray(items) || !items.length) throw invalid("Add at least one item");
       if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
       const menuQuery = new Parse.Query("MenuItem");
@@ -31347,13 +31643,13 @@ var require_orders = __commonJS({
       );
       const [menu, accompaniments] = await Promise.all([
         menuQuery.find(MASTER),
-        servableAccompaniments()
+        servableAccompaniments(branchId)
       ]);
       const byId = new Map(menu.map((item) => [item.id, item]));
       return items.map((line) => {
         const saved = byId.get(String(line.id));
         const qty = Number(line.quantity);
-        if (!saved || !saved.get("active") || !saved.get("availableToday"))
+        if (!saved || !saved.get("active") || !saved.get("availableToday") || !offeredAt(saved, branchId) || !inStockAt(saved, branchId))
           throw invalid(`${saved?.get("title") || "An item"} is not available`);
         if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw invalid("Invalid quantity");
         const title = saved.get("title");
@@ -31414,11 +31710,12 @@ var require_orders = __commonJS({
         throw invalid(
           paymentMethod === "card" ? "Card is taken at the counter only. Choose cash or mobile money" : "Invalid payment method"
         );
+      const branch = await require_branches().branchFor(rider);
       const activeQuery = new Parse.Query("Order");
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
       const [lines, { values: settings }, active, float, me] = await Promise.all([
-        priceLines(p.items),
+        priceLines(p.items, branch?.id),
         loadConfig(),
         findAll(activeQuery),
         riderFloat(rider),
@@ -31449,6 +31746,7 @@ var require_orders = __commonJS({
         p.payerPhone || p.customerPhone
       ) : null;
       const order = new Parse.Object("Order");
+      if (branch) order.set("branch", branch);
       order.set({
         orderCode: await nextDailyCode("ORD", 4, config.timezone, {
           className: "Order",
@@ -31851,8 +32149,9 @@ var require_orders = __commonJS({
       return people;
     }
     Parse.Cloud.define("getOnShiftCashiers", async (request) => {
-      const { user } = await requireRole(request, ["cashier", "admin"]);
-      return (await onShiftCashiers()).filter((person) => person.id !== user.id).map((person) => ({ id: person.id, name: personName(person) }));
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const branch = role === "cashier" ? (await user.fetch(MASTER)).get("branch")?.id : null;
+      return (await onShiftCashiers()).filter((person) => person.id !== user.id).filter((person) => !branch || person.get("branch")?.id === branch).map((person) => ({ id: person.id, name: personName(person) }));
     });
     Parse.Cloud.define("transferOrder", async (request) => {
       const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
@@ -31900,6 +32199,8 @@ var require_orders = __commonJS({
       cleanPhone,
       CHANNELS,
       servableAccompaniments,
+      offeredAt,
+      inStockAt,
       KITCHEN_OPEN,
       PAYMENT_METHODS,
       applyDelivery,
@@ -32030,7 +32331,9 @@ var require_counter = __commonJS({
         throw invalid("Card is taken at the counter for eat-in and pick-up orders only");
       const payLater = !isDelivery && p.payLater === true;
       const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
-      const lines = await priceLines(p.items);
+      const branches = require_branches();
+      const branch = role === "admin" && p.branchId ? await branches.branchParam(p.branchId) : await branches.branchFor(actor);
+      const lines = await priceLines(p.items, branch?.id);
       const subtotal = sumBy(lines, (line) => line.lineTotal);
       const fee = isDelivery ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0)) : 0;
       const total = subtotal + fee;
@@ -32043,6 +32346,7 @@ var require_counter = __commonJS({
       ) : method === "card" && !payLater ? await checkCard(config, p.paymentReference) : null;
       const me = await actor.fetch(MASTER);
       const order = new Parse.Object("Order");
+      if (branch) order.set("branch", branch);
       order.set({
         orderCode: await nextDailyCode("ORD", 4, config.timezone, {
           className: "Order",
@@ -32204,14 +32508,15 @@ var require_counter = __commonJS({
       };
     });
     Parse.Cloud.define("getAssignableRiders", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
-      const role = await new Parse.Query(Parse.Role).equalTo("name", "rider").first(MASTER);
-      const riders = role ? await findAll(role.getUsers().query()) : [];
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const branch = role === "cashier" ? (await user.fetch(MASTER)).get("branch")?.id : null;
+      const riderRole = await new Parse.Query(Parse.Role).equalTo("name", "rider").first(MASTER);
+      const riders = riderRole ? await findAll(riderRole.getUsers().query()) : [];
       const shifts = await findAll(
         new Parse.Query("Shift").equalTo("kind", "rider").equalTo("status", "open")
       );
       const onShift = new Set(shifts.map((s) => s.get("operator")?.id));
-      return riders.filter((rider) => rider.get("active") !== false).map((rider) => ({
+      return riders.filter((rider) => rider.get("active") !== false).filter((rider) => !branch || rider.get("branch")?.id === branch).map((rider) => ({
         id: rider.id,
         name: personName(rider),
         onShift: onShift.has(rider.id),
@@ -32291,9 +32596,15 @@ var require_menu = __commonJS({
       findAll
     } = require_core();
     var { availableGroups } = require_accompaniments();
-    var { servableAccompaniments } = require_orders();
+    var { servableAccompaniments, offeredAt, inStockAt } = require_orders();
+    var { branchFor, branchParam } = require_branches();
+    async function branchOfRequest(user, role, id) {
+      if (role === "admin") return id ? branchParam(id) : null;
+      return branchFor(user);
+    }
     Parse.Cloud.define("getOperationalMenu", async (request) => {
-      await requireRole(request, ["rider", "cashier", "admin"]);
+      const { user, role } = await requireRole(request, ["rider", "cashier", "admin"]);
+      const branchId = (role === "admin" && request.params.branchId ? await branchParam(request.params.branchId) : await branchFor(user))?.id;
       const query = new Parse.Query("MenuItem");
       query.equalTo("active", true);
       query.equalTo("availableToday", true);
@@ -32302,7 +32613,7 @@ var require_menu = __commonJS({
       const categoryQuery = new Parse.Query("MenuCategory");
       const [menu, accompaniments, { values: config }, categoryRows] = await Promise.all([
         query.find(MASTER),
-        servableAccompaniments(),
+        servableAccompaniments(branchId),
         loadConfig(),
         findAll(categoryQuery)
       ]);
@@ -32312,7 +32623,7 @@ var require_menu = __commonJS({
       const categories = categoryRows.filter((row) => row.get("active") !== false).sort((a, b) => Number(a.get("sortOrder") || 0) - Number(b.get("sortOrder") || 0)).map((row) => row.get("title"));
       return {
         categories,
-        items: menu.filter((item) => !hidden.has(item.get("category") || "Mains")).map((item) => ({
+        items: menu.filter((item) => !hidden.has(item.get("category") || "Mains")).filter((item) => offeredAt(item, branchId) && inStockAt(item, branchId)).map((item) => ({
           id: item.id,
           title: item.get("title"),
           category: item.get("category") || "Mains",
@@ -32337,7 +32648,9 @@ var require_menu = __commonJS({
       };
     });
     Parse.Cloud.define("getStock", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const branch = await branchOfRequest(user, role, request.params.branchId);
+      const branchId = branch?.id;
       const items = new Parse.Query("MenuItem");
       items.equalTo("active", true);
       items.ascending("sortOrder");
@@ -32348,16 +32661,20 @@ var require_menu = __commonJS({
       extras.limit(500);
       const [menu, accompaniments] = await Promise.all([items.find(MASTER), extras.find(MASTER)]);
       return {
-        items: menu.map((item) => ({
+        branch: branch ? { id: branch.id, name: branch.get("name") } : null,
+        items: menu.filter((item) => offeredAt(item, branchId)).map((item) => ({
           id: item.id,
           title: item.get("title"),
           category: item.get("category") || "Mains",
-          available: item.get("availableToday") !== false
+          available: item.get("availableToday") !== false && inStockAt(item, branchId),
+          // Sold out at every branch (only the owner changes that).
+          everywhere: item.get("availableToday") === false
         })),
         accompaniments: accompaniments.map((row) => ({
           id: row.id,
           title: row.get("title"),
-          available: row.get("available") !== false,
+          available: row.get("available") !== false && inStockAt(row, branchId),
+          everywhere: row.get("available") === false,
           price: Number(row.get("price") || 0)
         }))
       };
@@ -32369,8 +32686,22 @@ var require_menu = __commonJS({
       const available = request.params.available === true;
       const className = { menuItem: "MenuItem", accompaniment: "Accompaniment" }[type];
       if (!className) throw invalid("Unknown item type");
-      const field = type === "menuItem" ? "availableToday" : "available";
       const row = await new Parse.Query(className).get(String(id), MASTER);
+      const branch = await branchOfRequest(actor, role, request.params.branchId);
+      if (branch) {
+        const soldOut = new Set(row.get("soldOutAt") || []);
+        const before2 = { soldOutAt: [...soldOut] };
+        if (available) soldOut.delete(branch.id);
+        else soldOut.add(branch.id);
+        row.set("soldOutAt", [...soldOut]);
+        await row.save(null, MASTER);
+        await audit(actor, `stock.${available ? "available" : "sold_out"}`, row, before2, {
+          branch: branch.get("name"),
+          soldOutAt: [...soldOut]
+        });
+        return { id: row.id, available, branchId: branch.id };
+      }
+      const field = type === "menuItem" ? "availableToday" : "available";
       const before = { [field]: row.get(field) };
       row.set(field, available);
       await row.save(null, MASTER);
@@ -32539,6 +32870,8 @@ var require_shifts = __commonJS({
       const opening = Number(raw || 0);
       if (!Number.isFinite(opening) || opening < 0) throw invalid("Invalid opening cash");
       const row = new Parse.Object("Shift");
+      const branch = await require_branches().branchFor(user);
+      if (branch) row.set("branch", branch);
       row.set({
         operator: user,
         kind,
@@ -32629,6 +32962,8 @@ var require_shifts = __commonJS({
       const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
       if (range.error) throw invalid(range.error);
       const query = new Parse.Query("Shift");
+      const branch = await require_branches().branchParam(request.params.branchId);
+      if (branch) query.equalTo("branch", branch);
       query.equalTo("kind", "cashier");
       query.greaterThanOrEqualTo("startedAt", range.start);
       query.lessThan("startedAt", range.end);
@@ -32886,6 +33221,7 @@ var require_people = __commonJS({
         phone: user.get("phone") || "",
         role: role || "unassigned",
         code: user.get("riderCode") || user.get("cashierCode") || user.get("financeCode") || "",
+        branchId: user.get("branch")?.id || "",
         active: user.get("active") !== false,
         available: role === "rider" ? user.get("available") !== false : null,
         pinLocked: !!(lockedUntil && lockedUntil > /* @__PURE__ */ new Date()),
@@ -33141,7 +33477,8 @@ var require_admin = __commonJS({
           available: members[user.id] === "rider" ? user.get("available") !== false : null,
           onShift: onShift.has(user.id),
           cashHeld: cashHeld[user.id] || 0,
-          cashLimit: typeof user.get("maxFloat") === "number" ? user.get("maxFloat") : null
+          cashLimit: typeof user.get("maxFloat") === "number" ? user.get("maxFloat") : null,
+          branchId: user.get("branch")?.id || ""
         })),
         menu: menu.map((item) => ({
           id: item.id,
@@ -33150,6 +33487,8 @@ var require_admin = __commonJS({
           category: item.get("category"),
           active: item.get("active") !== false,
           availableToday: item.get("availableToday") !== false,
+          branchIds: item.get("branchIds") || [],
+          soldOutAt: item.get("soldOutAt") || [],
           accompanimentGroups: item.get("accompanimentGroups") || [],
           description: item.get("description") || "",
           image: fileUrl(item.get("image")),
@@ -33183,7 +33522,11 @@ var require_admin = __commonJS({
       if (!name || !/^[-a-z0-9_.]{3,32}$/.test(username) || pin.length < 4 || pin.length > 32)
         throw invalid("Enter a name, valid username and PIN of at least 4 characters");
       const { values: config } = await loadConfig();
+      await require_limits().checkMemberLimit(roleName);
+      const branches = require_branches();
+      const branch = roleName !== "finance" && (p.branchId || await branches.mainBranch()) ? await branches.assignableBranch(p.branchId, actor) : null;
       const user = new Parse.User();
+      if (branch) user.set("branch", branch);
       user.set({
         username,
         password: pin,
@@ -33216,7 +33559,8 @@ var require_admin = __commonJS({
         commissionType: user.get("commissionType"),
         commissionPerOrder: user.get("commissionPerOrder"),
         commissionPercent: user.get("commissionPercent"),
-        maxFloat: user.get("maxFloat")
+        maxFloat: user.get("maxFloat"),
+        branchId: user.get("branch")?.id || ""
       });
       const before = snapshot();
       if (p.name !== void 0) {
@@ -33238,6 +33582,14 @@ var require_admin = __commonJS({
             throw invalid("Invalid cash limit");
           user.set("maxFloat", Math.round(limit));
         }
+      }
+      if (p.branchId !== void 0) {
+        const branch = await require_branches().assignableBranch(p.branchId, actor);
+        user.set("branch", branch);
+      }
+      if (p.active === true && user.get("active") === false) {
+        const role = await require_core().getRoleName(user);
+        if (role && role !== "admin") await require_limits().checkMemberLimit(role);
       }
       const deactivating = p.active === false && user.get("active") !== false;
       if (typeof p.active === "boolean") user.set("active", p.active);
@@ -33280,6 +33632,7 @@ var require_admin = __commonJS({
           await role.save(null, MASTER);
         }
       }
+      await require_limits().checkMemberLimit(next);
       const destination = await ensureRole(next);
       destination.getUsers().add(user);
       await destination.save(null, MASTER);
@@ -33356,6 +33709,12 @@ var require_admin = __commonJS({
         ...prep !== void 0 && { prepMinutes: prep }
       });
       if (p.description !== void 0) item.set("description", merchantField(p.description, 300));
+      if (p.branchIds !== void 0) {
+        const wanted = Array.isArray(p.branchIds) ? [...new Set(p.branchIds.map(String))] : [];
+        const known = new Set((await findAll(new Parse.Query("Branch"))).map((row) => row.id));
+        if (wanted.some((id) => !known.has(id))) throw invalid("Unknown branch");
+        item.set("branchIds", wanted);
+      }
       if (!p.id && item.get("sortOrder") === void 0) {
         const last = await new Parse.Query("MenuItem").descending("sortOrder").first(MASTER);
         item.set("sortOrder", (Number(last?.get("sortOrder")) || 0) + 1);
@@ -33820,6 +34179,7 @@ var require_data = __commonJS({
     var { requireAdminUnlock } = require_adminLock();
     var EXPORT_CLASSES = [
       "Configuration",
+      "Branch",
       "_User",
       "MenuCategory",
       "MenuItem",
@@ -33843,6 +34203,7 @@ var require_data = __commonJS({
       "riderCode",
       "cashierCode",
       "financeCode",
+      "branch",
       "commissionType",
       "commissionPerOrder",
       "commissionPercent",
@@ -33857,6 +34218,7 @@ var require_data = __commonJS({
     async function userRow(user) {
       const row = { objectId: user.id, createdAt: user.createdAt, updatedAt: user.updatedAt };
       for (const field of USER_FIELDS) if (user.get(field) !== void 0) row[field] = user.get(field);
+      if (row.branch) row.branch = row.branch.id;
       row.role = await getRoleName(user) || "unassigned";
       return row;
     }
@@ -33906,6 +34268,7 @@ var require_restore = __commonJS({
     var { applySecurity } = require_security();
     var ORDER = [
       "Configuration",
+      "Branch",
       "_User",
       "MenuCategory",
       "Accompaniment",
@@ -34779,7 +35142,13 @@ var require_profile = __commonJS({
     Parse.Cloud.define("getMyProfile", async (request) => {
       const user = requireUser(request);
       await user.fetch(MASTER);
-      const [role, { values }] = await Promise.all([getRoleName(user), loadConfig()]);
+      const [role, { values }, branches, features] = await Promise.all([
+        getRoleName(user),
+        loadConfig(),
+        new Parse.Query("Branch").notEqualTo("active", false).find(MASTER),
+        require_limits().features()
+      ]);
+      const own = branches.find((row) => row.id === user.get("branch")?.id);
       return {
         id: user.id,
         username: user.getUsername(),
@@ -34795,6 +35164,12 @@ var require_profile = __commonJS({
           percent: user.get("commissionPercent") || 0
         } : null,
         canInitialize: role === null && await canBootstrapOwner(),
+        // Where they work (riders and cashiers), and how many open branches the
+        // restaurant has (branch filters show when there are two or more).
+        branch: own ? { id: own.id, name: own.get("name") } : null,
+        branchCount: branches.length,
+        // Parts of the app this restaurant has (lib/limits.js).
+        features,
         config: publicConfig(role === "rider" ? withRiderLimit(values, user) : values)
       };
     });
@@ -34818,6 +35193,7 @@ require_cash();
 require_payouts();
 require_cashcheck();
 require_shifts();
+require_branches();
 require_people();
 require_admin();
 require_onboarding();

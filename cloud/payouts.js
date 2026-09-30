@@ -128,6 +128,11 @@ Parse.Cloud.define('getMyPay', async (request) => {
 
 async function newPayout(fields, config) {
   const row = new Parse.Object('TillPayout');
+  // Paid from a cashier's till: that till's branch; else the rider's.
+  const branch = await require('./branches').branchFor(
+    fields.shift ? fields.paidBy : fields.rider || fields.paidBy,
+  );
+  if (branch) row.set('branch', branch);
   row.set({
     payoutCode: await nextDailyCode('PO', 3, config.timezone, {
       className: 'TillPayout',

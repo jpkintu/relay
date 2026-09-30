@@ -23,6 +23,7 @@ const { applySecurity } = require('./security');
 // Classes a record may link to come first.
 const ORDER = [
   'Configuration',
+  'Branch',
   '_User',
   'MenuCategory',
   'Accompaniment',

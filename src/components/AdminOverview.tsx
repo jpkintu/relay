@@ -1,11 +1,11 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Data, Layout } from 'plotly.js';
 import { ChevronRight } from 'lucide-react';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { statusLabel, statusTone } from '../lib/labels';
-import { useCloud } from './reports/common';
+import { BranchSelect, useBranchOptions, useCloud } from './reports/common';
 import { Chart, SERIES } from './reports/Chart';
 import { useLiveRefresh } from '../lib/live';
 
@@ -60,7 +60,12 @@ export function AdminOverview({ version }: { version: number }) {
   const { timezone } = useConfig();
   const navigate = useNavigate();
   const finance = useSession().profile?.role === 'finance';
-  const { data, error, loading, reload } = useCloud<Dashboard>('getDashboard', {});
+  const branches = useBranchOptions();
+  const [branchId, setBranchId] = useState('');
+  const { data, error, loading, reload } = useCloud<Dashboard>(
+    'getDashboard',
+    branchId ? { branchId } : {},
+  );
   useEffect(() => {
     if (version) reload();
   }, [version, reload]);
@@ -130,6 +135,11 @@ export function AdminOverview({ version }: { version: number }) {
 
   return (
     <div className={loading ? 'overview busy' : 'overview'}>
+      {branches.length > 1 && (
+        <div className="filter-bar overview-branch">
+          <BranchSelect value={branchId} onChange={setBranchId} branches={branches} />
+        </div>
+      )}
       <div className="admin-metrics">
         <article>
           <span>Net revenue today</span>

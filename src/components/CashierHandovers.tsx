@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, HandCoins } from 'lucide-react';
 import Parse from '../parse';
-import { useConfig, useMoney } from '../lib/session';
+import { useConfig, useMoney, useSession } from '../lib/session';
+import { inBranch } from '../lib/branch';
 import { formatDate } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { usePin } from '../lib/pin';
@@ -26,6 +27,8 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
   const money = useMoney();
   const { timezone } = useConfig();
   const withPin = usePin();
+  const { profile } = useSession();
+  const myBranch = profile?.role === 'cashier' ? profile.branch?.id : null;
   const [rows, setRows] = useState<Handover[]>([]),
     [selected, setSelected] = useState<string | null>(null),
     [counted, setCounted] = useState(''),
@@ -39,7 +42,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
   const load = useCallback(async () => {
     if (preview) return;
     try {
-      const q = new Parse.Query('CashHandover');
+      const q = inBranch(new Parse.Query('CashHandover'), myBranch);
       q.equalTo('status', 'pending');
       q.ascending('createdAt');
       q.include('rider');
@@ -62,7 +65,7 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load handovers');
     }
-  }, [preview]);
+  }, [preview, myBranch]);
   useEffect(() => {
     void load();
   }, [load, preview]);

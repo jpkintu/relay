@@ -4257,6 +4257,216 @@ describe('card payments at the counter', () => {
   });
 });
 
+describe('branches', () => {
+  const M = { useMasterKey: true };
+  let settings;
+  let items;
+  let main;
+  let ntinda;
+  let nia;
+  let nora;
+  const made = [];
+  const line = (item) => [{ id: item.id, quantity: 1 }];
+  const counter = async (params, user) => {
+    const placed = await run('createCounterOrder', params, user);
+    made.push([placed.id, user]);
+    return placed;
+  };
+  const fetch = (id) => new Parse.Query('Order').get(id, M);
+
+  before(async () => {
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run(
+      'adminSaveSettings',
+      { ...settings, moduleCallIn: true, moduleCounter: true },
+      s.owner,
+    );
+    items = (await run('getOperationalMenu', {}, s.dina)).items.filter(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+  after(async () => {
+    for (const [id, user] of made) {
+      const order = await fetch(id);
+      if (!['DELIVERED', 'CANCELLED'].includes(order.get('status')))
+        await run(
+          'transitionOrder',
+          { orderId: id, action: 'cancel', reason: 'Branch test' },
+          user,
+        );
+    }
+    for (const item of items.slice(0, 2))
+      await run('adminSaveMenuItem', { ...(await menuItem(item.id)), branchIds: [] }, s.owner);
+    await run('adminSaveSettings', settings, s.owner);
+  });
+  const menuItem = async (id) => {
+    const row = (await run('adminListSetup', {}, s.owner)).menu.find((m) => m.id === id);
+    return {
+      id: row.id,
+      title: row.title,
+      price: row.price,
+      category: row.category,
+      active: row.active,
+      availableToday: row.availableToday,
+    };
+  };
+
+  test('opening Branches makes the main branch and puts everything in it', async () => {
+    const before = await new Parse.Query('Order').descending('createdAt').first(M);
+    assert.equal(before.get('branch'), undefined);
+    assert.equal((await run('getMyProfile', {}, s.owner)).branchCount, 0);
+    const { branches } = await run('adminListBranches', {}, s.owner);
+    assert.equal(branches.length, 1);
+    main = branches[0];
+    assert.equal(main.main, true);
+    assert.equal(main.name, 'Main branch');
+    assert.equal((await fetch(before.id)).get('branch').id, main.id);
+    const dina = await new Parse.Query(Parse.User).get(s.dina.id, M);
+    assert.equal(dina.get('branch').id, main.id);
+    assert.equal((await run('getMyProfile', {}, s.dina)).branch.name, 'Main branch');
+    await rejects(run('adminListBranches', {}, s.dina), /admin role required/);
+  });
+
+  test('the owner adds a branch and staff work there', async () => {
+    ntinda = await run(
+      'adminSaveBranch',
+      { name: 'Ntinda', address: 'Ntinda shopping centre', phone: '0772000222' },
+      s.owner,
+    );
+    await rejects(run('adminSaveBranch', { name: 'ntinda' }, s.owner), /already a branch/);
+    await rejects(
+      run('adminSaveBranch', { id: main.id, name: main.name, active: false }, s.owner),
+      /main branch cannot be closed/,
+    );
+    assert.equal((await run('getMyProfile', {}, s.owner)).branchCount, 2);
+    const cashier = await run(
+      'adminCreateTeamMember',
+      {
+        name: 'Nia Ntinda',
+        username: 'nia-ntinda',
+        pin: '4455',
+        role: 'cashier',
+        branchId: ntinda.id,
+      },
+      s.owner,
+    );
+    const rider = await run(
+      'adminCreateTeamMember',
+      {
+        name: 'Nora Ntinda',
+        username: 'nora-ntinda',
+        pin: '5566',
+        role: 'rider',
+        branchId: ntinda.id,
+      },
+      s.owner,
+    );
+    nia = await login('nia-ntinda', '4455');
+    nora = await login('nora-ntinda', '5566');
+    assert.equal((await run('getMyProfile', {}, nia)).branch.id, ntinda.id);
+    await run('startShift', { kind: 'cashier', openingFloat: 0 }, nia);
+    const riders = await run('getAssignableRiders', {}, nia);
+    assert.deepEqual(
+      riders.map((r) => r.id),
+      [rider.id],
+      'a cashier sends only their branch riders',
+    );
+    assert.ok((await run('getAssignableRiders', {}, s.owner)).length > 1);
+    // A branch with people working at it cannot be closed.
+    await rejects(
+      run('adminSaveBranch', { id: ntinda.id, name: 'Ntinda', active: false }, s.owner),
+      /Move its 2 team member/,
+    );
+    const listed = (await run('adminListBranches', {}, s.owner)).branches.find(
+      (b) => b.id === ntinda.id,
+    );
+    assert.deepEqual(listed.members, { riders: 1, cashiers: 1 });
+    // A member can be moved; a rider's orders go to their branch.
+    const { team } = await run('adminListSetup', {}, s.owner);
+    assert.equal(team.find((m) => m.id === cashier.id).branchId, ntinda.id);
+    await rejects(
+      run('adminUpdateMember', { id: cashier.id, branchId: 'nope' }, s.owner),
+      /Unknown branch/,
+    );
+    await run('startShift', { kind: 'rider' }, nora);
+    const placed = await run(
+      'createOrder',
+      {
+        customerName: 'Branch Beth',
+        deliveryAddress: 'Ntinda',
+        paymentMethod: 'cash',
+        items: line(items[0]),
+      },
+      nora,
+    );
+    made.push([placed.id, nora]);
+    assert.equal((await fetch(placed.id)).get('branch').id, ntinda.id);
+  });
+
+  test('dishes are offered per branch and sold out per branch', async () => {
+    const [onlyMain, both] = items;
+    await run(
+      'adminSaveMenuItem',
+      { ...(await menuItem(onlyMain.id)), branchIds: [main.id] },
+      s.owner,
+    );
+    const ntindaMenu = (await run('getOperationalMenu', {}, nia)).items.map((i) => i.id);
+    assert.ok(!ntindaMenu.includes(onlyMain.id), 'not offered at Ntinda');
+    assert.ok(
+      (await run('getOperationalMenu', {}, s.dina)).items.some((i) => i.id === onlyMain.id),
+    );
+    await rejects(counter({ orderType: 'eat_in', items: line(onlyMain) }, nia), /is not available/);
+    // Sold out at Ntinda only.
+    await run('setAvailability', { type: 'menuItem', id: both.id, available: false }, nia);
+    assert.ok(!(await run('getOperationalMenu', {}, nia)).items.some((i) => i.id === both.id));
+    assert.ok((await run('getOperationalMenu', {}, s.dina)).items.some((i) => i.id === both.id));
+    const stock = await run('getStock', { branchId: ntinda.id }, s.owner);
+    assert.equal(stock.branch.name, 'Ntinda');
+    assert.equal(stock.items.find((i) => i.id === both.id).available, false);
+    assert.ok(!stock.items.some((i) => i.id === onlyMain.id), 'Ntinda does not list it');
+    const mainStock = await run('getStock', {}, s.dina);
+    assert.equal(mainStock.items.find((i) => i.id === both.id).available, true);
+    await run('setAvailability', { type: 'menuItem', id: both.id, available: true }, nia);
+    assert.ok((await run('getOperationalMenu', {}, nia)).items.some((i) => i.id === both.id));
+  });
+
+  test('orders, payments and reports split by branch', async () => {
+    const [, dish] = items;
+    const here = await counter({ orderType: 'eat_in', items: line(dish) }, nia);
+    const there = await counter({ orderType: 'eat_in', items: line(dish) }, s.dina);
+    assert.equal((await fetch(here.id)).get('branch').id, ntinda.id);
+    assert.equal((await fetch(there.id)).get('branch').id, main.id);
+    for (const [order, user] of [
+      [here, nia],
+      [there, s.dina],
+    ])
+      for (const action of ['accept', 'ready', 'complete'])
+        await run('transitionOrder', { orderId: order.id, action }, user);
+
+    const found = await run('adminSearchOrders', { branchId: ntinda.id }, s.owner);
+    assert.ok(found.rows.some((r) => r.id === here.id));
+    assert.ok(!found.rows.some((r) => r.id === there.id));
+    const report = await run('getOperationsReport', { branchId: ntinda.id }, s.owner);
+    const all = await run('getOperationsReport', {}, s.owner);
+    assert.ok(report.summary.orders < all.summary.orders);
+    assert.ok(all.branches.some((b) => b.name === 'Ntinda' && b.delivered >= 1));
+    assert.ok(all.branches.some((b) => b.name === 'Main branch'));
+    const today = await run('getDashboard', { branchId: ntinda.id }, s.owner);
+    assert.ok(today.today.orders >= 1);
+    assert.ok(today.today.orders < (await run('getDashboard', {}, s.owner)).today.orders);
+    const z = await run('adminGetZReport', { branchId: ntinda.id }, s.owner);
+    assert.equal(z.branchId, ntinda.id);
+    assert.equal(z.live, true);
+    // The Ntinda cashier's payments ledger is their branch's only.
+    const ledger = await run('getPaymentsLedger', { method: 'cash' }, nia);
+    assert.ok(ledger.transactions.some((t) => t.id === here.id));
+    assert.ok(!ledger.transactions.some((t) => t.id === there.id));
+    const shifts = await run('getShiftReport', { branchId: ntinda.id }, s.owner);
+    assert.ok(shifts.shifts.every((row) => /Nia/.test(row.cashier)));
+    await rejects(run('getDashboard', { branchId: 'bogus!' }, s.owner), /Unknown branch/);
+  });
+});
+
 describe('getting started: setup progress and menu import', () => {
   test('setup progress counts the restaurant own dishes and team', async () => {
     const progress = await run('getSetupProgress', {}, s.owner);
@@ -5050,6 +5260,7 @@ const ACCESS = {
   rider: ['createOrder', 'createHandover', 'getMyHandovers', 'getMyPay', 'setMyAvailability'],
   riderOrReports: ['getRiderEarnings'],
   anyRole: ['searchCustomers', 'getOperationalMenu'],
+  everyRole: ['getBranches'],
   cashier: ['recordTillPayout'],
   staff: [
     'confirmHandover',
@@ -5132,6 +5343,8 @@ const ACCESS = {
     'adminTestPaymentConnection',
     'adminMtnSandboxUser',
     'adminGetServerAddress',
+    'adminListBranches',
+    'adminSaveBranch',
   ],
 };
 const ALLOWED = {
@@ -5141,6 +5354,7 @@ const ALLOWED = {
   rider: ['rider'],
   riderOrReports: ['rider', 'finance', 'admin'],
   anyRole: ['rider', 'cashier', 'admin'],
+  everyRole: ['rider', 'cashier', 'finance', 'admin'],
   cashier: ['cashier'],
   staff: ['cashier', 'admin'],
   staffOrFinance: ['cashier', 'finance', 'admin'],

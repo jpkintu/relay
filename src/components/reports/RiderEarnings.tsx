@@ -136,7 +136,12 @@ export function RiderEarnings({ riderId }: { riderId?: string }) {
           </button>
         ))}
       </div>
-      <FilterBar filters={filters} onChange={setFilters} presets={VIEWS[view].presets} />
+      <FilterBar
+        showBranch={false}
+        filters={filters}
+        onChange={setFilters}
+        presets={VIEWS[view].presets}
+      />
       {error && <p className="ops-error">{error}</p>}
       {data && s && (
         <>

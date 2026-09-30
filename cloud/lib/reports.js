@@ -220,6 +220,28 @@ function paymentMix(facts) {
   return [...byKey.values()].sort((a, b) => b.amount - a.amount);
 }
 
+// Sales per branch: orders placed, delivered and their revenue.
+function branchMix(facts, names = {}) {
+  const rows = new Map();
+  for (const fact of facts) {
+    const key = fact.branchId || '';
+    const row = rows.get(key) || {
+      key,
+      name: names[key] || 'No branch',
+      orders: 0,
+      delivered: 0,
+      amount: 0,
+    };
+    row.orders += 1;
+    if (isDelivered(fact)) {
+      row.delivered += 1;
+      row.amount += round(fact.total);
+    }
+    rows.set(key, row);
+  }
+  return [...rows.values()].sort((a, b) => b.amount - a.amount);
+}
+
 // Delivered orders and sales by kind: delivery, eat in, pick up.
 function typeMix(facts) {
   const rows = { delivery: 0, eat_in: 0, pickup: 0 };
@@ -277,6 +299,7 @@ function tillTrend(shifts) {
 }
 
 module.exports = {
+  branchMix,
   tillTrend,
   growth,
   summarize,

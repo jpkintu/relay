@@ -84,6 +84,7 @@ type Report = {
   }[];
   payments: { key: string; orders: number; amount: number }[];
   channels: { key: string; orders: number; amount: number }[];
+  branches?: { key: string; name: string; orders: number; delivered: number; amount: number }[];
   hours: { hour: number; orders: number; revenue: number }[];
   weekdays: { weekday: number; orders: number; revenue: number }[];
 };
@@ -637,6 +638,22 @@ export function Reports() {
                   </div>
                 ))}
               </div>
+              {!!data.branches?.length && (
+                <>
+                  <p className="mini-table-title">Sales by branch</p>
+                  <div className="mini-table">
+                    {data.branches.map((b) => (
+                      <div key={b.key}>
+                        <span>{b.name}</span>
+                        <span>
+                          {b.delivered} of {b.orders} orders
+                        </span>
+                        <strong>{money(b.amount)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </ReportPanel>
 
             <ReportPanel title="Busiest hours" eyebrow="Orders placed by hour">

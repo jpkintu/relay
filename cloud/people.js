@@ -234,6 +234,7 @@ Parse.Cloud.define('adminGetMember', async (request) => {
     phone: user.get('phone') || '',
     role: role || 'unassigned',
     code: user.get('riderCode') || user.get('cashierCode') || user.get('financeCode') || '',
+    branchId: user.get('branch')?.id || '',
     active: user.get('active') !== false,
     available: role === 'rider' ? user.get('available') !== false : null,
     pinLocked: !!(lockedUntil && lockedUntil > new Date()),

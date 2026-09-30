@@ -11,12 +11,27 @@ const {
   findAll,
 } = require('./lib/core');
 const { availableGroups } = require('./lib/accompaniments');
-const { servableAccompaniments } = require('./orders');
+const { servableAccompaniments, offeredAt, inStockAt } = require('./orders');
+const { branchFor, branchParam } = require('./branches');
+
+// The branch a menu or stock request is about: the caller's own, or the one
+// the owner picks (none: every branch, as it was before branches).
+async function branchOfRequest(user, role, id) {
+  if (role === 'admin') return id ? branchParam(id) : null;
+  return branchFor(user);
+}
 
 // What a rider can order right now. Accompaniment groups only list
 // accompaniments that are active and not sold out.
 Parse.Cloud.define('getOperationalMenu', async (request) => {
-  await requireRole(request, ['rider', 'cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['rider', 'cashier', 'admin']);
+  // The owner orders for the main branch unless they pick one (as
+  // createCounterOrder does).
+  const branchId = (
+    role === 'admin' && request.params.branchId
+      ? await branchParam(request.params.branchId)
+      : await branchFor(user)
+  )?.id;
   const query = new Parse.Query('MenuItem');
   query.equalTo('active', true);
   query.equalTo('availableToday', true);
@@ -25,7 +40,7 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
   const categoryQuery = new Parse.Query('MenuCategory');
   const [menu, accompaniments, { values: config }, categoryRows] = await Promise.all([
     query.find(MASTER),
-    servableAccompaniments(),
+    servableAccompaniments(branchId),
     loadConfig(),
     findAll(categoryQuery),
   ]);
@@ -41,6 +56,7 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
     categories,
     items: menu
       .filter((item) => !hidden.has(item.get('category') || 'Mains'))
+      .filter((item) => offeredAt(item, branchId) && inStockAt(item, branchId))
       .map((item) => ({
         id: item.id,
         title: item.get('title'),
@@ -66,8 +82,12 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
 });
 
 // Everything staff can switch on or off during service.
+// Per branch: a cashier sees their own branch; the owner picks one (or
+// none: sold out everywhere). Dishes the branch does not offer are left out.
 Parse.Cloud.define('getStock', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['cashier', 'admin']);
+  const branch = await branchOfRequest(user, role, request.params.branchId);
+  const branchId = branch?.id;
   const items = new Parse.Query('MenuItem');
   items.equalTo('active', true);
   items.ascending('sortOrder');
@@ -78,16 +98,22 @@ Parse.Cloud.define('getStock', async (request) => {
   extras.limit(500);
   const [menu, accompaniments] = await Promise.all([items.find(MASTER), extras.find(MASTER)]);
   return {
-    items: menu.map((item) => ({
-      id: item.id,
-      title: item.get('title'),
-      category: item.get('category') || 'Mains',
-      available: item.get('availableToday') !== false,
-    })),
+    branch: branch ? { id: branch.id, name: branch.get('name') } : null,
+    items: menu
+      .filter((item) => offeredAt(item, branchId))
+      .map((item) => ({
+        id: item.id,
+        title: item.get('title'),
+        category: item.get('category') || 'Mains',
+        available: item.get('availableToday') !== false && inStockAt(item, branchId),
+        // Sold out at every branch (only the owner changes that).
+        everywhere: item.get('availableToday') === false,
+      })),
     accompaniments: accompaniments.map((row) => ({
       id: row.id,
       title: row.get('title'),
-      available: row.get('available') !== false,
+      available: row.get('available') !== false && inStockAt(row, branchId),
+      everywhere: row.get('available') === false,
       price: Number(row.get('price') || 0),
     })),
   };
@@ -101,8 +127,24 @@ Parse.Cloud.define('setAvailability', async (request) => {
   const available = request.params.available === true;
   const className = { menuItem: 'MenuItem', accompaniment: 'Accompaniment' }[type];
   if (!className) throw invalid('Unknown item type');
-  const field = type === 'menuItem' ? 'availableToday' : 'available';
   const row = await new Parse.Query(className).get(String(id), MASTER);
+  // At one branch: the cashier's own, or the one the owner picked. Without
+  // branches (or the owner choosing none): everywhere.
+  const branch = await branchOfRequest(actor, role, request.params.branchId);
+  if (branch) {
+    const soldOut = new Set(row.get('soldOutAt') || []);
+    const before = { soldOutAt: [...soldOut] };
+    if (available) soldOut.delete(branch.id);
+    else soldOut.add(branch.id);
+    row.set('soldOutAt', [...soldOut]);
+    await row.save(null, MASTER);
+    await audit(actor, `stock.${available ? 'available' : 'sold_out'}`, row, before, {
+      branch: branch.get('name'),
+      soldOutAt: [...soldOut],
+    });
+    return { id: row.id, available, branchId: branch.id };
+  }
+  const field = type === 'menuItem' ? 'availableToday' : 'available';
   const before = { [field]: row.get(field) };
   row.set(field, available);
   await row.save(null, MASTER);

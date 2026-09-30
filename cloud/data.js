@@ -8,6 +8,7 @@ const { requireAdminUnlock } = require('./adminLock');
 // push keys, the VAPID secret, counters and demo rows.
 const EXPORT_CLASSES = [
   'Configuration',
+  'Branch',
   '_User',
   'MenuCategory',
   'MenuItem',
@@ -32,6 +33,7 @@ const USER_FIELDS = [
   'riderCode',
   'cashierCode',
   'financeCode',
+  'branch',
   'commissionType',
   'commissionPerOrder',
   'commissionPercent',
@@ -48,6 +50,8 @@ function plain(object) {
 async function userRow(user) {
   const row = { objectId: user.id, createdAt: user.createdAt, updatedAt: user.updatedAt };
   for (const field of USER_FIELDS) if (user.get(field) !== undefined) row[field] = user.get(field);
+  // The branch as its id (a link, not the whole branch record).
+  if (row.branch) row.branch = row.branch.id;
   row.role = (await getRoleName(user)) || 'unassigned';
   return row;
 }

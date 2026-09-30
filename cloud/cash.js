@@ -46,6 +46,8 @@ async function releaseOrders(orders) {
 
 async function newHandover({ rider, orders, config, notes, requestId, cashier }) {
   const row = new Parse.Object('CashHandover');
+  const branch = await require('./branches').branchFor(rider);
+  if (branch) row.set('branch', branch);
   row.set({
     handoverCode: await nextDailyCode('HO', 3, config.timezone, {
       className: 'CashHandover',
