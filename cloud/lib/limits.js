@@ -12,7 +12,15 @@ async function features() {
   // branches: more than one; finance: the finance role; accounting:
   // purchases, expenses and the statements; reports: the Reports analytics
   // (the Z-report is always there).
-  return { branches: true, finance: true, accounting: true, reports: true };
+  // efris: EFRIS fiscal receipts; whatsapp: WhatsApp daily summaries.
+  return {
+    branches: true,
+    finance: true,
+    accounting: true,
+    reports: true,
+    efris: true,
+    whatsapp: true,
+  };
 }
 
 module.exports = { checkBranchLimit, checkMemberLimit, features };
