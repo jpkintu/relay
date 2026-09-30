@@ -33,6 +33,7 @@ type Summary = {
   avgOrder: number;
   cashSales: number;
   mobileMoneySales: number;
+  cardSales?: number;
   unconfirmedSales: number;
   riderCommission: number;
   customers: number;
@@ -92,6 +93,7 @@ const PAYMENT_NAMES: Record<string, string> = {
   airtel: 'Airtel Money',
   mtn: 'MTN MoMo',
   mobile_money: 'Mobile money',
+  card: 'Card',
 };
 // Payment types keep their color whatever the filter (color follows the entity).
 const PAYMENT_COLORS: Record<string, string> = {
@@ -99,6 +101,7 @@ const PAYMENT_COLORS: Record<string, string> = {
   airtel: SERIES[1],
   mtn: SERIES[2],
   mobile_money: SERIES[3],
+  card: SERIES[4],
 };
 const CHANNEL_NAMES: Record<string, string> = {
   walkin: 'Walk-in',
@@ -415,8 +418,8 @@ export function Reports() {
               label="Cash / mobile money"
               value={`${pct(s.cashSales, s.revenue)}% / ${pct(s.mobileMoneySales, s.revenue)}%`}
               note={`Confirmed: ${money(s.cashSales)} cash · ${money(s.mobileMoneySales)} mobile money${
-                s.unconfirmedSales ? ` · ${money(s.unconfirmedSales)} not yet confirmed` : ''
-              }`}
+                s.cardSales ? ` · ${money(s.cardSales)} card` : ''
+              }${s.unconfirmedSales ? ` · ${money(s.unconfirmedSales)} not yet confirmed` : ''}`}
             />
           </div>
 

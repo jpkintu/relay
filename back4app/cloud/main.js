@@ -351,6 +351,11 @@ var require_core = __commonJS({
       efrisFrom: null,
       airtelAutoCollect: false,
       momoDialCode: "256",
+      // Card payments at the counter (Settings → Card payments).
+      cardEnabled: false,
+      cardLabel: "",
+      cardTerminalId: "",
+      cardMerchantName: "",
       privacyContact: "",
       // Admin → Get started: true once the owner finishes it, false when they
       // reopen it, null (not set) to decide from the restaurant's state.
@@ -1171,6 +1176,10 @@ var require_security = __commonJS({
         airtelMerchantName: S,
         mtnMerchantCode: S,
         mtnMerchantName: S,
+        cardEnabled: B,
+        cardLabel: S,
+        cardTerminalId: S,
+        cardMerchantName: S,
         cashReminderHour: N,
         floatWarningPercent: N,
         defaultCommissionType: S,
@@ -2243,6 +2252,10 @@ var require_admin = __commonJS({
         airtelMerchantName: merchantField(p.airtelMerchantName, 60),
         mtnMerchantCode: merchantField(p.mtnMerchantCode, 30),
         mtnMerchantName: merchantField(p.mtnMerchantName, 60),
+        cardEnabled: (p.cardEnabled ?? current.cardEnabled) === true,
+        cardLabel: merchantField(p.cardLabel ?? current.cardLabel, 40),
+        cardTerminalId: merchantField(p.cardTerminalId ?? current.cardTerminalId, 30),
+        cardMerchantName: merchantField(p.cardMerchantName ?? current.cardMerchantName, 60),
         cashReminderHour: reminderHour,
         floatWarningPercent: warnPercent,
         commissionRounding: rounding,
@@ -10969,7 +10982,16 @@ var require_mobileMoney = __commonJS({
         return "A transaction ID has 4 to 40 letters or digits";
       return "";
     }
-    module2.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
+    function cardAccount(config) {
+      if (config.cardEnabled !== true) return null;
+      return {
+        provider: "card",
+        label: String(config.cardLabel || "").trim() || "Card",
+        code: String(config.cardTerminalId || "").trim(),
+        name: String(config.cardMerchantName || "").trim()
+      };
+    }
+    module2.exports = { PROVIDERS, merchantAccounts, cardAccount, cleanReference, referenceProblem };
   }
 });
 
@@ -11010,7 +11032,12 @@ var require_payments = __commonJS({
       takeOrder,
       findAll
     } = require_core();
-    var { merchantAccounts, cleanReference, referenceProblem } = require_mobileMoney();
+    var {
+      merchantAccounts,
+      cardAccount,
+      cleanReference,
+      referenceProblem
+    } = require_mobileMoney();
     var { dateKey } = require_dates();
     var { money, notifyUser, notifyStaff, personName } = require_notifications();
     var PENDING = "PENDING_VERIFICATION";
@@ -11031,6 +11058,10 @@ var require_payments = __commonJS({
       }
       const problem = referenceProblem(reference);
       if (problem) throw invalid(problem);
+      await refuseDuplicate(provider, reference, excludeOrderId);
+      return { provider, reference, auto: false, request: {} };
+    }
+    async function refuseDuplicate(provider, reference, excludeOrderId) {
       const query = new Parse.Query("Order");
       query.equalTo("paymentProvider", provider);
       query.equalTo("paymentReference", reference);
@@ -11039,7 +11070,17 @@ var require_payments = __commonJS({
       const duplicate = await query.first(MASTER);
       if (duplicate)
         throw invalid(`This transaction ID was already used on ${duplicate.get("orderCode")}`);
-      return { provider, reference, auto: false, request: {} };
+    }
+    async function checkCard(config, referenceParam, excludeOrderId) {
+      const account = cardAccount(config);
+      if (!account)
+        throw invalid("Card payments are not set up. The owner switches them on in Settings");
+      const reference = cleanReference(referenceParam);
+      if (!reference) throw invalid("Enter the transaction ID from the card machine slip");
+      if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
+        throw invalid("A transaction ID has 4 to 40 letters or digits");
+      await refuseDuplicate("card", reference, excludeOrderId);
+      return { provider: "card", reference, auto: false, request: {} };
     }
     async function settlePayment(order, { received, reason = "", actor }) {
       order.set({
@@ -11120,7 +11161,9 @@ var require_payments = __commonJS({
       if (owedAsCash && order.get("cashStatus") !== "WITH_RIDER")
         throw invalid("This order was already handed over as cash");
       const { values: config } = await loadConfig();
-      const momo = await checkMobileMoney(
+      const byCard = order.get("paymentMethod") === "card";
+      if (byCard && !["cashier", "admin"].includes(role)) throw forbidden("Not allowed");
+      const momo = byCard ? await checkCard(config, request.params.reference, order.id) : await checkMobileMoney(
         config,
         request.params.provider,
         request.params.reference,
@@ -11204,7 +11247,8 @@ var require_payments = __commonJS({
         (order) => dateKey(order.get("paymentCheckedAt"), config.timezone) === today
       );
       const verified = checkedToday.filter((order) => order.get("paymentStatus") === "VERIFIED");
-      const totals = merchantAccounts(config).map((account) => {
+      const card = cardAccount(config);
+      const totals = [...merchantAccounts(config), ...card ? [card] : []].map((account) => {
         const rows = verified.filter((order) => order.get("paymentProvider") === account.provider);
         return {
           ...account,
@@ -11219,7 +11263,7 @@ var require_payments = __commonJS({
         totals
       };
     });
-    module2.exports = { checkMobileMoney, settlePayment, PENDING };
+    module2.exports = { checkMobileMoney, checkCard, settlePayment, PENDING };
   }
 });
 
@@ -31027,7 +31071,7 @@ var require_reports = __commonJS({
     "use strict";
     var round = (value) => Math.round(Number(value) || 0);
     var isDelivered = (fact) => fact.status === "DELIVERED";
-    var isConfirmed = (fact) => fact.method === "cash" ? ["RECONCILED", "IN_TILL"].includes(fact.cashStatus) : fact.method === "mobile_money" ? fact.paymentStatus === "VERIFIED" : true;
+    var isConfirmed = (fact) => fact.method === "cash" ? ["RECONCILED", "IN_TILL"].includes(fact.cashStatus) : ["mobile_money", "card"].includes(fact.method) ? fact.paymentStatus === "VERIFIED" : true;
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
     function growth(current, previous) {
       if (!previous) return null;
@@ -31065,6 +31109,7 @@ var require_reports = __commonJS({
         // Confirmed money only; the rest is still with riders or waiting for a check.
         cashSales: confirmed.filter((f) => f.method === "cash").reduce((n, f) => n + round(f.total), 0),
         mobileMoneySales: confirmed.filter((f) => f.method === "mobile_money").reduce((n, f) => n + round(f.total), 0),
+        cardSales: confirmed.filter((f) => f.method === "card").reduce((n, f) => n + round(f.total), 0),
         unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + round(f.total), 0),
         customers: perCustomer.size,
         repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
@@ -31176,7 +31221,7 @@ var require_reports = __commonJS({
     function paymentMix(facts) {
       const byKey = /* @__PURE__ */ new Map();
       for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
-        const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : "cash";
+        const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : fact.method === "card" ? "card" : "cash";
         const row = byKey.get(key) || { key, orders: 0, amount: 0 };
         row.orders += 1;
         row.amount += round(fact.total);
@@ -31269,10 +31314,10 @@ var require_reports2 = __commonJS({
       if (typeof id !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown rider");
       return Parse.User.createWithoutData(id);
     };
-    var METHODS = ["all", "cash", "mobile_money"];
+    var METHODS = ["all", "cash", "mobile_money", "card"];
     function methodOf(params) {
       const method = params.method || "all";
-      if (!METHODS.includes(method)) throw invalid("Payment type must be cash or mobile_money");
+      if (!METHODS.includes(method)) throw invalid("Payment type must be cash, mobile_money or card");
       return method;
     }
     function periodOf(params, range) {
@@ -31349,8 +31394,9 @@ var require_reports2 = __commonJS({
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 7 });
       const method = methodOf(p);
-      const wantCash = method !== "mobile_money";
-      const wantMomo = method !== "cash";
+      const wantCash = ["all", "cash"].includes(method);
+      const wantMomo = ["all", "mobile_money"].includes(method);
+      const wantCard = ["all", "card"].includes(method);
       const cashQuery = ordersIn(range, "deliveredAt", p.riderId);
       cashQuery.equalTo("paymentMethod", "cash");
       cashQuery.equalTo("status", "DELIVERED");
@@ -31358,15 +31404,19 @@ var require_reports2 = __commonJS({
       const momoQuery = ordersIn(range, "createdAt", p.riderId);
       momoQuery.equalTo("paymentMethod", "mobile_money");
       momoQuery.include("paymentCheckedBy");
+      const cardQuery = ordersIn(range, "createdAt", p.riderId);
+      cardQuery.equalTo("paymentMethod", "card");
+      cardQuery.include("paymentCheckedBy");
       const handoverQuery = createdIn("CashHandover", {
         start: new Date(range.start.getTime() - 7 * 864e5),
         end: new Date(range.end.getTime() + 7 * 864e5)
       });
       if (p.riderId) handoverQuery.equalTo("rider", riderPointer(p.riderId));
       handoverQuery.include(["rider", "cashier"]);
-      const [cashOrders, momoOrders, handovers] = await Promise.all([
+      const [cashOrders, momoOrders, cardOrders, handovers] = await Promise.all([
         wantCash ? findAll(cashQuery) : [],
         wantMomo ? findAll(momoQuery) : [],
+        wantCard && !p.riderId ? findAll(cardQuery) : [],
         wantCash ? findAll(handoverQuery) : []
       ]);
       const handoverOf = /* @__PURE__ */ new Map();
@@ -31393,11 +31443,11 @@ var require_reports2 = __commonJS({
           note: order.get("shortfallNote") || ""
         };
       });
-      const momoRows = momoOrders.map((order) => {
+      const checkedRow = (kind) => (order) => {
         const f = factOf(order);
         return {
           id: f.id,
-          kind: "mobile_money",
+          kind,
           at: f.createdAt,
           code: f.code,
           riderId: f.riderId,
@@ -31411,10 +31461,14 @@ var require_reports2 = __commonJS({
           reference: f.reference,
           note: order.get("paymentRejectReason") || (f.status === "CANCELLED" ? "Order cancelled" : nameOf(order.get("paymentCheckedBy")))
         };
-      });
+      };
+      const momoRows = momoOrders.map(checkedRow("mobile_money"));
+      const cardRows = cardOrders.map(checkedRow("card"));
       const sum = (rows, test) => rows.filter(test).reduce((n, row) => n + row.amount, 0);
       const count = (rows, test) => rows.filter(test).length;
-      const liveMomo = momoRows.filter((r) => r.orderStatus !== "CANCELLED" || r.status === "VERIFIED");
+      const live = (rows) => rows.filter((r) => r.orderStatus !== "CANCELLED" || r.status === "VERIFIED");
+      const liveMomo = live(momoRows);
+      const liveCard = live(cardRows);
       const handoverRows = handovers.filter((h) => placedAt(h) >= range.start && placedAt(h) < range.end).sort((a, b) => placedAt(b) - placedAt(a)).map((h) => ({
         id: h.id,
         code: h.get("handoverCode"),
@@ -31434,12 +31488,12 @@ var require_reports2 = __commonJS({
         resolutionNote: h.get("resolutionNote") || "",
         receivedByOwner: h.get("receivedByOwner") === true
       }));
-      const transactions = [...cashRows, ...momoRows].sort(byNewest("at"));
+      const transactions = [...cashRows, ...momoRows, ...cardRows].sort(byNewest("at"));
       return {
         range: rangeInfo(range),
         method,
         summary: {
-          total: sum(cashRows, () => true) + sum(liveMomo, (r) => r.status === "VERIFIED"),
+          total: sum(cashRows, () => true) + sum(liveMomo, (r) => r.status === "VERIFIED") + sum(liveCard, (r) => r.status === "VERIFIED"),
           cash: {
             count: cashRows.length,
             collected: sum(cashRows, () => true),
@@ -31463,6 +31517,14 @@ var require_reports2 = __commonJS({
               );
               return { ...account, count: rows.length, amount: sum(rows, () => true) };
             })
+          },
+          card: {
+            count: cardRows.length,
+            verified: sum(cardRows, (r) => r.status === "VERIFIED"),
+            verifiedCount: count(cardRows, (r) => r.status === "VERIFIED"),
+            pending: sum(liveCard, (r) => r.status === "PENDING_VERIFICATION"),
+            pendingCount: count(liveCard, (r) => r.status === "PENDING_VERIFICATION"),
+            rejectedCount: count(cardRows, (r) => r.status === "REJECTED")
           },
           handovers: {
             count: handoverRows.length,
@@ -32047,6 +32109,8 @@ var require_owner = __commonJS({
       const cash = delivered.filter((f) => f.method === "cash");
       const momo = delivered.filter((f) => f.method === "mobile_money");
       const momoBy = (status) => momo.filter((f) => f.paymentStatus === status);
+      const card = delivered.filter((f) => f.method === "card");
+      const cardBy = (status) => card.filter((f) => f.paymentStatus === status);
       const riderPayouts = payouts.filter((row) => row.get("kind") === "rider");
       const receivedBy = /* @__PURE__ */ new Map();
       for (const row of received)
@@ -32077,7 +32141,9 @@ var require_owner = __commonJS({
           cashOrders: cash.length,
           mobileMoneyVerified: sumBy(momoBy("VERIFIED"), (f) => f.total),
           mobileMoneyPending: sumBy(momoBy("PENDING_VERIFICATION"), (f) => f.total),
-          mobileMoneyRejected: momoBy("REJECTED").length
+          mobileMoneyRejected: momoBy("REJECTED").length,
+          cardVerified: sumBy(cardBy("VERIFIED"), (f) => f.total),
+          cardPending: sumBy(cardBy("PENDING_VERIFICATION"), (f) => f.total)
         },
         till: {
           cashReceived: sumBy(received, (r) => r.amount),
@@ -33178,7 +33244,7 @@ var require_orders = __commonJS({
     var { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require_notifications();
     var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
     var PINNED_ONLY = "Pinned on the map";
-    var PAYMENT_METHODS = ["cash", "mobile_money", "card", "prepaid"];
+    var PAYMENT_METHODS = ["cash", "mobile_money"];
     var MAX_LINES = 30;
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
@@ -33283,7 +33349,10 @@ var require_orders = __commonJS({
       const channel = p.channel || "walkin";
       const paymentMethod = p.paymentMethod || "cash";
       if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
-      if (!PAYMENT_METHODS.includes(paymentMethod)) throw invalid("Invalid payment method");
+      if (!PAYMENT_METHODS.includes(paymentMethod))
+        throw invalid(
+          paymentMethod === "card" ? "Card is taken at the counter only. Choose cash or mobile money" : "Invalid payment method"
+        );
       const activeQuery = new Parse.Query("Order");
       activeQuery.equalTo("createdBy", rider);
       activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
@@ -33800,7 +33869,7 @@ var require_counter = __commonJS({
     var { sumBy } = require_money();
     var { cleanLocation } = require_geo();
     var { recordCustomerOrder } = require_customers();
-    var { checkMobileMoney, PENDING } = require_payments();
+    var { checkMobileMoney, checkCard, PENDING } = require_payments();
     var { money, notifyUser, notifyStaff } = require_notifications();
     var { priceLines, saveLines, clean, cleanPhone, CHANNELS, PINNED_ONLY } = require_orders();
     var ORDER_TYPES = ["delivery", "eat_in", "pickup"];
@@ -33894,7 +33963,10 @@ var require_counter = __commonJS({
       const channel = p.channel || (isDelivery ? "phone" : "walkin");
       if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
       const method = p.paymentMethod || "cash";
-      if (!["cash", "mobile_money"].includes(method)) throw invalid("Choose cash or mobile money");
+      if (!["cash", "mobile_money", "card"].includes(method))
+        throw invalid("Choose cash, mobile money or card");
+      if (method === "card" && isDelivery)
+        throw invalid("Card is taken at the counter for eat-in and pick-up orders only");
       const payLater = !isDelivery && p.payLater === true;
       const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
       const lines = await priceLines(p.items);
@@ -33907,7 +33979,7 @@ var require_counter = __commonJS({
         p.paymentReference,
         void 0,
         p.payerPhone || p.customerPhone
-      ) : null;
+      ) : method === "card" && !payLater ? await checkCard(config, p.paymentReference) : null;
       const me = await actor.fetch(MASTER);
       const order = new Parse.Object("Order");
       order.set({
@@ -34042,7 +34114,18 @@ var require_counter = __commonJS({
           amountToCollect: 0,
           billOpen: false
         });
-      } else throw invalid("Choose cash or mobile money");
+      } else if (p.paymentMethod === "card") {
+        const card = await checkCard(config, p.paymentReference, order.id);
+        order.set({
+          paymentMethod: "card",
+          paymentProvider: card.provider,
+          paymentReference: card.reference,
+          paymentStatus: PENDING,
+          cashStatus: "NOT_APPLICABLE",
+          amountToCollect: 0,
+          billOpen: false
+        });
+      } else throw invalid("Choose cash, mobile money or card");
       await order.save(null, MASTER);
       await audit(
         actor,
@@ -35881,7 +35964,7 @@ var require_profile = __commonJS({
     var tenancy = require_tenant();
     var { isPlatform, platformSettings, restaurantSummary } = require_restaurants();
     var { previewEnabled } = require_preview();
-    var { merchantAccounts } = require_mobileMoney();
+    var { merchantAccounts, cardAccount } = require_mobileMoney();
     function publicConfig(values) {
       return {
         restaurantName: values.restaurantName,
@@ -35910,6 +35993,8 @@ var require_profile = __commonJS({
         },
         mapCenter: { lat: Number(values.restaurantLat), lng: Number(values.restaurantLng) },
         mobileMoney: merchantAccounts(values),
+        // Card machine at the counter; null while card payments are off.
+        card: cardAccount(values),
         // False until the owner saves a restaurant name in Settings.
         restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName
       };

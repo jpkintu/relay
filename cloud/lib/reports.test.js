@@ -177,15 +177,19 @@ test('only confirmed money counts in the payment mix', () => {
     fact({ cashStatus: 'HANDOVER_PENDING' }),
     fact({ method: 'mobile_money', provider: 'mtn', paymentStatus: 'VERIFIED' }),
     fact({ method: 'mobile_money', provider: 'airtel', paymentStatus: 'PENDING_VERIFICATION' }),
+    fact({ method: 'card', provider: 'card', paymentStatus: 'VERIFIED' }),
+    fact({ method: 'card', provider: 'card', paymentStatus: 'PENDING_VERIFICATION' }),
   ];
   expect(paymentMix(facts)).toEqual([
     { key: 'cash', orders: 1, amount: 28000 },
     { key: 'mtn', orders: 1, amount: 28000 },
+    { key: 'card', orders: 1, amount: 28000 },
   ]);
   const summary = summarize(facts);
   expect(summary.cashSales).toBe(28000);
   expect(summary.mobileMoneySales).toBe(28000);
-  expect(summary.unconfirmedSales).toBe(3 * 28000);
+  expect(summary.cardSales).toBe(28000);
+  expect(summary.unconfirmedSales).toBe(4 * 28000);
 });
 
 test('rider pay splits into commission and the delivery fee passed on', () => {

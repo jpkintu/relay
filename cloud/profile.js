@@ -9,7 +9,7 @@ const {
 const tenancy = require('./lib/tenant');
 const { isPlatform, platformSettings, restaurantSummary } = require('./restaurants');
 const { previewEnabled } = require('./preview');
-const { merchantAccounts } = require('./lib/mobileMoney');
+const { merchantAccounts, cardAccount } = require('./lib/mobileMoney');
 
 // Settings every signed-in screen needs. Configuration itself is not
 // client-readable; this is the public subset.
@@ -41,6 +41,8 @@ function publicConfig(values) {
     },
     mapCenter: { lat: Number(values.restaurantLat), lng: Number(values.restaurantLng) },
     mobileMoney: merchantAccounts(values),
+    // Card machine at the counter; null while card payments are off.
+    card: cardAccount(values),
     // False until the owner saves a restaurant name in Settings.
     restaurantNameSet: values.restaurantName !== DEFAULT_CONFIG.restaurantName,
   };

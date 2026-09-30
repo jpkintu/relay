@@ -5764,12 +5764,86 @@ img.food-art.photo {
   margin: 14px auto 0;
   padding: 0 20px;
 }
-.order-type {
-  display: inline-flex;
+/* Kind of order: one tile each, icon in a tinted square. */
+.order-type-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 150px));
+  gap: 12px;
 }
-.order-type button {
-  min-height: 44px;
-  padding: 0 18px;
+.order-type-tile {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 16px 10px 14px;
+  border: 1.5px solid var(--line-soft);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--ink);
+  font: 600 15px var(--font-body);
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s;
+}
+.order-type-tile:hover {
+  border-color: var(--line);
+  transform: translateY(-1px);
+}
+.order-type-tile:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--blue) 40%, transparent);
+  outline-offset: 2px;
+}
+.order-type-icon {
+  --tint: var(--accent);
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--tint) 14%, white);
+  color: var(--tint);
+}
+.order-type-icon svg {
+  width: 26px;
+  height: 26px;
+}
+.type-eat_in .order-type-icon {
+  --tint: var(--accent);
+}
+.type-pickup .order-type-icon {
+  --tint: #d98a00;
+}
+.type-delivery .order-type-icon {
+  --tint: var(--blue);
+}
+.order-type-tile.active {
+  border-color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 7%, white);
+  box-shadow: 0 6px 16px -10px color-mix(in srgb, var(--ink) 60%, transparent);
+}
+.order-type-tile.active .order-type-icon {
+  background: var(--tint);
+  color: #fff;
+}
+@media (max-width: 420px) {
+  .order-type-tiles {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .order-type-tile {
+    padding: 12px 6px;
+    font-size: 14px;
+  }
+}
+.merchant-card.card-machine {
+  background: #eef3ff;
+  border-color: #b9cbf7;
+}
+.merchant-card.card-machine small {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .ticket-type {
   background: color-mix(in srgb, var(--blue) 9%, white);

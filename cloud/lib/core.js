@@ -58,6 +58,11 @@ const DEFAULT_CONFIG = {
   efrisFrom: null,
   airtelAutoCollect: false,
   momoDialCode: '256',
+  // Card payments at the counter (Settings → Card payments).
+  cardEnabled: false,
+  cardLabel: '',
+  cardTerminalId: '',
+  cardMerchantName: '',
   privacyContact: '',
   // Admin → Get started: true once the owner finishes it, false when they
   // reopen it, null (not set) to decide from the restaurant's state.

@@ -50,4 +50,18 @@ function referenceProblem(reference) {
   return '';
 }
 
-module.exports = { PROVIDERS, merchantAccounts, cleanReference, referenceProblem };
+// Card payments on the restaurant's card machine (Settings → Card payments):
+// taken at the counter only (never by riders), with the transaction ID from
+// the machine's slip, checked by a cashier like a merchant code payment.
+// Null while card payments are off.
+function cardAccount(config) {
+  if (config.cardEnabled !== true) return null;
+  return {
+    provider: 'card',
+    label: String(config.cardLabel || '').trim() || 'Card',
+    code: String(config.cardTerminalId || '').trim(),
+    name: String(config.cardMerchantName || '').trim(),
+  };
+}
+
+module.exports = { PROVIDERS, merchantAccounts, cardAccount, cleanReference, referenceProblem };

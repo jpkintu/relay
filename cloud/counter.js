@@ -30,7 +30,7 @@ const {
 const { sumBy } = require('./lib/money');
 const { cleanLocation } = require('./lib/geo');
 const { recordCustomerOrder } = require('./customers');
-const { checkMobileMoney, PENDING } = require('./payments');
+const { checkMobileMoney, checkCard, PENDING } = require('./payments');
 const { money, notifyUser, notifyStaff } = require('./notifications');
 const { priceLines, saveLines, clean, cleanPhone, CHANNELS, PINNED_ONLY } = require('./orders');
 
@@ -121,7 +121,8 @@ async function tellRider(rider, order, config) {
 // params: { orderType, customerName, customerPhone, channel, items,
 //   delivery: deliveryAddress, deliveryNotes, location, deliveryFee, riderId?
 //   eat-in / pick-up: table?
-//   paymentMethod: 'cash' | 'mobile_money', paymentProvider, paymentReference,
+//   paymentMethod: 'cash' | 'mobile_money' | 'card' (eat-in / pick-up),
+//   paymentProvider, paymentReference,
 //   payLater (eat-in / pick-up only), clientId }
 Parse.Cloud.define('createCounterOrder', async (request) => {
   const { user: actor, role } = await requireRole(request, ['cashier', 'admin']);
@@ -166,7 +167,11 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
   const channel = p.channel || (isDelivery ? 'phone' : 'walkin');
   if (!CHANNELS.includes(channel)) throw invalid('Invalid channel');
   const method = p.paymentMethod || 'cash';
-  if (!['cash', 'mobile_money'].includes(method)) throw invalid('Choose cash or mobile money');
+  if (!['cash', 'mobile_money', 'card'].includes(method))
+    throw invalid('Choose cash, mobile money or card');
+  // Card is taken on the machine at the counter: never at the door.
+  if (method === 'card' && isDelivery)
+    throw invalid('Card is taken at the counter for eat-in and pick-up orders only');
   const payLater = !isDelivery && p.payLater === true;
   const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
 
@@ -185,7 +190,9 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
           undefined,
           p.payerPhone || p.customerPhone,
         )
-      : null;
+      : method === 'card' && !payLater
+        ? await checkCard(config, p.paymentReference)
+        : null;
 
   const me = await actor.fetch(MASTER);
   const order = new Parse.Object('Order');
@@ -327,7 +334,18 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
       amountToCollect: 0,
       billOpen: false,
     });
-  } else throw invalid('Choose cash or mobile money');
+  } else if (p.paymentMethod === 'card') {
+    const card = await checkCard(config, p.paymentReference, order.id);
+    order.set({
+      paymentMethod: 'card',
+      paymentProvider: card.provider,
+      paymentReference: card.reference,
+      paymentStatus: PENDING,
+      cashStatus: 'NOT_APPLICABLE',
+      amountToCollect: 0,
+      billOpen: false,
+    });
+  } else throw invalid('Choose cash, mobile money or card');
   await order.save(null, MASTER);
   await audit(
     actor,

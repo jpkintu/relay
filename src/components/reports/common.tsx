@@ -10,7 +10,7 @@ export type Filters = {
   from: string;
   to: string;
   riderId: string;
-  method: '' | 'cash' | 'mobile_money';
+  method: '' | 'cash' | 'mobile_money' | 'card';
 };
 
 export function useFilters(preset: Exclude<Preset, 'custom'>, riderId = '') {
@@ -169,6 +169,7 @@ export function FilterBar({
               ['', 'All'],
               ['cash', 'Cash'],
               ['mobile_money', 'Mobile money'],
+              ['card', 'Card'],
             ] as const
           ).map(([value, label]) => (
             <button

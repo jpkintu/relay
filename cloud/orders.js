@@ -26,7 +26,9 @@ const { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require
 const CHANNELS = ['walkin', 'phone', 'whatsapp', 'other'];
 // Stored as the address when a delivery was only pinned on the map.
 const PINNED_ONLY = 'Pinned on the map';
-const PAYMENT_METHODS = ['cash', 'mobile_money', 'card', 'prepaid'];
+// What a rider can take at the door. Card is taken on the restaurant's card
+// machine at the counter only (counter.js), never by riders.
+const PAYMENT_METHODS = ['cash', 'mobile_money'];
 const MAX_LINES = 30;
 
 const clean = (value, max) =>
@@ -148,7 +150,12 @@ Parse.Cloud.define('createOrder', async (request) => {
   const channel = p.channel || 'walkin';
   const paymentMethod = p.paymentMethod || 'cash';
   if (!CHANNELS.includes(channel)) throw invalid('Invalid channel');
-  if (!PAYMENT_METHODS.includes(paymentMethod)) throw invalid('Invalid payment method');
+  if (!PAYMENT_METHODS.includes(paymentMethod))
+    throw invalid(
+      paymentMethod === 'card'
+        ? 'Card is taken at the counter only. Choose cash or mobile money'
+        : 'Invalid payment method',
+    );
 
   const activeQuery = new Parse.Query('Order');
   activeQuery.equalTo('createdBy', rider);

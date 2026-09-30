@@ -24,6 +24,8 @@ export type AppConfig = {
   commissionRounding?: string;
   requireCashierConfirmForPickup?: boolean;
   mobileMoney?: MerchantAccount[];
+  // Card machine at the counter (Settings → Card payments); null when off.
+  card?: MerchantAccount | null;
   restaurantNameSet?: boolean;
   floatWarningPercent?: number;
   // Where maps open: the restaurant (Settings).
