@@ -8177,3 +8177,16 @@ table.data tr.selected td {
 tr.split-row td {
   background: var(--canvas, #eef0f4);
 }
+
+/* Admin → WhatsApp: where to find the Meta values. */
+.whatsapp-help summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.whatsapp-help ol {
+  margin: 12px 0 8px;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+  line-height: 1.5;
+}

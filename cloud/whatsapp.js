@@ -15,6 +15,7 @@ const { MASTER, invalid, audit, loadConfig } = require('./lib/core');
 const { requireAdminUnlock } = require('./adminLock');
 const { money } = require('./notifications');
 const { log, errorMessage } = require('./lib/log');
+const { sharedSender } = require('./lib/whatsappSender');
 
 const SECRET_KEY = 'whatsapp';
 const API = () => process.env.RELAY_WHATSAPP_URL || 'https://graph.facebook.com/v20.0';
@@ -61,7 +62,22 @@ function summaryOf(config, day, data) {
       ? `Till differences: ${m(data.shifts.reduce((n, s) => n + Math.abs(s.variance || 0), 0))}`
       : '',
   ].filter(Boolean);
-  return { text: lines.join('\n'), line: lines.slice(1).join(' | ') };
+  // A shared sender (Relay Hosted) writes for many restaurants, so its
+  // template line starts with the restaurant's name.
+  return { text: lines.join('\n'), line: lines.slice(1).join(' | '), full: lines.join(' | ') };
+}
+
+// How to send: the restaurant's own WhatsApp app, or the shared one when the
+// platform provides it (then the restaurant only chooses the numbers).
+async function senderFor(settings) {
+  const shared = await sharedSender();
+  if (!shared) return { ...settings, managed: false };
+  return {
+    ...shared,
+    enabled: settings.enabled,
+    recipients: settings.recipients || [],
+    managed: true,
+  };
 }
 
 async function send(settings, to, summary) {
@@ -73,7 +89,12 @@ async function send(settings, to, summary) {
         template: {
           name: settings.templateName,
           language: { code: settings.language || 'en' },
-          components: [{ type: 'body', parameters: [{ type: 'text', text: summary.line }] }],
+          components: [
+            {
+              type: 'body',
+              parameters: [{ type: 'text', text: settings.managed ? summary.full : summary.line }],
+            },
+          ],
         },
       }
     : { messaging_product: 'whatsapp', to, type: 'text', text: { body: summary.text } };
@@ -118,8 +139,9 @@ const inPlan = async () => (await require('./lib/limits').features()).whatsapp !
 async function sendDailySummary(day, data, config) {
   if (!(await inPlan())) return null;
   const { row, settings } = await loadSettings();
-  if (!ready(settings) || settings.lastSentDay === day) return null;
-  const result = await sendAll(settings, summaryOf(config, day, data));
+  const sender = await senderFor(settings);
+  if (!ready(sender) || settings.lastSentDay === day) return null;
+  const result = await sendAll(sender, summaryOf(config, day, data));
   await saveSettings(row, {
     ...settings,
     lastSentDay: day,
@@ -130,7 +152,10 @@ async function sendDailySummary(day, data, config) {
   return result;
 }
 
-const view = (settings) => ({
+const view = (settings, shared = null) => ({
+  // Relay Hosted: the platform's WhatsApp sends; only the numbers are theirs.
+  managed: !!shared,
+  sender: shared?.displayNumber || '',
   enabled: settings.enabled === true,
   phoneNumberId: settings.phoneNumberId || '',
   tokenSet: !!settings.token,
@@ -142,7 +167,7 @@ const view = (settings) => ({
 
 Parse.Cloud.define('adminGetWhatsAppSettings', async (request) => {
   await requireAdminUnlock(request);
-  return view((await loadSettings()).settings);
+  return view((await loadSettings()).settings, await sharedSender());
 });
 
 // { enabled, phoneNumberId, token (empty keeps the saved one), templateName,
@@ -176,19 +201,22 @@ Parse.Cloud.define('adminSaveWhatsAppSettings', async (request) => {
     recipients: [...new Set(numbers)],
   };
   if (p.token) next.token = String(p.token).trim().slice(0, 1000);
+  const shared = await sharedSender();
   if (next.enabled && !(await inPlan()))
     throw invalid('WhatsApp summaries are not part of your plan');
-  if (next.enabled && !ready(next))
+  if (next.enabled && shared && !next.recipients.length)
+    throw invalid('Enter at least one number to send the summary to');
+  if (next.enabled && !ready(await senderFor(next)))
     throw invalid('Enter the phone number ID, the access token and at least one number');
   await saveSettings(row, next);
   await audit(
     actor,
     'whatsapp.saved',
     { className: 'Secret', id: SECRET_KEY },
-    view(settings),
-    view(next),
+    view(settings, shared),
+    view(next, shared),
   );
-  return view(next);
+  return view(next, shared);
 });
 
 // Owner: send today's summary so far, now, to check the connection.
@@ -196,15 +224,20 @@ Parse.Cloud.define('adminTestWhatsApp', async (request) => {
   await requireAdminUnlock(request);
   if (!(await inPlan())) throw invalid('WhatsApp summaries are not part of your plan');
   const { settings } = await loadSettings();
-  if (!settings.token || !settings.phoneNumberId || !(settings.recipients || []).length)
-    throw invalid('Save the phone number ID, the access token and at least one number first');
+  const sender = await senderFor(settings);
+  if (!sender.token || !sender.phoneNumberId || !sender.recipients.length)
+    throw invalid(
+      sender.managed
+        ? 'Save at least one number first'
+        : 'Save the phone number ID, the access token and at least one number first',
+    );
   const { values: config } = await loadConfig();
   const { buildZReport } = require('./owner');
   const { isoDay } = require('./lib/dates');
   const day = isoDay(new Date(), config.timezone);
-  const result = await sendAll(settings, summaryOf(config, day, await buildZReport(day, config)));
+  const result = await sendAll(sender, summaryOf(config, day, await buildZReport(day, config)));
   if (!result.sent) throw invalid(`Not sent: ${result.error}`);
   return result;
 });
 
-module.exports = { sendDailySummary, summaryOf, phoneOf };
+module.exports = { sendDailySummary, summaryOf, phoneOf, send };
