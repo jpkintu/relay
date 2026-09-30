@@ -5,7 +5,7 @@ import Parse from '../parse';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, initials } from '../lib/format';
 import { statusLabel, statusTone } from '../lib/labels';
-import { Stat, useBranchOptions, useCloud } from './reports/common';
+import { Stat, useCloud, useTeamBranches } from './reports/common';
 import { CommissionEditor } from './AdminSetup';
 import type { MyHandover } from './RiderMoney';
 
@@ -110,7 +110,7 @@ export function AdminMember({ id }: { id: string }) {
   const { timezone } = useConfig();
   const navigate = useNavigate();
   const { data: m, error, reload } = useCloud<Member>('adminGetMember', { id });
-  const openBranches = useBranchOptions().filter((b) => b.active);
+  const openBranches = useTeamBranches();
   const financeOn = useSession().profile?.features?.finance !== false;
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
@@ -339,11 +339,14 @@ export function AdminMember({ id }: { id: string }) {
                 {(financeOn || m.role === 'finance') && <option value="finance">Finance</option>}
               </select>
             </div>
-            {branches.length > 1 && m.role !== 'finance' && (
+            {branches.length > 0 && m.role !== 'finance' && m.role !== 'admin' && (
               <div className="member-action">
                 <div>
                   <b>Branch</b>
-                  <small>Where they work: their kitchen board, orders and cash.</small>
+                  <small>
+                    Where they work: their kitchen board, orders and cash.
+                    {branches.length === 1 && ' Add more branches in Admin → Branches.'}
+                  </small>
                 </div>
                 <select
                   aria-label="Branch"
