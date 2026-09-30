@@ -32208,6 +32208,8 @@ var require_reports2 = __commonJS({
     }
     Parse.Cloud.define("getOperationsReport", async (request) => {
       await requireRole(request, ["admin", "finance"]);
+      if ((await require_limits().features()).reports === false)
+        throw invalid("Reports are not part of your plan");
       const p = request.params;
       const { values: config } = await loadConfig();
       const tz = config.timezone;

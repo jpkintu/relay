@@ -537,7 +537,9 @@ export function AdminSetup({
   section: 'Team' | 'Menu' | 'Branding' | 'Settings';
   preview: boolean;
 }) {
-  const { config, refresh } = useSession();
+  const { config, refresh, profile } = useSession();
+  // Relay Hosted's Basic plan has no finance role.
+  const financeOn = profile?.features?.finance !== false;
   const money = useMoney();
   const navigate = useNavigate();
   const adminRun = useAdminRun();
@@ -660,7 +662,7 @@ export function AdminSetup({
                 <select value={role} onChange={(e) => setRole(e.target.value)}>
                   <option value="rider">Rider</option>
                   <option value="cashier">Cashier</option>
-                  <option value="finance">Finance</option>
+                  {financeOn && <option value="finance">Finance</option>}
                 </select>
                 {role === 'finance' && (
                   <small className="muted">

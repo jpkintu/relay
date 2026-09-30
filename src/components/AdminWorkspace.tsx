@@ -304,7 +304,12 @@ export function AdminWorkspace() {
             <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
             <>
-              {section === 'Reports' && (zDay ? <ZReportPage day={zDay} /> : <Reports />)}
+              {section === 'Reports' &&
+                (zDay || features?.reports === false ? (
+                  <ZReportPage day={zDay || 'today'} />
+                ) : (
+                  <Reports />
+                ))}
               {section === 'Orders' &&
                 (orderId ? (
                   <AdminOrder key={orderId} id={orderId} onChanged={() => void load()} />
