@@ -132,8 +132,8 @@ export function SubscriptionBanner() {
   return (
     <p className="subscription-banner" role="status">
       {profile?.role === 'admin'
-        ? `Your Relay subscription has ended. Renew within ${days} to keep the app open.`
-        : `The restaurant’s Relay subscription has ended. The owner has ${days} to renew it.`}
+        ? `Your subscription has ended. Renew within ${days} to keep the app open.`
+        : `The restaurant’s subscription has ended. The owner has ${days} to renew it.`}
     </p>
   );
 }
@@ -151,7 +151,7 @@ export function SubscriptionNotice() {
       <span>
         {r.status === 'past_due' ? (
           <>
-            <b>Relay subscription ended.</b> Pay by {date} to keep the app open · {priceText(r)}.
+            <b>Subscription ended.</b> Pay by {date} to keep the app open · {priceText(r)}.
           </>
         ) : r.status === 'trial' ? (
           <>
@@ -160,7 +160,7 @@ export function SubscriptionNotice() {
           </>
         ) : (
           <>
-            <b>Relay subscription:</b> paid until {date} · {priceText(r)}.
+            <b>Subscription:</b> paid until {date} · {priceText(r)}.
           </>
         )}
       </span>
@@ -217,8 +217,8 @@ export function ClosedScreen() {
             </>
           ) : (
             <p className="muted">
-              {r.name}’s Relay subscription has ended. Ask the owner to renew it; you can sign in
-              again as soon as they do.
+              {r.name}’s subscription has ended. Ask the owner to renew it; you can sign in again as
+              soon as they do.
             </p>
           )}
           <div className="closed-actions">

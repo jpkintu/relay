@@ -338,8 +338,8 @@ async function remind(row, platform) {
       title:
         access.status === 'trial'
           ? `Your free trial ends in ${left} day${left === 1 ? '' : 's'}`
-          : `Your Relay month ends in ${left} day${left === 1 ? '' : 's'}`,
-      body: `Pay ${price} a month from Overview to keep Relay open.`,
+          : `Your paid month ends in ${left} day${left === 1 ? '' : 's'}`,
+      body: `Pay ${price} a month from Overview to keep the app open.`,
       link: '/admin',
       key: `billing:${access.status}:${day}`,
     });
@@ -347,7 +347,7 @@ async function remind(row, platform) {
     return notifyAdmins({
       kind: 'billing.reminder',
       tone: 'alert',
-      title: `Relay closes in ${left} day${left === 1 ? '' : 's'}`,
+      title: `The app closes in ${left} day${left === 1 ? '' : 's'}`,
       body: `Your subscription has ended. Pay ${price} from Overview to keep the app open.`,
       link: '/admin',
       key: `billing:past_due:${day}`,
