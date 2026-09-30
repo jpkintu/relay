@@ -639,7 +639,14 @@ export function AdminSetup({
                 <select value={role} onChange={(e) => setRole(e.target.value)}>
                   <option value="rider">Rider</option>
                   <option value="cashier">Cashier</option>
+                  <option value="finance">Finance</option>
                 </select>
+                {role === 'finance' && (
+                  <small className="muted">
+                    Reports, accounting, purchases and expenses and tax receipts. No kitchen board,
+                    team, menu or Admin settings.
+                  </small>
+                )}
               </label>
               <button disabled={busy || preview} className="setup-submit">
                 Create team member

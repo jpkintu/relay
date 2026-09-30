@@ -7,7 +7,7 @@ const {
   readAcl,
   audit,
   riderFloat,
-  adminOnly,
+  requireRole,
   loadConfig,
   personName,
   verifyPin,
@@ -273,7 +273,7 @@ Parse.Cloud.define('endShift', async (request) => {
 
 // Owner: cashier shifts in a date range with their till reconciliation.
 Parse.Cloud.define('getShiftReport', async (request) => {
-  await adminOnly(request);
+  await requireRole(request, ['admin', 'finance']);
   const { values: config } = await loadConfig();
   const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
   if (range.error) throw invalid(range.error);

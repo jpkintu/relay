@@ -31,6 +31,7 @@ const USER_FIELDS = [
   'active',
   'riderCode',
   'cashierCode',
+  'financeCode',
   'commissionType',
   'commissionPerOrder',
   'commissionPercent',

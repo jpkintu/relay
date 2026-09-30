@@ -1207,7 +1207,10 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(labels.includes('R-002 · Ron Rider'));
     s.ritaId = riders.find((r) => r.label.includes('Rita')).id;
     s.ronId = riders.find((r) => r.label.includes('Ron')).id;
-    await rejects(run('getReportOptions', {}, s.rider), /cashier or admin role required/);
+    await rejects(
+      run('getReportOptions', {}, s.rider),
+      /cashier or admin or finance role required/,
+    );
   });
 
   test('the payments ledger lists every cash and mobile money transaction', async () => {
@@ -1245,7 +1248,10 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(rita.handovers.every((h) => h.riderId === s.ritaId));
     const empty = await run('getPaymentsLedger', { from: '2020-01-01', to: '2020-01-31' }, s.owner);
     assert.equal(empty.transactions.length, 0);
-    await rejects(run('getPaymentsLedger', range, s.rider), /cashier or admin role required/);
+    await rejects(
+      run('getPaymentsLedger', range, s.rider),
+      /cashier or admin or finance role required/,
+    );
     await rejects(
       run('getPaymentsLedger', { from: '2026-02-30', to: '2026-03-01' }, s.owner),
       /Dates must look like/,
@@ -1269,7 +1275,7 @@ describe('ledgers, earnings and reports', () => {
     assert.equal(done.rows.length, delivered.length);
     const past = await run('adminSearchOrders', { from: '2020-01-01', to: '2020-01-02' }, s.owner);
     assert.equal(past.rows.length, 0);
-    await rejects(run('adminSearchOrders', range, s.cashier), /admin role required/);
+    await rejects(run('adminSearchOrders', range, s.cashier), /admin or finance role required/);
   });
 
   test('admin order search filters by channel and cash status, and pages', async () => {
@@ -1322,7 +1328,7 @@ describe('ledgers, earnings and reports', () => {
       rita.riders.map((r) => r.riderId),
       [s.ritaId],
     );
-    await rejects(run('getCommissionLedger', range, s.rider), /admin role required/);
+    await rejects(run('getCommissionLedger', range, s.rider), /admin or finance role required/);
   });
 
   test('riders see only their own earnings, by week or month', async () => {
@@ -1349,7 +1355,10 @@ describe('ledgers, earnings and reports', () => {
     // The owner can look at any rider.
     const rita = await run('getRiderEarnings', { ...range, riderId: s.ritaId }, s.owner);
     assert.ok(rita.deliveries.length > 0);
-    await rejects(run('getRiderEarnings', range, s.cashier), /rider or admin role required/);
+    await rejects(
+      run('getRiderEarnings', range, s.cashier),
+      /rider or admin or finance role required/,
+    );
   });
 
   test('the operations report covers revenue, growth and menu item sales', async () => {
@@ -1390,7 +1399,7 @@ describe('ledgers, earnings and reports', () => {
       report.summary.commission - report.summary.deliveryFees,
     );
     assert.ok(report.riders.length >= 2);
-    await rejects(run('getOperationsReport', range, s.cashier), /admin role required/);
+    await rejects(run('getOperationsReport', range, s.cashier), /admin or finance role required/);
     await rejects(
       run('getOperationsReport', { from: '2025-01-01', to: '2026-06-30' }, s.owner),
       /at most 366 days/,
@@ -2061,7 +2070,7 @@ describe('cashier shifts and till reconciliation', () => {
     assert.ok(report.trend.days.some((d) => d.short >= 1000 && d.net <= -1000));
     const cashierRow = report.trend.cashiers.find((c) => c.cashier === row.cashier);
     assert.ok(cashierRow.short >= 1000);
-    await rejects(run('getShiftReport', {}, s.cleo), /admin role required/);
+    await rejects(run('getShiftReport', {}, s.cleo), /admin or finance role required/);
 
     // The owner settles it: 600 was a till payment nobody recorded, the rest is written off.
     const M = { useMasterKey: true };
@@ -3032,7 +3041,7 @@ describe('owner reporting and control', () => {
   });
 
   test('the dashboard is computed on the server, for the owner only', async () => {
-    await rejects(run('getDashboard', {}, s.dina), /admin role required/);
+    await rejects(run('getDashboard', {}, s.dina), /admin or finance role required/);
     const d = await run('getDashboard', {}, s.owner);
     assert.match(d.day, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(d.days.length, 30);
@@ -3195,7 +3204,7 @@ describe('owner reporting and control', () => {
       'order.deliver',
     ])
       assert.ok(actions.includes(action), action);
-    await rejects(run('adminGetOrder', { id: placed.id }, s.val), /admin role required/);
+    await rejects(run('adminGetOrder', { id: placed.id }, s.val), /admin or finance role required/);
   });
 
   test('the audit log filters by kind, person and record', async () => {
@@ -3250,7 +3259,7 @@ describe('owner reporting and control', () => {
     assert.equal(z.sales.total, z.sales.food + z.sales.deliveryFees);
     assert.ok(z.riders.some((r) => r.rider.includes('Val')));
     assert.ok(z.items.length >= 1);
-    await rejects(run('adminGetZReport', {}, s.dina), /admin role required/);
+    await rejects(run('adminGetZReport', {}, s.dina), /admin or finance role required/);
     await rejects(run('adminGetZReport', { day: '2999-01-01' }, s.owner), /up to today/);
     const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
     const past = await run('adminGetZReport', { day: yesterday }, s.owner);
@@ -5039,7 +5048,7 @@ const ACCESS = {
     'checkPaymentRequest',
   ],
   rider: ['createOrder', 'createHandover', 'getMyHandovers', 'getMyPay', 'setMyAvailability'],
-  riderOrAdmin: ['getRiderEarnings'],
+  riderOrReports: ['getRiderEarnings'],
   anyRole: ['searchCustomers', 'getOperationalMenu'],
   cashier: ['recordTillPayout'],
   staff: [
@@ -5058,10 +5067,17 @@ const ACCESS = {
     'getMobileMoneyLedger',
     'getRiderPay',
     'payRider',
-    'getTillPayouts',
-    'getReportOptions',
-    'getPaymentsLedger',
-    'issueEfrisReceipt',
+  ],
+  staffOrFinance: ['getTillPayouts', 'getReportOptions', 'getPaymentsLedger', 'issueEfrisReceipt'],
+  reports: [
+    'getDashboard',
+    'adminGetZReport',
+    'adminListZReports',
+    'adminGetOrder',
+    'adminSearchOrders',
+    'getCommissionLedger',
+    'getOperationsReport',
+    'getShiftReport',
   ],
   admin: [
     'adminGetEfrisSettings',
@@ -5092,20 +5108,12 @@ const ACCESS = {
     'adminRunCashCheck',
     'resolveOrderIssue',
     'adminListIssues',
-    'adminGetOrder',
     'adminOverrideOrder',
-    'getDashboard',
     'adminGetAuditLog',
-    'adminGetZReport',
-    'adminListZReports',
     'adminSettleTillDifference',
     'adminResetPin',
     'adminGetMember',
-    'adminSearchOrders',
-    'getCommissionLedger',
-    'getOperationsReport',
     'adminApplySecurity',
-    'getShiftReport',
     'getSetupProgress',
     'adminImportMenu',
     'adminFinishSetup',
@@ -5127,16 +5135,21 @@ const ACCESS = {
   ],
 };
 const ALLOWED = {
-  public: ['anonymous', 'rider', 'cashier', 'admin'],
+  public: ['anonymous', 'rider', 'cashier', 'finance', 'admin'],
   nobody: [],
-  signedIn: ['rider', 'cashier', 'admin'],
+  signedIn: ['rider', 'cashier', 'finance', 'admin'],
   rider: ['rider'],
-  riderOrAdmin: ['rider', 'admin'],
+  riderOrReports: ['rider', 'finance', 'admin'],
   anyRole: ['rider', 'cashier', 'admin'],
   cashier: ['cashier'],
   staff: ['cashier', 'admin'],
+  staffOrFinance: ['cashier', 'finance', 'admin'],
+  // Owner-end reporting: the owner and the finance role.
+  reports: ['finance', 'admin'],
   admin: ['admin'],
 };
+// Finance has no shifts: nothing to start at a till or on the road.
+const REFUSED = { startShift: ['finance'] };
 // How the server says "not you": no session, the wrong role, master key
 // only, or switched off. Other errors (a missing field, no open shift) mean
 // the caller got past the permission check.
@@ -5154,11 +5167,13 @@ describe('permission matrix: every Cloud function × every role', () => {
     for (const [username, pin, role] of [
       ['matrix-rider', '7001', 'rider'],
       ['matrix-cashier', '7002', 'cashier'],
+      ['matrix-finance', '7004', 'finance'],
       ['matrix-gone', '7003', 'rider'],
     ])
       await run('adminCreateTeamMember', { name: username, username, pin, role }, s.owner);
     callers.rider = await login('matrix-rider', '7001');
     callers.cashier = await login('matrix-cashier', '7002');
+    callers.finance = await login('matrix-finance', '7004');
     callers.admin = s.owner;
     // A deactivated member keeps a session token but may call nothing.
     const gone = await login('matrix-gone', '7003');
@@ -5192,7 +5207,7 @@ describe('permission matrix: every Cloud function × every role', () => {
     const wrong = [];
     for (const [rule, names] of Object.entries(ACCESS))
       for (const name of names)
-        for (const who of ['anonymous', 'rider', 'cashier', 'admin', 'inactive']) {
+        for (const who of ['anonymous', 'rider', 'cashier', 'finance', 'admin', 'inactive']) {
           const user = callers[who];
           let denied = false;
           let message = '';
@@ -5202,13 +5217,45 @@ describe('permission matrix: every Cloud function × every role', () => {
             message = String(error.message);
             denied = error.code === Parse.Error.INVALID_SESSION_TOKEN || DENIED.test(message);
           }
-          const expected = ALLOWED[rule].includes(who) && who !== 'inactive';
+          const expected =
+            ALLOWED[rule].includes(who) && who !== 'inactive' && !REFUSED[name]?.includes(who);
           if (denied === expected)
             wrong.push(
               `${name} as ${who}: ${expected ? 'denied' : 'allowed'} (${message || 'ok'})`,
             );
         }
     assert.deepEqual(wrong, []);
+  });
+});
+
+describe('the finance role', () => {
+  test('finance reads the owner end but changes nothing sensitive', async () => {
+    const created = await run(
+      'adminCreateTeamMember',
+      { name: 'Fiona Finance', username: 'fiona', pin: '8642', role: 'finance' },
+      s.owner,
+    );
+    assert.match(created.code, /^F-\d{3}$/);
+    const fiona = await login('fiona', '8642');
+    const profile = await run('getMyProfile', {}, fiona);
+    assert.equal(profile.role, 'finance');
+    const order = (await run('adminSearchOrders', {}, fiona)).rows[0];
+    if (order) {
+      const detail = await run('adminGetOrder', { id: order.id }, fiona);
+      assert.deepEqual(detail.can, {}, 'finance gets no override actions');
+      await rejects(
+        run('adminOverrideOrder', { id: order.id, action: 'cancel', reason: 'x' }, fiona),
+        /admin role required/,
+      );
+    }
+    await rejects(run('getStock', {}, fiona), /role required/);
+    await rejects(run('adminListSetup', {}, fiona), /admin role required/);
+    // The owner can move them to another role and back.
+    await run('adminChangeRole', { userId: created.id, role: 'cashier' }, s.owner);
+    assert.equal((await run('getMyProfile', {}, fiona)).role, 'cashier');
+    await run('adminChangeRole', { userId: created.id, role: 'finance' }, s.owner);
+    assert.equal((await run('getMyProfile', {}, fiona)).role, 'finance');
+    s.fiona = fiona;
   });
 });
 

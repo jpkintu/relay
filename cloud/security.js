@@ -78,7 +78,7 @@ Parse.Cloud.beforeSave(Parse.User, async (request) => {
     // First owner sign-up: never accept privileged fields from the client.
     for (const key of ['active', 'commissionType', 'commissionPerOrder', 'commissionPercent'])
       request.object.unset(key);
-    for (const key of ['riderCode', 'cashierCode']) request.object.unset(key);
+    for (const key of ['riderCode', 'cashierCode', 'financeCode']) request.object.unset(key);
     return;
   }
   const blocked = request.object
@@ -577,7 +577,14 @@ async function applySecurity() {
   updated._User = await eachObject(Parse.User, async (user) => {
     const role = await getRoleName(user);
     let changed = false;
-    const codeField = role === 'rider' ? 'riderCode' : role === 'cashier' ? 'cashierCode' : null;
+    const codeField =
+      role === 'rider'
+        ? 'riderCode'
+        : role === 'cashier'
+          ? 'cashierCode'
+          : role === 'finance'
+            ? 'financeCode'
+            : null;
     if (codeField && (!user.get(codeField) || isBrokenCode(user.get(codeField)))) {
       user.set(codeField, await nextStaffCode(role));
       changed = true;

@@ -8,6 +8,7 @@ const {
   invalid,
   forbidden,
   adminOnly,
+  requireRole,
   getRoleName,
   readAcl,
   audit,
@@ -76,7 +77,8 @@ const requestReference = (order) => {
 };
 
 Parse.Cloud.define('adminGetOrder', async (request) => {
-  await adminOnly(request);
+  // Finance reads orders; only the owner changes them (adminOverrideOrder).
+  const { role } = await requireRole(request, ['admin', 'finance']);
   const id = idOf(request.params.id);
   if (!id) throw invalid('Unknown order');
   const query = new Parse.Query('Order');
@@ -174,7 +176,7 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
     })),
     history,
     // What the owner may do now (see adminOverrideOrder).
-    can: overrideOptions(order),
+    can: role === 'admin' ? overrideOptions(order) : {},
     // Tax (EFRIS): the sale's fiscal receipt, if EFRIS is on.
     efris: await require('./efris').receiptView(order, (await loadConfig()).values),
   };

@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Data, Layout } from 'plotly.js';
 import { ChevronRight } from 'lucide-react';
-import { useConfig, useMoney } from '../lib/session';
+import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { statusLabel, statusTone } from '../lib/labels';
 import { useCloud } from './reports/common';
@@ -59,6 +59,7 @@ export function AdminOverview({ version }: { version: number }) {
   const money = useMoney();
   const { timezone } = useConfig();
   const navigate = useNavigate();
+  const finance = useSession().profile?.role === 'finance';
   const { data, error, loading, reload } = useCloud<Dashboard>('getDashboard', {});
   useEffect(() => {
     if (version) reload();
@@ -119,11 +120,12 @@ export function AdminOverview({ version }: { version: number }) {
       to: '/admin/payments',
       bad: true,
     },
-    a.openIssues && {
-      label: `${a.openIssues} open ${a.openIssues === 1 ? 'problem' : 'problems'}`,
-      to: '/admin/problems',
-      bad: true,
-    },
+    a.openIssues &&
+      !finance && {
+        label: `${a.openIssues} open ${a.openIssues === 1 ? 'problem' : 'problems'}`,
+        to: '/admin/problems',
+        bad: true,
+      },
   ].filter(Boolean) as { label: string; to: string; bad?: boolean }[];
 
   return (

@@ -239,7 +239,10 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
 
 const nameOf = (user) =>
   user
-    ? [user.get('riderCode') || user.get('cashierCode'), user.get('name')]
+    ? [
+        user.get('riderCode') || user.get('cashierCode') || user.get('financeCode'),
+        user.get('name'),
+      ]
         .filter(Boolean)
         .join(' · ')
     : '';

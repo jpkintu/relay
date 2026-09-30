@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react';
 import Parse from '../../parse';
-import { useConfig, useMoney } from '../../lib/session';
+import { useConfig, useMoney, useSession } from '../../lib/session';
 import { formatDate } from '../../lib/format';
 import { providerLabel } from '../MobileMoney';
 import {
@@ -159,6 +159,8 @@ export function PaymentsLedger() {
     to: filters.to,
   });
   const [settling, setSettling] = useState<string | null>(null);
+  // Finance reads the ledger; resolving and settling cash is the owner's.
+  const owner = useSession().profile?.role !== 'finance';
   const s = data?.summary;
   const rows = data?.transactions ?? [];
   const showCash = !filters.method || filters.method === 'cash';
@@ -339,7 +341,7 @@ export function PaymentsLedger() {
                 Handovers <small>({data?.handovers.length ?? 0})</small>
               </h2>
             </div>
-            <ReceiveCash riders={riders} onDone={reload} />
+            {owner && <ReceiveCash riders={riders} onDone={reload} />}
           </div>
           {(data?.handovers.length ?? 0) > 0 && (
             <div className="table-scroll">
@@ -374,7 +376,7 @@ export function PaymentsLedger() {
                         </td>
                         <td className="num">{money(h.amount)}</td>
                       </tr>
-                      {h.status === 'disputed' && (
+                      {owner && h.status === 'disputed' && (
                         <tr className="detail-row">
                           <td colSpan={5}>
                             <DisputeResolution handover={h} onResolved={reload} />
@@ -468,7 +470,7 @@ export function PaymentsLedger() {
                               <span className="status-pill good">Settled</span> {t.settlementNote}
                             </small>
                           )}
-                          {!t.settled && !!t.variance && t.status === 'closed' && (
+                          {owner && !t.settled && !!t.variance && t.status === 'closed' && (
                             <button
                               className="link-button settle-button"
                               onClick={() => setSettling(settling === t.id ? null : t.id)}
@@ -503,7 +505,7 @@ export function PaymentsLedger() {
         </section>
       )}
       {showCash && <PayoutsPanel from={filters.from} to={filters.to} />}
-      <CashCheckPanel />
+      {owner && <CashCheckPanel />}
     </div>
   );
 }

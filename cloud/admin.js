@@ -24,13 +24,14 @@ const { applySecurity } = require('./security');
 const { cleanLocation } = require('./lib/geo');
 const { cleanTheme, themeProblems } = require('./lib/theme');
 
-const ROLE_NAMES = ['admin', 'cashier', 'rider'];
-const STAFF_ROLES = ['rider', 'cashier'];
+const ROLE_NAMES = ['admin', 'finance', 'cashier', 'rider'];
+const STAFF_ROLES = ['rider', 'cashier', 'finance'];
 const merchantField = (value, max) =>
   String(value ?? '')
     .trim()
     .slice(0, max);
-const codeField = (role) => (role === 'rider' ? 'riderCode' : 'cashierCode');
+const codeField = (role) =>
+  role === 'rider' ? 'riderCode' : role === 'finance' ? 'financeCode' : 'cashierCode';
 
 async function adminRoleExists() {
   const query = new Parse.Query(Parse.Role);
@@ -191,7 +192,7 @@ Parse.Cloud.define('adminListSetup', async (request) => {
       phone: user.get('phone') || '',
       active: user.get('active') !== false,
       role: members[user.id] || 'unassigned',
-      code: user.get('riderCode') || user.get('cashierCode') || '',
+      code: user.get('riderCode') || user.get('cashierCode') || user.get('financeCode') || '',
       commissionType: user.get('commissionType') || 'per_order',
       commissionPerOrder: user.get('commissionPerOrder') || 0,
       commissionPercent: user.get('commissionPercent') || 0,
@@ -329,7 +330,8 @@ Parse.Cloud.define('adminUpdateMember', async (request) => {
 Parse.Cloud.define('adminChangeRole', async (request) => {
   const actor = await adminOnly(request);
   const { userId, role: next } = request.params;
-  if (!STAFF_ROLES.includes(next)) throw invalid('Only rider and cashier roles can be assigned');
+  if (!STAFF_ROLES.includes(next))
+    throw invalid('Only rider, cashier and finance roles can be assigned');
   const user = await new Parse.Query(Parse.User).get(userId, MASTER);
   if (user.id === actor.id) throw forbidden('You cannot change your own role');
   const query = new Parse.Query(Parse.Role);

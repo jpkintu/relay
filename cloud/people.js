@@ -22,7 +22,7 @@ const { riderOutstanding } = require('./shifts');
 const { riderPayState, payoutJSON } = require('./payouts');
 const { handoverJSON } = require('./cash');
 
-const STAFF_ROLES = ['rider', 'cashier'];
+const STAFF_ROLES = ['rider', 'cashier', 'finance'];
 
 // Riders and cashiers sign in with a PIN of 4 to 32 characters; the owner's
 // password needs at least 8.
@@ -77,7 +77,8 @@ Parse.Cloud.define('adminResetPin', async (request) => {
   const user = await new Parse.Query(Parse.User).get(String(request.params.id || ''), MASTER);
   if (user.id === actor.id) throw forbidden('Change your own password from your profile');
   const role = await getRoleName(user);
-  if (!STAFF_ROLES.includes(role)) throw forbidden('Only rider and cashier PINs can be reset here');
+  if (!STAFF_ROLES.includes(role))
+    throw forbidden('Only rider, cashier and finance PINs can be reset here');
   const pin = String(request.params.pin ?? '');
   checkNewPin(role, pin);
   user.set({ password: pin, pinFailures: 0 });
@@ -232,7 +233,7 @@ Parse.Cloud.define('adminGetMember', async (request) => {
     username: user.getUsername(),
     phone: user.get('phone') || '',
     role: role || 'unassigned',
-    code: user.get('riderCode') || user.get('cashierCode') || '',
+    code: user.get('riderCode') || user.get('cashierCode') || user.get('financeCode') || '',
     active: user.get('active') !== false,
     available: role === 'rider' ? user.get('available') !== false : null,
     pinLocked: !!(lockedUntil && lockedUntil > new Date()),

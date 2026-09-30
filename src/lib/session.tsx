@@ -6,7 +6,7 @@ import { formatMoney } from './format';
 import { forgetPush } from './push';
 import { applyTheme, type Theme } from './theme';
 
-export type Role = 'admin' | 'cashier' | 'rider';
+export type Role = 'admin' | 'finance' | 'cashier' | 'rider';
 
 export type AppConfig = {
   restaurantName: string;
@@ -279,5 +279,9 @@ export function useMoney() {
 }
 
 export function homePath(role: Role | null): string {
-  return role === 'admin' ? '/admin' : role === 'cashier' ? '/cashier' : '/rider';
+  return role === 'admin' || role === 'finance'
+    ? '/admin'
+    : role === 'cashier'
+      ? '/cashier'
+      : '/rider';
 }
