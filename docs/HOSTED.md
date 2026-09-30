@@ -69,6 +69,25 @@ forget it:
   optionally `IOTEC_ENV=sandbox` (test currency `ITX`) and `IOTEC_API_URL` /
   `IOTEC_AUTH_URL` if ioTec's addresses differ.
 
+## Plans (Basic and Enterprise)
+
+Each restaurant is on a plan (`Restaurant.plan`, `cloud/lib/limits.js`):
+
+| Plan       | Price a month (platform settings) | Limits                                                                                                                    |
+| ---------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Basic      | 100,000 (`monthlyPrice`)          | 1 branch, 2 cashiers, 5 riders; no finance role, purchases/expenses, accounting or Reports analytics (the Z-report stays) |
+| Enterprise | 200,000 (`enterprisePrice`)       | none                                                                                                                      |
+
+- A new restaurant chooses its plan at sign-up (Basic by default). The owner
+  switches under Subscription → Plans (`changePlan`): up at any time; down to
+  Basic only when within Basic's limits. The platform console sets any plan.
+- A negotiated price (`priceOverride`, platform console) wins over the plan's
+  price.
+- Limits are checked when something is added (a branch, a member, a role
+  change, a member switched back on); nothing a restaurant has is taken away.
+  The Enterprise-only parts are refused on the server
+  (`lib/limits.js` → `features()`), and hidden in the app.
+
 ## Lessons carried over from Embiro BI
 
 The Embiro BI platform (Superset, `Embiro-Concepts/embiro-bi`,

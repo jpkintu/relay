@@ -7983,3 +7983,53 @@ table.data tr.selected td {
   gap: 6px;
   font-size: 14px;
 }
+
+/* Relay Hosted plans */
+.subscription-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-picker {
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.plan-picker > p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.plan-card {
+  background: var(--surface);
+  border: 1.5px solid var(--line-soft);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  color: var(--ink);
+}
+.plan-card.current {
+  border-color: var(--ink);
+}
+.plan-card h3 {
+  margin: 0;
+}
+.plan-card strong {
+  font: 600 22px var(--font-display);
+}
+.plan-card strong small {
+  font: 500 13px var(--font-body);
+  color: var(--muted);
+}
+.plan-card ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+}
+.plan-card button,
+.plan-card .status-pill {
+  justify-self: start;
+}

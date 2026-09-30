@@ -13,7 +13,81 @@ const DAY = 86400000;
 export const daysLeft = (until: string | null) =>
   until ? Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / DAY)) : 0;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
-const priceText = (r: RestaurantSummary) => `${formatMoney(r.monthlyPrice, r.currency)} a month`;
+const priceText = (r: RestaurantSummary) =>
+  `${r.plan === 'enterprise' ? 'Enterprise' : 'Basic'} plan · ${formatMoney(
+    r.monthlyPrice,
+    r.currency,
+  )} a month`;
+
+// What each plan includes (the server's limits are in cloud/lib/limits.js).
+export const PLAN_INFO = {
+  basic: {
+    label: 'Basic',
+    points: ['1 branch', 'Up to 2 cashiers and 5 riders', 'Orders, kitchen, cash and Z-report'],
+  },
+  enterprise: {
+    label: 'Enterprise',
+    points: [
+      'Many branches, as many team members as you need',
+      'Finance role, purchases & expenses, accounting (P&L, balance sheet, cash flow)',
+      'Reports and analytics',
+    ],
+  },
+} as const;
+
+// The owner: the two plans and a switch between them. Moving down to Basic
+// needs the restaurant within Basic's limits (the server says what is over).
+export function PlanPicker() {
+  const { profile, refresh } = useSession();
+  const r = profile?.restaurant;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (!r || !r.planPrices) return null;
+  const current = r.plan === 'enterprise' ? 'enterprise' : 'basic';
+  return (
+    <div className="plan-picker">
+      {(['basic', 'enterprise'] as const).map((plan) => (
+        <article key={plan} className={plan === current ? 'plan-card current' : 'plan-card'}>
+          <h3>{PLAN_INFO[plan].label}</h3>
+          <strong>
+            {formatMoney(r.planPrices![plan], r.currency)}
+            <small> a month</small>
+          </strong>
+          <ul>
+            {PLAN_INFO[plan].points.map((point) => (
+              <li key={point}>{point}</li>
+            ))}
+          </ul>
+          {plan === current ? (
+            <span className="status-pill good">Your plan</span>
+          ) : (
+            <button
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setError('');
+                try {
+                  await Parse.Cloud.run('changePlan', { plan });
+                  await refresh();
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : 'Could not change the plan');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Switch to {PLAN_INFO[plan].label}
+            </button>
+          )}
+        </article>
+      ))}
+      {error && <p className="form-error">{error}</p>}
+      <p className="muted small">
+        A negotiated price stays as agreed. The new plan's price applies from your next payment.
+      </p>
+    </div>
+  );
+}
 
 // Everyone, during the grace days after the trial or paid month ends.
 export function SubscriptionBanner() {
@@ -34,6 +108,7 @@ export function SubscriptionBanner() {
 export function SubscriptionNotice() {
   const { profile, config } = useSession();
   const [paying, setPaying] = useState(false);
+  const [plans, setPlans] = useState(false);
   const r = profile?.restaurant;
   if (!r || profile?.role !== 'admin') return null;
   const date = formatDate(r.until, config.timezone, { dateStyle: 'medium' });
@@ -56,10 +131,16 @@ export function SubscriptionNotice() {
         )}
       </span>
       {!paying && (
-        <button onClick={() => setPaying(true)}>
-          {r.status === 'active' ? 'Pay ahead' : 'Pay now'}
-        </button>
+        <span className="subscription-actions">
+          <button className="setup-secondary" onClick={() => setPlans((v) => !v)}>
+            {plans ? 'Hide plans' : 'Plans'}
+          </button>
+          <button onClick={() => setPaying(true)}>
+            {r.status === 'active' ? 'Pay ahead' : 'Pay now'}
+          </button>
+        </span>
       )}
+      {plans && !paying && <PlanPicker />}
       {paying && <BillingPanel onClose={() => setPaying(false)} />}
     </div>
   );

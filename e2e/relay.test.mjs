@@ -6129,6 +6129,8 @@ describe('platform console and access (Relay Hosted)', () => {
     const { rows, settings } = await run('platformListRestaurants', {}, ops);
     // Relay's starting price until the console sets another.
     assert.equal(settings.monthlyPrice, 100000);
+    // Plans (owner's decision 2026-09-30): Basic 100,000, Enterprise 200,000.
+    assert.equal(settings.enterprisePrice, 200000);
     assert.deepEqual(rows.map((row) => row.code).sort(), [OTHER, CODE]);
     const mine = rows.find((row) => row.code === CODE);
     const theirs = rows.find((row) => row.code === OTHER);
@@ -6187,8 +6189,13 @@ describe('platform console and access (Relay Hosted)', () => {
     );
     assert.equal((await update({ priceOverride: 35000 })).monthlyPrice, 35000);
     assert.equal((await run('getMyProfile', {}, other.owner)).restaurant.monthlyPrice, 35000);
-    assert.equal((await run('getMyProfile', {}, s.owner)).restaurant.monthlyPrice, 60000);
+    // The other restaurant (Enterprise) keeps its plan's price.
+    assert.equal((await run('getMyProfile', {}, s.owner)).restaurant.monthlyPrice, 150000);
     assert.equal((await update({ priceOverride: 90000 })).monthlyPrice, 90000);
+    // The plan is the platform's to set too; a negotiated price stays.
+    assert.equal((await update({ plan: 'enterprise' })).monthlyPrice, 90000);
+    await rejects(update({ plan: 'gold' }), /Plan: basic or enterprise/);
+    assert.equal((await update({ plan: 'basic' })).plan, 'basic');
     const back = await update({ priceOverride: null });
     assert.equal(back.priceOverride, null);
     assert.equal(back.monthlyPrice, 60000);
@@ -6377,75 +6384,6 @@ describe('platform console and access (Relay Hosted)', () => {
       typeof (await run('getAppInfo', { restaurant: CODE })).platform.supportContact,
       'string',
     );
-  });
-});
-
-describe('plans: Basic and Enterprise (Relay Hosted)', () => {
-  const CODE2 = 'basic-bites';
-  let owner;
-  const member = (username, role) =>
-    run('adminCreateTeamMember', { name: username, username, pin: '7777', role }, owner);
-
-  before(async () => {
-    await run('signUpRestaurant', {
-      restaurantName: 'Basic Bites',
-      ownerName: 'Bea',
-      username: 'owner',
-      pin: PINS.owner,
-      phone: '0701 999888',
-    });
-    owner = await login('owner', PINS.owner, CODE2);
-  });
-
-  test('a new restaurant is on Basic: 100,000 a month, no finance or reporting', async () => {
-    const profile = await run('getMyProfile', {}, owner);
-    assert.deepEqual(profile.features, {
-      branches: false,
-      finance: false,
-      accounting: false,
-      reports: false,
-    });
-    const billing = await run('getBilling', {}, owner);
-    assert.equal(billing.restaurant.plan, 'basic');
-    assert.equal(billing.restaurant.monthlyPrice, 100000);
-    assert.deepEqual(billing.restaurant.planPrices, { basic: 100000, enterprise: 200000 });
-    await rejects(run('listPurchases', {}, owner), /not part of your plan/);
-    await rejects(run('getProfitAndLoss', {}, owner), /not part of your plan/);
-    await rejects(run('getOperationsReport', {}, owner), /not part of your plan/);
-    // The Z-report stays.
-    assert.equal((await run('adminGetZReport', {}, owner)).live, true);
-  });
-
-  test('Basic allows one branch, 2 cashiers, 5 riders and no finance', async () => {
-    await member('cash1', 'cashier');
-    await member('cash2', 'cashier');
-    await rejects(member('cash3', 'cashier'), /allows 2 cashiers.*Upgrade to Enterprise/);
-    for (const n of [1, 2, 3, 4, 5]) await member(`ride${n}`, 'rider');
-    await rejects(member('ride6', 'rider'), /allows 5 riders/);
-    await rejects(member('fin1', 'finance'), /no finance role/);
-    assert.equal((await run('adminListBranches', {}, owner)).branches.length, 1);
-    await rejects(run('adminSaveBranch', { name: 'Second' }, owner), /has 1 branch/);
-    // A rider cannot be moved into a full cashier role either.
-    const { team } = await run('adminListSetup', {}, owner);
-    const rider = team.find((m) => m.username === 'ride1');
-    await rejects(
-      run('adminChangeRole', { userId: rider.id, role: 'cashier' }, owner),
-      /allows 2 cashiers/,
-    );
-  });
-
-  test('upgrading to Enterprise lifts the limits and costs 200,000', async () => {
-    const billing = await run('changePlan', { plan: 'enterprise' }, owner);
-    assert.equal(billing.restaurant.plan, 'enterprise');
-    assert.equal(billing.restaurant.monthlyPrice, 200000);
-    assert.equal((await run('getMyProfile', {}, owner)).features.accounting, true);
-    await member('cash3', 'cashier');
-    await member('fin1', 'finance');
-    await run('adminSaveBranch', { name: 'Second' }, owner);
-    assert.ok(Array.isArray((await run('listPurchases', {}, owner)).purchases));
-    // Back to Basic only once it fits again.
-    await rejects(run('changePlan', { plan: 'basic' }, owner), /Basic allows less than you have/);
-    await rejects(run('changePlan', { plan: 'gold' }, owner), /Choose Basic or Enterprise/);
   });
 });
 
@@ -6853,5 +6791,75 @@ describe('restore from a backup file', () => {
     assert.equal((await run('getMyProfile', {}, back)).role, 'rider');
     // Everyone else was matched, not duplicated.
     assert.equal(team.skipped + team.updated, backup._User.length - 1);
+  });
+});
+
+describe('plans: Basic and Enterprise (Relay Hosted)', () => {
+  const CODE2 = 'basic-bites';
+  let owner;
+  const member = (username, role) =>
+    run('adminCreateTeamMember', { name: username, username, pin: '7777', role }, owner);
+
+  before(async () => {
+    await run('signUpRestaurant', {
+      restaurantName: 'Basic Bites',
+      ownerName: 'Bea',
+      username: 'owner',
+      pin: PINS.owner,
+      phone: '0701 999888',
+    });
+    owner = await login('owner', PINS.owner, CODE2);
+  });
+
+  test('a new restaurant is on Basic, with no finance or reporting', async () => {
+    const profile = await run('getMyProfile', {}, owner);
+    assert.deepEqual(profile.features, {
+      branches: false,
+      finance: false,
+      accounting: false,
+      reports: false,
+    });
+    const billing = await run('getBilling', {}, owner);
+    assert.equal(billing.restaurant.plan, 'basic');
+    // Basic's price (the platform console may have changed the defaults of
+    // 100,000 and 200,000 earlier in this run).
+    assert.equal(billing.restaurant.monthlyPrice, billing.restaurant.planPrices.basic);
+    await rejects(run('listPurchases', {}, owner), /not part of your plan/);
+    await rejects(run('getProfitAndLoss', {}, owner), /not part of your plan/);
+    await rejects(run('getOperationsReport', {}, owner), /not part of your plan/);
+    // The Z-report stays.
+    assert.equal((await run('adminGetZReport', {}, owner)).live, true);
+  });
+
+  test('Basic allows one branch, 2 cashiers, 5 riders and no finance', async () => {
+    await member('cash1', 'cashier');
+    await member('cash2', 'cashier');
+    await rejects(member('cash3', 'cashier'), /allows 2 cashiers.*Upgrade to Enterprise/);
+    for (const n of [1, 2, 3, 4, 5]) await member(`ride${n}`, 'rider');
+    await rejects(member('ride6', 'rider'), /allows 5 riders/);
+    await rejects(member('fin1', 'finance'), /no finance role/);
+    assert.equal((await run('adminListBranches', {}, owner)).branches.length, 1);
+    await rejects(run('adminSaveBranch', { name: 'Second' }, owner), /has 1 branch/);
+    // A rider cannot be moved into a full cashier role either.
+    const { team } = await run('adminListSetup', {}, owner);
+    const rider = team.find((m) => m.username === 'ride1');
+    await rejects(
+      run('adminChangeRole', { userId: rider.id, role: 'cashier' }, owner),
+      /allows 2 cashiers/,
+    );
+  });
+
+  test('upgrading to Enterprise lifts the limits and costs the Enterprise price', async () => {
+    const billing = await run('changePlan', { plan: 'enterprise' }, owner);
+    assert.equal(billing.restaurant.plan, 'enterprise');
+    assert.equal(billing.restaurant.monthlyPrice, billing.restaurant.planPrices.enterprise);
+    assert.equal((await run('getMyProfile', {}, owner)).features.accounting, true);
+    await member('cash3', 'cashier');
+    await member('fin1', 'finance');
+    await run('adminSaveBranch', { name: 'Second' }, owner);
+    assert.ok(Array.isArray((await run('listPurchases', {}, owner)).purchases));
+    // Back to Basic only once it fits again.
+    await rejects(run('changePlan', { plan: 'basic' }, owner), /Basic allows less than you have/);
+    await rejects(run('changePlan', { plan: 'gold' }, owner), /Choose Basic or Enterprise/);
   });
 });

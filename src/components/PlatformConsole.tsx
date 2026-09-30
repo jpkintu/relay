@@ -12,7 +12,9 @@ import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
 // subscription and size, never its orders or customers (docs/HOSTED.md).
 
 type Settings = {
+  // Basic plan's price, and Enterprise's.
   monthlyPrice: number;
+  enterprisePrice: number;
   currency: string;
   trialDays: number;
   graceDays: number;
@@ -202,7 +204,10 @@ export function PlatformConsole() {
                       </td>
                       <td className="num">
                         {formatMoney(r.monthlyPrice, r.currency)}
-                        {r.priceOverride !== null && <small className="cell-sub">own price</small>}
+                        <small className="cell-sub">
+                          {r.plan === 'enterprise' ? 'Enterprise' : 'Basic'}
+                          {r.priceOverride !== null && ' · own price'}
+                        </small>
                       </td>
                       <td className="num">{r.staff}</td>
                       <td className="num">{r.orders30}</td>
@@ -315,6 +320,7 @@ function RestaurantEditor({
   onClose: () => void;
 }) {
   const [price, setPrice] = useState(row.priceOverride === null ? '' : String(row.priceOverride));
+  const [plan, setPlan] = useState(row.plan === 'enterprise' ? 'enterprise' : 'basic');
   const [trialEndsAt, setTrialEndsAt] = useState(toInput(row.trialEndsAt));
   const [paidUntil, setPaidUntil] = useState(toInput(row.paidUntil));
   const [note, setNote] = useState(row.note);
@@ -353,6 +359,7 @@ function RestaurantEditor({
     try {
       const next: Row = await Parse.Cloud.run('platformUpdateRestaurant', {
         id: row.id,
+        plan,
         priceOverride: price.trim() === '' ? null : Number(price),
         trialEndsAt: endOfDay(trialEndsAt),
         paidUntil: endOfDay(paidUntil),
@@ -387,14 +394,29 @@ function RestaurantEditor({
       </div>
       <form className="platform-form" onSubmit={submit}>
         <label className="setup-field">
+          Plan
+          <select value={plan} onChange={(e) => setPlan(e.target.value)}>
+            <option value="basic">
+              Basic ({formatMoney(settings.monthlyPrice, settings.currency)})
+            </option>
+            <option value="enterprise">
+              Enterprise ({formatMoney(settings.enterprisePrice, settings.currency)})
+            </option>
+          </select>
+          <small>Basic: 1 branch, 2 cashiers, 5 riders, no finance or reports.</small>
+        </label>
+        <label className="setup-field">
           Monthly price ({row.currency})
           <input
             inputMode="numeric"
             value={price}
             onChange={(e) => setPrice(e.target.value.replace(/[^\d]/g, ''))}
-            placeholder={`Platform price: ${formatMoney(settings.monthlyPrice, settings.currency)}`}
+            placeholder={`Plan price: ${formatMoney(
+              plan === 'enterprise' ? settings.enterprisePrice : settings.monthlyPrice,
+              settings.currency,
+            )}`}
           />
-          <small>Leave empty for the platform price. Higher or lower is fine.</small>
+          <small>Leave empty for the plan's price. A negotiated price, higher or lower.</small>
         </label>
         <label className="setup-field">
           Trial ends
@@ -685,6 +707,7 @@ function SettingsForm({
 }) {
   const [form, setForm] = useState({
     monthlyPrice: String(settings.monthlyPrice),
+    enterprisePrice: String(settings.enterprisePrice ?? 200000),
     currency: settings.currency,
     trialDays: String(settings.trialDays),
     graceDays: String(settings.graceDays),
@@ -703,6 +726,7 @@ function SettingsForm({
     try {
       const saved: Settings = await Parse.Cloud.run('platformSaveSettings', {
         monthlyPrice: Number(form.monthlyPrice),
+        enterprisePrice: Number(form.enterprisePrice),
         currency: form.currency,
         trialDays: Number(form.trialDays),
         graceDays: Number(form.graceDays),
@@ -723,8 +747,16 @@ function SettingsForm({
       </div>
       <form className="platform-form" onSubmit={(e) => void submit(e)}>
         <label className="setup-field">
-          Monthly price
+          Basic plan, a month
           <input inputMode="numeric" value={form.monthlyPrice} onChange={set('monthlyPrice')} />
+        </label>
+        <label className="setup-field">
+          Enterprise plan, a month
+          <input
+            inputMode="numeric"
+            value={form.enterprisePrice}
+            onChange={set('enterprisePrice')}
+          />
         </label>
         <label className="setup-field">
           Currency

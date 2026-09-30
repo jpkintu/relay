@@ -272,6 +272,7 @@ function SignUp({
     phone: '',
     username: '',
     pin: '',
+    plan: 'basic',
   });
   const [codeEdited, setCodeEdited] = useState(false);
   const [codeState, setCodeState] = useState<{ code: string; free: boolean } | null>(null);
@@ -386,8 +387,20 @@ function SignUp({
             required
           />
         </label>
+        <label>
+          Plan
+          <select
+            value={form.plan}
+            onChange={(e) => setForm((f) => ({ ...f, plan: e.target.value }))}
+          >
+            <option value="basic">Basic: 1 branch, 2 cashiers, 5 riders</option>
+            <option value="enterprise">
+              Enterprise: branches, finance, accounting and reports
+            </option>
+          </select>
+        </label>
         <p className="field-hint">
-          By creating a restaurant you accept{' '}
+          You can change the plan later under your subscription. By creating a restaurant you accept{' '}
           <a href="/terms" target="_blank" rel="noreferrer">
             Relay’s terms
           </a>

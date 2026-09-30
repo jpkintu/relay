@@ -83,6 +83,9 @@ export type RestaurantSummary = {
   trialEndsAt: string | null;
   paidUntil: string | null;
   monthlyPrice: number;
+  // Relay Hosted plans (lib/limits.js on the server).
+  plan?: 'basic' | 'enterprise';
+  planPrices?: { basic: number; enterprise: number };
   currency: string;
   graceDays: number;
   supportContact: string;
