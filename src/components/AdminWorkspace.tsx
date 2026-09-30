@@ -15,6 +15,8 @@ import {
   TriangleAlert,
   Rocket,
   Store,
+  ShoppingCart,
+  Contact,
 } from 'lucide-react';
 import Parse from '../parse';
 import { AdminOverview } from './AdminOverview';
@@ -42,6 +44,8 @@ const AdminMember = lazyScreen(() => import('./AdminMember').then((m) => m.Admin
 const AdminOrder = lazyScreen(() => import('./AdminOrder').then((m) => m.AdminOrder));
 const AdminSite = lazyScreen(() => import('./AdminSite').then((m) => m.AdminSite));
 const AdminStart = lazyScreen(() => import('./AdminStart').then((m) => m.AdminStart));
+const AdminSpending = lazyScreen(() => import('./AdminSpending').then((m) => m.AdminSpending));
+const AdminCustomers = lazyScreen(() => import('./AdminCustomers').then((m) => m.AdminCustomers));
 const AdminBranches = lazyScreen(() => import('./AdminBranches').then((m) => m.AdminBranches));
 const ZReportPage = lazyScreen(() => import('./reports/ZReport').then((m) => m.ZReportPage));
 
@@ -53,6 +57,8 @@ const NAV = [
   [TriangleAlert, 'Problems', 'problems'],
   [HandCoins, 'Payments ledger', 'payments'],
   [CircleDollarSign, 'Commissions', 'commissions'],
+  [ShoppingCart, 'Purchases & expenses', 'spending'],
+  [Contact, 'Customers', 'customers'],
   [Users, 'Team', 'team'],
   [Store, 'Branches', 'branches'],
   [ClipboardList, 'Menu', 'menu'],
@@ -70,6 +76,8 @@ export const FINANCE_SECTIONS: Section[] = [
   'Orders',
   'Payments ledger',
   'Commissions',
+  'Purchases & expenses',
+  'Customers',
 ];
 // Pages that moved into Admin keep working from old links and bookmarks.
 const MOVED: Record<string, AdminTab> = {
@@ -87,7 +95,8 @@ export function AdminWorkspace() {
   const features = profile?.features;
   const allowed = (label: Section) =>
     (!finance || FINANCE_SECTIONS.includes(label)) &&
-    (label !== 'Branches' || features?.branches !== false);
+    (label !== 'Branches' || features?.branches !== false) &&
+    (label !== 'Purchases & expenses' || features?.accounting !== false);
   const { timezone, restaurantNameSet, restaurantName, restaurantLogo } = useConfig();
   const navigate = useNavigate();
   const device = useDevice();
@@ -280,6 +289,8 @@ export function AdminWorkspace() {
             'Commissions',
             'Admin',
             'Branches',
+            'Purchases & expenses',
+            'Customers',
           ].includes(section) ? (
             <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
@@ -303,6 +314,8 @@ export function AdminWorkspace() {
               {section === 'Payments ledger' && <PaymentsLedger />}
               {section === 'Commissions' && <Commissions />}
               {section === 'Branches' && <AdminBranches />}
+              {section === 'Purchases & expenses' && <AdminSpending />}
+              {section === 'Customers' && <AdminCustomers />}
             </>
           )}
           {memberId && !finance && <AdminMember key={memberId} id={memberId} />}

@@ -1024,7 +1024,10 @@ var require_security = __commonJS({
       "ZReport",
       "ErrorLog",
       "AdminUnlock",
-      "Branch"
+      "Branch",
+      "Supplier",
+      "Purchase",
+      "Expense"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -1331,7 +1334,56 @@ var require_security = __commonJS({
         price: N,
         soldOutAt: "Array"
       },
+      // Purchases and expenses (spending.js).
+      Supplier: {
+        name: S,
+        phone: S,
+        email: S,
+        address: S,
+        tin: S,
+        notes: S,
+        active: B
+      },
+      Purchase: {
+        branch,
+        purchaseCode: S,
+        day: S,
+        spentAt: D,
+        supplier: ["Pointer", "Supplier"],
+        supplierName: S,
+        category: S,
+        lines: "Array",
+        total: N,
+        paid: N,
+        status: S,
+        invoice: S,
+        notes: S,
+        payments: "Array",
+        recordedBy: user,
+        voidedAt: D,
+        voidReason: S,
+        voidedBy: user
+      },
+      Expense: {
+        branch,
+        expenseCode: S,
+        day: S,
+        spentAt: D,
+        category: S,
+        description: S,
+        amount: N,
+        method: S,
+        payee: S,
+        reference: S,
+        supplier: ["Pointer", "Supplier"],
+        recordedBy: user,
+        voidedAt: D,
+        voidReason: S,
+        voidedBy: user
+      },
       Customer: {
+        email: S,
+        notes: S,
         key: S,
         name: S,
         nameLower: S,
@@ -1426,7 +1478,10 @@ var require_security = __commonJS({
       "Accompaniment",
       "Customer",
       "ZReport",
-      "Branch"
+      "Branch",
+      "Supplier",
+      "Purchase",
+      "Expense"
     ])
       Object.assign(SCHEMAS[className], {
         restoredFrom: S,
@@ -1547,6 +1602,11 @@ var require_security = __commonJS({
         "AuditLog"
       ])
         updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ["admin"])));
+      for (const className of ["Supplier", "Purchase", "Expense"])
+        updated[className] = await eachObject(
+          className,
+          (o) => saveAcl(o, readAcl(null, ["admin", "finance"]))
+        );
       updated.Branch = await eachObject(
         "Branch",
         (o) => saveAcl(o, readAcl(null, ["admin", "finance", "cashier", "rider"]))
@@ -31385,7 +31445,7 @@ var require_notifications = __commonJS({
 var require_customers = __commonJS({
   "cloud/customers.js"(exports2, module2) {
     "use strict";
-    var { MASTER, invalid, requireRole, readAcl } = require_core();
+    var { MASTER, invalid, requireRole, readAcl, audit } = require_core();
     var MAX_ADDRESSES = 5;
     var customerKey = (name, phone) => phone ? `tel:${phone}` : `name:${name.toLowerCase()}`;
     async function recordCustomerOrder(order) {
@@ -31481,6 +31541,96 @@ var require_customers = __commonJS({
           }))
         };
       });
+    });
+    var customerView = (row) => ({
+      id: row.id,
+      name: row.get("name"),
+      phone: row.get("phone") || "",
+      email: row.get("email") || "",
+      notes: row.get("notes") || "",
+      addresses: row.get("addresses") || [],
+      orderCount: row.get("orderCount") || 0,
+      lastOrderAt: row.get("lastOrderAt") || null,
+      createdAt: row.get("restoredCreatedAt") || row.createdAt
+    });
+    var PAGE = 100;
+    Parse.Cloud.define("listCustomers", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      const p = request.params;
+      const text = String(p.q || "").trim().toLowerCase().slice(0, 40);
+      let query = new Parse.Query("Customer");
+      if (text) {
+        const byName = new Parse.Query("Customer");
+        byName.matches("nameLower", escapeRegex(text));
+        const queries = [byName];
+        const digits = text.replace(/[^\d]/g, "");
+        if (digits.length >= 3) {
+          const byPhone = new Parse.Query("Customer");
+          byPhone.matches("phone", escapeRegex(digits));
+          queries.push(byPhone);
+        }
+        query = Parse.Query.or(...queries);
+      }
+      const sort = ["orders", "recent", "name"].includes(p.sort) ? p.sort : "orders";
+      if (sort === "orders") query.descending("orderCount");
+      else if (sort === "recent") query.descending("lastOrderAt");
+      else query.ascending("nameLower");
+      const page = Math.max(0, Math.floor(Number(p.page) || 0));
+      query.skip(page * PAGE);
+      query.limit(PAGE + 1);
+      const [rows, total] = await Promise.all([
+        query.find(MASTER),
+        // A condition makes Postgres count exactly instead of estimating.
+        new Parse.Query("Customer").exists("objectId").count(MASTER)
+      ]);
+      return {
+        customers: rows.slice(0, PAGE).map(customerView),
+        more: rows.length > PAGE,
+        total
+      };
+    });
+    Parse.Cloud.define("getCustomer", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      const row = await new Parse.Query("Customer").get(String(request.params.id || ""), MASTER).catch(() => null);
+      if (!row) throw invalid("Unknown customer");
+      const orders = await new Parse.Query("Order").equalTo("customer", row).descending("createdAt").limit(50).find(MASTER);
+      const delivered = orders.filter((o) => o.get("status") === "DELIVERED");
+      return {
+        ...customerView(row),
+        spent: delivered.reduce((n, o) => n + Number(o.get("total") || 0), 0),
+        orders: orders.map((o) => ({
+          id: o.id,
+          code: o.get("orderCode"),
+          status: o.get("status"),
+          total: Number(o.get("total") || 0),
+          at: o.get("restoredCreatedAt") || o.createdAt,
+          type: o.get("orderType") || "delivery"
+        }))
+      };
+    });
+    Parse.Cloud.define("saveCustomer", async (request) => {
+      const { user: actor } = await requireRole(request, ["admin", "finance"]);
+      const p = request.params;
+      const row = await new Parse.Query("Customer").get(String(p.id || ""), MASTER).catch(() => null);
+      if (!row) throw invalid("Unknown customer");
+      const before = customerView(row);
+      const name = String(p.name ?? row.get("name")).trim().slice(0, 80);
+      if (name.length < 2) throw invalid("Enter the customer name");
+      const phone = String(p.phone ?? row.get("phone") ?? "").replace(/[^\d+]/g, "").slice(0, 20);
+      const key = customerKey(name, phone);
+      const clash = await new Parse.Query("Customer").equalTo("key", key).notEqualTo("objectId", row.id).first(MASTER);
+      if (clash) throw invalid(`That phone number is already ${clash.get("name")}'s`);
+      row.set({
+        name,
+        nameLower: name.toLowerCase(),
+        phone,
+        key,
+        email: String(p.email ?? row.get("email") ?? "").trim().slice(0, 120),
+        notes: String(p.notes ?? row.get("notes") ?? "").trim().slice(0, 300)
+      });
+      await row.save(null, MASTER);
+      await audit(actor, "customer.updated", row, before, customerView(row));
+      return customerView(row);
     });
     module2.exports = { recordCustomerOrder, pinCustomerAddress };
   }
@@ -33011,6 +33161,410 @@ var require_shifts = __commonJS({
   }
 });
 
+// cloud/spending.js
+var require_spending = __commonJS({
+  "cloud/spending.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      requireRole,
+      audit,
+      loadConfig,
+      findAll,
+      readAcl,
+      nextDailyCode
+    } = require_core();
+    var { isDay, isoDay, startOfDay, resolveRange } = require_dates();
+    var { branchParam, branchFor } = require_branches();
+    var ROLES = ["admin", "finance"];
+    var ACL_ROLES = ["admin", "finance"];
+    var METHODS = ["cash", "mobile_money", "bank", "card", "cheque"];
+    var PURCHASE_CATEGORIES = ["food", "drinks", "packaging", "cleaning", "gas_fuel", "other"];
+    var EXPENSE_CATEGORIES = [
+      "rent",
+      "salaries",
+      "utilities",
+      "transport",
+      "marketing",
+      "repairs",
+      "equipment",
+      "licences_taxes",
+      "bank_charges",
+      "other"
+    ];
+    var MAX = 1e9;
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    async function requireFinance(request) {
+      const who = await requireRole(request, ROLES);
+      const features = await require_limits().features();
+      if (features.accounting === false)
+        throw invalid("Purchases, expenses and accounting are not part of your plan");
+      return who;
+    }
+    function amountOf(value, label, { allowZero = false } = {}) {
+      const amount = Math.round(Number(value));
+      if (!Number.isFinite(amount) || amount < 0 || amount > MAX || !allowZero && amount === 0)
+        throw invalid(`Enter the ${label}`);
+      return amount;
+    }
+    function methodOf(value) {
+      const method = String(value || "cash");
+      if (!METHODS.includes(method)) throw invalid("Choose how it was paid");
+      return method;
+    }
+    function dayOf(value, config) {
+      const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
+      const day = value ? String(value) : today;
+      if (!isDay(day) || day > today) throw invalid("Choose a day up to today");
+      return day;
+    }
+    var instantOf = (day, config) => new Date(startOfDay(day, config.timezone).getTime() + 12 * 36e5);
+    function rangeOf(params, config) {
+      const range = resolveRange(params, config.timezone, { defaultDays: 30 });
+      if (range.error) throw invalid(range.error);
+      return range;
+    }
+    var nameOf = (user) => user ? user.get("name") || user.get("username") || "" : "";
+    var supplierView = (row, owed = 0) => ({
+      id: row.id,
+      name: row.get("name"),
+      phone: row.get("phone") || "",
+      email: row.get("email") || "",
+      address: row.get("address") || "",
+      tin: row.get("tin") || "",
+      notes: row.get("notes") || "",
+      active: row.get("active") !== false,
+      owed
+    });
+    var owedOn = (purchase) => purchase.get("voidedAt") ? 0 : Math.max(0, Number(purchase.get("total") || 0) - Number(purchase.get("paid") || 0));
+    async function owedBySupplier() {
+      const query = new Parse.Query("Purchase");
+      query.doesNotExist("voidedAt");
+      query.notEqualTo("status", "paid");
+      const owed = {};
+      for (const row of await findAll(query)) {
+        const id = row.get("supplier")?.id;
+        if (id) owed[id] = (owed[id] || 0) + owedOn(row);
+      }
+      return owed;
+    }
+    Parse.Cloud.define("listSuppliers", async (request) => {
+      await requireFinance(request);
+      const [rows, owed] = await Promise.all([findAll(new Parse.Query("Supplier")), owedBySupplier()]);
+      return {
+        suppliers: rows.sort((a, b) => a.get("name").localeCompare(b.get("name"))).map((row) => supplierView(row, owed[row.id] || 0))
+      };
+    });
+    Parse.Cloud.define("saveSupplier", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const p = request.params;
+      const name = clean(p.name, 80);
+      if (name.length < 2) throw invalid("Enter the supplier name");
+      const all = await findAll(new Parse.Query("Supplier"));
+      if (all.some((row2) => row2.id !== p.id && row2.get("name").toLowerCase() === name.toLowerCase()))
+        throw invalid(`There is already a supplier called "${name}"`);
+      const row = p.id ? all.find((r) => r.id === p.id) : new Parse.Object("Supplier");
+      if (!row) throw invalid("Unknown supplier");
+      const before = p.id ? supplierView(row) : null;
+      row.set({
+        name,
+        phone: clean(p.phone, 30),
+        email: clean(p.email, 120),
+        address: clean(p.address, 200),
+        tin: clean(p.tin, 20),
+        notes: clean(p.notes, 300),
+        active: p.active === void 0 ? row.get("active") !== false : p.active === true
+      });
+      row.setACL(readAcl(null, ACL_ROLES));
+      await row.save(null, MASTER);
+      await audit(
+        actor,
+        p.id ? "supplier.updated" : "supplier.created",
+        row,
+        before,
+        supplierView(row)
+      );
+      return supplierView(row);
+    });
+    async function supplierParam(id, { required = false } = {}) {
+      if (!id) {
+        if (required) throw invalid("Choose the supplier");
+        return null;
+      }
+      if (typeof id !== "string" || !ID.test(id)) throw invalid("Unknown supplier");
+      const row = await new Parse.Query("Supplier").get(id, MASTER).catch(() => null);
+      if (!row) throw invalid("Unknown supplier");
+      return row;
+    }
+    function purchaseView(row) {
+      const payments = row.get("payments") || [];
+      return {
+        id: row.id,
+        code: row.get("purchaseCode"),
+        day: row.get("day"),
+        supplierId: row.get("supplier")?.id || "",
+        supplier: row.get("supplier")?.get?.("name") || row.get("supplierName") || "",
+        branchId: row.get("branch")?.id || "",
+        category: row.get("category"),
+        lines: row.get("lines") || [],
+        total: Number(row.get("total") || 0),
+        paid: Number(row.get("paid") || 0),
+        owed: owedOn(row),
+        status: row.get("voidedAt") ? "void" : row.get("status"),
+        invoice: row.get("invoice") || "",
+        notes: row.get("notes") || "",
+        payments: payments.map((entry) => ({ ...entry, at: entry.at })),
+        recordedBy: nameOf(row.get("recordedBy")),
+        voidReason: row.get("voidReason") || ""
+      };
+    }
+    var statusOf = (total, paid) => paid >= total ? "paid" : paid > 0 ? "partial" : "unpaid";
+    function linesOf(value) {
+      if (!Array.isArray(value) || !value.length) throw invalid("Add at least one line");
+      if (value.length > 50) throw invalid("A purchase can have at most 50 lines");
+      const lines = value.map((line) => {
+        const description = clean(line?.description, 120);
+        if (!description) throw invalid("Each line needs a description");
+        const quantity = Number(line.quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 1e5)
+          throw invalid(`${description}: enter the quantity`);
+        const unitCost = amountOf(line.unitCost, `${description} unit cost`, { allowZero: true });
+        return {
+          description,
+          quantity: Math.round(quantity * 1e3) / 1e3,
+          unit: clean(line.unit, 20),
+          unitCost,
+          total: Math.round(quantity * unitCost)
+        };
+      });
+      return { lines, total: lines.reduce((n, line) => n + line.total, 0) };
+    }
+    Parse.Cloud.define("recordPurchase", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const supplier = await supplierParam(p.supplierId, { required: true });
+      if (supplier.get("active") === false) throw invalid("That supplier is archived");
+      const category = PURCHASE_CATEGORIES.includes(p.category) ? p.category : "other";
+      const { lines, total } = linesOf(p.lines);
+      if (!total) throw invalid("The purchase total is zero");
+      const paid = amountOf(p.paid ?? 0, "amount paid", { allowZero: true });
+      if (paid > total) throw invalid("Paid more than the total");
+      const day = dayOf(p.day, config);
+      const branch = p.branchId ? await branchParam(p.branchId) : await branchFor(null);
+      const method = methodOf(p.method);
+      const row = new Parse.Object("Purchase");
+      row.set({
+        purchaseCode: await nextDailyCode("PU", 3, config.timezone, {
+          className: "Purchase",
+          field: "purchaseCode"
+        }),
+        day,
+        spentAt: instantOf(day, config),
+        supplier,
+        supplierName: supplier.get("name"),
+        category,
+        lines,
+        total,
+        paid,
+        status: statusOf(total, paid),
+        invoice: clean(p.invoice, 60),
+        notes: clean(p.notes, 300),
+        payments: paid ? [
+          {
+            amount: paid,
+            method,
+            day,
+            at: (/* @__PURE__ */ new Date()).toISOString(),
+            by: nameOf(await actor.fetch(MASTER))
+          }
+        ] : [],
+        recordedBy: actor,
+        ...branch && { branch }
+      });
+      row.setACL(readAcl(null, ACL_ROLES));
+      await row.save(null, MASTER);
+      await audit(actor, "purchase.recorded", row, null, {
+        supplier: supplier.get("name"),
+        total,
+        paid,
+        method,
+        day
+      });
+      return purchaseView(row);
+    });
+    Parse.Cloud.define("payPurchase", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const row = await new Parse.Query("Purchase").get(String(p.purchaseId || ""), MASTER).catch(() => null);
+      if (!row || row.get("voidedAt")) throw invalid("Unknown purchase");
+      const owed = owedOn(row);
+      if (!owed) throw invalid("This purchase is already paid");
+      const amount = amountOf(p.amount, "amount paid");
+      if (amount > owed) throw invalid("That is more than is owed on it");
+      const method = methodOf(p.method);
+      const day = dayOf(p.day, config);
+      const before = { paid: row.get("paid"), status: row.get("status") };
+      const paid = Number(row.get("paid") || 0) + amount;
+      row.set({
+        paid,
+        status: statusOf(Number(row.get("total")), paid),
+        payments: [
+          ...row.get("payments") || [],
+          { amount, method, day, at: (/* @__PURE__ */ new Date()).toISOString(), by: nameOf(await actor.fetch(MASTER)) }
+        ]
+      });
+      await row.save(null, MASTER);
+      await audit(actor, "purchase.paid", row, before, { paid, amount, method, day });
+      return purchaseView(row);
+    });
+    async function voidRecord(className, request, action) {
+      const { user: actor } = await requireFinance(request);
+      const reason = clean(request.params.reason, 200);
+      if (reason.length < 3) throw invalid("Say why it is being voided");
+      const row = await new Parse.Query(className).get(String(request.params.id || ""), MASTER).catch(() => null);
+      if (!row) throw invalid("Not found");
+      if (row.get("voidedAt")) throw invalid("Already voided");
+      row.set({ voidedAt: /* @__PURE__ */ new Date(), voidReason: reason, voidedBy: actor });
+      await row.save(null, MASTER);
+      await audit(actor, action, row, { voided: false }, { voided: true, reason });
+      return row;
+    }
+    Parse.Cloud.define(
+      "voidPurchase",
+      async (request) => purchaseView(await voidRecord("Purchase", request, "purchase.voided"))
+    );
+    Parse.Cloud.define("listPurchases", async (request) => {
+      await requireFinance(request);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const range = rangeOf(p, config);
+      const query = new Parse.Query("Purchase");
+      query.greaterThanOrEqualTo("spentAt", range.start);
+      query.lessThan("spentAt", range.end);
+      const branch = await branchParam(p.branchId);
+      if (branch) query.equalTo("branch", branch);
+      const supplier = await supplierParam(p.supplierId);
+      if (supplier) query.equalTo("supplier", supplier);
+      query.include(["supplier", "recordedBy"]);
+      const rows = (await findAll(query)).sort((a, b) => b.get("spentAt") - a.get("spentAt") || b.createdAt - a.createdAt).map(purchaseView).filter((row) => p.status !== "owed" || row.owed > 0);
+      const live = rows.filter((row) => row.status !== "void");
+      return {
+        range: { from: range.from, to: range.to },
+        purchases: rows,
+        summary: {
+          count: live.length,
+          total: live.reduce((n, row) => n + row.total, 0),
+          paid: live.reduce((n, row) => n + row.paid, 0),
+          owed: live.reduce((n, row) => n + row.owed, 0)
+        }
+      };
+    });
+    function expenseView(row) {
+      return {
+        id: row.id,
+        code: row.get("expenseCode"),
+        day: row.get("day"),
+        category: row.get("category"),
+        description: row.get("description"),
+        amount: Number(row.get("amount") || 0),
+        method: row.get("method"),
+        branchId: row.get("branch")?.id || "",
+        supplierId: row.get("supplier")?.id || "",
+        payee: row.get("payee") || row.get("supplier")?.get?.("name") || "",
+        reference: row.get("reference") || "",
+        status: row.get("voidedAt") ? "void" : "recorded",
+        recordedBy: nameOf(row.get("recordedBy")),
+        voidReason: row.get("voidReason") || ""
+      };
+    }
+    Parse.Cloud.define("recordExpense", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      if (!EXPENSE_CATEGORIES.includes(p.category)) throw invalid("Choose the kind of expense");
+      const description = clean(p.description, 160);
+      if (description.length < 2) throw invalid("Say what the expense was for");
+      const amount = amountOf(p.amount, "amount");
+      const day = dayOf(p.day, config);
+      const method = methodOf(p.method);
+      const branch = p.branchId ? await branchParam(p.branchId) : await branchFor(null);
+      const supplier = await supplierParam(p.supplierId);
+      const row = new Parse.Object("Expense");
+      row.set({
+        expenseCode: await nextDailyCode("EX", 3, config.timezone, {
+          className: "Expense",
+          field: "expenseCode"
+        }),
+        day,
+        spentAt: instantOf(day, config),
+        category: p.category,
+        description,
+        amount,
+        method,
+        payee: clean(p.payee, 80),
+        reference: clean(p.reference, 60),
+        recordedBy: actor,
+        ...branch && { branch },
+        ...supplier && { supplier }
+      });
+      row.setACL(readAcl(null, ACL_ROLES));
+      await row.save(null, MASTER);
+      await audit(actor, "expense.recorded", row, null, {
+        category: p.category,
+        description,
+        amount,
+        method,
+        day
+      });
+      return expenseView(row);
+    });
+    Parse.Cloud.define(
+      "voidExpense",
+      async (request) => expenseView(await voidRecord("Expense", request, "expense.voided"))
+    );
+    Parse.Cloud.define("listExpenses", async (request) => {
+      await requireFinance(request);
+      const p = request.params;
+      const { values: config } = await loadConfig();
+      const range = rangeOf(p, config);
+      const query = new Parse.Query("Expense");
+      query.greaterThanOrEqualTo("spentAt", range.start);
+      query.lessThan("spentAt", range.end);
+      const branch = await branchParam(p.branchId);
+      if (branch) query.equalTo("branch", branch);
+      if (p.category) {
+        if (!EXPENSE_CATEGORIES.includes(p.category)) throw invalid("Unknown kind of expense");
+        query.equalTo("category", p.category);
+      }
+      query.include(["supplier", "recordedBy"]);
+      const rows = (await findAll(query)).sort((a, b) => b.get("spentAt") - a.get("spentAt") || b.createdAt - a.createdAt).map(expenseView);
+      const live = rows.filter((row) => row.status !== "void");
+      const byCategory = {};
+      for (const row of live) byCategory[row.category] = (byCategory[row.category] || 0) + row.amount;
+      return {
+        range: { from: range.from, to: range.to },
+        expenses: rows,
+        summary: {
+          count: live.length,
+          total: live.reduce((n, row) => n + row.amount, 0),
+          byCategory: Object.entries(byCategory).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount)
+        }
+      };
+    });
+    module2.exports = {
+      requireFinance,
+      owedOn,
+      PURCHASE_CATEGORIES,
+      EXPENSE_CATEGORIES,
+      METHODS
+    };
+  }
+});
+
 // cloud/people.js
 var require_people = __commonJS({
   "cloud/people.js"(exports2, module2) {
@@ -34191,6 +34745,9 @@ var require_data = __commonJS({
       "TillPayout",
       "Shift",
       "ZReport",
+      "Supplier",
+      "Purchase",
+      "Expense",
       "AuditLog"
     ];
     var PAGE = 500;
@@ -34280,6 +34837,9 @@ var require_restore = __commonJS({
       "OrderItem",
       "CashHandover",
       "ZReport",
+      "Supplier",
+      "Purchase",
+      "Expense",
       "AuditLog"
     ];
     var BATCH = 200;
@@ -35194,6 +35754,7 @@ require_payouts();
 require_cashcheck();
 require_shifts();
 require_branches();
+require_spending();
 require_people();
 require_admin();
 require_onboarding();

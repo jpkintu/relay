@@ -4467,6 +4467,178 @@ describe('branches', () => {
   });
 });
 
+describe('purchases, expenses, suppliers and customers', () => {
+  let supplier;
+  let fiona;
+  before(async () => {
+    await run(
+      'adminCreateTeamMember',
+      { name: 'Farida Finance', username: 'farida', pin: '9753', role: 'finance' },
+      s.owner,
+    );
+    fiona = await login('farida', '9753');
+  });
+
+  test('suppliers: finance adds and edits them; others cannot', async () => {
+    supplier = await run(
+      'saveSupplier',
+      { name: 'Owino Market Traders', phone: '0772111222', tin: '1000123456' },
+      fiona,
+    );
+    assert.equal(supplier.owed, 0);
+    await rejects(
+      run('saveSupplier', { name: 'owino market traders' }, s.owner),
+      /already a supplier/,
+    );
+    await rejects(run('saveSupplier', { name: 'Nope' }, s.dina), /admin or finance role required/);
+    const edited = await run(
+      'saveSupplier',
+      { id: supplier.id, name: 'Owino Market Traders', phone: '0772111333' },
+      s.owner,
+    );
+    assert.equal(edited.phone, '0772111333');
+  });
+
+  test('a purchase on credit is owed until it is paid', async () => {
+    await rejects(
+      run('recordPurchase', { supplierId: supplier.id, lines: [] }, fiona),
+      /at least one line/,
+    );
+    const bought = await run(
+      'recordPurchase',
+      {
+        supplierId: supplier.id,
+        category: 'food',
+        lines: [
+          { description: 'Tomatoes', quantity: 2, unit: 'crate', unitCost: 45000 },
+          { description: 'Onions', quantity: 10, unit: 'kg', unitCost: 3500 },
+        ],
+        paid: 50000,
+        method: 'cash',
+        invoice: 'INV-77',
+      },
+      fiona,
+    );
+    assert.equal(bought.total, 125000);
+    assert.equal(bought.paid, 50000);
+    assert.equal(bought.owed, 75000);
+    assert.equal(bought.status, 'partial');
+    assert.match(bought.code, /^PU-\d{8}-\d{3}$/);
+    await rejects(
+      run(
+        'recordPurchase',
+        {
+          supplierId: supplier.id,
+          lines: [{ description: 'X', quantity: 1, unitCost: 10 }],
+          paid: 20,
+        },
+        fiona,
+      ),
+      /Paid more than the total/,
+    );
+    const owed = (await run('listSuppliers', {}, s.owner)).suppliers.find(
+      (x) => x.id === supplier.id,
+    );
+    assert.equal(owed.owed, 75000);
+    await rejects(
+      run('payPurchase', { purchaseId: bought.id, amount: 80000, method: 'bank' }, fiona),
+      /more than is owed/,
+    );
+    const paid = await run(
+      'payPurchase',
+      { purchaseId: bought.id, amount: 75000, method: 'mobile_money' },
+      s.owner,
+    );
+    assert.equal(paid.status, 'paid');
+    assert.equal(paid.payments.length, 2);
+    const list = await run('listPurchases', {}, fiona);
+    assert.ok(list.purchases.some((row) => row.id === bought.id));
+    assert.ok(list.summary.total >= 125000);
+    assert.equal(
+      (await run('listPurchases', { status: 'owed' }, fiona)).purchases.some(
+        (r) => r.id === bought.id,
+      ),
+      false,
+    );
+    // Voided: it leaves the totals but stays listed.
+    const mistake = await run(
+      'recordPurchase',
+      { supplierId: supplier.id, lines: [{ description: 'Oops', quantity: 1, unitCost: 1000 }] },
+      fiona,
+    );
+    await rejects(run('voidPurchase', { id: mistake.id, reason: '' }, fiona), /Say why/);
+    const voided = await run('voidPurchase', { id: mistake.id, reason: 'Entered twice' }, fiona);
+    assert.equal(voided.status, 'void');
+    assert.equal(voided.owed, 0);
+    await rejects(run('listPurchases', {}, s.dina), /admin or finance role required/);
+  });
+
+  test('expenses are recorded by kind and can be voided', async () => {
+    await rejects(
+      run('recordExpense', { category: 'nonsense', description: 'x', amount: 1 }, fiona),
+      /kind of expense/,
+    );
+    await rejects(
+      run('recordExpense', { category: 'rent', description: 'Rent', amount: 0 }, fiona),
+      /Enter the amount/,
+    );
+    await rejects(
+      run(
+        'recordExpense',
+        { category: 'rent', description: 'Rent', amount: 5, day: '2099-01-01' },
+        fiona,
+      ),
+      /up to today/,
+    );
+    const rent = await run(
+      'recordExpense',
+      {
+        category: 'rent',
+        description: 'October rent',
+        amount: 1500000,
+        method: 'bank',
+        payee: 'Landlord',
+      },
+      fiona,
+    );
+    const power = await run(
+      'recordExpense',
+      { category: 'utilities', description: 'Yaka', amount: 200000, method: 'mobile_money' },
+      s.owner,
+    );
+    let list = await run('listExpenses', {}, fiona);
+    assert.ok(list.summary.total >= 1700000);
+    assert.equal(list.summary.byCategory[0].category, 'rent');
+    await run('voidExpense', { id: power.id, reason: 'Wrong amount' }, fiona);
+    list = await run('listExpenses', { category: 'utilities' }, fiona);
+    assert.equal(list.expenses.find((e) => e.id === power.id).status, 'void');
+    assert.equal(list.summary.total, 0);
+    assert.match(rent.code, /^EX-/);
+    await rejects(run('recordExpense', {}, s.rider), /admin or finance role required/);
+  });
+
+  test('customers: listed, opened and corrected', async () => {
+    const { customers, total } = await run('listCustomers', { sort: 'orders' }, fiona);
+    assert.ok(total >= 1);
+    const first = customers[0];
+    const detail = await run('getCustomer', { id: first.id }, fiona);
+    assert.equal(detail.id, first.id);
+    assert.ok(Array.isArray(detail.orders));
+    const saved = await run(
+      'saveCustomer',
+      { id: first.id, name: first.name, phone: first.phone, notes: 'No onions, ever' },
+      s.owner,
+    );
+    assert.equal(saved.notes, 'No onions, ever');
+    const found = await run('listCustomers', { q: first.name.slice(0, 4) }, fiona);
+    assert.ok(found.customers.some((c) => c.id === first.id));
+    const other = customers.find((c) => c.phone && c.phone !== first.phone);
+    if (other && first.phone)
+      await rejects(run('saveCustomer', { id: other.id, phone: first.phone }, fiona), /already/);
+    await rejects(run('listCustomers', {}, s.dina), /admin or finance role required/);
+  });
+});
+
 describe('getting started: setup progress and menu import', () => {
   test('setup progress counts the restaurant own dishes and team', async () => {
     const progress = await run('getSetupProgress', {}, s.owner);
@@ -5281,6 +5453,18 @@ const ACCESS = {
   ],
   staffOrFinance: ['getTillPayouts', 'getReportOptions', 'getPaymentsLedger', 'issueEfrisReceipt'],
   reports: [
+    'listSuppliers',
+    'saveSupplier',
+    'recordPurchase',
+    'payPurchase',
+    'voidPurchase',
+    'listPurchases',
+    'recordExpense',
+    'voidExpense',
+    'listExpenses',
+    'listCustomers',
+    'getCustomer',
+    'saveCustomer',
     'getDashboard',
     'adminGetZReport',
     'adminListZReports',
