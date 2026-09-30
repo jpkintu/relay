@@ -714,6 +714,83 @@ var require_access = __commonJS({
   }
 });
 
+// cloud/lib/limits.js
+var require_limits = __commonJS({
+  "cloud/lib/limits.js"(exports2, module2) {
+    "use strict";
+    var PLANS = {
+      basic: {
+        label: "Basic",
+        branches: 1,
+        members: { cashier: 2, rider: 5, finance: 0 },
+        features: { branches: false, finance: false, accounting: false, reports: false }
+      },
+      enterprise: {
+        label: "Enterprise",
+        branches: Infinity,
+        members: {},
+        features: { branches: true, finance: true, accounting: true, reports: true }
+      }
+    };
+    var MASTER = { useMasterKey: true };
+    var planOf = (row) => row?.get("plan") === "enterprise" ? "enterprise" : "basic";
+    async function currentRow() {
+      const tenancy = require_tenant();
+      const tenant = tenancy.current();
+      if (!tenant) return null;
+      return tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(tenant, MASTER).catch(() => null)
+      );
+    }
+    async function currentPlan() {
+      const row = await currentRow();
+      return row ? PLANS[planOf(row)] : PLANS.enterprise;
+    }
+    var refuse = (message) => new Parse.Error(
+      Parse.Error.OPERATION_FORBIDDEN,
+      `${message} Upgrade to Enterprise in Subscription to add more.`
+    );
+    async function checkBranchLimit(count) {
+      const plan = await currentPlan();
+      if (count > plan.branches)
+        throw refuse(
+          `The ${plan.label} plan has ${plan.branches} branch${plan.branches === 1 ? "" : "es"}.`
+        );
+    }
+    async function activeMembers(role) {
+      const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
+      if (!roleRow) return 0;
+      const users = roleRow.getUsers().query();
+      users.notEqualTo("active", false);
+      return users.count(MASTER);
+    }
+    async function checkMemberLimit(role) {
+      const plan = await currentPlan();
+      const max = plan.members[role];
+      if (max === void 0) return;
+      if (max === 0) throw refuse(`The ${plan.label} plan has no ${role} role.`);
+      if (await activeMembers(role) >= max)
+        throw refuse(`The ${plan.label} plan allows ${max} ${role}s.`);
+    }
+    async function features() {
+      return { ...(await currentPlan()).features };
+    }
+    async function overLimits(plan) {
+      const target = PLANS[plan];
+      const problems = [];
+      const branches = await new Parse.Query("Branch").notEqualTo("active", false).count(MASTER);
+      if (branches > target.branches)
+        problems.push(`${branches} open branches (${target.branches} allowed)`);
+      for (const [role, max] of Object.entries(target.members)) {
+        const count = await activeMembers(role);
+        if (count > max) problems.push(`${count} active ${role}s (${max} allowed)`);
+      }
+      return problems;
+    }
+    module2.exports = { PLANS, planOf, checkBranchLimit, checkMemberLimit, features, overLimits };
+  }
+});
+
 // cloud/adminLock.js
 var require_adminLock = __commonJS({
   "cloud/adminLock.js"(exports2, module2) {
@@ -899,21 +976,6 @@ var require_accompaniments = __commonJS({
       return "";
     }
     module2.exports = { normalizeGroups, availableGroups, selectionError };
-  }
-});
-
-// cloud/lib/limits.js
-var require_limits = __commonJS({
-  "cloud/lib/limits.js"(exports2, module2) {
-    "use strict";
-    async function checkBranchLimit() {
-    }
-    async function checkMemberLimit() {
-    }
-    async function features() {
-      return { branches: true, finance: true, accounting: true };
-    }
-    module2.exports = { checkBranchLimit, checkMemberLimit, features };
   }
 });
 
@@ -1570,6 +1632,8 @@ var require_security = __commonJS({
         trialEndsAt: D,
         ownerName: S,
         billingPhone: S,
+        // basic | enterprise (lib/limits.js).
+        plan: S,
         priceOverride: N,
         paidUntil: D,
         note: S
@@ -2631,8 +2695,11 @@ var require_restaurants = __commonJS({
     var { accessOf } = require_access();
     var { log } = require_log();
     var DEFAULT_PLATFORM = {
-      // Relay's starting price (owner's decision 2026-09-29).
+      // Monthly prices per plan (owner's decision 2026-09-30): Basic (1 branch,
+      // 2 cashiers, 5 riders, no finance or reporting) and Enterprise (all).
+      // `monthlyPrice` is the Basic price (the flat price before plans).
       monthlyPrice: 1e5,
+      enterprisePrice: 2e5,
       currency: "UGX",
       trialDays: 14,
       graceDays: 7,
@@ -2657,7 +2724,8 @@ var require_restaurants = __commonJS({
     }
     var priceOf = (row, platform) => {
       const own = row.get("priceOverride");
-      return typeof own === "number" && own >= 0 ? own : Number(platform.monthlyPrice) || 0;
+      if (typeof own === "number" && own >= 0) return own;
+      return require_limits().planOf(row) === "enterprise" ? Number(platform.enterprisePrice) || 0 : Number(platform.monthlyPrice) || 0;
     };
     var OPEN_WHEN_CLOSED = /* @__PURE__ */ new Set([
       "getAppInfo",
@@ -2742,7 +2810,9 @@ var require_restaurants = __commonJS({
         trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 864e5),
         ownerName,
         billingPhone: phone,
-        priceOverride: null
+        priceOverride: null,
+        // The plan chosen at sign-up (Basic unless Enterprise is asked for).
+        plan: p.plan === "enterprise" ? "enterprise" : "basic"
       });
       restaurant.setACL(new Parse.ACL());
       await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
@@ -2800,6 +2870,11 @@ var require_restaurants = __commonJS({
         trialEndsAt: row.get("trialEndsAt")?.toISOString() || null,
         paidUntil: row.get("paidUntil")?.toISOString() || null,
         monthlyPrice: priceOf(row, platform),
+        plan: require_limits().planOf(row),
+        planPrices: {
+          basic: Number(platform.monthlyPrice) || 0,
+          enterprise: Number(platform.enterprisePrice) || 0
+        },
         currency: platform.currency,
         graceDays: Number(platform.graceDays) || 0,
         supportContact: platform.supportContact || ""
@@ -2936,8 +3011,12 @@ var require_restaurants = __commonJS({
         () => new Parse.Query("Restaurant").get(String(p.id || ""), MASTER).catch(() => null)
       );
       if (!row) throw invalid("Restaurant not found");
-      const fields = ["priceOverride", "trialEndsAt", "paidUntil", "suspended", "note"];
+      const fields = ["plan", "priceOverride", "trialEndsAt", "paidUntil", "suspended", "note"];
       const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
+      if ("plan" in p) {
+        if (!["basic", "enterprise"].includes(p.plan)) throw invalid("Plan: basic or enterprise");
+        row.set("plan", p.plan);
+      }
       if ("priceOverride" in p) {
         if (p.priceOverride === null || p.priceOverride === "") row.unset("priceOverride");
         else {
@@ -3005,11 +3084,14 @@ var require_restaurants = __commonJS({
       const actor = await requirePlatform(request);
       const p = request.params || {};
       const monthlyPrice = Number(p.monthlyPrice);
+      const enterprisePrice = Number(p.enterprisePrice ?? DEFAULT_PLATFORM.enterprisePrice);
       const trialDays = Number(p.trialDays);
       const graceDays = Number(p.graceDays);
       const currency = String(p.currency || "").trim().toUpperCase();
       if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 1e8)
         throw invalid("Monthly price: a number from 0 up");
+      if (!Number.isFinite(enterprisePrice) || enterprisePrice < 0 || enterprisePrice > 1e8)
+        throw invalid("Enterprise price: a number from 0 up");
       if (!/^[A-Z]{3}$/.test(currency)) throw invalid("Currency: a 3-letter code such as UGX");
       if (!Number.isInteger(trialDays) || trialDays < 0 || trialDays > 365)
         throw invalid("Trial days: 0 to 365");
@@ -3020,6 +3102,7 @@ var require_restaurants = __commonJS({
       if (!existing) row.setACL(new Parse.ACL());
       row.set({
         monthlyPrice: Math.round(monthlyPrice),
+        enterprisePrice: Math.round(enterprisePrice),
         currency,
         trialDays,
         graceDays,
@@ -33505,6 +33588,23 @@ var require_billing = __commonJS({
     }
     Parse.Cloud.define("getBilling", async (request) => {
       await requireRole(request, ["admin"]);
+      return billingState();
+    });
+    Parse.Cloud.define("changePlan", async (request) => {
+      const { user: actor } = await requireRole(request, ["admin"]);
+      const plan = request.params?.plan;
+      const limits = require_limits();
+      if (!limits.PLANS[plan]) throw invalid("Choose Basic or Enterprise");
+      const row = await restaurantRow();
+      const before = limits.planOf(row);
+      if (before === plan) throw invalid(`You are on ${limits.PLANS[plan].label} already`);
+      if (plan === "basic") {
+        const problems = await limits.overLimits("basic");
+        if (problems.length) throw invalid(`Basic allows less than you have: ${problems.join(", ")}`);
+      }
+      row.set("plan", plan);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      await audit(actor, "subscription.plan_changed", row, { plan: before }, { plan });
       return billingState();
     });
     Parse.Cloud.define("startSubscriptionPayment", async (request) => {

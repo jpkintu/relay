@@ -490,6 +490,8 @@ const SCHEMAS = {
     trialEndsAt: D,
     ownerName: S,
     billingPhone: S,
+    // basic | enterprise (lib/limits.js).
+    plan: S,
     priceOverride: N,
     paidUntil: D,
     note: S,

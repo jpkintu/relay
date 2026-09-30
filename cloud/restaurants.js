@@ -17,8 +17,11 @@ const { accessOf } = require('./lib/access');
 const { log } = require('./lib/log');
 
 const DEFAULT_PLATFORM = {
-  // Relay's starting price (owner's decision 2026-09-29).
+  // Monthly prices per plan (owner's decision 2026-09-30): Basic (1 branch,
+  // 2 cashiers, 5 riders, no finance or reporting) and Enterprise (all).
+  // `monthlyPrice` is the Basic price (the flat price before plans).
   monthlyPrice: 100000,
+  enterprisePrice: 200000,
   currency: 'UGX',
   trialDays: 14,
   graceDays: 7,
@@ -46,11 +49,14 @@ async function cachedPlatform() {
   return values;
 }
 
-// What a restaurant pays each month: its own price when you set one, else
-// the platform price.
+// What a restaurant pays each month: its own (negotiated) price when you set
+// one, else its plan's price.
 const priceOf = (row, platform) => {
   const own = row.get('priceOverride');
-  return typeof own === 'number' && own >= 0 ? own : Number(platform.monthlyPrice) || 0;
+  if (typeof own === 'number' && own >= 0) return own;
+  return require('./lib/limits').planOf(row) === 'enterprise'
+    ? Number(platform.enterprisePrice) || 0
+    : Number(platform.monthlyPrice) || 0;
 };
 
 // Functions an expired or suspended restaurant can still use: sign-in
@@ -179,6 +185,8 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     ownerName,
     billingPhone: phone,
     priceOverride: null,
+    // The plan chosen at sign-up (Basic unless Enterprise is asked for).
+    plan: p.plan === 'enterprise' ? 'enterprise' : 'basic',
   });
   restaurant.setACL(new Parse.ACL());
   await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
@@ -240,6 +248,11 @@ function summarise(row, platform) {
     trialEndsAt: row.get('trialEndsAt')?.toISOString() || null,
     paidUntil: row.get('paidUntil')?.toISOString() || null,
     monthlyPrice: priceOf(row, platform),
+    plan: require('./lib/limits').planOf(row),
+    planPrices: {
+      basic: Number(platform.monthlyPrice) || 0,
+      enterprise: Number(platform.enterprisePrice) || 0,
+    },
     currency: platform.currency,
     graceDays: Number(platform.graceDays) || 0,
     supportContact: platform.supportContact || '',
@@ -408,8 +421,14 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     new Parse.Query('Restaurant').get(String(p.id || ''), MASTER).catch(() => null),
   );
   if (!row) throw invalid('Restaurant not found');
-  const fields = ['priceOverride', 'trialEndsAt', 'paidUntil', 'suspended', 'note'];
+  const fields = ['plan', 'priceOverride', 'trialEndsAt', 'paidUntil', 'suspended', 'note'];
   const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
+  // The platform may put a restaurant on any plan (over the limits too: what
+  // it has is kept, only additions are checked).
+  if ('plan' in p) {
+    if (!['basic', 'enterprise'].includes(p.plan)) throw invalid('Plan: basic or enterprise');
+    row.set('plan', p.plan);
+  }
   if ('priceOverride' in p) {
     if (p.priceOverride === null || p.priceOverride === '') row.unset('priceOverride');
     else {
@@ -493,6 +512,7 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
   const actor = await requirePlatform(request);
   const p = request.params || {};
   const monthlyPrice = Number(p.monthlyPrice);
+  const enterprisePrice = Number(p.enterprisePrice ?? DEFAULT_PLATFORM.enterprisePrice);
   const trialDays = Number(p.trialDays);
   const graceDays = Number(p.graceDays);
   const currency = String(p.currency || '')
@@ -500,6 +520,8 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
     .toUpperCase();
   if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 100000000)
     throw invalid('Monthly price: a number from 0 up');
+  if (!Number.isFinite(enterprisePrice) || enterprisePrice < 0 || enterprisePrice > 100000000)
+    throw invalid('Enterprise price: a number from 0 up');
   if (!/^[A-Z]{3}$/.test(currency)) throw invalid('Currency: a 3-letter code such as UGX');
   if (!Number.isInteger(trialDays) || trialDays < 0 || trialDays > 365)
     throw invalid('Trial days: 0 to 365');
@@ -510,6 +532,7 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
   if (!existing) row.setACL(new Parse.ACL());
   row.set({
     monthlyPrice: Math.round(monthlyPrice),
+    enterprisePrice: Math.round(enterprisePrice),
     currency,
     trialDays,
     graceDays,

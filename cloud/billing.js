@@ -145,6 +145,27 @@ Parse.Cloud.define('getBilling', async (request) => {
   return billingState();
 });
 
+// Owner: move to another plan { plan }. Upgrading is immediate; moving down
+// to Basic needs the restaurant within Basic's limits. The new price applies
+// from the next payment.
+Parse.Cloud.define('changePlan', async (request) => {
+  const { user: actor } = await requireRole(request, ['admin']);
+  const plan = request.params?.plan;
+  const limits = require('./lib/limits');
+  if (!limits.PLANS[plan]) throw invalid('Choose Basic or Enterprise');
+  const row = await restaurantRow();
+  const before = limits.planOf(row);
+  if (before === plan) throw invalid(`You are on ${limits.PLANS[plan].label} already`);
+  if (plan === 'basic') {
+    const problems = await limits.overLimits('basic');
+    if (problems.length) throw invalid(`Basic allows less than you have: ${problems.join(', ')}`);
+  }
+  row.set('plan', plan);
+  await tenancy.withoutTenant(() => row.save(null, MASTER));
+  await audit(actor, 'subscription.plan_changed', row, { plan: before }, { plan });
+  return billingState();
+});
+
 // Owner: pay { months, phone } with mobile money. ioTec asks the phone to
 // approve; checkSubscriptionPayment follows it up.
 Parse.Cloud.define('startSubscriptionPayment', async (request) => {
