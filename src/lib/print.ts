@@ -65,7 +65,11 @@ type Receipt = {
 };
 
 const TYPE: Record<string, string> = { delivery: 'DELIVERY', eat_in: 'EAT IN', pickup: 'PICK UP' };
-const PROVIDER: Record<string, string> = { mtn: 'MTN MoMo', airtel: 'Airtel Money' };
+const PROVIDER: Record<string, string> = {
+  mtn: 'MTN MoMo',
+  airtel: 'Airtel Money',
+  card: 'Card',
+};
 
 const escape = (text: unknown) =>
   String(text ?? '').replace(

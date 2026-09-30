@@ -7,11 +7,11 @@
 const round = (value) => Math.round(Number(value) || 0);
 const isDelivered = (fact) => fact.status === 'DELIVERED';
 // Money the restaurant actually has: cash counted in by a cashier, or mobile
-// money a cashier found on the merchant statement.
+// money / card payments a cashier found on the statement.
 const isConfirmed = (fact) =>
   fact.method === 'cash'
     ? ['RECONCILED', 'IN_TILL'].includes(fact.cashStatus)
-    : fact.method === 'mobile_money'
+    : ['mobile_money', 'card'].includes(fact.method)
       ? fact.paymentStatus === 'VERIFIED'
       : true;
 const OPEN = ['PLACED', 'ACCEPTED', 'PREPARING', 'READY', 'PICKED_UP'];
@@ -63,6 +63,7 @@ function summarize(facts) {
     mobileMoneySales: confirmed
       .filter((f) => f.method === 'mobile_money')
       .reduce((n, f) => n + round(f.total), 0),
+    cardSales: confirmed.filter((f) => f.method === 'card').reduce((n, f) => n + round(f.total), 0),
     unconfirmedSales: delivered
       .filter((f) => !isConfirmed(f))
       .reduce((n, f) => n + round(f.total), 0),
@@ -205,7 +206,12 @@ function timeOfDay(facts, clockOf) {
 function paymentMix(facts) {
   const byKey = new Map();
   for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
-    const key = fact.method === 'mobile_money' ? fact.provider || 'mobile_money' : 'cash';
+    const key =
+      fact.method === 'mobile_money'
+        ? fact.provider || 'mobile_money'
+        : fact.method === 'card'
+          ? 'card'
+          : 'cash';
     const row = byKey.get(key) || { key, orders: 0, amount: 0 };
     row.orders += 1;
     row.amount += round(fact.total);

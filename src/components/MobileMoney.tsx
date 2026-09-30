@@ -165,7 +165,13 @@ export const PAYMENT_STATUS_LABEL: Record<string, string> = {
 };
 
 export const providerLabel = (provider: string) =>
-  provider === 'mtn' ? 'MTN MoMo' : provider === 'airtel' ? 'Airtel Money' : provider;
+  provider === 'mtn'
+    ? 'MTN MoMo'
+    : provider === 'airtel'
+      ? 'Airtel Money'
+      : provider === 'card'
+        ? 'Card'
+        : provider;
 
 export const referenceProblem = (reference: string) =>
   /^[A-Z0-9.-]{4,40}$/.test(reference.replace(/\s+/g, '').toUpperCase())

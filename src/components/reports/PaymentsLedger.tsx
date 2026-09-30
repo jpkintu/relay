@@ -16,7 +16,7 @@ import { CashCheckPanel, PayoutsPanel, ReceiveCash } from './CashControls';
 
 type Transaction = {
   id: string;
-  kind: 'cash' | 'mobile_money';
+  kind: 'cash' | 'mobile_money' | 'card';
   at: string;
   code: string;
   riderId: string;
@@ -94,6 +94,14 @@ type Ledger = {
         amount: number;
       }[];
     };
+    card?: {
+      count: number;
+      verified: number;
+      verifiedCount: number;
+      pending: number;
+      pendingCount: number;
+      rejectedCount: number;
+    };
     handovers: { count: number; confirmed: number; pending: number; disputed: number };
   };
   transactions: Transaction[];
@@ -153,6 +161,9 @@ export function PaymentsLedger() {
   const [settling, setSettling] = useState<string | null>(null);
   const s = data?.summary;
   const rows = data?.transactions ?? [];
+  const showCash = !filters.method || filters.method === 'cash';
+  const showMomo = !filters.method || filters.method === 'mobile_money';
+  const showCard = filters.method === 'card' || (!filters.method && !!s?.card?.count);
   const staleCount = rows.filter((t) => overdue(t.status, t.at)).length;
   const when = (at: string) =>
     formatDate(at, timezone, { dateStyle: 'medium', timeStyle: 'short' });
@@ -179,7 +190,7 @@ export function PaymentsLedger() {
         t.code,
         t.rider,
         t.customer,
-        t.kind === 'cash' ? 'Cash' : 'Mobile money',
+        t.kind === 'cash' ? 'Cash' : t.kind === 'card' ? 'Card' : 'Mobile money',
         t.provider ? providerLabel(t.provider) : '',
         t.reference,
         t.amount,
@@ -202,9 +213,9 @@ export function PaymentsLedger() {
           <Stat
             label="Total received"
             value={money(s.total)}
-            note="Cash collected plus verified mobile money"
+            note="Cash collected plus verified mobile money and card"
           />
-          {filters.method !== 'mobile_money' && (
+          {showCash && (
             <Stat
               label="Cash collected"
               value={money(s.cash.collected)}
@@ -213,7 +224,7 @@ export function PaymentsLedger() {
               } · ${money(s.cash.withRiders + s.cash.handoverPending)} still with riders`}
             />
           )}
-          {filters.method !== 'cash' && (
+          {showMomo && (
             <Stat
               label="Mobile money verified"
               value={money(s.mobileMoney.verified)}
@@ -223,14 +234,23 @@ export function PaymentsLedger() {
               }
             />
           )}
-          {filters.method !== 'cash' && (
+          {showMomo && (
             <Stat
               label="Waiting for a check"
               value={money(s.mobileMoney.pending)}
               note={`${s.mobileMoney.pendingCount} pending · ${s.mobileMoney.rejectedCount} not received`}
             />
           )}
-          {filters.method !== 'mobile_money' && (
+          {showCard && s.card && (
+            <Stat
+              label="Card verified"
+              value={money(s.card.verified)}
+              note={`${s.card.verifiedCount} payments · ${money(s.card.pending)} waiting for a check${
+                s.card.rejectedCount ? ` · ${s.card.rejectedCount} not received` : ''
+              }`}
+            />
+          )}
+          {showCash && (
             <Stat
               label="Handovers confirmed"
               value={money(s.handovers.confirmed)}
@@ -290,7 +310,7 @@ export function PaymentsLedger() {
                           Handover <span className="code">{t.reference}</span>
                         </small>
                       )}
-                      {t.note && t.kind === 'mobile_money' && <small>{t.note}</small>}
+                      {t.note && t.kind !== 'cash' && <small>{t.note}</small>}
                       {t.kind === 'cash' && t.note && <small>Short: {t.note}</small>}
                     </td>
                     <td>
@@ -311,7 +331,7 @@ export function PaymentsLedger() {
           <p className="muted small">Showing the latest 2,000. Narrow the dates to see more.</p>
         )}
       </section>
-      {filters.method !== 'mobile_money' && (
+      {showCash && (
         <section className="admin-panel admin-section-panel">
           <div className="panel-title">
             <div>
@@ -372,7 +392,7 @@ export function PaymentsLedger() {
           )}
         </section>
       )}
-      {filters.method !== 'mobile_money' && (
+      {showCash && (
         <section className="admin-panel admin-section-panel">
           <div className="panel-title">
             <h2>
@@ -482,7 +502,7 @@ export function PaymentsLedger() {
           )}
         </section>
       )}
-      {filters.method !== 'mobile_money' && <PayoutsPanel from={filters.from} to={filters.to} />}
+      {showCash && <PayoutsPanel from={filters.from} to={filters.to} />}
       <CashCheckPanel />
     </div>
   );

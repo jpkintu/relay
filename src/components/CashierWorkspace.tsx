@@ -23,7 +23,12 @@ import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
 import { formatDate } from '../lib/format';
-import { PaymentRequestStatus, payerPhoneProblem, providerLabel } from './MobileMoney';
+import {
+  PaymentRequestStatus,
+  payerPhoneProblem,
+  providerLabel,
+  referenceProblem,
+} from './MobileMoney';
 import { BrandMark } from './BrandMark';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
@@ -147,7 +152,7 @@ async function countPendingHandovers(): Promise<number> {
 }
 
 export function CashierWorkspace() {
-  const { preview, profile, logout } = useSession();
+  const { preview, profile, logout, config } = useSession();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [pendingHandovers, setPendingHandovers] = useState(0);
@@ -231,7 +236,8 @@ export function CashierWorkspace() {
             onClick={() => navigate('/cashier/payments')}
           >
             <Smartphone />
-            Mobile money {pendingPayments > 0 && <b>{pendingPayments}</b>}
+            {config.card ? 'Payments' : 'Mobile money'}{' '}
+            {pendingPayments > 0 && <b>{pendingPayments}</b>}
           </button>
           <button
             className={tab === 'payouts' ? 'active' : ''}
@@ -368,7 +374,7 @@ function KitchenBoard() {
   >(null);
   const [riderPick, setRiderPick] = useState('');
   const [paying, setPaying] = useState<string | null>(null);
-  const [payMethod, setPayMethod] = useState<'cash' | 'mobile_money'>('cash');
+  const [payMethod, setPayMethod] = useState<'cash' | 'mobile_money' | 'card'>('cash');
   const [payProvider, setPayProvider] = useState('');
   const [payRef, setPayRef] = useState('');
   // Automatic payments: the number to send the request to, and the ticket
@@ -509,6 +515,7 @@ function KitchenBoard() {
           paymentReference: payRef.trim(),
           ...(request && { payerPhone: payPhone }),
         }),
+        ...(payMethod === 'card' && { paymentProvider: 'card', paymentReference: payRef.trim() }),
       });
       if (request) setRequesting({ id: ticket.id, code: ticket.code });
       setPaying(null);
@@ -677,6 +684,7 @@ function KitchenBoard() {
                             [
                               ['cash', 'Cash'],
                               ['mobile_money', 'Mobile money'],
+                              ...(config.card ? ([['card', 'Card']] as const) : []),
                             ] as const
                           ).map(([value, label]) => (
                             <button
@@ -720,6 +728,18 @@ function KitchenBoard() {
                               }
                             />
                           </>
+                        ) : payMethod === 'card' ? (
+                          <>
+                            <small>
+                              Charge {money(ticket.total)} on the {config.card?.label || 'card'}{' '}
+                              machine.
+                            </small>
+                            <input
+                              value={payRef}
+                              onChange={(e) => setPayRef(e.target.value.toUpperCase())}
+                              placeholder="Transaction ID on the slip"
+                            />
+                          </>
                         ) : (
                           <small>Put {money(ticket.total)} in the till.</small>
                         )}
@@ -727,10 +747,11 @@ function KitchenBoard() {
                           <button onClick={() => setPaying(null)}>Back</button>
                           <button
                             disabled={
-                              payMethod === 'mobile_money' &&
-                              (!payProvider ||
-                                (!payRef.trim() &&
-                                  (!autoFor(payProvider) || !!payerPhoneProblem(payPhone))))
+                              (payMethod === 'card' && !!referenceProblem(payRef)) ||
+                              (payMethod === 'mobile_money' &&
+                                (!payProvider ||
+                                  (!payRef.trim() &&
+                                    (!autoFor(payProvider) || !!payerPhoneProblem(payPhone)))))
                             }
                             onClick={() => void takePayment(ticket)}
                           >
@@ -1149,9 +1170,12 @@ function MobileMoneyLedger() {
     <div className="ops-content">
       <div className="ops-title">
         <div>
-          <h1>Mobile money</h1>
+          <h1>{config.card ? 'Mobile money & card' : 'Mobile money'}</h1>
         </div>
-        <span>Check each transaction ID on the merchant account before confirming.</span>
+        <span>
+          Check each transaction ID on the merchant account
+          {config.card ? ' or the card machine report' : ''} before confirming.
+        </span>
       </div>
       {error && <p className="ops-error">{error}</p>}
       {preview && <p className="setup-notice">Mobile money needs a signed-in cashier.</p>}
@@ -1166,7 +1190,7 @@ function MobileMoneyLedger() {
             {ledger.totals.map((t) => (
               <Stat
                 key={t.provider}
-                label={`${t.label} · ${t.code}`}
+                label={[t.label, t.code].filter(Boolean).join(' · ')}
                 value={money(t.amount)}
                 note={`${t.count} confirmed today`}
               />
