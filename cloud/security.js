@@ -537,6 +537,8 @@ const SCHEMAS = {
     trialDays: N,
     graceDays: N,
     supportContact: S,
+    // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
+    whatsapp: 'Object',
   },
   Notification: {
     recipient: user,

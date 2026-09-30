@@ -1775,7 +1775,9 @@ var require_security = __commonJS({
         currency: S,
         trialDays: N,
         graceDays: N,
-        supportContact: S
+        supportContact: S,
+        // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
+        whatsapp: "Object"
       },
       Notification: {
         recipient: user,
@@ -32476,10 +32478,33 @@ var require_reports2 = __commonJS({
 var require_whatsappSender = __commonJS({
   "cloud/lib/whatsappSender.js"(exports2, module2) {
     "use strict";
-    async function sharedSender() {
-      return null;
+    var MASTER = { useMasterKey: true };
+    async function loadSender() {
+      const tenancy = require_tenant();
+      const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
+      return { row, sender: { language: "en", ...row?.get("whatsapp") || {} } };
     }
-    module2.exports = { sharedSender };
+    var cache = null;
+    var clearSender = () => {
+      cache = null;
+    };
+    async function sharedSender() {
+      if (!cache || Date.now() - cache.at > 3e4) {
+        const { sender } = await loadSender();
+        cache = {
+          at: Date.now(),
+          value: sender.enabled === true && sender.phoneNumberId && sender.token ? {
+            phoneNumberId: sender.phoneNumberId,
+            token: sender.token,
+            templateName: sender.templateName || "",
+            language: sender.language || "en",
+            displayNumber: sender.displayNumber || ""
+          } : null
+        };
+      }
+      return cache.value;
+    }
+    module2.exports = { sharedSender, loadSender, clearSender };
   }
 });
 
@@ -36404,6 +36429,74 @@ var require_accounting = __commonJS({
   }
 });
 
+// cloud/platformWhatsapp.js
+var require_platformWhatsapp = __commonJS({
+  "cloud/platformWhatsapp.js"() {
+    "use strict";
+    var { invalid, audit } = require_core();
+    var tenancy = require_tenant();
+    var { requirePlatform } = require_restaurants();
+    var { loadSender, clearSender } = require_whatsappSender();
+    var { send, phoneOf } = require_whatsapp();
+    var MASTER = { useMasterKey: true };
+    var view = (sender) => ({
+      enabled: sender.enabled === true,
+      phoneNumberId: sender.phoneNumberId || "",
+      displayNumber: sender.displayNumber || "",
+      tokenSet: !!sender.token,
+      templateName: sender.templateName || "",
+      language: sender.language || "en"
+    });
+    Parse.Cloud.define("platformGetWhatsApp", async (request) => {
+      await requirePlatform(request);
+      return view((await loadSender()).sender);
+    });
+    Parse.Cloud.define("platformSaveWhatsApp", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const { row, sender } = await loadSender();
+      if (!row) throw invalid("Save the platform settings first");
+      const next = {
+        ...sender,
+        enabled: p.enabled === true,
+        phoneNumberId: String(p.phoneNumberId ?? sender.phoneNumberId ?? "").replace(/[^\d]/g, "").slice(0, 30),
+        displayNumber: String(p.displayNumber ?? sender.displayNumber ?? "").trim().slice(0, 40),
+        templateName: String(p.templateName ?? sender.templateName ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 60),
+        language: String(p.language || sender.language || "en").trim().slice(0, 10)
+      };
+      if (p.token) next.token = String(p.token).trim().slice(0, 1e3);
+      if (next.enabled && (!next.phoneNumberId || !next.token))
+        throw invalid("Enter the phone number ID and the access token");
+      if (next.enabled && !next.templateName)
+        throw invalid(
+          "Enter the approved template: without one WhatsApp only delivers to numbers that wrote first"
+        );
+      row.set("whatsapp", next);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      clearSender();
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.whatsapp_saved", row, view(sender), view(next))
+      );
+      return view(next);
+    });
+    Parse.Cloud.define("platformTestWhatsApp", async (request) => {
+      await requirePlatform(request);
+      const to = phoneOf(request.params?.to);
+      if (!to) throw invalid("Enter the number to send the test to");
+      const { sender } = await loadSender();
+      if (!sender.phoneNumberId || !sender.token)
+        throw invalid("Save the phone number ID and the access token first");
+      const text = "Relay test: WhatsApp summaries can reach this number.";
+      try {
+        await send({ ...sender, managed: true }, to, { text, line: text, full: text });
+      } catch (error) {
+        throw invalid(`Not sent: ${error.message}`);
+      }
+      return { sent: 1 };
+    });
+  }
+});
+
 // cloud/people.js
 var require_people = __commonJS({
   "cloud/people.js"(exports2, module2) {
@@ -37917,6 +38010,7 @@ require_branches();
 require_spending();
 require_accounting();
 require_whatsapp();
+require_platformWhatsapp();
 require_people();
 require_admin();
 require_onboarding();

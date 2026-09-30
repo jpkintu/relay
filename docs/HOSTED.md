@@ -252,3 +252,15 @@ soon as ioTec says Success. Past payments are listed under the form.
    paid-until dates, suspension, platform settings, the access gate.
 3. **Billing** (done): ioTec collection requests and status checks, the
    `billing` job and reminders, manual payments, the owner's payment form.
+
+## WhatsApp summaries
+
+Platform console → **WhatsApp sender** connects one WhatsApp Business app for
+every restaurant: the phone number ID, a system-user access token that never
+expires, an approved Utility template whose body has one variable (for example
+"Daily summary: {{1}}"; the variable starts with the restaurant's name), the
+template language and the number shown to restaurants. _Send a test_ checks it.
+Once it is switched on, Admin → WhatsApp in each restaurant only asks for the
+numbers that receive the nightly summary (`cloud/lib/whatsappSender.js`,
+`cloud/platformWhatsapp.js`). Until then, a restaurant can still connect its
+own WhatsApp app there.

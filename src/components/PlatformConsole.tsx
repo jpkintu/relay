@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { LogOut, RefreshCw } from 'lucide-react';
 import Parse from '../parse';
+import { PlatformWhatsApp } from './PlatformWhatsApp';
 import { PlatformPlans, type Plan } from './PlatformPlans';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
@@ -243,6 +244,8 @@ export function PlatformConsole() {
             }}
           />
         )}
+
+        <PlatformWhatsApp />
 
         <ApplySecurity onDone={() => void load()} />
 

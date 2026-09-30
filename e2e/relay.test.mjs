@@ -5783,6 +5783,9 @@ const ACCESS = {
     'platformSaveSettings',
     'platformListPlans',
     'platformSavePlan',
+    'platformGetWhatsApp',
+    'platformSaveWhatsApp',
+    'platformTestWhatsApp',
     'platformGetAudit',
     'platformRecordPayment',
     'platformListPayments',
@@ -7020,5 +7023,67 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
     await run('platformSavePlan', { ...growth, active: false }, ops);
     assert.ok(!(await run('getPlans', {})).plans.some((plan) => plan.key === 'growth'));
     assert.equal((await run('getMyProfile', {}, owner)).restaurant.plan, 'growth');
+  });
+});
+
+describe('one WhatsApp sender for every restaurant (Relay Hosted)', () => {
+  let ops;
+  before(async () => {
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+  });
+  after(async () => {
+    await run('platformSaveWhatsApp', { enabled: false }, ops);
+    await run('adminSaveWhatsAppSettings', { enabled: false, recipients: [] }, s.owner);
+  });
+
+  test('platform staff connect it; owners only choose the numbers', async () => {
+    assert.equal((await run('adminGetWhatsAppSettings', {}, s.owner)).managed, false);
+    await rejects(
+      run('platformSaveWhatsApp', { enabled: true, phoneNumberId: '5550001' }, ops),
+      /phone number ID and the access token/,
+    );
+    await rejects(
+      run('platformSaveWhatsApp', { enabled: true, phoneNumberId: '5550001', token: 't' }, ops),
+      /approved template/,
+    );
+    const saved = await run(
+      'platformSaveWhatsApp',
+      {
+        enabled: true,
+        phoneNumberId: '5550001',
+        token: 'wa-token',
+        templateName: 'relay_summary',
+        displayNumber: '+256 700 000000',
+      },
+      ops,
+    );
+    assert.equal(saved.tokenSet, true);
+    assert.equal(JSON.stringify(saved).includes('wa-token'), false);
+    await rejects(
+      run('platformSaveWhatsApp', { enabled: false }, s.owner),
+      /platform role required/,
+    );
+
+    const page = await run('adminGetWhatsAppSettings', {}, s.owner);
+    assert.equal(page.managed, true);
+    assert.equal(page.sender, '+256 700 000000');
+    await rejects(
+      run('adminSaveWhatsAppSettings', { enabled: true, recipients: [] }, s.owner),
+      /at least one number/,
+    );
+    await run('adminSaveWhatsAppSettings', { enabled: true, recipients: ['0772 000111'] }, s.owner);
+    whatsapp.messages.length = 0;
+    assert.equal((await run('adminTestWhatsApp', {}, s.owner)).sent, 1);
+    const [message] = whatsapp.messages;
+    assert.equal(message.phoneId, '5550001');
+    assert.equal(message.to, '256772000111');
+    assert.equal(message.template.name, 'relay_summary');
+    const name = (await run('getMyProfile', {}, s.owner)).config.restaurantName;
+    assert.ok(message.template.components[0].parameters[0].text.startsWith(name));
+
+    whatsapp.messages.length = 0;
+    assert.equal((await run('platformTestWhatsApp', { to: '0701 222333' }, ops)).sent, 1);
+    assert.equal(whatsapp.messages[0].to, '256701222333');
+    await rejects(run('platformTestWhatsApp', { to: 'nobody' }, ops), /number to send/);
   });
 });

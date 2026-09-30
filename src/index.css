@@ -8190,3 +8190,14 @@ tr.split-row td {
   gap: 8px;
   line-height: 1.5;
 }
+
+/* Platform console → WhatsApp sender */
+.platform-test-to {
+  width: 220px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  background: #fff;
+}

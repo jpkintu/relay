@@ -54,6 +54,7 @@ require('./branches');
 require('./spending');
 require('./accounting');
 require('./whatsapp');
+require('./platformWhatsapp');
 require('./people');
 require('./admin');
 require('./onboarding');
