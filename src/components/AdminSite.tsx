@@ -2,7 +2,7 @@ import { Suspense, useCallback, useEffect, useState, type FormEvent } from 'reac
 import { LockKeyhole, Lock } from 'lucide-react';
 import Parse from '../parse';
 import { lazyScreen } from '../lib/lazy';
-import { useConfig } from '../lib/session';
+import { useConfig, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { ADMIN_TABS, type AdminTab } from '../lib/adminTabs';
 
@@ -30,6 +30,8 @@ export function AdminSite({
   openErrors: number;
   onChanged: () => void;
 }) {
+  // Relay Hosted plans may leave some pages out.
+  const features = useSession().profile?.features;
   const { timezone } = useConfig();
   const [state, setState] = useState<Unlock | null>(null);
   const [pin, setPin] = useState('');
@@ -97,7 +99,11 @@ export function AdminSite({
     <div className="admin-site">
       <div className="admin-site-bar">
         <nav className="admin-tabs" aria-label="Admin pages">
-          {ADMIN_TABS.map(([id, label]) => (
+          {ADMIN_TABS.filter(
+            ([id]) =>
+              (id !== 'tax' || features?.efris !== false) &&
+              (id !== 'whatsapp' || features?.whatsapp !== false),
+          ).map(([id, label]) => (
             <button
               key={id}
               className={tab === id ? 'active' : ''}
