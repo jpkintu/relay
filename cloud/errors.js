@@ -281,7 +281,7 @@ const restaurantOf = (row) => {
   const tenant = row.get('tenant');
   return tenant
     ? { id: tenant.id, name: tenant.get('name') || '', code: tenant.get('code') || '' }
-    : { id: 'none', name: 'Relay (no restaurant)', code: '' };
+    : { id: 'none', name: 'No restaurant (sign-in screen, platform console)', code: '' };
 };
 
 // Platform: { state: 'open' | 'fixed', restaurant?: id | 'none' } → the same
