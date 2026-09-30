@@ -30,6 +30,8 @@ const PINNED_ONLY = 'Pinned on the map';
 // machine at the counter only (counter.js), never by riders.
 const PAYMENT_METHODS = ['cash', 'mobile_money'];
 const MAX_LINES = 30;
+// Split orders: at most this many splits (people or portions) in one order.
+const MAX_SPLITS = 12;
 
 const clean = (value, max) =>
   String(value ?? '')
@@ -73,6 +75,7 @@ async function saveLines(order, lines, rider) {
       accompanimentNames: line.accompanimentNames,
       accompanimentPrices: line.accompanimentPrices,
       extrasPerUnit: line.extrasPerUnit,
+      ...(line.split && { split: line.split }),
     });
     item.setACL(readAcl(rider));
     return item;
@@ -96,6 +99,12 @@ async function priceLines(items, branchId) {
     servableAccompaniments(branchId),
   ]);
   const byId = new Map(menu.map((item) => [item.id, item]));
+  // Split order: every line names its split (e.g. "Split 1" or a guest's
+  // name); one split only is an ordinary order.
+  const splits = [...new Set(items.map((line) => clean(line.split, 30)))];
+  const split = splits.length > 1;
+  if (split && splits.includes('')) throw invalid('Put every item in a split');
+  if (splits.length > MAX_SPLITS) throw invalid(`An order can have at most ${MAX_SPLITS} splits`);
   return items.map((line) => {
     const saved = byId.get(String(line.id));
     const qty = Number(line.quantity);
@@ -133,8 +142,15 @@ async function priceLines(items, branchId) {
       accompanimentIds: chosen,
       accompanimentNames: chosen.map((id) => accompaniments.get(id).get('title')),
       accompanimentPrices,
+      split: split ? clean(line.split, 30) : '',
     };
   });
+}
+
+// The order's splits in the order they were entered ({} when not split).
+function splitFields(lines) {
+  const splits = [...new Set(lines.map((line) => line.split).filter(Boolean))];
+  return splits.length > 1 ? { splits } : {};
 }
 
 Parse.Cloud.define('createOrder', async (request) => {
@@ -240,6 +256,7 @@ Parse.Cloud.define('createOrder', async (request) => {
     deliveryNotes: clean(p.deliveryNotes, 200),
     subtotal,
     prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
+    ...splitFields(lines),
     deliveryFee: fee,
     total,
     paymentMethod,
@@ -738,6 +755,7 @@ module.exports = {
   PINNED_ONLY,
   priceLines,
   saveLines,
+  splitFields,
   clean,
   cleanPhone,
   CHANNELS,

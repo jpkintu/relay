@@ -1100,6 +1100,8 @@ var require_security = __commonJS({
       Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N },
       Order: {
         branch,
+        // Split orders: the splits in the order entered (lines carry `split`).
+        splits: "Array",
         // Tax (EFRIS): the fiscal document for the sale (cloud/efris.js).
         efrisStatus: S,
         efrisFdn: S,
@@ -1199,7 +1201,9 @@ var require_security = __commonJS({
         // Charged sides: price of each chosen accompaniment (0 = free) and their
         // sum per unit; lineTotal = (unitPriceSnapshot + extrasPerUnit) × quantity.
         accompanimentPrices: "Array",
-        extrasPerUnit: N
+        extrasPerUnit: N,
+        // Split orders: the split (guest or portion) this line belongs to.
+        split: S
       },
       CashHandover: {
         branch,
@@ -31961,6 +31965,7 @@ var require_orders = __commonJS({
     var PINNED_ONLY = "Pinned on the map";
     var PAYMENT_METHODS = ["cash", "mobile_money"];
     var MAX_LINES = 30;
+    var MAX_SPLITS = 12;
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
     var offeredAt = (row, branchId) => {
@@ -31990,7 +31995,8 @@ var require_orders = __commonJS({
           accompanimentIds: line.accompanimentIds,
           accompanimentNames: line.accompanimentNames,
           accompanimentPrices: line.accompanimentPrices,
-          extrasPerUnit: line.extrasPerUnit
+          extrasPerUnit: line.extrasPerUnit,
+          ...line.split && { split: line.split }
         });
         item.setACL(readAcl(rider));
         return item;
@@ -32010,6 +32016,10 @@ var require_orders = __commonJS({
         servableAccompaniments(branchId)
       ]);
       const byId = new Map(menu.map((item) => [item.id, item]));
+      const splits = [...new Set(items.map((line) => clean(line.split, 30)))];
+      const split = splits.length > 1;
+      if (split && splits.includes("")) throw invalid("Put every item in a split");
+      if (splits.length > MAX_SPLITS) throw invalid(`An order can have at most ${MAX_SPLITS} splits`);
       return items.map((line) => {
         const saved = byId.get(String(line.id));
         const qty = Number(line.quantity);
@@ -32040,9 +32050,14 @@ var require_orders = __commonJS({
           notes: clean(line.notes, 140),
           accompanimentIds: chosen,
           accompanimentNames: chosen.map((id) => accompaniments.get(id).get("title")),
-          accompanimentPrices
+          accompanimentPrices,
+          split: split ? clean(line.split, 30) : ""
         };
       });
+    }
+    function splitFields(lines) {
+      const splits = [...new Set(lines.map((line) => line.split).filter(Boolean))];
+      return splits.length > 1 ? { splits } : {};
     }
     Parse.Cloud.define("createOrder", async (request) => {
       const { user: rider } = await requireRole(request, ["rider"]);
@@ -32125,6 +32140,7 @@ var require_orders = __commonJS({
         deliveryNotes: clean(p.deliveryNotes, 200),
         subtotal,
         prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
+        ...splitFields(lines),
         deliveryFee: fee,
         total,
         paymentMethod,
@@ -32559,6 +32575,7 @@ var require_orders = __commonJS({
       PINNED_ONLY,
       priceLines,
       saveLines,
+      splitFields,
       clean,
       cleanPhone,
       CHANNELS,
@@ -32597,7 +32614,15 @@ var require_counter = __commonJS({
     var { recordCustomerOrder } = require_customers();
     var { checkMobileMoney, checkCard, PENDING } = require_payments();
     var { money, notifyUser, notifyStaff } = require_notifications();
-    var { priceLines, saveLines, clean, cleanPhone, CHANNELS, PINNED_ONLY } = require_orders();
+    var {
+      priceLines,
+      saveLines,
+      splitFields,
+      clean,
+      cleanPhone,
+      CHANNELS,
+      PINNED_ONLY
+    } = require_orders();
     var ORDER_TYPES = ["delivery", "eat_in", "pickup"];
     var COUNTER_TYPES = ["eat_in", "pickup"];
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
@@ -32729,6 +32754,7 @@ var require_counter = __commonJS({
         ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
         subtotal,
         prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
+        ...splitFields(lines),
         deliveryFee: fee,
         total,
         paymentMethod: method,
@@ -32926,8 +32952,10 @@ var require_counter = __commonJS({
           total: item.get("lineTotal"),
           notes: item.get("notes") || "",
           accompaniments: item.get("accompanimentNames") || [],
-          accompanimentPrices: item.get("accompanimentPrices") || []
+          accompanimentPrices: item.get("accompanimentPrices") || [],
+          split: item.get("split") || ""
         })),
+        splits: order.get("splits") || [],
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
         total: Number(order.get("total") || 0),
@@ -35881,8 +35909,10 @@ var require_overrides = __commonJS({
           total: item.get("lineTotal"),
           notes: item.get("notes") || "",
           accompaniments: item.get("accompanimentNames") || [],
-          accompanimentPrices: item.get("accompanimentPrices") || []
+          accompanimentPrices: item.get("accompanimentPrices") || [],
+          split: item.get("split") || ""
         })),
+        splits: order.get("splits") || [],
         subtotal: order.get("subtotal") || 0,
         deliveryFee: order.get("deliveryFee") || 0,
         total: order.get("total") || 0,

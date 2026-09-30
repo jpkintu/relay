@@ -1,4 +1,4 @@
-import { sidesLabel } from '../lib/cart';
+import { groupBySplit, sidesLabel } from '../lib/cart';
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronRight, MapPin, Phone } from 'lucide-react';
 import Parse from '../parse';
@@ -27,6 +27,7 @@ type Line = {
   // Price per portion of each side (0 = free).
   sidePrices: number[];
   notes: string;
+  split: string;
 };
 type Detail = {
   id: string;
@@ -60,6 +61,8 @@ type Detail = {
   paymentAuto: boolean;
   createdAt: Date;
   lines: Line[];
+  // Split orders: the splits in the order entered.
+  splits: string[];
 };
 
 const PAYMENTS = [
@@ -121,7 +124,9 @@ async function loadDetail(orderId: string): Promise<Detail> {
       sides: item.get('accompanimentNames') || [],
       sidePrices: item.get('accompanimentPrices') || [],
       notes: item.get('notes') || '',
+      split: item.get('split') || '',
     })),
+    splits: order.get('splits') || [],
   };
 }
 
@@ -277,21 +282,31 @@ export function OrderDetail({
 
             <section className="detail-card">
               <p className="eyebrow">Items</p>
-              {order.lines.map((line) => (
-                <div className="cart-line" key={line.id}>
-                  <div>
-                    <b>
-                      {line.quantity}× {line.title}
-                    </b>
-                    {(line.sides.length > 0 || line.notes) && (
-                      <small>
-                        {[sidesLabel(line.sides, line.sidePrices, money), line.notes]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </small>
-                    )}
-                  </div>
-                  <span>{money(line.total)}</span>
+              {groupBySplit(order.lines, order.splits).map((group) => (
+                <div key={group.split || 'all'} className={group.split ? 'split-group' : undefined}>
+                  {group.split && (
+                    <p className="split-heading">
+                      <b>{group.split}</b>
+                      <span>{money(group.lines.reduce((n, line) => n + line.total, 0))}</span>
+                    </p>
+                  )}
+                  {group.lines.map((line) => (
+                    <div className="cart-line" key={line.id}>
+                      <div>
+                        <b>
+                          {line.quantity}× {line.title}
+                        </b>
+                        {(line.sides.length > 0 || line.notes) && (
+                          <small>
+                            {[sidesLabel(line.sides, line.sidePrices, money), line.notes]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </small>
+                        )}
+                      </div>
+                      <span>{money(line.total)}</span>
+                    </div>
+                  ))}
                 </div>
               ))}
               <div className="bill">
