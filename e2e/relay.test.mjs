@@ -1207,7 +1207,10 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(labels.includes('R-002 · Ron Rider'));
     s.ritaId = riders.find((r) => r.label.includes('Rita')).id;
     s.ronId = riders.find((r) => r.label.includes('Ron')).id;
-    await rejects(run('getReportOptions', {}, s.rider), /cashier or admin or finance role required/);
+    await rejects(
+      run('getReportOptions', {}, s.rider),
+      /cashier or admin or finance role required/,
+    );
   });
 
   test('the payments ledger lists every cash and mobile money transaction', async () => {
@@ -1245,7 +1248,10 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(rita.handovers.every((h) => h.riderId === s.ritaId));
     const empty = await run('getPaymentsLedger', { from: '2020-01-01', to: '2020-01-31' }, s.owner);
     assert.equal(empty.transactions.length, 0);
-    await rejects(run('getPaymentsLedger', range, s.rider), /cashier or admin or finance role required/);
+    await rejects(
+      run('getPaymentsLedger', range, s.rider),
+      /cashier or admin or finance role required/,
+    );
     await rejects(
       run('getPaymentsLedger', { from: '2026-02-30', to: '2026-03-01' }, s.owner),
       /Dates must look like/,
@@ -1349,7 +1355,10 @@ describe('ledgers, earnings and reports', () => {
     // The owner can look at any rider.
     const rita = await run('getRiderEarnings', { ...range, riderId: s.ritaId }, s.owner);
     assert.ok(rita.deliveries.length > 0);
-    await rejects(run('getRiderEarnings', range, s.cashier), /rider or admin or finance role required/);
+    await rejects(
+      run('getRiderEarnings', range, s.cashier),
+      /rider or admin or finance role required/,
+    );
   });
 
   test('the operations report covers revenue, growth and menu item sales', async () => {
