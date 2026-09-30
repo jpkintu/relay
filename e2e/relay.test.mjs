@@ -4543,6 +4543,12 @@ describe('tax: EFRIS fiscal receipts', () => {
     assert.equal(made.view.certificate.fingerprint, made.fingerprint);
     assert.equal(made.view.keyLoaded, true);
     assert.equal(JSON.stringify(made).includes('PRIVATE KEY'), false, 'the key stays here');
+    // The easy mistake: choosing the certificate as the private key.
+    for (const file of [Buffer.from(made.crt.text).toString('base64'), made.cer.base64])
+      await rejects(
+        run('adminSaveEfrisSettings', { key: file, keyName: 'efris.crt' }, s.owner),
+        /is a certificate \(the public key\).*already saved/,
+      );
     const cert = new crypto.X509Certificate(made.crt.text);
     assert.match(cert.subject, /CN=1000029771/);
     // Before the certificate is uploaded, EFRIS refuses the new key.

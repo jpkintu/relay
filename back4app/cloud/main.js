@@ -27296,10 +27296,22 @@ var require_efrisApi = __commonJS({
         this.code = String(code || "");
       }
     };
+    var CERTIFICATE_NOT_KEY = "That file is a certificate (the public key): upload it on the EFRIS portal. Relay needs the private key instead; if you made the key pair in Relay, it is already saved and nothing needs uploading here.";
+    function isCertificate(bytes, text) {
+      if (/-----BEGIN (TRUSTED )?CERTIFICATE-----/.test(text)) return true;
+      if (text.includes("-----BEGIN")) return false;
+      try {
+        new crypto.X509Certificate(bytes);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     function privateKeyPem(fileBase64, password = "") {
       const bytes = Buffer.from(String(fileBase64 || ""), "base64");
       if (!bytes.length) throw new EfrisError("Choose the private key file");
       const text = bytes.toString("utf8");
+      if (isCertificate(bytes, text)) throw new EfrisError(CERTIFICATE_NOT_KEY);
       if (text.includes("-----BEGIN")) {
         try {
           const key2 = crypto.createPrivateKey({ key: text, passphrase: password || void 0 });
