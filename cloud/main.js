@@ -48,6 +48,8 @@ require('./cashcheck');
 require('./shifts');
 require('./branches');
 require('./spending');
+require('./accounting');
+require('./whatsapp');
 require('./people');
 require('./admin');
 require('./onboarding');

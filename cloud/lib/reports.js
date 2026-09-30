@@ -299,6 +299,7 @@ function tillTrend(shifts) {
 }
 
 module.exports = {
+  isConfirmed,
   branchMix,
   tillTrend,
   growth,
