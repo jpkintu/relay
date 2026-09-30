@@ -60,6 +60,8 @@ const efris = {
   calls: [],
   lostAnswers: 0,
   badSignatures: 0,
+  // The certificate the taxpayer has uploaded on the portal.
+  publicKey: EFRIS_KEYS.publicKey,
 };
 const momo = { mtn: new Map(), airtel: new Map(), polls: new Map(), ip: '203.0.113.10' };
 let momoServer;
@@ -183,7 +185,7 @@ function startMomoMock() {
       const signed = crypto.verify(
         'sha1',
         Buffer.from(data.content),
-        EFRIS_KEYS.publicKey,
+        efris.publicKey,
         Buffer.from(String(data.signature || ''), 'base64'),
       );
       if (!signed) {
@@ -202,7 +204,7 @@ function startMomoMock() {
       efris.aes = crypto.randomBytes(16);
       const passowrdDes = crypto
         .publicEncrypt(
-          { key: EFRIS_KEYS.publicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+          { key: efris.publicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
           Buffer.from(efris.aes.toString('base64')),
         )
         .toString('base64');
@@ -4531,6 +4533,37 @@ describe('tax: EFRIS fiscal receipts', () => {
     }
   });
 
+  test('Relay makes a key pair; its certificate, once on the portal, connects', async () => {
+    await rejects(run('adminGenerateEfrisKey', {}, s.dina), /admin role required/);
+    await rejects(run('adminGenerateEfrisKey', {}, s.owner), /already saved/);
+    await rejects(run('adminGetEfrisCertificate', {}, s.owner), /No certificate here/);
+    const made = await run('adminGenerateEfrisKey', { replace: true }, s.owner);
+    assert.match(made.crt.text, /^-----BEGIN CERTIFICATE-----/);
+    assert.equal(made.crt.name, 'efris-1000029771.crt');
+    assert.equal(made.view.certificate.fingerprint, made.fingerprint);
+    assert.equal(made.view.keyLoaded, true);
+    assert.equal(JSON.stringify(made).includes('PRIVATE KEY'), false, 'the key stays here');
+    const cert = new crypto.X509Certificate(made.crt.text);
+    assert.match(cert.subject, /CN=1000029771/);
+    // Before the certificate is uploaded, EFRIS refuses the new key.
+    assert.equal((await run('adminTestEfris', {}, s.owner)).lastTest.ok, false);
+    // The owner uploads the certificate on the portal.
+    efris.publicKey = cert.publicKey;
+    const tested = await run('adminTestEfris', {}, s.owner);
+    assert.equal(tested.lastTest.ok, true, tested.lastTest.message);
+    const again = await run('adminGetEfrisCertificate', {}, s.owner);
+    assert.equal(again.fingerprint, made.fingerprint);
+    assert.equal(
+      new crypto.X509Certificate(Buffer.from(again.cer.base64, 'base64')).fingerprint,
+      cert.fingerprint,
+    );
+    // Uploading a key of one's own replaces it, and its certificate with it.
+    efris.publicKey = EFRIS_KEYS.publicKey;
+    const own = await run('adminSaveEfrisSettings', { key: KEY, keyName: 'relay.pem' }, s.owner);
+    assert.equal(own.certificate, null);
+    assert.equal((await run('adminTestEfris', {}, s.owner)).lastTest.ok, true);
+  });
+
   test('switched off: receipts carry nothing and no sale goes to EFRIS', async () => {
     const off = await run('adminSaveEfrisSettings', { enabled: false }, s.owner);
     assert.equal(off.enabled, false);
@@ -4853,6 +4886,8 @@ const ACCESS = {
     'adminSaveEfrisSettings',
     'adminTestEfris',
     'adminRegisterEfrisGoods',
+    'adminGenerateEfrisKey',
+    'adminGetEfrisCertificate',
     'adminRestoreData',
     'adminRestoreFinish',
     'adminListSetup',
