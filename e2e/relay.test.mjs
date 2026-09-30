@@ -51,6 +51,9 @@ process.env.RELAY_MTN_URL = `http://localhost:${MOMO_PORT}/mtn`;
 process.env.RELAY_AIRTEL_URL = `http://localhost:${MOMO_PORT}/airtel`;
 process.env.RELAY_IP_URL = `http://localhost:${MOMO_PORT}/ip`;
 process.env.RELAY_EFRIS_URL = `http://localhost:${MOMO_PORT}/efris`;
+process.env.RELAY_WHATSAPP_URL = `http://localhost:${MOMO_PORT}/whatsapp`;
+// The WhatsApp Cloud API stand-in: messages it accepted.
+const whatsapp = { messages: [], refuse: '' };
 process.env.RELAY_EFRIS_DELAY_MS = '300';
 // A stand-in for URA's EFRIS: the taxpayer's key pair (the public half is
 // what the taxpayer uploads to the EFRIS portal), and what it has recorded.
@@ -346,6 +349,14 @@ function startMomoMock() {
       return answer(res, { basicInformation: record.basicInformation, summary: record.summary });
     }
     return refuse(res, '01', 'Interface coding error');
+  });
+  app.post('/whatsapp/:phoneId/messages', express.json(), (req, res) => {
+    if (req.headers.authorization !== 'Bearer wa-token')
+      return res.status(401).json({ error: { message: 'Invalid OAuth access token' } });
+    if (whatsapp.refuse === req.body.to)
+      return res.status(400).json({ error: { message: 'Recipient not on WhatsApp' } });
+    whatsapp.messages.push({ phoneId: req.params.phoneId, ...req.body });
+    res.json({ messages: [{ id: `wamid.${whatsapp.messages.length}` }] });
   });
   momoServer = app.listen(MOMO_PORT);
 }
@@ -4593,6 +4604,340 @@ describe('branches', () => {
   });
 });
 
+describe('purchases, expenses, suppliers and customers', () => {
+  let supplier;
+  let fiona;
+  before(async () => {
+    await run(
+      'adminCreateTeamMember',
+      { name: 'Farida Finance', username: 'farida', pin: '9753', role: 'finance' },
+      s.owner,
+    );
+    fiona = await login('farida', '9753');
+  });
+
+  test('suppliers: finance adds and edits them; others cannot', async () => {
+    supplier = await run(
+      'saveSupplier',
+      { name: 'Owino Market Traders', phone: '0772111222', tin: '1000123456' },
+      fiona,
+    );
+    assert.equal(supplier.owed, 0);
+    await rejects(
+      run('saveSupplier', { name: 'owino market traders' }, s.owner),
+      /already a supplier/,
+    );
+    await rejects(run('saveSupplier', { name: 'Nope' }, s.dina), /admin or finance role required/);
+    const edited = await run(
+      'saveSupplier',
+      { id: supplier.id, name: 'Owino Market Traders', phone: '0772111333' },
+      s.owner,
+    );
+    assert.equal(edited.phone, '0772111333');
+  });
+
+  test('a purchase on credit is owed until it is paid', async () => {
+    await rejects(
+      run('recordPurchase', { supplierId: supplier.id, lines: [] }, fiona),
+      /at least one line/,
+    );
+    const bought = await run(
+      'recordPurchase',
+      {
+        supplierId: supplier.id,
+        category: 'food',
+        lines: [
+          { description: 'Tomatoes', quantity: 2, unit: 'crate', unitCost: 45000 },
+          { description: 'Onions', quantity: 10, unit: 'kg', unitCost: 3500 },
+        ],
+        paid: 50000,
+        method: 'cash',
+        invoice: 'INV-77',
+      },
+      fiona,
+    );
+    assert.equal(bought.total, 125000);
+    assert.equal(bought.paid, 50000);
+    assert.equal(bought.owed, 75000);
+    assert.equal(bought.status, 'partial');
+    assert.match(bought.code, /^PU-\d{8}-\d{3}$/);
+    await rejects(
+      run(
+        'recordPurchase',
+        {
+          supplierId: supplier.id,
+          lines: [{ description: 'X', quantity: 1, unitCost: 10 }],
+          paid: 20,
+        },
+        fiona,
+      ),
+      /Paid more than the total/,
+    );
+    const owed = (await run('listSuppliers', {}, s.owner)).suppliers.find(
+      (x) => x.id === supplier.id,
+    );
+    assert.equal(owed.owed, 75000);
+    await rejects(
+      run('payPurchase', { purchaseId: bought.id, amount: 80000, method: 'bank' }, fiona),
+      /more than is owed/,
+    );
+    const paid = await run(
+      'payPurchase',
+      { purchaseId: bought.id, amount: 75000, method: 'mobile_money' },
+      s.owner,
+    );
+    assert.equal(paid.status, 'paid');
+    assert.equal(paid.payments.length, 2);
+    const list = await run('listPurchases', {}, fiona);
+    assert.ok(list.purchases.some((row) => row.id === bought.id));
+    assert.ok(list.summary.total >= 125000);
+    assert.equal(
+      (await run('listPurchases', { status: 'owed' }, fiona)).purchases.some(
+        (r) => r.id === bought.id,
+      ),
+      false,
+    );
+    // Voided: it leaves the totals but stays listed.
+    const mistake = await run(
+      'recordPurchase',
+      { supplierId: supplier.id, lines: [{ description: 'Oops', quantity: 1, unitCost: 1000 }] },
+      fiona,
+    );
+    await rejects(run('voidPurchase', { id: mistake.id, reason: '' }, fiona), /Say why/);
+    const voided = await run('voidPurchase', { id: mistake.id, reason: 'Entered twice' }, fiona);
+    assert.equal(voided.status, 'void');
+    assert.equal(voided.owed, 0);
+    await rejects(run('listPurchases', {}, s.dina), /admin or finance role required/);
+  });
+
+  test('expenses are recorded by kind and can be voided', async () => {
+    await rejects(
+      run('recordExpense', { category: 'nonsense', description: 'x', amount: 1 }, fiona),
+      /kind of expense/,
+    );
+    await rejects(
+      run('recordExpense', { category: 'rent', description: 'Rent', amount: 0 }, fiona),
+      /Enter the amount/,
+    );
+    await rejects(
+      run(
+        'recordExpense',
+        { category: 'rent', description: 'Rent', amount: 5, day: '2099-01-01' },
+        fiona,
+      ),
+      /up to today/,
+    );
+    const rent = await run(
+      'recordExpense',
+      {
+        category: 'rent',
+        description: 'October rent',
+        amount: 1500000,
+        method: 'bank',
+        payee: 'Landlord',
+      },
+      fiona,
+    );
+    const power = await run(
+      'recordExpense',
+      { category: 'utilities', description: 'Yaka', amount: 200000, method: 'mobile_money' },
+      s.owner,
+    );
+    let list = await run('listExpenses', {}, fiona);
+    assert.ok(list.summary.total >= 1700000);
+    assert.equal(list.summary.byCategory[0].category, 'rent');
+    await run('voidExpense', { id: power.id, reason: 'Wrong amount' }, fiona);
+    list = await run('listExpenses', { category: 'utilities' }, fiona);
+    assert.equal(list.expenses.find((e) => e.id === power.id).status, 'void');
+    assert.equal(list.summary.total, 0);
+    assert.match(rent.code, /^EX-/);
+    await rejects(run('recordExpense', {}, s.rider), /admin or finance role required/);
+  });
+
+  test('customers: listed, opened and corrected', async () => {
+    const { customers, total } = await run('listCustomers', { sort: 'orders' }, fiona);
+    assert.ok(total >= 1);
+    const first = customers[0];
+    const detail = await run('getCustomer', { id: first.id }, fiona);
+    assert.equal(detail.id, first.id);
+    assert.ok(Array.isArray(detail.orders));
+    const saved = await run(
+      'saveCustomer',
+      { id: first.id, name: first.name, phone: first.phone, notes: 'No onions, ever' },
+      s.owner,
+    );
+    assert.equal(saved.notes, 'No onions, ever');
+    const found = await run('listCustomers', { q: first.name.slice(0, 4) }, fiona);
+    assert.ok(found.customers.some((c) => c.id === first.id));
+    const other = customers.find((c) => c.phone && c.phone !== first.phone);
+    if (other && first.phone)
+      await rejects(run('saveCustomer', { id: other.id, phone: first.phone }, fiona), /already/);
+    await rejects(run('listCustomers', {}, s.dina), /admin or finance role required/);
+  });
+});
+
+describe('accounting statements', () => {
+  let farida;
+  before(async () => {
+    farida = await login('farida', '9753');
+  });
+  const statements = async () => ({
+    pl: (await run('getProfitAndLoss', { preset: 'today' }, farida)).current,
+    sheet: (await run('getBalanceSheet', {}, farida)).sheet,
+    flow: await run('getCashFlow', {}, farida),
+  });
+
+  test('the statements agree with each other', async () => {
+    const { pl, sheet, flow } = await statements();
+    assert.equal(pl.grossProfit, pl.revenue.total - pl.costOfSales.total);
+    assert.equal(pl.netProfit, pl.grossProfit - pl.operating.total);
+    assert.equal(sheet.equity.total, sheet.assets.total - sheet.liabilities.total);
+    assert.equal(
+      sheet.equity.opening + sheet.equity.profit + sheet.equity.other,
+      sheet.equity.total,
+    );
+    assert.equal(flow.closing, flow.opening + flow.net);
+    // The cash flow ends where the balance sheet's cash is.
+    assert.equal(flow.closing, sheet.assets.cash);
+  });
+
+  test('a purchase on credit, then paid: cost, liability and cash move together', async () => {
+    const before = await statements();
+    const supplier = (await run('listSuppliers', {}, farida)).suppliers[0];
+    const bought = await run(
+      'recordPurchase',
+      {
+        supplierId: supplier.id,
+        category: 'drinks',
+        lines: [{ description: 'Soda crates', quantity: 4, unitCost: 25000 }],
+        paid: 0,
+      },
+      farida,
+    );
+    let after = await statements();
+    assert.equal(after.pl.costOfSales.total - before.pl.costOfSales.total, 100000);
+    assert.equal(after.sheet.liabilities.suppliers - before.sheet.liabilities.suppliers, 100000);
+    assert.equal(after.sheet.assets.cash, before.sheet.assets.cash, 'nothing paid yet');
+    await run('payPurchase', { purchaseId: bought.id, amount: 100000, method: 'cash' }, farida);
+    after = await statements();
+    assert.equal(after.sheet.liabilities.suppliers, before.sheet.liabilities.suppliers);
+    assert.equal(before.sheet.assets.cash - after.sheet.assets.cash, 100000);
+    assert.equal(before.flow.closing - after.flow.closing, 100000);
+    const expense = await run(
+      'recordExpense',
+      { category: 'marketing', description: 'Flyers', amount: 30000, method: 'cash' },
+      farida,
+    );
+    const withExpense = await statements();
+    assert.equal(withExpense.pl.operating.total - after.pl.operating.total, 30000);
+    assert.equal(withExpense.pl.netProfit, after.pl.netProfit - 30000);
+    await run('voidExpense', { id: expense.id, reason: 'Test' }, farida);
+    assert.equal((await statements()).pl.netProfit, after.pl.netProfit);
+  });
+
+  test('the opening balance adds to cash and equity', async () => {
+    const before = (await run('getBalanceSheet', {}, farida)).sheet;
+    await rejects(run('saveOpeningBalance', { amount: -5 }, farida), /opening cash/);
+    await run('saveOpeningBalance', { amount: 1000000 }, s.owner);
+    const after = (await run('getBalanceSheet', {}, farida)).sheet;
+    assert.equal(after.assets.cash - before.assets.cash, 1000000 - before.equity.opening);
+    assert.equal(after.equity.opening, 1000000);
+    await rejects(run('getBalanceSheet', { day: '2099-01-01' }, farida), /up to today/);
+    await rejects(run('getProfitAndLoss', {}, s.dina), /admin or finance role required/);
+  });
+
+  test('tax receipts list the sales for EFRIS follow-up', async () => {
+    const list = await run('listEfrisReceipts', {}, farida);
+    assert.equal(typeof list.enabled, 'boolean');
+    assert.ok(list.rows.every((row) => ['issued', 'failed', 'pending'].includes(row.status)));
+    await rejects(run('listEfrisReceipts', {}, s.dina), /admin or finance role required/);
+  });
+});
+
+describe('WhatsApp daily summaries', () => {
+  const M = { useMasterKey: true };
+
+  test('the owner connects WhatsApp and tests it', async () => {
+    assert.equal((await run('adminGetWhatsAppSettings', {}, s.owner)).tokenSet, false);
+    await rejects(
+      run('adminSaveWhatsAppSettings', { enabled: true, recipients: ['0772 000111'] }, s.owner),
+      /phone number ID, the access token/,
+    );
+    await rejects(
+      run('adminSaveWhatsAppSettings', { recipients: ['hello'] }, s.owner),
+      /not a phone number/,
+    );
+    const saved = await run(
+      'adminSaveWhatsAppSettings',
+      {
+        enabled: true,
+        phoneNumberId: '1098765',
+        token: 'wa-token',
+        templateName: 'Daily Summary',
+        recipients: ['0772 000111', '+256 701 222333'],
+      },
+      s.owner,
+    );
+    assert.equal(saved.tokenSet, true);
+    assert.equal(saved.templateName, 'dailysummary');
+    assert.deepEqual(saved.recipients, ['256772000111', '256701222333']);
+    assert.equal(JSON.stringify(saved).includes('wa-token'), false, 'the token is never sent back');
+    whatsapp.messages.length = 0;
+    const result = await run('adminTestWhatsApp', {}, s.owner);
+    assert.equal(result.sent, 2);
+    const [first] = whatsapp.messages;
+    assert.equal(first.phoneId, '1098765');
+    assert.equal(first.type, 'template');
+    assert.equal(first.template.name, 'dailysummary');
+    const line = first.template.components[0].parameters[0].text;
+    assert.match(line, /Orders: \d+ delivered/);
+    assert.ok(!line.includes('\n'), 'template values have no line breaks');
+    await rejects(run('adminGetWhatsAppSettings', {}, s.dina), /admin role required/);
+  });
+
+  test('the nightly Z-report goes out once, as text without a template', async () => {
+    await run(
+      'adminSaveWhatsAppSettings',
+      { enabled: true, templateName: '', recipients: ['0772000111', '0701222333'] },
+      s.owner,
+    );
+    const { settings } = await run('adminListSetup', {}, s.owner);
+    await run('adminSaveSettings', { ...settings, zReportHour: 0 }, s.owner);
+    // Today's Z-report was saved by an earlier test; let the job make it again.
+    await Parse.Object.destroyAll(await new Parse.Query('ZReport').find(M), M);
+    whatsapp.messages.length = 0;
+    whatsapp.refuse = '256701222333';
+    const runJob = async () => {
+      const jobId = await Parse.Cloud.startJob('dailyZReport', {});
+      for (let i = 0; i < 50; i += 1) {
+        const status = await new Parse.Query('_JobStatus').get(jobId, M);
+        if (['succeeded', 'failed'].includes(status.get('status'))) return status;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      return null;
+    };
+    try {
+      assert.equal((await runJob()).get('status'), 'succeeded');
+      assert.equal(whatsapp.messages.length, 1, 'one number took it, the other was refused');
+      const [message] = whatsapp.messages;
+      assert.equal(message.type, 'text');
+      assert.equal(message.to, '256772000111');
+      assert.match(message.text.body, /Z-report \d{4}-\d{2}-\d{2}\nOrders:/);
+      const status = await run('adminGetWhatsAppSettings', {}, s.owner);
+      assert.equal(status.lastResult.sent, 1);
+      assert.equal(status.lastResult.failed, 1);
+      assert.match(status.lastResult.error, /Recipient not on WhatsApp/);
+      // Once a day: the saved Z-report is not sent again.
+      await runJob();
+      assert.equal(whatsapp.messages.length, 1);
+    } finally {
+      whatsapp.refuse = '';
+      await run('adminSaveWhatsAppSettings', { enabled: false, recipients: [] }, s.owner);
+      await run('adminSaveSettings', settings, s.owner);
+    }
+  });
+});
+
 describe('getting started: setup progress and menu import', () => {
   test('setup progress counts the restaurant own dishes and team', async () => {
     const progress = await run('getSetupProgress', {}, s.owner);
@@ -5423,6 +5768,23 @@ const ACCESS = {
   ],
   staffOrFinance: ['getTillPayouts', 'getReportOptions', 'getPaymentsLedger', 'issueEfrisReceipt'],
   reports: [
+    'getProfitAndLoss',
+    'getBalanceSheet',
+    'getCashFlow',
+    'saveOpeningBalance',
+    'listEfrisReceipts',
+    'listSuppliers',
+    'saveSupplier',
+    'recordPurchase',
+    'payPurchase',
+    'voidPurchase',
+    'listPurchases',
+    'recordExpense',
+    'voidExpense',
+    'listExpenses',
+    'listCustomers',
+    'getCustomer',
+    'saveCustomer',
     'getDashboard',
     'adminGetZReport',
     'adminListZReports',
@@ -5489,6 +5851,9 @@ const ACCESS = {
     'adminTestPaymentConnection',
     'adminMtnSandboxUser',
     'adminGetServerAddress',
+    'adminGetWhatsAppSettings',
+    'adminSaveWhatsAppSettings',
+    'adminTestWhatsApp',
     'adminListBranches',
     'adminSaveBranch',
   ],

@@ -59,6 +59,8 @@ const DEFAULT_CONFIG = {
   // Tax (EFRIS): on/off and the day it was switched on (cloud/efris.js).
   efrisEnabled: false,
   efrisFrom: null,
+  // Accounting: cash and bank when the books started (null: not entered).
+  openingBalance: null,
   airtelAutoCollect: false,
   momoDialCode: '256',
   // Card payments at the counter (Settings → Card payments).

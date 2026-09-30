@@ -20,6 +20,9 @@ const EXPORT_CLASSES = [
   'TillPayout',
   'Shift',
   'ZReport',
+  'Supplier',
+  'Purchase',
+  'Expense',
   'AuditLog',
 ];
 const PAGE = 500;

@@ -46,6 +46,9 @@ const PROTECTED_CLASSES = [
   'ErrorLog',
   'AdminUnlock',
   'Branch',
+  'Supplier',
+  'Purchase',
+  'Expense',
   // Relay Hosted.
   'Restaurant',
   'PlatformSettings',
@@ -297,6 +300,8 @@ const SCHEMAS = {
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
     restaurantName: S,
+    // Accounting: cash and bank when the books started (accounting.js).
+    openingBalance: N,
     efrisEnabled: B,
     efrisFrom: D,
     mtnAutoCollect: B,
@@ -368,7 +373,56 @@ const SCHEMAS = {
     price: N,
     soldOutAt: 'Array',
   },
+  // Purchases and expenses (spending.js).
+  Supplier: {
+    name: S,
+    phone: S,
+    email: S,
+    address: S,
+    tin: S,
+    notes: S,
+    active: B,
+  },
+  Purchase: {
+    branch,
+    purchaseCode: S,
+    day: S,
+    spentAt: D,
+    supplier: ['Pointer', 'Supplier'],
+    supplierName: S,
+    category: S,
+    lines: 'Array',
+    total: N,
+    paid: N,
+    status: S,
+    invoice: S,
+    notes: S,
+    payments: 'Array',
+    recordedBy: user,
+    voidedAt: D,
+    voidReason: S,
+    voidedBy: user,
+  },
+  Expense: {
+    branch,
+    expenseCode: S,
+    day: S,
+    spentAt: D,
+    category: S,
+    description: S,
+    amount: N,
+    method: S,
+    payee: S,
+    reference: S,
+    supplier: ['Pointer', 'Supplier'],
+    recordedBy: user,
+    voidedAt: D,
+    voidReason: S,
+    voidedBy: user,
+  },
   Customer: {
+    email: S,
+    notes: S,
     key: S,
     name: S,
     nameLower: S,
@@ -508,6 +562,9 @@ for (const className of [
   'Customer',
   'ZReport',
   'Branch',
+  'Supplier',
+  'Purchase',
+  'Expense',
 ])
   Object.assign(SCHEMAS[className], {
     restoredFrom: S,
@@ -643,6 +700,10 @@ async function applySecurity({ schemas = true } = {}) {
     'AuditLog',
   ])
     updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ['admin'])));
+  for (const className of ['Supplier', 'Purchase', 'Expense'])
+    updated[className] = await eachObject(className, (o) =>
+      saveAcl(o, readAcl(null, ['admin', 'finance'])),
+    );
   updated.Branch = await eachObject('Branch', (o) =>
     saveAcl(o, readAcl(null, ['admin', 'finance', 'cashier', 'rider'])),
   );

@@ -1,7 +1,7 @@
 // Customers are captured by riders on each order (customers never sign in).
 // They power the name type-ahead, saved addresses and "Repeat last order".
 
-const { MASTER, invalid, requireRole, readAcl } = require('./lib/core');
+const { MASTER, invalid, requireRole, readAcl, audit } = require('./lib/core');
 
 const MAX_ADDRESSES = 5;
 
@@ -122,6 +122,128 @@ Parse.Cloud.define('searchCustomers', async (request) => {
         })),
     };
   });
+});
+
+// ---------------------------------------------------------------------------
+// Customer management (Admin → Customers): the owner and finance.
+
+const customerView = (row) => ({
+  id: row.id,
+  name: row.get('name'),
+  phone: row.get('phone') || '',
+  email: row.get('email') || '',
+  notes: row.get('notes') || '',
+  addresses: row.get('addresses') || [],
+  orderCount: row.get('orderCount') || 0,
+  lastOrderAt: row.get('lastOrderAt') || null,
+  createdAt: row.get('restoredCreatedAt') || row.createdAt,
+});
+
+const PAGE = 100;
+
+// { q?, page?, sort?: 'orders' | 'recent' | 'name' }
+Parse.Cloud.define('listCustomers', async (request) => {
+  await requireRole(request, ['admin', 'finance']);
+  const p = request.params;
+  const text = String(p.q || '')
+    .trim()
+    .toLowerCase()
+    .slice(0, 40);
+  let query = new Parse.Query('Customer');
+  if (text) {
+    const byName = new Parse.Query('Customer');
+    byName.matches('nameLower', escapeRegex(text));
+    const queries = [byName];
+    const digits = text.replace(/[^\d]/g, '');
+    if (digits.length >= 3) {
+      const byPhone = new Parse.Query('Customer');
+      byPhone.matches('phone', escapeRegex(digits));
+      queries.push(byPhone);
+    }
+    query = Parse.Query.or(...queries);
+  }
+  const sort = ['orders', 'recent', 'name'].includes(p.sort) ? p.sort : 'orders';
+  if (sort === 'orders') query.descending('orderCount');
+  else if (sort === 'recent') query.descending('lastOrderAt');
+  else query.ascending('nameLower');
+  const page = Math.max(0, Math.floor(Number(p.page) || 0));
+  query.skip(page * PAGE);
+  query.limit(PAGE + 1);
+  const [rows, total] = await Promise.all([
+    query.find(MASTER),
+    // A condition makes Postgres count exactly instead of estimating.
+    new Parse.Query('Customer').exists('objectId').count(MASTER),
+  ]);
+  return {
+    customers: rows.slice(0, PAGE).map(customerView),
+    more: rows.length > PAGE,
+    total,
+  };
+});
+
+// One customer with their recent orders and what they have spent.
+Parse.Cloud.define('getCustomer', async (request) => {
+  await requireRole(request, ['admin', 'finance']);
+  const row = await new Parse.Query('Customer')
+    .get(String(request.params.id || ''), MASTER)
+    .catch(() => null);
+  if (!row) throw invalid('Unknown customer');
+  const orders = await new Parse.Query('Order')
+    .equalTo('customer', row)
+    .descending('createdAt')
+    .limit(50)
+    .find(MASTER);
+  const delivered = orders.filter((o) => o.get('status') === 'DELIVERED');
+  return {
+    ...customerView(row),
+    spent: delivered.reduce((n, o) => n + Number(o.get('total') || 0), 0),
+    orders: orders.map((o) => ({
+      id: o.id,
+      code: o.get('orderCode'),
+      status: o.get('status'),
+      total: Number(o.get('total') || 0),
+      at: o.get('restoredCreatedAt') || o.createdAt,
+      type: o.get('orderType') || 'delivery',
+    })),
+  };
+});
+
+// { id, name, phone, email, notes }. A new phone must not belong to another
+// customer (orders find customers by phone).
+Parse.Cloud.define('saveCustomer', async (request) => {
+  const { user: actor } = await requireRole(request, ['admin', 'finance']);
+  const p = request.params;
+  const row = await new Parse.Query('Customer').get(String(p.id || ''), MASTER).catch(() => null);
+  if (!row) throw invalid('Unknown customer');
+  const before = customerView(row);
+  const name = String(p.name ?? row.get('name'))
+    .trim()
+    .slice(0, 80);
+  if (name.length < 2) throw invalid('Enter the customer name');
+  const phone = String(p.phone ?? row.get('phone') ?? '')
+    .replace(/[^\d+]/g, '')
+    .slice(0, 20);
+  const key = customerKey(name, phone);
+  const clash = await new Parse.Query('Customer')
+    .equalTo('key', key)
+    .notEqualTo('objectId', row.id)
+    .first(MASTER);
+  if (clash) throw invalid(`That phone number is already ${clash.get('name')}'s`);
+  row.set({
+    name,
+    nameLower: name.toLowerCase(),
+    phone,
+    key,
+    email: String(p.email ?? row.get('email') ?? '')
+      .trim()
+      .slice(0, 120),
+    notes: String(p.notes ?? row.get('notes') ?? '')
+      .trim()
+      .slice(0, 300),
+  });
+  await row.save(null, MASTER);
+  await audit(actor, 'customer.updated', row, before, customerView(row));
+  return customerView(row);
 });
 
 module.exports = { recordCustomerOrder, pinCustomerAddress };

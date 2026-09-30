@@ -7742,3 +7742,244 @@ table.data tr.selected td {
 .overview-branch {
   margin-bottom: 12px;
 }
+
+/* Purchases & expenses, customers */
+.spending-tabs {
+  display: inline-flex;
+  margin-bottom: 14px;
+}
+.filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+.spending-form h2 {
+  margin: 0 0 12px;
+}
+.spending-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.spending-fields .full-row {
+  grid-column: 1 / -1;
+}
+.purchase-lines {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+.purchase-line {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 3fr) minmax(70px, 1fr) minmax(70px, 1fr) minmax(90px, 1.3fr)
+    minmax(90px, 1.2fr) 44px;
+  gap: 8px;
+  align-items: center;
+}
+.purchase-line.head {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.purchase-line input {
+  min-width: 0;
+  width: 100%;
+}
+.purchase-lines > .setup-secondary {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.purchase-total {
+  justify-self: end;
+  margin: 0;
+  font-size: 15px;
+}
+.purchase-total strong {
+  font: 600 20px var(--font-display);
+  margin-left: 8px;
+}
+.spending-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+  padding: 6px 0;
+}
+.spending-actions {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.spending-actions .inline-form,
+.actions-cell .inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.customer-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.customer-form .payment-actions,
+.customer-form .form-error {
+  grid-column: 1 / -1;
+}
+.customer-search {
+  min-width: 240px;
+}
+@media (max-width: 700px) {
+  .purchase-line {
+    grid-template-columns: 1fr 1fr;
+  }
+  .purchase-line.head {
+    display: none;
+  }
+  .purchase-line input:first-child {
+    grid-column: 1 / -1;
+  }
+}
+.danger-button {
+  background: #fde3dc;
+  color: #a33a1c;
+}
+.filter-bar .filter-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.purchase-line input,
+.spending-actions input,
+.spending-actions select,
+.actions-cell .inline-form input {
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  padding: 0 10px;
+  outline: none;
+}
+.purchase-line input:focus,
+.spending-actions input:focus {
+  border-color: var(--ink);
+}
+.filter-bar .filter-check {
+  flex-direction: row;
+  align-self: end;
+  min-height: 44px;
+}
+.filter-bar .filter-check input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+}
+.admin-side nav button svg {
+  flex-shrink: 0;
+}
+.filter-bar .customer-search {
+  align-self: end;
+}
+.filter-bar .customer-search svg {
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  pointer-events: none;
+}
+.filter-bar .customer-search input {
+  width: 100%;
+  padding-left: 38px;
+}
+
+/* Accounting statements */
+.statement {
+  max-width: 820px;
+}
+.statement-head h2 {
+  margin: 2px 0;
+}
+.statement h3 {
+  margin: 18px 0 4px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.statement-row {
+  display: grid;
+  grid-template-columns: 1fr minmax(90px, auto) minmax(110px, auto);
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 15px;
+}
+.statement-row:not(:has(> :nth-child(3))) {
+  grid-template-columns: 1fr minmax(110px, auto);
+}
+.statement-row.head {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  border-bottom: 0;
+}
+.statement-row.indent > :first-child {
+  padding-left: 16px;
+}
+.statement-row.strong {
+  font-weight: 700;
+  border-bottom: 2px solid var(--line);
+}
+.statement-row small {
+  font-weight: 500;
+  color: var(--muted);
+}
+.statement-note {
+  margin-top: 16px;
+}
+.opening-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.opening-form input {
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 10px;
+  width: 180px;
+}
+.bad-text {
+  color: #a33a1c;
+}
+@media print {
+  .admin-side,
+  .admin-main > header,
+  .no-print,
+  .filter-bar {
+    display: none !important;
+  }
+  .statement {
+    border: 0;
+    box-shadow: none;
+    max-width: none;
+  }
+}
+
+.momo-status.good {
+  color: #1b7a4a;
+}
+.momo-status.bad {
+  color: #a33a1c;
+}
+.momo-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}

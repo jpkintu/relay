@@ -36,6 +36,9 @@ const ORDER = [
   'OrderItem',
   'CashHandover',
   'ZReport',
+  'Supplier',
+  'Purchase',
+  'Expense',
   'AuditLog',
 ];
 const BATCH = 200;
