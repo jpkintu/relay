@@ -18,7 +18,10 @@ const PERIODS = ['day', 'week', 'month'];
 
 const nameOf = (user) =>
   user
-    ? [user.get('riderCode') || user.get('cashierCode'), user.get('name') || user.get('username')]
+    ? [
+        user.get('riderCode') || user.get('cashierCode') || user.get('financeCode'),
+        user.get('name') || user.get('username'),
+      ]
         .filter(Boolean)
         .join(' · ')
     : '';
@@ -107,7 +110,7 @@ const rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days
 
 // Riders for the filter drop-downs (everyone who has ever had a rider code).
 Parse.Cloud.define('getReportOptions', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
+  await requireRole(request, ['cashier', 'admin', 'finance']);
   const query = new Parse.Query(Parse.User);
   query.exists('riderCode');
   const riders = (await findAll(query)).sort((a, b) =>
@@ -125,7 +128,7 @@ Parse.Cloud.define('getReportOptions', async (request) => {
 // Every cash collection, mobile money and card payment in the range, for
 // reconciliation: cash by delivery date, mobile money and card by order date.
 Parse.Cloud.define('getPaymentsLedger', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
+  await requireRole(request, ['cashier', 'admin', 'finance']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
@@ -316,7 +319,7 @@ const CASH_STATUSES = [
 // cashStatus. The summary covers every match; rows come 2,000 per `page`
 // (0 = newest).
 Parse.Cloud.define('adminSearchOrders', async (request) => {
-  await requireRole(request, ['admin']);
+  await requireRole(request, ['admin', 'finance']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
@@ -359,7 +362,7 @@ Parse.Cloud.define('adminSearchOrders', async (request) => {
 // what is paid or still owed. `paid`: 'all' (default), 'paid' or 'owed'.
 const PAID_FILTERS = ['all', 'paid', 'owed'];
 Parse.Cloud.define('getCommissionLedger', async (request) => {
-  await requireRole(request, ['admin']);
+  await requireRole(request, ['admin', 'finance']);
   const p = request.params;
   const paidFilter = p.paid || 'all';
   if (!PAID_FILTERS.includes(paidFilter)) throw invalid('Show all, paid or owed');
@@ -431,9 +434,9 @@ async function earningsFacts(range, riderId) {
 // A rider's own earnings (admins may pass riderId), grouped by week or month
 // of delivery, with the same-length period before for comparison.
 Parse.Cloud.define('getRiderEarnings', async (request) => {
-  const { user, role } = await requireRole(request, ['rider', 'admin']);
+  const { user, role } = await requireRole(request, ['rider', 'admin', 'finance']);
   const p = request.params;
-  const riderId = role === 'admin' ? p.riderId || user.id : user.id;
+  const riderId = role === 'rider' ? user.id : p.riderId || user.id;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 56 });
   const period = periodOf(p, range);
@@ -507,7 +510,7 @@ async function orderLines(orderIds) {
 // The owner's report: revenue over time, growth against the previous period
 // and month on month, menu item sales, riders, payment mix and busy hours.
 Parse.Cloud.define('getOperationsReport', async (request) => {
-  await requireRole(request, ['admin']);
+  await requireRole(request, ['admin', 'finance']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const tz = config.timezone;

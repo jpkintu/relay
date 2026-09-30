@@ -81,7 +81,7 @@ Parse.Cloud.define('getMyProfile', async (request) => {
     name: user.get('name') || user.getUsername(),
     phone: user.get('phone') || '',
     role,
-    code: user.get('riderCode') || user.get('cashierCode') || '',
+    code: user.get('riderCode') || user.get('cashierCode') || user.get('financeCode') || '',
     // Riders only: false while on a break (new orders are refused).
     available: role === 'rider' ? user.get('available') !== false : null,
     commission:

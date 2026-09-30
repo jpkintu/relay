@@ -143,7 +143,7 @@ var require_core = __commonJS({
     "use strict";
     var { dateKey } = require_dates();
     var MASTER = { useMasterKey: true };
-    var ROLE_NAMES = ["admin", "cashier", "rider"];
+    var ROLE_NAMES = ["admin", "finance", "cashier", "rider"];
     var DEFAULT_CONFIG = {
       restaurantName: "Restaurant",
       currencySymbol: "UGX",
@@ -323,7 +323,10 @@ var require_core = __commonJS({
       if (!await query.first(MASTER))
         throw invalid("Start your shift and count the cash in the till first");
     }
-    var personName = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
+    var personName = (user) => user ? [
+      user.get("riderCode") || user.get("cashierCode") || user.get("financeCode"),
+      user.get("name") || user.get("username")
+    ].filter(Boolean).join(" \xB7 ") : "";
     async function nextSequence(key) {
       const find = () => {
         const query = new Parse.Query("Counter");
@@ -386,11 +389,14 @@ var require_core = __commonJS({
       );
     }
     async function nextStaffCode(role) {
-      const prefix = role === "rider" ? "R" : "C";
+      const prefix = role === "rider" ? "R" : role === "finance" ? "F" : "C";
       return uniqueCode(
         `staff:${prefix}`,
         (n) => `${prefix}-${String(n).padStart(3, "0")}`,
-        codeTakenIn(Parse.User, role === "rider" ? "riderCode" : "cashierCode")
+        codeTakenIn(
+          Parse.User,
+          role === "rider" ? "riderCode" : role === "finance" ? "financeCode" : "cashierCode"
+        )
       );
     }
     async function claimOnce(key) {
@@ -844,7 +850,7 @@ var require_security = __commonJS({
           throw forbidden("Accounts are created by the restaurant administrator");
         for (const key of ["active", "commissionType", "commissionPerOrder", "commissionPercent"])
           request.object.unset(key);
-        for (const key of ["riderCode", "cashierCode"]) request.object.unset(key);
+        for (const key of ["riderCode", "cashierCode", "financeCode"]) request.object.unset(key);
         return;
       }
       const blocked = request.object.dirtyKeys().filter((key) => !SELF_EDITABLE_USER_FIELDS.includes(key));
@@ -1319,7 +1325,7 @@ var require_security = __commonJS({
       updated._User = await eachObject(Parse.User, async (user2) => {
         const role = await getRoleName(user2);
         let changed = false;
-        const codeField = role === "rider" ? "riderCode" : role === "cashier" ? "cashierCode" : null;
+        const codeField = role === "rider" ? "riderCode" : role === "cashier" ? "cashierCode" : role === "finance" ? "financeCode" : null;
         if (codeField && (!user2.get(codeField) || isBrokenCode(user2.get(codeField)))) {
           user2.set(codeField, await nextStaffCode(role));
           changed = true;
@@ -9436,7 +9442,10 @@ var require_payments = __commonJS({
       });
       return { paymentStatus: PENDING };
     });
-    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name")].filter(Boolean).join(" \xB7 ") : "";
+    var nameOf = (user) => user ? [
+      user.get("riderCode") || user.get("cashierCode") || user.get("financeCode"),
+      user.get("name")
+    ].filter(Boolean).join(" \xB7 ") : "";
     function paymentRow(order) {
       return {
         id: order.id,
@@ -28294,7 +28303,7 @@ var require_efris = __commonJS({
       };
     }
     Parse.Cloud.define("issueEfrisReceipt", async (request) => {
-      const { user: actor } = await requireRole(request, ["cashier", "admin"]);
+      const { user: actor } = await requireRole(request, ["cashier", "admin", "finance"]);
       const id = String(request.params?.orderId || "");
       if (!/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown order");
       const { values } = await loadConfig();
@@ -28881,9 +28890,9 @@ var require_payouts = __commonJS({
       return { id: row.id, amount };
     });
     Parse.Cloud.define("getTillPayouts", async (request) => {
-      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const { user, role } = await requireRole(request, ["cashier", "admin", "finance"]);
       const query = new Parse.Query("TillPayout");
-      if (role === "admin") {
+      if (role !== "cashier") {
         const { values: config } = await loadConfig();
         const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
         if (range.error) throw invalid(range.error);
@@ -29596,7 +29605,10 @@ var require_reports2 = __commonJS({
     var { payOwed } = require_payouts();
     var MAX_ROWS = 2e3;
     var PERIODS = ["day", "week", "month"];
-    var nameOf = (user) => user ? [user.get("riderCode") || user.get("cashierCode"), user.get("name") || user.get("username")].filter(Boolean).join(" \xB7 ") : "";
+    var nameOf = (user) => user ? [
+      user.get("riderCode") || user.get("cashierCode") || user.get("financeCode"),
+      user.get("name") || user.get("username")
+    ].filter(Boolean).join(" \xB7 ") : "";
     function rangeOf(params, config, options) {
       const range = resolveRange(params, config.timezone, options);
       if (range.error) throw invalid(range.error);
@@ -29667,7 +29679,7 @@ var require_reports2 = __commonJS({
     var byNewest = (field) => (a, b) => (b[field] || 0) - (a[field] || 0);
     var rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days });
     Parse.Cloud.define("getReportOptions", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
+      await requireRole(request, ["cashier", "admin", "finance"]);
       const query = new Parse.Query(Parse.User);
       query.exists("riderCode");
       const riders = (await findAll(query)).sort(
@@ -29682,7 +29694,7 @@ var require_reports2 = __commonJS({
       };
     });
     Parse.Cloud.define("getPaymentsLedger", async (request) => {
-      await requireRole(request, ["cashier", "admin"]);
+      await requireRole(request, ["cashier", "admin", "finance"]);
       const p = request.params;
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 7 });
@@ -29844,7 +29856,7 @@ var require_reports2 = __commonJS({
       "NOT_APPLICABLE"
     ];
     Parse.Cloud.define("adminSearchOrders", async (request) => {
-      await requireRole(request, ["admin"]);
+      await requireRole(request, ["admin", "finance"]);
       const p = request.params;
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 7 });
@@ -29882,7 +29894,7 @@ var require_reports2 = __commonJS({
     });
     var PAID_FILTERS = ["all", "paid", "owed"];
     Parse.Cloud.define("getCommissionLedger", async (request) => {
-      await requireRole(request, ["admin"]);
+      await requireRole(request, ["admin", "finance"]);
       const p = request.params;
       const paidFilter = p.paid || "all";
       if (!PAID_FILTERS.includes(paidFilter)) throw invalid("Show all, paid or owed");
@@ -29944,9 +29956,9 @@ var require_reports2 = __commonJS({
       return (await findAll(query)).map(factOf);
     }
     Parse.Cloud.define("getRiderEarnings", async (request) => {
-      const { user, role } = await requireRole(request, ["rider", "admin"]);
+      const { user, role } = await requireRole(request, ["rider", "admin", "finance"]);
       const p = request.params;
-      const riderId = role === "admin" ? p.riderId || user.id : user.id;
+      const riderId = role === "rider" ? user.id : p.riderId || user.id;
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 56 });
       const period = periodOf(p, range);
@@ -30013,7 +30025,7 @@ var require_reports2 = __commonJS({
       return lines;
     }
     Parse.Cloud.define("getOperationsReport", async (request) => {
-      await requireRole(request, ["admin"]);
+      await requireRole(request, ["admin", "finance"]);
       const p = request.params;
       const { values: config } = await loadConfig();
       const tz = config.timezone;
@@ -30068,7 +30080,7 @@ var require_owner = __commonJS({
     var {
       MASTER,
       invalid,
-      adminOnly,
+      requireRole,
       readAcl,
       audit,
       loadConfig,
@@ -30152,7 +30164,7 @@ var require_owner = __commonJS({
       return sumBy(unpaid, payOwed) - sumBy(owed, (h) => h.get("shortage"));
     }
     Parse.Cloud.define("getDashboard", async (request) => {
-      await adminOnly(request);
+      await requireRole(request, ["admin", "finance"]);
       const { values: config } = await loadConfig();
       const tz = config.timezone;
       const today = isoDay(/* @__PURE__ */ new Date(), tz);
@@ -30530,7 +30542,7 @@ var require_owner = __commonJS({
       return row ? `Z-report saved for ${row.get("day")}` : "Not due yet (or already saved)";
     });
     Parse.Cloud.define("adminGetZReport", async (request) => {
-      const actor = await adminOnly(request);
+      const { user: actor } = await requireRole(request, ["admin", "finance"]);
       const { values: config } = await loadConfig();
       const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
       const day = request.params.day || today;
@@ -30542,7 +30554,7 @@ var require_owner = __commonJS({
       return { day, live: false, savedAt: row.get("generatedAt"), report: row.get("data") };
     });
     Parse.Cloud.define("adminListZReports", async (request) => {
-      await adminOnly(request);
+      await requireRole(request, ["admin", "finance"]);
       const query = new Parse.Query("ZReport");
       query.descending("day");
       query.limit(62);
@@ -32383,7 +32395,7 @@ var require_shifts = __commonJS({
       readAcl,
       audit,
       riderFloat,
-      adminOnly,
+      requireRole,
       loadConfig,
       personName,
       verifyPin,
@@ -32612,7 +32624,7 @@ var require_shifts = __commonJS({
       return { balance, expectedTill: expected, variance };
     });
     Parse.Cloud.define("getShiftReport", async (request) => {
-      await adminOnly(request);
+      await requireRole(request, ["admin", "finance"]);
       const { values: config } = await loadConfig();
       const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
       if (range.error) throw invalid(range.error);
@@ -32687,7 +32699,7 @@ var require_people = __commonJS({
     var { riderOutstanding } = require_shifts();
     var { riderPayState, payoutJSON } = require_payouts();
     var { handoverJSON } = require_cash();
-    var STAFF_ROLES = ["rider", "cashier"];
+    var STAFF_ROLES = ["rider", "cashier", "finance"];
     function checkNewPin(role, pin) {
       const [min, max] = role === "admin" ? [8, 64] : [4, 32];
       if (pin.length < min || pin.length > max)
@@ -32727,7 +32739,8 @@ var require_people = __commonJS({
       const user = await new Parse.Query(Parse.User).get(String(request.params.id || ""), MASTER);
       if (user.id === actor.id) throw forbidden("Change your own password from your profile");
       const role = await getRoleName(user);
-      if (!STAFF_ROLES.includes(role)) throw forbidden("Only rider and cashier PINs can be reset here");
+      if (!STAFF_ROLES.includes(role))
+        throw forbidden("Only rider, cashier and finance PINs can be reset here");
       const pin = String(request.params.pin ?? "");
       checkNewPin(role, pin);
       user.set({ password: pin, pinFailures: 0 });
@@ -32872,7 +32885,7 @@ var require_people = __commonJS({
         username: user.getUsername(),
         phone: user.get("phone") || "",
         role: role || "unassigned",
-        code: user.get("riderCode") || user.get("cashierCode") || "",
+        code: user.get("riderCode") || user.get("cashierCode") || user.get("financeCode") || "",
         active: user.get("active") !== false,
         available: role === "rider" ? user.get("available") !== false : null,
         pinLocked: !!(lockedUntil && lockedUntil > /* @__PURE__ */ new Date()),
@@ -32980,10 +32993,10 @@ var require_admin = __commonJS({
     var { applySecurity } = require_security();
     var { cleanLocation } = require_geo();
     var { cleanTheme, themeProblems } = require_theme();
-    var ROLE_NAMES = ["admin", "cashier", "rider"];
-    var STAFF_ROLES = ["rider", "cashier"];
+    var ROLE_NAMES = ["admin", "finance", "cashier", "rider"];
+    var STAFF_ROLES = ["rider", "cashier", "finance"];
     var merchantField = (value, max) => String(value ?? "").trim().slice(0, max);
-    var codeField = (role) => role === "rider" ? "riderCode" : "cashierCode";
+    var codeField = (role) => role === "rider" ? "riderCode" : role === "finance" ? "financeCode" : "cashierCode";
     async function adminRoleExists() {
       const query = new Parse.Query(Parse.Role);
       query.equalTo("name", "admin");
@@ -33121,7 +33134,7 @@ var require_admin = __commonJS({
           phone: user.get("phone") || "",
           active: user.get("active") !== false,
           role: members[user.id] || "unassigned",
-          code: user.get("riderCode") || user.get("cashierCode") || "",
+          code: user.get("riderCode") || user.get("cashierCode") || user.get("financeCode") || "",
           commissionType: user.get("commissionType") || "per_order",
           commissionPerOrder: user.get("commissionPerOrder") || 0,
           commissionPercent: user.get("commissionPercent") || 0,
@@ -33248,7 +33261,8 @@ var require_admin = __commonJS({
     Parse.Cloud.define("adminChangeRole", async (request) => {
       const actor = await adminOnly(request);
       const { userId, role: next } = request.params;
-      if (!STAFF_ROLES.includes(next)) throw invalid("Only rider and cashier roles can be assigned");
+      if (!STAFF_ROLES.includes(next))
+        throw invalid("Only rider, cashier and finance roles can be assigned");
       const user = await new Parse.Query(Parse.User).get(userId, MASTER);
       if (user.id === actor.id) throw forbidden("You cannot change your own role");
       const query = new Parse.Query(Parse.Role);
@@ -33828,6 +33842,7 @@ var require_data = __commonJS({
       "active",
       "riderCode",
       "cashierCode",
+      "financeCode",
       "commissionType",
       "commissionPerOrder",
       "commissionPercent",
@@ -33927,13 +33942,14 @@ var require_restore = __commonJS({
       "active",
       "riderCode",
       "cashierCode",
+      "financeCode",
       "commissionType",
       "commissionPerOrder",
       "commissionPercent",
       "maxFloat",
       "available"
     ];
-    var ROLES = ["admin", "cashier", "rider"];
+    var ROLES = ["admin", "finance", "cashier", "rider"];
     var ARRAY_LINKS = {
       CashHandover: { orders: "Order", returnedOrders: "Order" },
       TillPayout: { orders: "Order", shortages: "CashHandover" }
@@ -34345,6 +34361,7 @@ var require_overrides = __commonJS({
       invalid,
       forbidden,
       adminOnly,
+      requireRole,
       getRoleName,
       readAcl,
       audit,
@@ -34397,7 +34414,7 @@ var require_overrides = __commonJS({
       return order.get("paymentProvider") === "airtel" ? id.replace(/-/g, "") : id;
     };
     Parse.Cloud.define("adminGetOrder", async (request) => {
-      await adminOnly(request);
+      const { role } = await requireRole(request, ["admin", "finance"]);
       const id = idOf(request.params.id);
       if (!id) throw invalid("Unknown order");
       const query = new Parse.Query("Order");
@@ -34490,7 +34507,7 @@ var require_overrides = __commonJS({
         })),
         history,
         // What the owner may do now (see adminOverrideOrder).
-        can: overrideOptions(order),
+        can: role === "admin" ? overrideOptions(order) : {},
         // Tax (EFRIS): the sale's fiscal receipt, if EFRIS is on.
         efris: await require_efris().receiptView(order, (await loadConfig()).values)
       };
@@ -34769,7 +34786,7 @@ var require_profile = __commonJS({
         name: user.get("name") || user.getUsername(),
         phone: user.get("phone") || "",
         role,
-        code: user.get("riderCode") || user.get("cashierCode") || "",
+        code: user.get("riderCode") || user.get("cashierCode") || user.get("financeCode") || "",
         // Riders only: false while on a break (new orders are refused).
         available: role === "rider" ? user.get("available") !== false : null,
         commission: role === "rider" ? {

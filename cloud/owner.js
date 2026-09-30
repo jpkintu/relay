@@ -5,7 +5,7 @@
 const {
   MASTER,
   invalid,
-  adminOnly,
+  requireRole,
   readAcl,
   audit,
   loadConfig,
@@ -101,7 +101,7 @@ async function riderPayOwed() {
 
 // Owner: today's figures, the last 30 days and what needs attention.
 Parse.Cloud.define('getDashboard', async (request) => {
-  await adminOnly(request);
+  await requireRole(request, ['admin', 'finance']);
   const { values: config } = await loadConfig();
   const tz = config.timezone;
   const today = isoDay(new Date(), tz);
@@ -519,7 +519,7 @@ Parse.Cloud.job('dailyZReport', async () => {
 // Owner: one day's Z-report. Past days come from the saved copy (saved on
 // first view if the nightly one is missing); today is always built live.
 Parse.Cloud.define('adminGetZReport', async (request) => {
-  const actor = await adminOnly(request);
+  const { user: actor } = await requireRole(request, ['admin', 'finance']);
   const { values: config } = await loadConfig();
   const today = isoDay(new Date(), config.timezone);
   const day = request.params.day || today;
@@ -533,7 +533,7 @@ Parse.Cloud.define('adminGetZReport', async (request) => {
 
 // Owner: saved Z-reports, newest first.
 Parse.Cloud.define('adminListZReports', async (request) => {
-  await adminOnly(request);
+  await requireRole(request, ['admin', 'finance']);
   const query = new Parse.Query('ZReport');
   query.descending('day');
   query.limit(62);

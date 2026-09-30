@@ -255,9 +255,9 @@ Parse.Cloud.define('recordTillPayout', async (request) => {
 
 // Payouts in a date range (owner), or the caller's own shift (cashier).
 Parse.Cloud.define('getTillPayouts', async (request) => {
-  const { user, role } = await requireRole(request, ['cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['cashier', 'admin', 'finance']);
   const query = new Parse.Query('TillPayout');
-  if (role === 'admin') {
+  if (role !== 'cashier') {
     const { values: config } = await loadConfig();
     const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
     if (range.error) throw invalid(range.error);

@@ -4,7 +4,7 @@ import type Parse from '../parse';
 export function personLabel(user: Parse.Object | undefined | null): string {
   if (!user) return 'Unknown';
   const name = user.get('name') || user.get('username');
-  const code = user.get('riderCode') || user.get('cashierCode');
+  const code = user.get('riderCode') || user.get('cashierCode') || user.get('financeCode');
   if (!name) return code || 'Unknown';
   return code ? `${code} · ${name}` : name;
 }

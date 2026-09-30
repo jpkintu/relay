@@ -159,7 +159,7 @@ export function AdminMember({ id }: { id: string }) {
       </div>
     );
 
-  const staff = m.role === 'rider' || m.role === 'cashier';
+  const staff = m.role === 'rider' || m.role === 'cashier' || m.role === 'finance';
   const r = m.rider;
   const c = m.cashier;
   const limitValue = limit ?? (m.cashLimit === null ? '' : String(m.cashLimit));
@@ -332,6 +332,7 @@ export function AdminMember({ id }: { id: string }) {
               >
                 <option value="rider">Rider</option>
                 <option value="cashier">Cashier</option>
+                <option value="finance">Finance</option>
               </select>
             </div>
             <div className="member-action">
