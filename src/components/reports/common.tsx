@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import Parse from '../../parse';
-import { useConfig } from '../../lib/session';
+import { useConfig, useSession } from '../../lib/session';
 import { PRESETS, formatChange, presetRange, rangeLabel, todayIn } from '../../lib/range';
 import type { DateRange, Preset } from '../../lib/range';
 
@@ -11,6 +11,8 @@ export type Filters = {
   to: string;
   riderId: string;
   method: '' | 'cash' | 'mobile_money' | 'card';
+  // '' = every branch.
+  branchId?: string;
 };
 
 export function useFilters(preset: Exclude<Preset, 'custom'>, riderId = '') {
@@ -20,6 +22,7 @@ export function useFilters(preset: Exclude<Preset, 'custom'>, riderId = '') {
     ...presetRange(preset, todayIn(timezone)),
     riderId,
     method: '',
+    branchId: '',
   }));
 }
 
@@ -30,6 +33,7 @@ export function filterParams(filters: Filters, extra: Record<string, unknown> = 
     to: filters.to,
     ...(filters.riderId ? { riderId: filters.riderId } : {}),
     ...(filters.method ? { method: filters.method } : {}),
+    ...(filters.branchId ? { branchId: filters.branchId } : {}),
     ...extra,
   };
 }
@@ -69,11 +73,54 @@ export function useRiderOptions(enabled = true) {
   return data?.riders ?? [];
 }
 
+export type BranchOption = { id: string; name: string; active: boolean; main: boolean };
+
+// The restaurant's branches for filters: only for the owner and finance, and
+// only once there are two or more.
+export function useBranchOptions() {
+  const { profile, preview } = useSession();
+  const wanted =
+    !preview &&
+    (profile?.branchCount ?? 0) > 1 &&
+    (profile?.role === 'admin' || profile?.role === 'finance');
+  const { data } = useCloud<{ branches: BranchOption[] }>('getBranches', {}, wanted);
+  return wanted ? (data?.branches ?? []) : [];
+}
+
+export function BranchSelect({
+  value,
+  onChange,
+  branches,
+  allLabel = 'All branches',
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  branches: BranchOption[];
+  allLabel?: string;
+}) {
+  if (branches.length < 2) return null;
+  return (
+    <label>
+      <span>Branch</span>
+      <select aria-label="Branch" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{allLabel}</option>
+        {branches.map((branch) => (
+          <option key={branch.id} value={branch.id}>
+            {branch.name}
+            {branch.active ? '' : ' (closed)'}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function FilterBar({
   filters,
   onChange,
   riders,
   showMethod,
+  showBranch = true,
   presets = PRESETS.map(([id]) => id),
   children,
 }: {
@@ -81,10 +128,12 @@ export function FilterBar({
   onChange: (next: Filters) => void;
   riders?: RiderOption[];
   showMethod?: boolean;
+  showBranch?: boolean;
   presets?: readonly Exclude<Preset, 'custom'>[];
   children?: ReactNode;
 }) {
   const { timezone } = useConfig();
+  const branches = useBranchOptions();
   const today = todayIn(timezone);
   const setPreset = (preset: Preset) =>
     onChange(
@@ -143,6 +192,13 @@ export function FilterBar({
         </>
       ) : (
         <p className="filter-range">{rangeLabel(filters)}</p>
+      )}
+      {showBranch && (
+        <BranchSelect
+          value={filters.branchId || ''}
+          onChange={(branchId) => onChange({ ...filters, branchId })}
+          branches={branches}
+        />
       )}
       {riders && (
         <label>

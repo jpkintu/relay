@@ -38,12 +38,22 @@ const clean = (value, max) =>
 const cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, '');
 
 // Accompaniments that exist, are active and are not sold out, by id.
-async function servableAccompaniments() {
+// Branches (branches.js): a dish is offered at the branches in `branchIds`
+// (none listed: every branch), and sold out at those in `soldOutAt` (the
+// cashiers' Stock tab), on top of being sold out everywhere.
+const offeredAt = (row, branchId) => {
+  const ids = row.get('branchIds') || [];
+  return !branchId || !ids.length || ids.includes(branchId);
+};
+const inStockAt = (row, branchId) => !branchId || !(row.get('soldOutAt') || []).includes(branchId);
+
+async function servableAccompaniments(branchId) {
   const query = new Parse.Query('Accompaniment');
   query.equalTo('active', true);
   query.equalTo('available', true);
   query.limit(1000);
-  return new Map((await query.find(MASTER)).map((row) => [row.id, row]));
+  const rows = (await query.find(MASTER)).filter((row) => inStockAt(row, branchId));
+  return new Map(rows.map((row) => [row.id, row]));
 }
 
 // Saves the order's priced lines (OrderItem), readable by `rider` (if any),
@@ -71,7 +81,9 @@ async function saveLines(order, lines, rider) {
 }
 
 // Validates a cart against the live menu and returns priced lines.
-async function priceLines(items) {
+// `branchId`: the branch the order is for; dishes it does not offer or has
+// sold out are refused.
+async function priceLines(items, branchId) {
   if (!Array.isArray(items) || !items.length) throw invalid('Add at least one item');
   if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
   const menuQuery = new Parse.Query('MenuItem');
@@ -81,13 +93,19 @@ async function priceLines(items) {
   );
   const [menu, accompaniments] = await Promise.all([
     menuQuery.find(MASTER),
-    servableAccompaniments(),
+    servableAccompaniments(branchId),
   ]);
   const byId = new Map(menu.map((item) => [item.id, item]));
   return items.map((line) => {
     const saved = byId.get(String(line.id));
     const qty = Number(line.quantity);
-    if (!saved || !saved.get('active') || !saved.get('availableToday'))
+    if (
+      !saved ||
+      !saved.get('active') ||
+      !saved.get('availableToday') ||
+      !offeredAt(saved, branchId) ||
+      !inStockAt(saved, branchId)
+    )
       throw invalid(`${saved?.get('title') || 'An item'} is not available`);
     if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw invalid('Invalid quantity');
     const title = saved.get('title');
@@ -157,11 +175,13 @@ Parse.Cloud.define('createOrder', async (request) => {
         : 'Invalid payment method',
     );
 
+  // The rider's branch: the order is theirs to deliver from there.
+  const branch = await require('./branches').branchFor(rider);
   const activeQuery = new Parse.Query('Order');
   activeQuery.equalTo('createdBy', rider);
   activeQuery.notContainedIn('status', ['DELIVERED', 'CANCELLED']);
   const [lines, { values: settings }, active, float, me] = await Promise.all([
-    priceLines(p.items),
+    priceLines(p.items, branch?.id),
     loadConfig(),
     findAll(activeQuery),
     riderFloat(rider),
@@ -205,6 +225,7 @@ Parse.Cloud.define('createOrder', async (request) => {
       : null;
 
   const order = new Parse.Object('Order');
+  if (branch) order.set('branch', branch);
   order.set({
     orderCode: await nextDailyCode('ORD', 4, config.timezone, {
       className: 'Order',
@@ -662,9 +683,12 @@ async function onShiftCashiers() {
 }
 
 Parse.Cloud.define('getOnShiftCashiers', async (request) => {
-  const { user } = await requireRole(request, ['cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['cashier', 'admin']);
+  // A cashier passes orders within their branch; the owner to anyone.
+  const branch = role === 'cashier' ? (await user.fetch(MASTER)).get('branch')?.id : null;
   return (await onShiftCashiers())
     .filter((person) => person.id !== user.id)
+    .filter((person) => !branch || person.get('branch')?.id === branch)
     .map((person) => ({ id: person.id, name: personName(person) }));
 });
 
@@ -718,6 +742,8 @@ module.exports = {
   cleanPhone,
   CHANNELS,
   servableAccompaniments,
+  offeredAt,
+  inStockAt,
   KITCHEN_OPEN,
   PAYMENT_METHODS,
   applyDelivery,

@@ -9,6 +9,7 @@ import { MenuImport } from './MenuImport';
 import { useAdminRun } from '../lib/adminRun';
 import { useMoney, useSession, type LoginImage } from '../lib/session';
 import { ChangePin } from './Profile';
+import { useBranchOptions, type BranchOption } from './reports/common';
 import { PinSheet } from './MapPin';
 
 type Member = {
@@ -26,6 +27,7 @@ type Member = {
   onShift: boolean;
   cashHeld: number;
   cashLimit: number | null;
+  branchId?: string;
 };
 type Item = {
   id: string;
@@ -41,6 +43,8 @@ type Item = {
   archived: boolean;
   // Minutes the kitchen needs (0 = not set).
   prepMinutes: number;
+  // Branches that offer it (empty: all).
+  branchIds?: string[];
 };
 type Group = { label: string; options: string[]; min: number; max: number };
 // `price` 0 = free; otherwise charged on top of the dish, per unit.
@@ -106,6 +110,9 @@ const input = (
 );
 
 // The fields adminSaveMenuItem takes, from a listed dish.
+const branchLabel = (branches: BranchOption[], id: string) =>
+  branches.find((b) => b.id === id)?.name || '';
+
 const itemPayload = (item: Item) => ({
   id: item.id,
   title: item.title,
@@ -546,7 +553,10 @@ export function AdminSetup({
     [username, setUsername] = useState(''),
     [phone, setPhone] = useState(''),
     [pin, setPin] = useState(''),
-    [role, setRole] = useState('rider');
+    [role, setRole] = useState('rider'),
+    [memberBranch, setMemberBranch] = useState('');
+  const branches = useBranchOptions().filter((b) => b.active);
+  const [itemBranches, setItemBranches] = useState<string[]>([]);
   const [itemTitle, setItemTitle] = useState(''),
     [itemPrice, setItemPrice] = useState(''),
     [itemPrep, setItemPrep] = useState(''),
@@ -622,12 +632,23 @@ export function AdminSetup({
               className="setup-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                void save('adminCreateTeamMember', { name, username, phone, pin, role }, () => {
-                  setName('');
-                  setUsername('');
-                  setPhone('');
-                  setPin('');
-                });
+                void save(
+                  'adminCreateTeamMember',
+                  {
+                    name,
+                    username,
+                    phone,
+                    pin,
+                    role,
+                    ...(memberBranch && role !== 'finance' && { branchId: memberBranch }),
+                  },
+                  () => {
+                    setName('');
+                    setUsername('');
+                    setPhone('');
+                    setPin('');
+                  },
+                );
               }}
             >
               {input('Full name', name, setName)}
@@ -648,6 +669,21 @@ export function AdminSetup({
                   </small>
                 )}
               </label>
+              {branches.length > 1 && role !== 'finance' && (
+                <label className="setup-field">
+                  Branch
+                  <select value={memberBranch} onChange={(e) => setMemberBranch(e.target.value)}>
+                    <option value="">Main branch</option>
+                    {branches
+                      .filter((b) => !b.main)
+                      .map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
               <button disabled={busy || preview} className="setup-submit">
                 Create team member
               </button>
@@ -682,6 +718,9 @@ export function AdminSetup({
                           <b>{u.name}</b>
                           <small>
                             {u.code && `${u.code} · `}@{u.username}
+                            {branches.length > 1 &&
+                              u.branchId &&
+                              ` · ${branchLabel(branches, u.branchId)}`}
                           </small>
                         </td>
                         <td data-label="Role">{u.role === 'admin' ? 'Owner' : capital(u.role)}</td>
@@ -852,6 +891,7 @@ export function AdminSetup({
                     category: itemCategory,
                     description: itemDescription,
                     accompanimentGroups: itemGroups,
+                    ...(branches.length > 1 && { branchIds: itemBranches }),
                   },
                   () => {
                     setItemTitle('');
@@ -859,6 +899,7 @@ export function AdminSetup({
                     setItemPrep('');
                     setItemDescription('');
                     setItemGroups([]);
+                    setItemBranches([]);
                     setEditingItem(null);
                   },
                 );
@@ -903,6 +944,33 @@ export function AdminSetup({
                   onDone={() => void load()}
                   onError={setError}
                 />
+              )}
+              {branches.length > 1 && (
+                <fieldset className="setup-field full-row branch-offer">
+                  <legend>Offered at</legend>
+                  <label className="setup-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={!itemBranches.length}
+                      onChange={() => setItemBranches([])}
+                    />{' '}
+                    Every branch
+                  </label>
+                  {branches.map((b) => (
+                    <label className="setup-checkbox" key={b.id}>
+                      <input
+                        type="checkbox"
+                        checked={itemBranches.includes(b.id)}
+                        onChange={(e) =>
+                          setItemBranches((ids) =>
+                            e.target.checked ? [...ids, b.id] : ids.filter((id) => id !== b.id),
+                          )
+                        }
+                      />{' '}
+                      {b.name}
+                    </label>
+                  ))}
+                </fieldset>
               )}
               <GroupsEditor
                 groups={itemGroups}
@@ -1018,6 +1086,7 @@ export function AdminSetup({
                                 setItemCategory(item.category);
                                 setItemDescription(item.description || '');
                                 setItemGroups(item.accompanimentGroups || []);
+                                setItemBranches(item.branchIds || []);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
                               }}
                             >

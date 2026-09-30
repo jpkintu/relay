@@ -175,7 +175,13 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
   const payLater = !isDelivery && p.payLater === true;
   const rider = isDelivery && p.riderId ? await activeRider(p.riderId) : null;
 
-  const lines = await priceLines(p.items);
+  // The cashier's branch; the owner may say which branch it is for.
+  const branches = require('./branches');
+  const branch =
+    role === 'admin' && p.branchId
+      ? await branches.branchParam(p.branchId)
+      : await branches.branchFor(actor);
+  const lines = await priceLines(p.items, branch?.id);
   const subtotal = sumBy(lines, (line) => line.lineTotal);
   const fee = isDelivery
     ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0))
@@ -196,6 +202,7 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
 
   const me = await actor.fetch(MASTER);
   const order = new Parse.Object('Order');
+  if (branch) order.set('branch', branch);
   order.set({
     orderCode: await nextDailyCode('ORD', 4, config.timezone, {
       className: 'Order',
@@ -367,15 +374,18 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
 // shift and available first). Riders on a break are listed but cannot be
 // chosen (activeRider refuses them).
 Parse.Cloud.define('getAssignableRiders', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
-  const role = await new Parse.Query(Parse.Role).equalTo('name', 'rider').first(MASTER);
-  const riders = role ? await findAll(role.getUsers().query()) : [];
+  const { user, role } = await requireRole(request, ['cashier', 'admin']);
+  // A cashier sends riders of their own branch; the owner any rider.
+  const branch = role === 'cashier' ? (await user.fetch(MASTER)).get('branch')?.id : null;
+  const riderRole = await new Parse.Query(Parse.Role).equalTo('name', 'rider').first(MASTER);
+  const riders = riderRole ? await findAll(riderRole.getUsers().query()) : [];
   const shifts = await findAll(
     new Parse.Query('Shift').equalTo('kind', 'rider').equalTo('status', 'open'),
   );
   const onShift = new Set(shifts.map((s) => s.get('operator')?.id));
   return riders
     .filter((rider) => rider.get('active') !== false)
+    .filter((rider) => !branch || rider.get('branch')?.id === branch)
     .map((rider) => ({
       id: rider.id,
       name: personName(rider),

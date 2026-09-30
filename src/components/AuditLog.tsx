@@ -98,7 +98,7 @@ export function AuditLog() {
 
   return (
     <div className={busy ? 'report busy' : 'report'}>
-      <FilterBar filters={filters} onChange={setFilters}>
+      <FilterBar showBranch={false} filters={filters} onChange={setFilters}>
         <label>
           <span>Kind</span>
           <select aria-label="Kind" value={group} onChange={(e) => setGroup(e.target.value)}>

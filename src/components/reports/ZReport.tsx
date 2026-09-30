@@ -1,9 +1,10 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, Printer } from 'lucide-react';
 import { useConfig, useMoney } from '../../lib/session';
 import { formatDate } from '../../lib/format';
 import { addDays, todayIn } from '../../lib/range';
-import { useCloud } from './common';
+import { BranchSelect, useBranchOptions, useCloud } from './common';
 
 type Z = {
   day: string;
@@ -75,7 +76,13 @@ export function ZReportPage({ day: wanted }: { day: string }) {
   const navigate = useNavigate();
   const today = todayIn(timezone);
   const day = wanted === 'today' || wanted > today ? today : wanted;
-  const { data, error, loading } = useCloud<Result>('adminGetZReport', { day });
+  const branches = useBranchOptions();
+  const [branchId, setBranchId] = useState('');
+  const branchName = branches.find((b) => b.id === branchId)?.name;
+  const { data, error, loading } = useCloud<Result>(
+    'adminGetZReport',
+    branchId ? { day, branchId } : { day },
+  );
   const saved = useCloud<Saved[]>('adminListZReports', {});
   const go = (next: string) => navigate(`/admin/reports/z/${next}`);
   const z = data?.report;
@@ -117,6 +124,12 @@ export function ZReportPage({ day: wanted }: { day: string }) {
             <ChevronRight />
           </button>
         </div>
+        <BranchSelect
+          value={branchId}
+          onChange={setBranchId}
+          branches={branches}
+          allLabel="Whole restaurant"
+        />
         <button className="setup-secondary" onClick={() => window.print()} disabled={!z}>
           <Printer /> Print
         </button>
@@ -125,12 +138,17 @@ export function ZReportPage({ day: wanted }: { day: string }) {
       {z && data && (
         <article className="admin-panel z-sheet">
           <header>
-            <p className="eyebrow">{restaurantName} · Z-report</p>
+            <p className="eyebrow">
+              {restaurantName}
+              {branchName ? ` · ${branchName}` : ''} · Z-report
+            </p>
             <h2>{heading}</h2>
             <p className="muted small">
-              {data.live
-                ? 'Today so far. Saved automatically tonight.'
-                : `Saved ${formatDate(data.savedAt || '', timezone, { dateStyle: 'medium', timeStyle: 'short' })}`}
+              {branchId
+                ? 'This branch only, worked out now.'
+                : data.live
+                  ? 'Today so far. Saved automatically tonight.'
+                  : `Saved ${formatDate(data.savedAt || '', timezone, { dateStyle: 'medium', timeStyle: 'short' })}`}
             </p>
           </header>
 

@@ -14,6 +14,7 @@ import {
   BarChart3,
   TriangleAlert,
   Rocket,
+  Store,
 } from 'lucide-react';
 import Parse from '../parse';
 import { AdminOverview } from './AdminOverview';
@@ -41,6 +42,7 @@ const AdminMember = lazyScreen(() => import('./AdminMember').then((m) => m.Admin
 const AdminOrder = lazyScreen(() => import('./AdminOrder').then((m) => m.AdminOrder));
 const AdminSite = lazyScreen(() => import('./AdminSite').then((m) => m.AdminSite));
 const AdminStart = lazyScreen(() => import('./AdminStart').then((m) => m.AdminStart));
+const AdminBranches = lazyScreen(() => import('./AdminBranches').then((m) => m.AdminBranches));
 const ZReportPage = lazyScreen(() => import('./reports/ZReport').then((m) => m.ZReportPage));
 
 const NAV = [
@@ -52,6 +54,7 @@ const NAV = [
   [HandCoins, 'Payments ledger', 'payments'],
   [CircleDollarSign, 'Commissions', 'commissions'],
   [Users, 'Team', 'team'],
+  [Store, 'Branches', 'branches'],
   [ClipboardList, 'Menu', 'menu'],
   // Settings, branding, payments, access rules, audit log, errors and data &
   // privacy, behind the owner's PIN (AdminSite).
@@ -81,7 +84,10 @@ const isAdminTab = (value: string): value is AdminTab => ADMIN_TABS.some(([id]) 
 export function AdminWorkspace() {
   const { preview, logout, profile } = useSession();
   const finance = profile?.role === 'finance';
-  const allowed = (label: Section) => !finance || FINANCE_SECTIONS.includes(label);
+  const features = profile?.features;
+  const allowed = (label: Section) =>
+    (!finance || FINANCE_SECTIONS.includes(label)) &&
+    (label !== 'Branches' || features?.branches !== false);
   const { timezone, restaurantNameSet, restaurantName, restaurantLogo } = useConfig();
   const navigate = useNavigate();
   const device = useDevice();
@@ -266,9 +272,15 @@ export function AdminWorkspace() {
               <AdminStart onChanged={() => void load()} goTo={(label) => setSection(label)} />
             ))}
           {preview &&
-          ['Reports', 'Orders', 'Problems', 'Payments ledger', 'Commissions', 'Admin'].includes(
-            section,
-          ) ? (
+          [
+            'Reports',
+            'Orders',
+            'Problems',
+            'Payments ledger',
+            'Commissions',
+            'Admin',
+            'Branches',
+          ].includes(section) ? (
             <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
             <>
@@ -290,6 +302,7 @@ export function AdminWorkspace() {
               {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
               {section === 'Payments ledger' && <PaymentsLedger />}
               {section === 'Commissions' && <Commissions />}
+              {section === 'Branches' && <AdminBranches />}
             </>
           )}
           {memberId && !finance && <AdminMember key={memberId} id={memberId} />}

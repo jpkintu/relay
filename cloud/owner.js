@@ -28,6 +28,7 @@ const { placedAt, createdIn } = require('./lib/placed');
 const { factOf, findAll, ordersIn, orderLines } = require('./reports');
 const { payOwed } = require('./payouts');
 const { money, notifyAdmins } = require('./notifications');
+const { branchParam } = require('./branches');
 
 const OPEN = ['PLACED', 'ACCEPTED', 'PREPARING', 'READY', 'PICKED_UP'];
 
@@ -37,9 +38,12 @@ const dayRange = (day, timezone) => {
   return range;
 };
 
+// One branch's records only (a Branch), or every branch (null).
+const scoped = (query, branch) => (branch ? query.equalTo('branch', branch) : query);
+
 // Cash still with riders (delivered, not reconciled), across all days.
-async function cashWithRiders() {
-  const query = new Parse.Query('Order');
+async function cashWithRiders(branch) {
+  const query = scoped(new Parse.Query('Order'), branch);
   query.equalTo('status', 'DELIVERED');
   query.containedIn('cashStatus', ['WITH_RIDER', 'HANDOVER_PENDING']);
   query.select('amountCollected', 'cashStatus', 'createdBy');
@@ -59,7 +63,7 @@ async function cashWithRiders() {
 }
 
 // Cash counted into a till or taken by the owner during the range.
-async function cashReceived(range) {
+async function cashReceived(range, branch) {
   const counted = new Parse.Query('CashHandover');
   counted.greaterThanOrEqualTo('tillAt', range.start);
   counted.lessThan('tillAt', range.end);
@@ -68,7 +72,7 @@ async function cashReceived(range) {
   legacy.doesNotExist('tillAt');
   legacy.greaterThanOrEqualTo('confirmedAt', range.start);
   legacy.lessThan('confirmedAt', range.end);
-  const query = Parse.Query.or(counted, legacy);
+  const query = scoped(Parse.Query.or(counted, legacy), branch);
   query.include(['rider', 'cashier']);
   const rows = await findAll(query);
   return rows.map((h) => ({
@@ -79,8 +83,8 @@ async function cashReceived(range) {
 }
 
 // Eat-in / pick-up cash taken into tills during the range.
-async function counterCash(range) {
-  const query = new Parse.Query('Order');
+async function counterCash(range, branch) {
+  const query = scoped(new Parse.Query('Order'), branch);
   query.equalTo('cashStatus', 'IN_TILL');
   query.greaterThanOrEqualTo('paidAt', range.start);
   query.lessThan('paidAt', range.end);
@@ -89,11 +93,11 @@ async function counterCash(range) {
 }
 
 // Rider pay still owed (commission + unpaid delivery fees, less shortages).
-async function riderPayOwed() {
-  const orders = new Parse.Query('Order');
+async function riderPayOwed(branch) {
+  const orders = scoped(new Parse.Query('Order'), branch);
   orders.equalTo('status', 'DELIVERED');
   orders.notEqualTo('commissionPaid', true);
-  const shortages = new Parse.Query('CashHandover');
+  const shortages = scoped(new Parse.Query('CashHandover'), branch);
   shortages.equalTo('shortageStatus', 'owed');
   const [unpaid, owed] = await Promise.all([findAll(orders), findAll(shortages)]);
   return sumBy(unpaid, payOwed) - sumBy(owed, (h) => h.get('shortage'));
@@ -102,36 +106,42 @@ async function riderPayOwed() {
 // Owner: today's figures, the last 30 days and what needs attention.
 Parse.Cloud.define('getDashboard', async (request) => {
   await requireRole(request, ['admin', 'finance']);
+  const branch = await branchParam(request.params.branchId);
   const { values: config } = await loadConfig();
   const tz = config.timezone;
   const today = isoDay(new Date(), tz);
   const todayRange = dayRange(today, tz);
   const monthRange = resolveRange({ from: addDays(today, -29), to: today }, tz);
-  const pendingMomo = new Parse.Query('Order');
+  const pendingMomo = scoped(new Parse.Query('Order'), branch);
   pendingMomo.equalTo('paymentStatus', 'PENDING_VERIFICATION');
   pendingMomo.notEqualTo('status', 'CANCELLED');
-  const pendingHandovers = new Parse.Query('CashHandover').equalTo('status', 'pending');
-  const disputed = new Parse.Query('CashHandover').equalTo('status', 'disputed');
-  const issues = new Parse.Query('Order').equalTo('disputeFlag', true);
-  const recent = new Parse.Query('Order');
+  const pendingHandovers = scoped(new Parse.Query('CashHandover'), branch).equalTo(
+    'status',
+    'pending',
+  );
+  const disputed = scoped(new Parse.Query('CashHandover'), branch).equalTo('status', 'disputed');
+  const issues = scoped(new Parse.Query('Order'), branch).equalTo('disputeFlag', true);
+  const recent = scoped(new Parse.Query('Order'), branch);
   recent.include('createdBy');
   recent.descending('createdAt');
   recent.limit(15);
-  const onShift = new Parse.Query('Shift').equalTo('status', 'open').include('operator');
+  const onShift = scoped(new Parse.Query('Shift'), branch)
+    .equalTo('status', 'open')
+    .include('operator');
   onShift.limit(200);
   const [todayFacts, deliveredToday, monthFacts, cash, received, owed, counts, recentRows, shifts] =
     await Promise.all([
-      findAll(ordersIn(todayRange, 'createdAt')).then((rows) => rows.map(factOf)),
-      findAll(ordersIn(todayRange, 'deliveredAt').equalTo('status', 'DELIVERED')).then((rows) =>
-        rows.map(factOf),
-      ),
-      findAll(ordersIn(monthRange, 'createdAt')).then((rows) => rows.map(factOf)),
-      cashWithRiders(),
-      cashReceived(todayRange).then(async (rows) => [
+      findAll(ordersIn(todayRange, 'createdAt', null, branch)).then((rows) => rows.map(factOf)),
+      findAll(
+        ordersIn(todayRange, 'deliveredAt', null, branch).equalTo('status', 'DELIVERED'),
+      ).then((rows) => rows.map(factOf)),
+      findAll(ordersIn(monthRange, 'createdAt', null, branch)).then((rows) => rows.map(factOf)),
+      cashWithRiders(branch),
+      cashReceived(todayRange, branch).then(async (rows) => [
         ...rows,
-        { riderId: '', amount: await counterCash(todayRange), status: 'counter' },
+        { riderId: '', amount: await counterCash(todayRange, branch), status: 'counter' },
       ]),
-      riderPayOwed(),
+      riderPayOwed(branch),
       Promise.all([
         pendingMomo.count(MASTER),
         pendingHandovers.count(MASTER),
@@ -330,22 +340,30 @@ Parse.Cloud.define('adminGetAuditLog', async (request) => {
 // ---------------------------------------------------------------------------
 // Daily Z-report
 
-async function buildZReport(day, config) {
+// `branch`: one branch's Z-report (built live, never saved); none: the
+// whole restaurant's.
+async function buildZReport(day, config, branch = null) {
   const tz = config.timezone;
   const range = dayRange(day, tz);
-  const placedQuery = ordersIn(range, 'createdAt');
-  const deliveredQuery = ordersIn(range, 'deliveredAt').equalTo('status', 'DELIVERED');
-  const cancelledQuery = ordersIn(range, 'cancelledAt').equalTo('status', 'CANCELLED');
-  const payoutQuery = new Parse.Query('TillPayout');
+  const placedQuery = ordersIn(range, 'createdAt', null, branch);
+  const deliveredQuery = ordersIn(range, 'deliveredAt', null, branch).equalTo(
+    'status',
+    'DELIVERED',
+  );
+  const cancelledQuery = ordersIn(range, 'cancelledAt', null, branch).equalTo(
+    'status',
+    'CANCELLED',
+  );
+  const payoutQuery = scoped(new Parse.Query('TillPayout'), branch);
   payoutQuery.greaterThanOrEqualTo('paidAt', range.start);
   payoutQuery.lessThan('paidAt', range.end);
-  const shiftQuery = new Parse.Query('Shift');
+  const shiftQuery = scoped(new Parse.Query('Shift'), branch);
   shiftQuery.equalTo('kind', 'cashier');
   shiftQuery.equalTo('status', 'closed');
   shiftQuery.greaterThanOrEqualTo('endedAt', range.start);
   shiftQuery.lessThan('endedAt', range.end);
   shiftQuery.include('operator');
-  const disputeQuery = new Parse.Query('CashHandover');
+  const disputeQuery = scoped(new Parse.Query('CashHandover'), branch);
   disputeQuery.equalTo('status', 'disputed');
   disputeQuery.greaterThanOrEqualTo('handedOverAt', range.start);
   disputeQuery.lessThan('handedOverAt', range.end);
@@ -356,12 +374,12 @@ async function buildZReport(day, config) {
       cancelledQuery.count(MASTER),
       findAll(payoutQuery),
       findAll(shiftQuery),
-      cashReceived(range).then(async (rows) => [
+      cashReceived(range, branch).then(async (rows) => [
         ...rows,
-        { riderId: '', amount: await counterCash(range), status: 'counter' },
+        { riderId: '', amount: await counterCash(range, branch), status: 'counter' },
       ]),
       disputeQuery.count(MASTER),
-      cashWithRiders(),
+      cashWithRiders(branch),
     ]);
   const sales = R.summarize(delivered);
   const lines = await orderLines(delivered.map((f) => f.id));
@@ -524,8 +542,17 @@ Parse.Cloud.define('adminGetZReport', async (request) => {
   const today = isoDay(new Date(), config.timezone);
   const day = request.params.day || today;
   if (!isDay(day) || day > today) throw invalid('Choose a day up to today');
-  if (day === today)
-    return { day, live: true, savedAt: null, report: await buildZReport(day, config) };
+  // One branch's day is always worked out live; the saved copy is the whole
+  // restaurant's.
+  const branch = await branchParam(request.params.branchId);
+  if (day === today || branch)
+    return {
+      day,
+      live: true,
+      savedAt: null,
+      branchId: branch?.id || '',
+      report: await buildZReport(day, config, branch),
+    };
   let row = await storedZReport(day);
   if (!row) row = await saveZReport(day, await buildZReport(day, config), actor);
   return { day, live: false, savedAt: row.get('generatedAt'), report: row.get('data') };

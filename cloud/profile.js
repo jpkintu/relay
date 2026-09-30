@@ -74,7 +74,13 @@ Parse.Cloud.define('getAppInfo', async () => {
 Parse.Cloud.define('getMyProfile', async (request) => {
   const user = requireUser(request);
   await user.fetch(MASTER);
-  const [role, { values }] = await Promise.all([getRoleName(user), loadConfig()]);
+  const [role, { values }, branches, features] = await Promise.all([
+    getRoleName(user),
+    loadConfig(),
+    new Parse.Query('Branch').notEqualTo('active', false).find(MASTER),
+    require('./lib/limits').features(),
+  ]);
+  const own = branches.find((row) => row.id === user.get('branch')?.id);
   return {
     id: user.id,
     username: user.getUsername(),
@@ -93,6 +99,12 @@ Parse.Cloud.define('getMyProfile', async (request) => {
           }
         : null,
     canInitialize: role === null && (await canBootstrapOwner()),
+    // Where they work (riders and cashiers), and how many open branches the
+    // restaurant has (branch filters show when there are two or more).
+    branch: own ? { id: own.id, name: own.get('name') } : null,
+    branchCount: branches.length,
+    // Parts of the app this restaurant has (lib/limits.js).
+    features,
     config: publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
   };
 });
