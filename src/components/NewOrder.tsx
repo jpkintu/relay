@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Bike,
   Check,
+  CreditCard,
   MapPin,
   Minus,
   Plus,
@@ -9,8 +11,10 @@ import {
   RotateCcw,
   Search,
   ShoppingBag,
+  UtensilsCrossed,
   X,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import {
@@ -86,6 +90,11 @@ const TYPES: [OrderType, string][] = [
   ['eat_in', 'Eat in'],
   ['pickup', 'Pick up'],
 ];
+const TYPE_ICON: Record<OrderType, LucideIcon> = {
+  delivery: Bike,
+  eat_in: UtensilsCrossed,
+  pickup: ShoppingBag,
+};
 
 type Customer = {
   id: string;
@@ -116,6 +125,8 @@ type Draft = {
   payment: string;
   provider: string;
   reference: string;
+  // Card (counter, eat-in / pick-up): the transaction ID on the machine slip.
+  cardRef?: string;
   // Automatic payments: the manual way chosen, and the number to ask.
   manualPay?: boolean;
   payerPhone?: string;
@@ -244,7 +255,11 @@ export function NewOrder({
   const fee = isDelivery ? (draft.fee ?? menuFee) : 0;
   const subtotal = cartSubtotal(draft.cart);
   const total = subtotal + fee;
-  const isCash = draft.payment === 'cash';
+  // Card is taken on the counter's card machine: eat-in / pick-up only.
+  const cardOk = !!counter && !isDelivery && !!config.card;
+  const payment = draft.payment === 'card' && !cardOk ? 'cash' : draft.payment;
+  const isCash = payment === 'cash';
+  const isCard = payment === 'card';
   // Riders earn their commission plus the delivery fee.
   const earn = previewCommission(profile?.commission, subtotal, config.commissionRounding) + fee;
   const present = new Set(items.map((i) => i.category));
@@ -260,14 +275,16 @@ export function NewOrder({
   );
   // Counter orders can be paid later (eat-in / pick-up only).
   const payLater = !!counter && !isDelivery && !!draft.payLater;
-  const payRequest = usesRequest(config.mobileMoney, draft.provider, draft.manualPay);
+  const payRequest = !isCard && usesRequest(config.mobileMoney, draft.provider, draft.manualPay);
   const problems = [
     isDelivery && !draft.name.trim() && 'customer name',
     isDelivery && !draft.address.trim() && !draft.location && 'delivery address or map pin',
     !draft.cart.length && 'at least one item',
-    !payLater && !isCash && !draft.provider && 'Airtel or MTN',
+    !payLater && isCard && referenceProblem(draft.cardRef || ''),
+    !payLater && !isCash && !isCard && !draft.provider && 'Airtel or MTN',
     !payLater &&
       !isCash &&
+      !isCard &&
       draft.provider &&
       (payRequest
         ? payerPhoneProblem(draft.payerPhone ?? draft.phone)
@@ -343,9 +360,16 @@ export function NewOrder({
           ...(!isDelivery && { table: (draft.table || '').trim(), payLater }),
         }),
         deliveryFee: fee,
-        paymentMethod: draft.payment,
-        paymentProvider: isCash || payLater ? undefined : draft.provider,
-        paymentReference: isCash || payLater ? undefined : payRequest ? '' : draft.reference.trim(),
+        paymentMethod: payment,
+        paymentProvider: isCash || payLater ? undefined : isCard ? 'card' : draft.provider,
+        paymentReference:
+          isCash || payLater
+            ? undefined
+            : isCard
+              ? (draft.cardRef || '').trim()
+              : payRequest
+                ? ''
+                : draft.reference.trim(),
         ...(!isCash && !payLater && payRequest && { payerPhone: draft.payerPhone ?? draft.phone }),
         items: draft.cart.map((line) => ({
           id: line.itemId,
@@ -466,17 +490,24 @@ export function NewOrder({
 
       {counter && (
         <div className="order-type-row">
-          <div className="filter-toggle order-type" role="group" aria-label="Kind of order">
-            {types.map(([type, label]) => (
-              <button
-                key={type}
-                className={orderType === type ? 'active' : ''}
-                aria-pressed={orderType === type}
-                onClick={() => update({ orderType: type })}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="order-type-tiles" role="group" aria-label="Kind of order">
+            {types.map(([type, label]) => {
+              const Icon = TYPE_ICON[type];
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  className={`order-type-tile type-${type}${orderType === type ? ' active' : ''}`}
+                  aria-pressed={orderType === type}
+                  onClick={() => update({ orderType: type })}
+                >
+                  <span className="order-type-icon" aria-hidden="true">
+                    <Icon />
+                  </span>
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -713,12 +744,20 @@ export function NewOrder({
               {PAYMENTS.map(([value, label]) => (
                 <button
                   key={value}
-                  className={!payLater && draft.payment === value ? 'active' : ''}
+                  className={!payLater && payment === value ? 'active' : ''}
                   onClick={() => update({ payment: value, payLater: false })}
                 >
                   {label}
                 </button>
               ))}
+              {cardOk && (
+                <button
+                  className={!payLater && isCard ? 'active' : ''}
+                  onClick={() => update({ payment: 'card', payLater: false })}
+                >
+                  Card
+                </button>
+              )}
               {counter && !isDelivery && (
                 <button
                   className={payLater ? 'active' : ''}
@@ -733,7 +772,36 @@ export function NewOrder({
                 An open bill: take payment from the kitchen board before it is served.
               </p>
             )}
-            {!payLater && !isCash && (
+            {!payLater && isCard && config.card && (
+              <div className="momo-panel full-row">
+                <div className="merchant-card card-machine">
+                  <small>
+                    <CreditCard size={14} aria-hidden /> {config.card.label}
+                    {config.card.code && ` · terminal ${config.card.code}`}
+                  </small>
+                  <strong>{money(total)}</strong>
+                  <span>
+                    Charge this on the card machine
+                    {config.card.name ? ` (${config.card.name})` : ''}.
+                  </span>
+                </div>
+                <label>
+                  <span>Transaction ID (on the card machine slip)</span>
+                  <input
+                    value={draft.cardRef || ''}
+                    onChange={(e) => update({ cardRef: e.target.value })}
+                    placeholder="e.g. RRN or approval code"
+                    autoCapitalize="characters"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <small className="muted">
+                  A cashier checks it against the card machine report before it counts as paid.
+                </small>
+              </div>
+            )}
+            {!payLater && !isCash && !isCard && (
               <MobileMoneyPanel
                 provider={draft.provider}
                 reference={draft.reference}

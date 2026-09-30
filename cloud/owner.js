@@ -368,6 +368,8 @@ async function buildZReport(day, config) {
   const cash = delivered.filter((f) => f.method === 'cash');
   const momo = delivered.filter((f) => f.method === 'mobile_money');
   const momoBy = (status) => momo.filter((f) => f.paymentStatus === status);
+  const card = delivered.filter((f) => f.method === 'card');
+  const cardBy = (status) => card.filter((f) => f.paymentStatus === status);
   const riderPayouts = payouts.filter((row) => row.get('kind') === 'rider');
   const receivedBy = new Map();
   for (const row of received)
@@ -399,6 +401,8 @@ async function buildZReport(day, config) {
       mobileMoneyVerified: sumBy(momoBy('VERIFIED'), (f) => f.total),
       mobileMoneyPending: sumBy(momoBy('PENDING_VERIFICATION'), (f) => f.total),
       mobileMoneyRejected: momoBy('REJECTED').length,
+      cardVerified: sumBy(cardBy('VERIFIED'), (f) => f.total),
+      cardPending: sumBy(cardBy('PENDING_VERIFICATION'), (f) => f.total),
     },
     till: {
       cashReceived: sumBy(received, (r) => r.amount),

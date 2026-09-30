@@ -1250,7 +1250,10 @@ describe('ledgers, earnings and reports', () => {
       run('getPaymentsLedger', { from: '2026-02-30', to: '2026-03-01' }, s.owner),
       /Dates must look like/,
     );
-    await rejects(run('getPaymentsLedger', { ...range, method: 'card' }, s.owner), /Payment type/);
+    await rejects(
+      run('getPaymentsLedger', { ...range, method: 'cheque' }, s.owner),
+      /Payment type/,
+    );
   });
 
   test('admin order search filters by date, rider and status', async () => {
@@ -4069,6 +4072,179 @@ describe('reports agree across order sources', () => {
     assert.ok(rows.every((r) => r.status === 'IN_TILL' && /^Counter · /.test(r.rider)));
     const c = ledger.summary.cash;
     assert.equal(c.collected, c.withRiders + c.handoverPending + c.reconciled + c.inTill);
+  });
+});
+
+describe('card payments at the counter', () => {
+  const M = { useMasterKey: true };
+  let item;
+  let settings;
+  const made = [];
+  const counter = async (params, user = s.dina) => {
+    const placed = await run(
+      'createCounterOrder',
+      { items: [{ id: item.id, quantity: 1 }], ...params },
+      user,
+    );
+    made.push(placed.id);
+    return placed;
+  };
+  const fetch = (id) => new Parse.Query('Order').get(id, M);
+
+  before(async () => {
+    item = (await run('getOperationalMenu', {}, s.pia)).items.find(
+      (i) => !i.accompanimentGroups.length,
+    );
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run(
+      'adminSaveSettings',
+      { ...settings, moduleCallIn: true, moduleCounter: true, cardEnabled: false },
+      s.owner,
+    );
+  });
+  after(async () => {
+    for (const id of made) {
+      const order = await fetch(id);
+      if (!['DELIVERED', 'CANCELLED'].includes(order.get('status')))
+        await run(
+          'transitionOrder',
+          { orderId: id, action: 'cancel', reason: 'Card test' },
+          s.dina,
+        );
+    }
+    await run('adminSaveSettings', settings, s.owner);
+  });
+
+  test('card is refused until the owner switches it on', async () => {
+    assert.equal((await run('getMyProfile', {}, s.dina)).config.card, null);
+    await rejects(
+      counter({ orderType: 'eat_in', paymentMethod: 'card', paymentReference: 'RRN1234' }),
+      /Card payments are not set up/,
+    );
+    await run(
+      'adminSaveSettings',
+      {
+        ...settings,
+        moduleCallIn: true,
+        moduleCounter: true,
+        cardEnabled: true,
+        cardLabel: 'Stanbic card machine',
+        cardTerminalId: ' 40012345 ',
+      },
+      s.owner,
+    );
+    assert.deepEqual((await run('getMyProfile', {}, s.dina)).config.card, {
+      provider: 'card',
+      label: 'Stanbic card machine',
+      code: '40012345',
+      name: '',
+    });
+  });
+
+  test('riders and deliveries cannot pay by card', async () => {
+    await rejects(
+      run(
+        'createOrder',
+        {
+          customerName: 'Card Carl',
+          deliveryAddress: 'Kololo',
+          paymentMethod: 'card',
+          paymentReference: 'RRN1234',
+          items: [{ id: item.id, quantity: 1 }],
+        },
+        s.pia,
+      ),
+      /Card is taken at the counter only/,
+    );
+    await rejects(
+      counter({
+        orderType: 'delivery',
+        customerName: 'Card Carl',
+        deliveryAddress: 'Kololo',
+        paymentMethod: 'card',
+        paymentReference: 'RRN1234',
+      }),
+      /eat-in and pick-up orders only/,
+    );
+  });
+
+  test('a card payment waits for a cashier to check its transaction ID', async () => {
+    await rejects(
+      counter({ orderType: 'eat_in', paymentMethod: 'card' }),
+      /transaction ID from the card machine slip/,
+    );
+    const placed = await counter({
+      orderType: 'eat_in',
+      paymentMethod: 'card',
+      paymentReference: 'rrn 5566 7788',
+    });
+    let order = await fetch(placed.id);
+    assert.equal(order.get('paymentMethod'), 'card');
+    assert.equal(order.get('paymentProvider'), 'card');
+    assert.equal(order.get('paymentReference'), 'RRN55667788');
+    assert.equal(order.get('paymentStatus'), 'PENDING_VERIFICATION');
+    assert.equal(order.get('cashStatus'), 'NOT_APPLICABLE');
+    assert.equal(
+      (await run('getReceipt', { orderId: placed.id }, s.dina)).payment.state,
+      'checking',
+    );
+    await rejects(
+      counter({ orderType: 'pickup', paymentMethod: 'card', paymentReference: 'RRN55667788' }),
+      /already used on/,
+    );
+
+    const ledger = await run('getMobileMoneyLedger', {}, s.dina);
+    assert.ok(ledger.pending.some((r) => r.id === placed.id && r.provider === 'card'));
+    assert.ok(ledger.totals.some((t) => t.provider === 'card' && t.code === '40012345'));
+
+    await run('verifyPayment', { orderId: placed.id, received: true }, s.dina);
+    order = await fetch(placed.id);
+    assert.equal(order.get('paymentStatus'), 'VERIFIED');
+    assert.equal((await run('getReceipt', { orderId: placed.id }, s.dina)).payment.state, 'paid');
+    for (const action of ['accept', 'ready', 'complete'])
+      await run('transitionOrder', { orderId: placed.id, action }, s.dina);
+
+    const payments = await run('getPaymentsLedger', { method: 'card' }, s.owner);
+    const row = payments.transactions.find((t) => t.id === placed.id);
+    assert.equal(row.kind, 'card');
+    assert.equal(row.status, 'VERIFIED');
+    assert.ok(payments.summary.card.verified >= placed.total);
+    assert.ok(payments.transactions.every((t) => t.kind === 'card'));
+    const z = (await run('adminGetZReport', {}, s.owner)).report;
+    assert.ok(z.payments.cardVerified >= placed.total);
+  });
+
+  test('an open bill paid by card; a slip that does not check out opens it again', async () => {
+    const later = await counter({ orderType: 'pickup', payLater: true });
+    await rejects(
+      run('takeCounterPayment', { orderId: later.id, paymentMethod: 'card' }, s.dina),
+      /transaction ID/,
+    );
+    await run(
+      'takeCounterPayment',
+      { orderId: later.id, paymentMethod: 'card', paymentReference: 'APP99881' },
+      s.dina,
+    );
+    let order = await fetch(later.id);
+    assert.equal(order.get('billOpen'), false);
+    assert.equal(order.get('paymentMethod'), 'card');
+    assert.equal(order.get('paymentStatus'), 'PENDING_VERIFICATION');
+    await run(
+      'verifyPayment',
+      { orderId: later.id, received: false, reason: 'Not on the machine report' },
+      s.dina,
+    );
+    order = await fetch(later.id);
+    assert.equal(order.get('paymentStatus'), 'REJECTED');
+    assert.equal(order.get('billOpen'), true);
+    await rejects(
+      run('resubmitPayment', { orderId: later.id, reference: 'APP99882' }, s.pia),
+      /Not allowed/,
+    );
+    await run('resubmitPayment', { orderId: later.id, reference: 'APP99882' }, s.dina);
+    order = await fetch(later.id);
+    assert.equal(order.get('paymentReference'), 'APP99882');
+    assert.equal(order.get('paymentStatus'), 'PENDING_VERIFICATION');
   });
 });
 

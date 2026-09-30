@@ -115,7 +115,7 @@ export function AdminOrders() {
   const when = (at: string | null) =>
     formatDate(at, timezone, { dateStyle: 'medium', timeStyle: 'short' });
   const payment = (o: OrderRow) =>
-    o.method === 'mobile_money'
+    o.method === 'mobile_money' || o.method === 'card'
       ? `${providerLabel(o.provider)}${o.reference ? ` · ${o.reference}` : ''}`
       : 'Cash';
   const exportCsv = () =>

@@ -66,6 +66,10 @@ type Settings = {
   airtelMerchantName?: string;
   mtnMerchantCode?: string;
   mtnMerchantName?: string;
+  cardEnabled?: boolean;
+  cardLabel?: string;
+  cardTerminalId?: string;
+  cardMerchantName?: string;
   cashReminderHour?: number;
   floatWarningPercent?: number;
   commissionRounding?: string;
@@ -1321,6 +1325,40 @@ export function AdminSetup({
                   />
                 </label>
               ))}
+            </div>
+            <div className="full-row merchant-settings">
+              <p className="setup-field-label">Card payments</p>
+              <p className="muted">
+                For a card machine at the counter. Cashiers charge the card on the machine and type
+                the transaction ID from the slip; a cashier checks it against the machine’s report,
+                like a mobile money payment. Card is for eat-in and pick-up orders only: riders
+                never take cards.
+              </p>
+              <label className="setup-checkbox full-row">
+                <input
+                  type="checkbox"
+                  checked={!!settings.cardEnabled}
+                  onChange={(e) => setSettings((p) => ({ ...p, cardEnabled: e.target.checked }))}
+                />{' '}
+                Take card payments at the counter
+              </label>
+              {settings.cardEnabled &&
+                (
+                  [
+                    ['cardLabel', 'Card machine name (e.g. Stanbic card machine)'],
+                    ['cardTerminalId', 'Terminal ID (optional)'],
+                    ['cardMerchantName', 'Merchant name on the slip (optional)'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label className="setup-field" key={key}>
+                    {label}
+                    <input
+                      value={settings[key] || ''}
+                      onChange={(e) => setSettings((p) => ({ ...p, [key]: e.target.value }))}
+                      maxLength={key === 'cardMerchantName' ? 60 : key === 'cardLabel' ? 40 : 30}
+                    />
+                  </label>
+                ))}
             </div>
             <button className="setup-submit" disabled={busy || preview}>
               Save settings

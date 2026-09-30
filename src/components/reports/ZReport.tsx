@@ -32,6 +32,8 @@ type Z = {
     mobileMoneyVerified: number;
     mobileMoneyPending: number;
     mobileMoneyRejected: number;
+    cardVerified?: number;
+    cardPending?: number;
   };
   till: {
     cashReceived: number;
@@ -216,6 +218,18 @@ export function ZReportPage({ day: wanted }: { day: string }) {
                   <dt>Mobile money not yet checked</dt>
                   <dd>{money(z.payments.mobileMoneyPending)}</dd>
                 </div>
+                {!!(z.payments.cardVerified || z.payments.cardPending) && (
+                  <div>
+                    <dt>Card confirmed</dt>
+                    <dd>{money(z.payments.cardVerified || 0)}</dd>
+                  </div>
+                )}
+                {!!z.payments.cardPending && (
+                  <div>
+                    <dt>Card not yet checked</dt>
+                    <dd>{money(z.payments.cardPending)}</dd>
+                  </div>
+                )}
                 {z.payments.mobileMoneyRejected > 0 && (
                   <div className="bad">
                     <dt>Mobile money not received</dt>

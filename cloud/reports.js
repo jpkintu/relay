@@ -35,10 +35,10 @@ const riderPointer = (id) => {
   return Parse.User.createWithoutData(id);
 };
 
-const METHODS = ['all', 'cash', 'mobile_money'];
+const METHODS = ['all', 'cash', 'mobile_money', 'card'];
 function methodOf(params) {
   const method = params.method || 'all';
-  if (!METHODS.includes(method)) throw invalid('Payment type must be cash or mobile_money');
+  if (!METHODS.includes(method)) throw invalid('Payment type must be cash, mobile_money or card');
   return method;
 }
 
@@ -122,16 +122,17 @@ Parse.Cloud.define('getReportOptions', async (request) => {
   };
 });
 
-// Every cash collection and mobile money payment in the range, for
-// reconciliation: cash by delivery date, mobile money by order date.
+// Every cash collection, mobile money and card payment in the range, for
+// reconciliation: cash by delivery date, mobile money and card by order date.
 Parse.Cloud.define('getPaymentsLedger', async (request) => {
   await requireRole(request, ['cashier', 'admin']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
   const method = methodOf(p);
-  const wantCash = method !== 'mobile_money';
-  const wantMomo = method !== 'cash';
+  const wantCash = ['all', 'cash'].includes(method);
+  const wantMomo = ['all', 'mobile_money'].includes(method);
+  const wantCard = ['all', 'card'].includes(method);
 
   const cashQuery = ordersIn(range, 'deliveredAt', p.riderId);
   cashQuery.equalTo('paymentMethod', 'cash');
@@ -140,6 +141,10 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
   const momoQuery = ordersIn(range, 'createdAt', p.riderId);
   momoQuery.equalTo('paymentMethod', 'mobile_money');
   momoQuery.include('paymentCheckedBy');
+  // Card payments on the counter's card machine, checked like mobile money.
+  const cardQuery = ordersIn(range, 'createdAt', p.riderId);
+  cardQuery.equalTo('paymentMethod', 'card');
+  cardQuery.include('paymentCheckedBy');
   const handoverQuery = createdIn('CashHandover', {
     start: new Date(range.start.getTime() - 7 * 864e5),
     end: new Date(range.end.getTime() + 7 * 864e5),
@@ -147,9 +152,10 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
   if (p.riderId) handoverQuery.equalTo('rider', riderPointer(p.riderId));
   handoverQuery.include(['rider', 'cashier']);
 
-  const [cashOrders, momoOrders, handovers] = await Promise.all([
+  const [cashOrders, momoOrders, cardOrders, handovers] = await Promise.all([
     wantCash ? findAll(cashQuery) : [],
     wantMomo ? findAll(momoQuery) : [],
+    wantCard && !p.riderId ? findAll(cardQuery) : [],
     wantCash ? findAll(handoverQuery) : [],
   ]);
 
@@ -178,11 +184,11 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
       note: order.get('shortfallNote') || '',
     };
   });
-  const momoRows = momoOrders.map((order) => {
+  const checkedRow = (kind) => (order) => {
     const f = factOf(order);
     return {
       id: f.id,
-      kind: 'mobile_money',
+      kind,
       at: f.createdAt,
       code: f.code,
       riderId: f.riderId,
@@ -198,12 +204,17 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
         order.get('paymentRejectReason') ||
         (f.status === 'CANCELLED' ? 'Order cancelled' : nameOf(order.get('paymentCheckedBy'))),
     };
-  });
+  };
+  const momoRows = momoOrders.map(checkedRow('mobile_money'));
+  const cardRows = cardOrders.map(checkedRow('card'));
 
   const sum = (rows, test) => rows.filter(test).reduce((n, row) => n + row.amount, 0);
   const count = (rows, test) => rows.filter(test).length;
   // A pending payment on a cancelled order is no longer waiting for money.
-  const liveMomo = momoRows.filter((r) => r.orderStatus !== 'CANCELLED' || r.status === 'VERIFIED');
+  const live = (rows) =>
+    rows.filter((r) => r.orderStatus !== 'CANCELLED' || r.status === 'VERIFIED');
+  const liveMomo = live(momoRows);
+  const liveCard = live(cardRows);
   const handoverRows = handovers
     .filter((h) => placedAt(h) >= range.start && placedAt(h) < range.end)
     .sort((a, b) => placedAt(b) - placedAt(a))
@@ -226,13 +237,16 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
       resolutionNote: h.get('resolutionNote') || '',
       receivedByOwner: h.get('receivedByOwner') === true,
     }));
-  const transactions = [...cashRows, ...momoRows].sort(byNewest('at'));
+  const transactions = [...cashRows, ...momoRows, ...cardRows].sort(byNewest('at'));
 
   return {
     range: rangeInfo(range),
     method,
     summary: {
-      total: sum(cashRows, () => true) + sum(liveMomo, (r) => r.status === 'VERIFIED'),
+      total:
+        sum(cashRows, () => true) +
+        sum(liveMomo, (r) => r.status === 'VERIFIED') +
+        sum(liveCard, (r) => r.status === 'VERIFIED'),
       cash: {
         count: cashRows.length,
         collected: sum(cashRows, () => true),
@@ -256,6 +270,14 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
           );
           return { ...account, count: rows.length, amount: sum(rows, () => true) };
         }),
+      },
+      card: {
+        count: cardRows.length,
+        verified: sum(cardRows, (r) => r.status === 'VERIFIED'),
+        verifiedCount: count(cardRows, (r) => r.status === 'VERIFIED'),
+        pending: sum(liveCard, (r) => r.status === 'PENDING_VERIFICATION'),
+        pendingCount: count(liveCard, (r) => r.status === 'PENDING_VERIFICATION'),
+        rejectedCount: count(cardRows, (r) => r.status === 'REJECTED'),
       },
       handovers: {
         count: handoverRows.length,

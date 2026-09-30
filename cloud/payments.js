@@ -19,7 +19,12 @@ const {
   takeOrder,
   findAll,
 } = require('./lib/core');
-const { merchantAccounts, cleanReference, referenceProblem } = require('./lib/mobileMoney');
+const {
+  merchantAccounts,
+  cardAccount,
+  cleanReference,
+  referenceProblem,
+} = require('./lib/mobileMoney');
 const { dateKey } = require('./lib/dates');
 const { money, notifyUser, notifyStaff, personName } = require('./notifications');
 
@@ -48,6 +53,12 @@ async function checkMobileMoney(config, providerParam, referenceParam, excludeOr
   }
   const problem = referenceProblem(reference);
   if (problem) throw invalid(problem);
+  await refuseDuplicate(provider, reference, excludeOrderId);
+  return { provider, reference, auto: false, request: {} };
+}
+
+// A transaction ID must not be on another live order of the same provider.
+async function refuseDuplicate(provider, reference, excludeOrderId) {
   const query = new Parse.Query('Order');
   query.equalTo('paymentProvider', provider);
   query.equalTo('paymentReference', reference);
@@ -56,7 +67,21 @@ async function checkMobileMoney(config, providerParam, referenceParam, excludeOr
   const duplicate = await query.first(MASTER);
   if (duplicate)
     throw invalid(`This transaction ID was already used on ${duplicate.get('orderCode')}`);
-  return { provider, reference, auto: false, request: {} };
+}
+
+// Card payments (counter only): the transaction ID from the card machine's
+// slip, checked by a cashier against the machine's report like a merchant
+// code payment. Same shape as checkMobileMoney's answer.
+async function checkCard(config, referenceParam, excludeOrderId) {
+  const account = cardAccount(config);
+  if (!account)
+    throw invalid('Card payments are not set up. The owner switches them on in Settings');
+  const reference = cleanReference(referenceParam);
+  if (!reference) throw invalid('Enter the transaction ID from the card machine slip');
+  if (!/^[A-Z0-9.-]{4,40}$/.test(reference))
+    throw invalid('A transaction ID has 4 to 40 letters or digits');
+  await refuseDuplicate('card', reference, excludeOrderId);
+  return { provider: 'card', reference, auto: false, request: {} };
 }
 
 // Records that a mobile money payment arrived (VERIFIED) or did not
@@ -168,13 +193,18 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
   if (owedAsCash && order.get('cashStatus') !== 'WITH_RIDER')
     throw invalid('This order was already handed over as cash');
   const { values: config } = await loadConfig();
-  const momo = await checkMobileMoney(
-    config,
-    request.params.provider,
-    request.params.reference,
-    order.id,
-    request.params.payerPhone || order.get('customerPhone'),
-  );
+  // Card: taken at the counter, so only a cashier or the owner corrects it.
+  const byCard = order.get('paymentMethod') === 'card';
+  if (byCard && !['cashier', 'admin'].includes(role)) throw forbidden('Not allowed');
+  const momo = byCard
+    ? await checkCard(config, request.params.reference, order.id)
+    : await checkMobileMoney(
+        config,
+        request.params.provider,
+        request.params.reference,
+        order.id,
+        request.params.payerPhone || order.get('customerPhone'),
+      );
   const { provider, reference } = momo;
   const before = {
     provider: order.get('paymentProvider'),
@@ -264,7 +294,8 @@ Parse.Cloud.define('getMobileMoneyLedger', async (request) => {
     (order) => dateKey(order.get('paymentCheckedAt'), config.timezone) === today,
   );
   const verified = checkedToday.filter((order) => order.get('paymentStatus') === 'VERIFIED');
-  const totals = merchantAccounts(config).map((account) => {
+  const card = cardAccount(config);
+  const totals = [...merchantAccounts(config), ...(card ? [card] : [])].map((account) => {
     const rows = verified.filter((order) => order.get('paymentProvider') === account.provider);
     return {
       ...account,
@@ -282,4 +313,4 @@ Parse.Cloud.define('getMobileMoneyLedger', async (request) => {
   };
 });
 
-module.exports = { checkMobileMoney, settlePayment, PENDING };
+module.exports = { checkMobileMoney, checkCard, settlePayment, PENDING };
