@@ -187,6 +187,7 @@ Parse.Cloud.define('adminSaveEfrisSettings', async (request) => {
   const enabled = p.enabled === undefined ? values.efrisEnabled === true : p.enabled === true;
   // Checked when switching on. Once on, a new key or device can be saved
   // (sales are retried until its connection is tested and works).
+  if (enabled && !(await efrisInPlan())) throw invalid('EFRIS receipts are not part of your plan');
   if (enabled && values.efrisEnabled !== true) {
     const gaps = missing(settings);
     if (gaps.length) throw invalid(`Add the ${gaps.join(', ')} before switching EFRIS on`);
@@ -511,7 +512,11 @@ async function waitForOther(order) {
 }
 
 // Issues one sale if it is due. Never throws; the order says how it went.
+// Relay Hosted plans may leave EFRIS out (lib/limits.js).
+const efrisInPlan = async () => (await require('./lib/limits').features()).efris !== false;
+
 async function issue(orderOrId, { actor = null, force = false } = {}) {
+  if (!(await efrisInPlan())) return null;
   let order;
   try {
     order =
@@ -646,6 +651,7 @@ Parse.Cloud.define('issueEfrisReceipt', async (request) => {
   if (!/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid('Unknown order');
   const { values } = await loadConfig();
   if (values.efrisEnabled !== true) throw invalid('EFRIS is not switched on (Admin → Tax)');
+  if (!(await efrisInPlan())) throw invalid('EFRIS receipts are not part of your plan');
   const order = await issue(id, { actor, force: true });
   if (!order) throw invalid('Unknown order');
   if (!due(order, values) && order.get('efrisStatus') !== 'issued')

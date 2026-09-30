@@ -113,7 +113,10 @@ const ready = (settings) =>
   (settings.recipients || []).length > 0;
 
 // Called when the nightly Z-report is saved. Once per day.
+const inPlan = async () => (await require('./lib/limits').features()).whatsapp !== false;
+
 async function sendDailySummary(day, data, config) {
+  if (!(await inPlan())) return null;
   const { row, settings } = await loadSettings();
   if (!ready(settings) || settings.lastSentDay === day) return null;
   const result = await sendAll(settings, summaryOf(config, day, data));
@@ -173,6 +176,8 @@ Parse.Cloud.define('adminSaveWhatsAppSettings', async (request) => {
     recipients: [...new Set(numbers)],
   };
   if (p.token) next.token = String(p.token).trim().slice(0, 1000);
+  if (next.enabled && !(await inPlan()))
+    throw invalid('WhatsApp summaries are not part of your plan');
   if (next.enabled && !ready(next))
     throw invalid('Enter the phone number ID, the access token and at least one number');
   await saveSettings(row, next);
@@ -189,6 +194,7 @@ Parse.Cloud.define('adminSaveWhatsAppSettings', async (request) => {
 // Owner: send today's summary so far, now, to check the connection.
 Parse.Cloud.define('adminTestWhatsApp', async (request) => {
   await requireAdminUnlock(request);
+  if (!(await inPlan())) throw invalid('WhatsApp summaries are not part of your plan');
   const { settings } = await loadSettings();
   if (!settings.token || !settings.phoneNumberId || !(settings.recipients || []).length)
     throw invalid('Save the phone number ID, the access token and at least one number first');

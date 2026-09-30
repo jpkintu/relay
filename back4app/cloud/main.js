@@ -796,7 +796,14 @@ var require_limits = __commonJS({
     async function checkMemberLimit() {
     }
     async function features() {
-      return { branches: true, finance: true, accounting: true, reports: true };
+      return {
+        branches: true,
+        finance: true,
+        accounting: true,
+        reports: true,
+        efris: true,
+        whatsapp: true
+      };
     }
     module2.exports = { checkBranchLimit, checkMemberLimit, features };
   }
@@ -28224,6 +28231,7 @@ var require_efris = __commonJS({
       }
       const { object: config, values } = await loadConfig();
       const enabled = p.enabled === void 0 ? values.efrisEnabled === true : p.enabled === true;
+      if (enabled && !await efrisInPlan()) throw invalid("EFRIS receipts are not part of your plan");
       if (enabled && values.efrisEnabled !== true) {
         const gaps = missing(settings);
         if (gaps.length) throw invalid(`Add the ${gaps.join(", ")} before switching EFRIS on`);
@@ -28501,7 +28509,9 @@ var require_efris = __commonJS({
       }
       return order;
     }
+    var efrisInPlan = async () => (await require_limits().features()).efris !== false;
     async function issue(orderOrId, { actor = null, force = false } = {}) {
+      if (!await efrisInPlan()) return null;
       let order;
       try {
         order = typeof orderOrId === "string" ? await new Parse.Query("Order").include(["tillCashier", "placedBy", "cashier", "createdBy"]).get(orderOrId, MASTER) : orderOrId;
@@ -28607,6 +28617,7 @@ var require_efris = __commonJS({
       if (!/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown order");
       const { values } = await loadConfig();
       if (values.efrisEnabled !== true) throw invalid("EFRIS is not switched on (Admin \u2192 Tax)");
+      if (!await efrisInPlan()) throw invalid("EFRIS receipts are not part of your plan");
       const order = await issue(id, { actor, force: true });
       if (!order) throw invalid("Unknown order");
       if (!due(order, values) && order.get("efrisStatus") !== "issued")
@@ -30524,7 +30535,9 @@ var require_whatsapp = __commonJS({
       return { sent, failed: errors.length, error: errors.join("; ").slice(0, 500) };
     }
     var ready = (settings) => settings.enabled === true && !!settings.token && !!settings.phoneNumberId && (settings.recipients || []).length > 0;
+    var inPlan = async () => (await require_limits().features()).whatsapp !== false;
     async function sendDailySummary(day, data, config) {
+      if (!await inPlan()) return null;
       const { row, settings } = await loadSettings();
       if (!ready(settings) || settings.lastSentDay === day) return null;
       const result = await sendAll(settings, summaryOf(config, day, data));
@@ -30569,6 +30582,8 @@ var require_whatsapp = __commonJS({
         recipients: [...new Set(numbers)]
       };
       if (p.token) next.token = String(p.token).trim().slice(0, 1e3);
+      if (next.enabled && !await inPlan())
+        throw invalid("WhatsApp summaries are not part of your plan");
       if (next.enabled && !ready(next))
         throw invalid("Enter the phone number ID, the access token and at least one number");
       await saveSettings(row, next);
@@ -30583,6 +30598,7 @@ var require_whatsapp = __commonJS({
     });
     Parse.Cloud.define("adminTestWhatsApp", async (request) => {
       await requireAdminUnlock(request);
+      if (!await inPlan()) throw invalid("WhatsApp summaries are not part of your plan");
       const { settings } = await loadSettings();
       if (!settings.token || !settings.phoneNumberId || !(settings.recipients || []).length)
         throw invalid("Save the phone number ID, the access token and at least one number first");
