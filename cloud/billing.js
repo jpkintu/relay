@@ -325,6 +325,28 @@ Parse.Cloud.define('platformListPayments', async (request) => {
 // Reminds the owner before the trial or paid month ends, and when it has
 // ended (once per date; notifications carry a key).
 async function remind(row, platform) {
+  const sent = await notifyBilling(row, platform);
+  // The same reminder by email, once per reminder.
+  if (sent?.key && row.get('ownerEmail')) {
+    const once = await tenancy.withoutTenant(() => claimOnce(`email:${row.id}:${sent.key}`));
+    if (once)
+      await require('./platformEmail').emailOwner(
+        row,
+        `${row.get('name')}: ${sent.title}`,
+        [sent.title, '', sent.body, '', 'Relay'].join('\n'),
+      );
+  }
+  return sent?.count ?? 0;
+}
+
+const tell = async (payload) => ({
+  count: await notifyAdmins(payload),
+  key: payload.key,
+  title: payload.title,
+  body: payload.body,
+});
+
+async function notifyBilling(row, platform) {
   const access = accessOf(row, platform.graceDays);
   const until = access.until;
   if (!until) return 0;
@@ -332,7 +354,7 @@ async function remind(row, platform) {
   const price = `${platform.currency} ${priceOf(row, platform).toLocaleString('en-US')}`;
   const day = until.toISOString().slice(0, 10);
   if ((access.status === 'trial' || access.status === 'active') && left <= REMIND_DAYS)
-    return notifyAdmins({
+    return tell({
       kind: 'billing.reminder',
       tone: 'warning',
       title:
@@ -344,7 +366,7 @@ async function remind(row, platform) {
       key: `billing:${access.status}:${day}`,
     });
   if (access.status === 'past_due')
-    return notifyAdmins({
+    return tell({
       kind: 'billing.reminder',
       tone: 'alert',
       title: `The app closes in ${left} day${left === 1 ? '' : 's'}`,
@@ -352,7 +374,7 @@ async function remind(row, platform) {
       link: '/admin',
       key: `billing:past_due:${day}`,
     });
-  return 0;
+  return null;
 }
 
 // Without the billing job (Back4App's scheduler is a paid feature): whenever

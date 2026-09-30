@@ -164,6 +164,10 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
   const phone = String(p.phone || '')
     .replace(/[^\d+]/g, '')
     .slice(0, 20);
+  // Password resets and everything Relay emails go here.
+  const ownerEmail = String(p.email || '')
+    .trim()
+    .toLowerCase();
   if (restaurantName.length < 2) throw invalid('Enter the restaurant’s name');
   if (code.length < 3) throw invalid('The restaurant code needs at least 3 letters or digits');
   if (!ownerName) throw invalid('Enter your name');
@@ -171,6 +175,7 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     throw invalid('Username: 3 to 32 letters, digits, dots, dashes or underscores');
   if (pin.length < 6) throw invalid('Choose a PIN or password of at least 6 characters');
   if (phone.replace(/\D/g, '').length < 9) throw invalid('Enter your phone number');
+  if (!require('./lib/email').validEmail(ownerEmail)) throw invalid('Enter your email address');
   // Only complete sign-ups count towards the limit.
   if (!request.master && !allowSignUp(request.ip || 'unknown'))
     throw forbidden('Too many sign-ups from here. Try again in an hour');
@@ -188,6 +193,7 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     suspended: false,
     trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 86400000),
     ownerName,
+    ownerEmail,
     billingPhone: phone,
     priceOverride: null,
     // The plan chosen at sign-up (one offered), else the first offered.
@@ -228,6 +234,24 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     code,
   );
   log('info', 'restaurant.signed_up', { restaurant: restaurant.id, code });
+  // Welcome email (best effort; nothing waits for it).
+  const { appUrl } = (await require('./lib/email').loadEmail()).email;
+  void require('./platformEmail').emailOwner(
+    restaurant,
+    `Welcome to Relay, ${restaurantName}`,
+    [
+      `Hello ${ownerName},`,
+      '',
+      `${restaurantName} is set up on Relay with a ${platform.trialDays}-day free trial.`,
+      `Restaurant code: ${code}`,
+      `Your username: ${username}`,
+      appUrl ? `Sign in: ${appUrl}` : '',
+      '',
+      'Forgot your password? Use "Forgot password" on the sign-in page and we will email you a link.',
+    ]
+      .filter((line) => line !== null)
+      .join('\n'),
+  );
   return { code, username: tenancy.fullUsername(username, code) };
 });
 
@@ -261,6 +285,7 @@ function summarise(row, platform) {
     currency: platform.currency,
     graceDays: Number(platform.graceDays) || 0,
     supportContact: platform.supportContact || '',
+    ownerEmail: row.get('ownerEmail') || '',
   };
 }
 
@@ -386,6 +411,7 @@ async function restaurantRow(row, platform) {
     ...summarise(row, platform),
     ownerName: row.get('ownerName') || '',
     billingPhone: row.get('billingPhone') || '',
+    ownerEmail: row.get('ownerEmail') || '',
     priceOverride: typeof row.get('priceOverride') === 'number' ? row.get('priceOverride') : null,
     suspended: row.get('suspended') === true,
     note: row.get('note') || '',
@@ -426,7 +452,15 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     new Parse.Query('Restaurant').get(String(p.id || ''), MASTER).catch(() => null),
   );
   if (!row) throw invalid('Restaurant not found');
-  const fields = ['plan', 'priceOverride', 'trialEndsAt', 'paidUntil', 'suspended', 'note'];
+  const fields = [
+    'plan',
+    'priceOverride',
+    'trialEndsAt',
+    'paidUntil',
+    'suspended',
+    'note',
+    'ownerEmail',
+  ];
   const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
   // The platform may put a restaurant on any plan (over the limits too: what
   // it has is kept, only additions are checked).
@@ -451,6 +485,14 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     else row.unset('paidUntil');
   }
   if ('suspended' in p) row.set('suspended', p.suspended === true);
+  if ('ownerEmail' in p) {
+    const email = String(p.ownerEmail || '')
+      .trim()
+      .toLowerCase();
+    if (email && !require('./lib/email').validEmail(email))
+      throw invalid('The owner email is not an email address');
+    row.set('ownerEmail', email);
+  }
   if ('note' in p)
     row.set(
       'note',

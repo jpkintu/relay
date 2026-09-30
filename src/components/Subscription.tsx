@@ -88,27 +88,46 @@ export function useOfferedPlans() {
   return data;
 }
 
-// One plan: price, what it allows and what it includes.
-function PlanCard({
+// One plan: price, what it allows and what it includes. With `onSelect`
+// (the sign-up form) the card itself is a choice.
+export function PlanCard({
   plan,
   currency,
   current,
   action,
+  onSelect,
+  badge = 'Your plan',
 }: {
   plan: OfferedPlan;
   currency: string;
   current: boolean;
-  action: ReactNode;
+  action?: ReactNode;
+  onSelect?: () => void;
+  badge?: string;
 }) {
   const spec = planSpec(plan);
+  const choice = onSelect
+    ? {
+        role: 'radio',
+        'aria-checked': current,
+        tabIndex: 0,
+        onClick: onSelect,
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onSelect();
+          }
+        },
+      }
+    : { 'aria-current': current || undefined };
   return (
     <article
-      className={`plan-card${current ? ' current' : ''}`}
-      aria-current={current || undefined}
+      className={`plan-card${current ? ' current' : ''}${onSelect ? ' choosable' : ''}`}
+      {...choice}
     >
       <header className="plan-card-head">
         <h3>{plan.name}</h3>
-        {current && <span className="status-pill good">Your plan</span>}
+        {current && <span className="status-pill good">{badge}</span>}
       </header>
       <p className="plan-price">
         <strong>{formatMoney(plan.price, currency)}</strong>
@@ -135,7 +154,7 @@ function PlanCard({
           </li>
         ))}
       </ul>
-      {!current && <div className="plan-action">{action}</div>}
+      {!current && action && <div className="plan-action">{action}</div>}
     </article>
   );
 }
@@ -240,6 +259,7 @@ export function SubscriptionNotice() {
         </span>
       )}
       {plans && !paying && <PlanPicker />}
+      {!paying && <OwnerEmail />}
       {paying && <BillingPanel onClose={() => setPaying(false)} />}
     </div>
   );
@@ -487,5 +507,71 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
         </details>
       )}
     </div>
+  );
+}
+
+// The owner's email (password reset links and Relay's emails): shown under
+// the subscription notice, with a way to change it.
+function OwnerEmail() {
+  const { profile, refresh } = useSession();
+  const current = profile?.restaurant?.ownerEmail || '';
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('updateOwnerEmail', { email });
+      await refresh();
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the email');
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!editing)
+    return (
+      <p className={`owner-email${current ? '' : ' missing'}`}>
+        {current ? (
+          <>
+            Account email: <b>{current}</b>
+          </>
+        ) : (
+          <>
+            <b>Add your email</b> so you can reset your password and get Relay&apos;s reminders.
+          </>
+        )}{' '}
+        <button
+          className="link-button"
+          onClick={() => {
+            setEmail(current);
+            setEditing(true);
+          }}
+        >
+          {current ? 'Change' : 'Add email'}
+        </button>
+      </p>
+    );
+  return (
+    <form className="owner-email" onSubmit={save}>
+      <input
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="you@example.com"
+        autoComplete="email"
+        aria-label="Account email"
+        required
+      />
+      <button disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+      <button type="button" className="setup-secondary" onClick={() => setEditing(false)}>
+        Cancel
+      </button>
+      {error && <span className="form-error">{error}</span>}
+    </form>
   );
 }

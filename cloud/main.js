@@ -55,6 +55,7 @@ require('./spending');
 require('./accounting');
 require('./whatsapp');
 require('./platformWhatsapp');
+require('./platformEmail');
 require('./people');
 require('./admin');
 require('./onboarding');

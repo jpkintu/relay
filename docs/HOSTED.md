@@ -264,3 +264,22 @@ Once it is switched on, Admin → WhatsApp in each restaurant only asks for the
 numbers that receive the nightly summary (`cloud/lib/whatsappSender.js`,
 `cloud/platformWhatsapp.js`). Until then, a restaurant can still connect its
 own WhatsApp app there.
+
+## Owner email and password reset
+
+Sign-up asks for the owner's email (`Restaurant.ownerEmail`). Relay writes to
+it through the email service set in Platform console → **Email** (Resend or
+Brevo: API key, sending address on a verified domain, sender name, and the
+app's address for links; _Send a test_ checks it). It sends:
+
+- **Forgot password**: on the sign-in page, "Owner? Forgot your password"
+  asks for the email; if it is the restaurant's owner email, a link valid for
+  one hour is emailed (`/?reset=…`; only its hash is kept). The link sets a
+  new password and signs the owner out everywhere. The answer never says
+  whether the email matched. Riders and cashiers still get new PINs from the
+  owner; platform staff can still reset an owner by hand.
+- **Welcome** after sign-up, with the restaurant code and username.
+- **Subscription reminders**, the same as the in-app ones, once each.
+
+Owners change their email under the subscription notice on Overview;
+platform staff can change it in the restaurant's panel (and write to them).

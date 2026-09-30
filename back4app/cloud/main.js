@@ -810,6 +810,62 @@ var require_plans = __commonJS({
   }
 });
 
+// cloud/lib/email.js
+var require_email = __commonJS({
+  "cloud/lib/email.js"(exports2, module2) {
+    "use strict";
+    var MASTER = { useMasterKey: true };
+    var PROVIDERS = {
+      resend: "https://api.resend.com",
+      brevo: "https://api.brevo.com/v3"
+    };
+    async function loadEmail() {
+      const tenancy = require_tenant();
+      const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
+      return { row, email: { provider: "resend", fromName: "Relay", ...row?.get("email") || {} } };
+    }
+    var ready = (email) => !!(email.apiKey && email.from && PROVIDERS[email.provider]);
+    var validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(value || "").trim()) && String(value).trim().length <= 120;
+    async function sendWith(email, { to, subject, text }) {
+      const base = process.env.RELAY_EMAIL_URL || PROVIDERS[email.provider];
+      const name = String(email.fromName || "Relay").replace(/[<>"]/g, "");
+      const request = email.provider === "brevo" ? {
+        url: `${base}/smtp/email`,
+        headers: { "api-key": email.apiKey },
+        body: {
+          sender: { name, email: email.from },
+          to: [{ email: to }],
+          subject,
+          textContent: text
+        }
+      } : {
+        url: `${base}/emails`,
+        headers: { Authorization: `Bearer ${email.apiKey}` },
+        body: { from: `${name} <${email.from}>`, to: [to], subject, text }
+      };
+      const response = await fetch(request.url, {
+        method: "POST",
+        headers: { ...request.headers, "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+        signal: AbortSignal.timeout(15e3)
+      });
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({}));
+        throw new Error(
+          json?.message || json?.error?.message || `Email service answered ${response.status}`
+        );
+      }
+    }
+    async function sendEmail(message) {
+      const { email } = await loadEmail();
+      if (!ready(email) || !validEmail(message.to)) return false;
+      await sendWith(email, message);
+      return true;
+    }
+    module2.exports = { loadEmail, sendWith, sendEmail, ready, validEmail, PROVIDERS };
+  }
+});
+
 // cloud/adminLock.js
 var require_adminLock = __commonJS({
   "cloud/adminLock.js"(exports2, module2) {
@@ -1739,7 +1795,12 @@ var require_security = __commonJS({
         plan: S,
         priceOverride: N,
         paidUntil: D,
-        note: S
+        note: S,
+        // Collected at sign-up: password reset links and Relay's emails.
+        ownerEmail: S,
+        // Forgot password: hash of the emailed token, and when it runs out.
+        resetTokenHash: S,
+        resetTokenExpires: D
       },
       SubscriptionPayment: {
         amount: N,
@@ -1777,7 +1838,9 @@ var require_security = __commonJS({
         graceDays: N,
         supportContact: S,
         // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
-        whatsapp: "Object"
+        whatsapp: "Object",
+        // The email service (lib/email.js), API key included.
+        email: "Object"
       },
       Notification: {
         recipient: user,
@@ -2793,6 +2856,179 @@ var require_admin = __commonJS({
   }
 });
 
+// cloud/platformEmail.js
+var require_platformEmail = __commonJS({
+  "cloud/platformEmail.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var { MASTER, invalid, audit, endSessions, requireRole } = require_core();
+    var tenancy = require_tenant();
+    var { requirePlatform } = require_restaurants();
+    var { loadEmail, sendWith, sendEmail, ready, validEmail, PROVIDERS } = require_email();
+    var { log, errorMessage } = require_log();
+    var RESET_MS = 36e5;
+    var hash = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
+    var cleanEmail = (value) => String(value || "").trim().toLowerCase();
+    var view = (email) => ({
+      provider: email.provider || "resend",
+      from: email.from || "",
+      fromName: email.fromName || "Relay",
+      appUrl: email.appUrl || "",
+      keySet: !!email.apiKey,
+      ready: ready(email),
+      providers: Object.keys(PROVIDERS)
+    });
+    Parse.Cloud.define("platformGetEmail", async (request) => {
+      await requirePlatform(request);
+      return view((await loadEmail()).email);
+    });
+    Parse.Cloud.define("platformSaveEmail", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const { row, email } = await loadEmail();
+      if (!row) throw invalid("Save the platform settings first");
+      const provider = String(p.provider || email.provider || "resend");
+      if (!PROVIDERS[provider]) throw invalid("Choose Resend or Brevo");
+      const from = cleanEmail(p.from ?? email.from);
+      if (from && !validEmail(from)) throw invalid("The sender address is not an email address");
+      const appUrl = String(p.appUrl ?? email.appUrl ?? "").trim().replace(/\/+$/, "");
+      if (appUrl && !/^https?:\/\/[^\s/]+/.test(appUrl))
+        throw invalid("The app address starts with https://");
+      const next = {
+        ...email,
+        provider,
+        from,
+        fromName: String(p.fromName ?? email.fromName ?? "Relay").trim().slice(0, 60),
+        appUrl
+      };
+      if (p.apiKey) next.apiKey = String(p.apiKey).trim().slice(0, 500);
+      row.set("email", next);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.email_saved", row, view(email), view(next))
+      );
+      return view(next);
+    });
+    Parse.Cloud.define("platformTestEmail", async (request) => {
+      await requirePlatform(request);
+      const to = cleanEmail(request.params?.to);
+      if (!validEmail(to)) throw invalid("Enter the email address to send the test to");
+      const { email } = await loadEmail();
+      if (!ready(email)) throw invalid("Save the service, its API key and the sender address first");
+      try {
+        await sendWith(email, {
+          to,
+          subject: "Relay test email",
+          text: "Email from Relay works. Owners will get password reset links and reminders like this."
+        });
+      } catch (error) {
+        throw invalid(`Not sent: ${errorMessage(error)}`);
+      }
+      return { sent: 1 };
+    });
+    Parse.Cloud.define("updateOwnerEmail", async (request) => {
+      const { user } = await requireRole(request, ["admin"]);
+      const email = cleanEmail(request.params?.email);
+      if (!validEmail(email)) throw invalid("Enter a valid email address");
+      const tenant = tenancy.current();
+      const row = await tenancy.withoutTenant(() => new Parse.Query("Restaurant").get(tenant, MASTER));
+      const before = row.get("ownerEmail") || "";
+      row.set("ownerEmail", email);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      tenancy.clearCache();
+      await audit(user, "restaurant.owner_email_changed", row, { email: before }, { email });
+      return { email };
+    });
+    var recent = /* @__PURE__ */ new Map();
+    function allow(key) {
+      const now = Date.now();
+      const times = (recent.get(key) || []).filter((time) => now - time < 36e5);
+      if (times.length >= 5) return false;
+      times.push(now);
+      recent.set(key, times);
+      if (recent.size > 5e3) recent.clear();
+      return true;
+    }
+    Parse.Cloud.define("requestOwnerReset", async (request) => {
+      const p = request.params || {};
+      const code = String(p.code || "").trim().toLowerCase();
+      const email = cleanEmail(p.email);
+      if (!code || !validEmail(email)) throw invalid("Enter the restaurant code and your email");
+      const { email: settings } = await loadEmail();
+      if (!ready(settings) || !settings.appUrl)
+        throw invalid("Password reset by email is not set up yet. Ask Relay support to reset it");
+      if (!request.master && !allow(`${request.ip || "unknown"}:${code}`))
+        throw invalid("Too many requests. Try again in an hour");
+      const done = { sent: true };
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").equalTo("code", code).first(MASTER)
+      );
+      if (!row || cleanEmail(row.get("ownerEmail")) !== email) return done;
+      const token = crypto.randomBytes(32).toString("hex");
+      row.set({ resetTokenHash: hash(token), resetTokenExpires: new Date(Date.now() + RESET_MS) });
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      const link = `${settings.appUrl}/?reset=${token}`;
+      try {
+        await sendWith(settings, {
+          to: email,
+          subject: `Reset your ${row.get("name")} password`,
+          text: [
+            `Hello ${row.get("ownerName") || ""},`.trim(),
+            "",
+            `Someone asked to reset the owner password for ${row.get("name")} on Relay.`,
+            `Open this link within an hour to choose a new one:`,
+            link,
+            "",
+            "If it was not you, ignore this email: your password stays as it is."
+          ].join("\n")
+        });
+      } catch (error) {
+        log("warn", "email.reset_failed", { restaurant: row.id, error: errorMessage(error) });
+        throw invalid("The email could not be sent. Try again later or ask Relay support");
+      }
+      return done;
+    });
+    Parse.Cloud.define("completeOwnerReset", async (request) => {
+      const p = request.params || {};
+      const password = String(p.password || "");
+      if (password.length < 6) throw invalid("Choose a password of at least 6 characters");
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").equalTo("resetTokenHash", hash(p.token)).first(MASTER)
+      );
+      if (!row || !(row.get("resetTokenExpires") > /* @__PURE__ */ new Date()))
+        throw invalid("This link has expired or was already used. Ask for a new one");
+      const owner = await tenancy.runAs(
+        row.id,
+        async () => {
+          const role = await new Parse.Query(Parse.Role).equalTo("name", "admin").first(MASTER);
+          const owners = role ? await role.getUsers().query().ascending("createdAt").find(MASTER) : [];
+          const user = owners.find((u) => u.get("active") !== false) || owners[0];
+          if (!user) throw invalid("This restaurant has no owner account");
+          user.set({ password, active: true });
+          await user.save(null, MASTER);
+          await endSessions(user);
+          await audit(user, "restaurant.owner_password_reset", row, null, { by: "email link" });
+          return user;
+        },
+        row.get("code")
+      );
+      row.unset("resetTokenHash");
+      row.unset("resetTokenExpires");
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      return { code: row.get("code"), username: tenancy.displayUsername(owner.getUsername()) };
+    });
+    async function emailOwner(row, subject, text) {
+      try {
+        return await sendEmail({ to: row.get("ownerEmail"), subject, text });
+      } catch (error) {
+        log("warn", "email.failed", { restaurant: row.id, subject, error: errorMessage(error) });
+        return false;
+      }
+    }
+    module2.exports = { emailOwner, validEmail };
+  }
+});
+
 // cloud/restaurants.js
 var require_restaurants = __commonJS({
   "cloud/restaurants.js"(exports2, module2) {
@@ -2912,6 +3148,7 @@ var require_restaurants = __commonJS({
       const username = String(p.username || "").trim().toLowerCase();
       const pin = String(p.pin || "");
       const phone = String(p.phone || "").replace(/[^\d+]/g, "").slice(0, 20);
+      const ownerEmail = String(p.email || "").trim().toLowerCase();
       if (restaurantName.length < 2) throw invalid("Enter the restaurant\u2019s name");
       if (code.length < 3) throw invalid("The restaurant code needs at least 3 letters or digits");
       if (!ownerName) throw invalid("Enter your name");
@@ -2919,6 +3156,7 @@ var require_restaurants = __commonJS({
         throw invalid("Username: 3 to 32 letters, digits, dots, dashes or underscores");
       if (pin.length < 6) throw invalid("Choose a PIN or password of at least 6 characters");
       if (phone.replace(/\D/g, "").length < 9) throw invalid("Enter your phone number");
+      if (!require_email().validEmail(ownerEmail)) throw invalid("Enter your email address");
       if (!request.master && !allowSignUp(request.ip || "unknown"))
         throw forbidden("Too many sign-ups from here. Try again in an hour");
       if (await codeTaken(code) || !await tenancy.withoutTenant(() => claimOnce(`restaurant:${code}`)))
@@ -2931,6 +3169,7 @@ var require_restaurants = __commonJS({
         suspended: false,
         trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 864e5),
         ownerName,
+        ownerEmail,
         billingPhone: phone,
         priceOverride: null,
         // The plan chosen at sign-up (one offered), else the first offered.
@@ -2967,6 +3206,21 @@ var require_restaurants = __commonJS({
         code
       );
       log("info", "restaurant.signed_up", { restaurant: restaurant.id, code });
+      const { appUrl } = (await require_email().loadEmail()).email;
+      void require_platformEmail().emailOwner(
+        restaurant,
+        `Welcome to Relay, ${restaurantName}`,
+        [
+          `Hello ${ownerName},`,
+          "",
+          `${restaurantName} is set up on Relay with a ${platform.trialDays}-day free trial.`,
+          `Restaurant code: ${code}`,
+          `Your username: ${username}`,
+          appUrl ? `Sign in: ${appUrl}` : "",
+          "",
+          'Forgot your password? Use "Forgot password" on the sign-in page and we will email you a link.'
+        ].filter((line) => line !== null).join("\n")
+      );
       return { code, username: tenancy.fullUsername(username, code) };
     });
     async function restaurantSummary() {
@@ -2996,7 +3250,8 @@ var require_restaurants = __commonJS({
         planName: planOfRow(row, platform).name,
         currency: platform.currency,
         graceDays: Number(platform.graceDays) || 0,
-        supportContact: platform.supportContact || ""
+        supportContact: platform.supportContact || "",
+        ownerEmail: row.get("ownerEmail") || ""
       };
     }
     async function isPlatform(user) {
@@ -3098,6 +3353,7 @@ var require_restaurants = __commonJS({
         ...summarise(row, platform),
         ownerName: row.get("ownerName") || "",
         billingPhone: row.get("billingPhone") || "",
+        ownerEmail: row.get("ownerEmail") || "",
         priceOverride: typeof row.get("priceOverride") === "number" ? row.get("priceOverride") : null,
         suspended: row.get("suspended") === true,
         note: row.get("note") || "",
@@ -3130,7 +3386,15 @@ var require_restaurants = __commonJS({
         () => new Parse.Query("Restaurant").get(String(p.id || ""), MASTER).catch(() => null)
       );
       if (!row) throw invalid("Restaurant not found");
-      const fields = ["plan", "priceOverride", "trialEndsAt", "paidUntil", "suspended", "note"];
+      const fields = [
+        "plan",
+        "priceOverride",
+        "trialEndsAt",
+        "paidUntil",
+        "suspended",
+        "note",
+        "ownerEmail"
+      ];
       const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
       if ("plan" in p) {
         const { values: platform2 } = await platformSettings();
@@ -3153,6 +3417,12 @@ var require_restaurants = __commonJS({
         else row.unset("paidUntil");
       }
       if ("suspended" in p) row.set("suspended", p.suspended === true);
+      if ("ownerEmail" in p) {
+        const email = String(p.ownerEmail || "").trim().toLowerCase();
+        if (email && !require_email().validEmail(email))
+          throw invalid("The owner email is not an email address");
+        row.set("ownerEmail", email);
+      }
       if ("note" in p)
         row.set(
           "note",
@@ -34019,6 +34289,25 @@ var require_billing = __commonJS({
       };
     });
     async function remind(row, platform) {
+      const sent = await notifyBilling(row, platform);
+      if (sent?.key && row.get("ownerEmail")) {
+        const once = await tenancy.withoutTenant(() => claimOnce(`email:${row.id}:${sent.key}`));
+        if (once)
+          await require_platformEmail().emailOwner(
+            row,
+            `${row.get("name")}: ${sent.title}`,
+            [sent.title, "", sent.body, "", "Relay"].join("\n")
+          );
+      }
+      return sent?.count ?? 0;
+    }
+    var tell = async (payload) => ({
+      count: await notifyAdmins(payload),
+      key: payload.key,
+      title: payload.title,
+      body: payload.body
+    });
+    async function notifyBilling(row, platform) {
       const access = accessOf(row, platform.graceDays);
       const until = access.until;
       if (!until) return 0;
@@ -34026,7 +34315,7 @@ var require_billing = __commonJS({
       const price = `${platform.currency} ${priceOf(row, platform).toLocaleString("en-US")}`;
       const day = until.toISOString().slice(0, 10);
       if ((access.status === "trial" || access.status === "active") && left <= REMIND_DAYS)
-        return notifyAdmins({
+        return tell({
           kind: "billing.reminder",
           tone: "warning",
           title: access.status === "trial" ? `Your free trial ends in ${left} day${left === 1 ? "" : "s"}` : `Your paid month ends in ${left} day${left === 1 ? "" : "s"}`,
@@ -34035,7 +34324,7 @@ var require_billing = __commonJS({
           key: `billing:${access.status}:${day}`
         });
       if (access.status === "past_due")
-        return notifyAdmins({
+        return tell({
           kind: "billing.reminder",
           tone: "alert",
           title: `The app closes in ${left} day${left === 1 ? "" : "s"}`,
@@ -34043,7 +34332,7 @@ var require_billing = __commonJS({
           link: "/admin",
           key: `billing:past_due:${day}`
         });
-      return 0;
+      return null;
     }
     var billingCheckMs = () => Number(process.env.RELAY_BILLING_CHECK_MS ?? 3e5);
     function billingDue() {
@@ -38011,6 +38300,7 @@ require_spending();
 require_accounting();
 require_whatsapp();
 require_platformWhatsapp();
+require_platformEmail();
 require_people();
 require_admin();
 require_onboarding();

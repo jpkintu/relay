@@ -52,6 +52,9 @@ process.env.RELAY_AIRTEL_URL = `http://localhost:${MOMO_PORT}/airtel`;
 process.env.RELAY_IP_URL = `http://localhost:${MOMO_PORT}/ip`;
 process.env.RELAY_EFRIS_URL = `http://localhost:${MOMO_PORT}/efris`;
 process.env.RELAY_WHATSAPP_URL = `http://localhost:${MOMO_PORT}/whatsapp`;
+process.env.RELAY_EMAIL_URL = `http://localhost:${MOMO_PORT}/email`;
+// The email service stand-in (Resend and Brevo APIs): emails it accepted.
+const mailbox = [];
 // The WhatsApp Cloud API stand-in: messages it accepted.
 const whatsapp = { messages: [], refuse: '' };
 process.env.RELAY_EFRIS_DELAY_MS = '300';
@@ -350,6 +353,22 @@ function startMomoMock() {
     }
     return refuse(res, '01', 'Interface coding error');
   });
+  app.post('/email/emails', express.json(), (req, res) => {
+    if (req.headers.authorization !== 'Bearer email-key')
+      return res.status(401).json({ message: 'API key is invalid' });
+    mailbox.push({ to: req.body.to[0], subject: req.body.subject, text: req.body.text });
+    res.json({ id: `email-${mailbox.length}` });
+  });
+  app.post('/email/smtp/email', express.json(), (req, res) => {
+    if (req.headers['api-key'] !== 'email-key')
+      return res.status(401).json({ message: 'Key not found' });
+    mailbox.push({
+      to: req.body.to[0].email,
+      subject: req.body.subject,
+      text: req.body.textContent,
+    });
+    res.json({ messageId: `email-${mailbox.length}` });
+  });
   app.post('/whatsapp/:phoneId/messages', express.json(), (req, res) => {
     if (req.headers.authorization !== 'Bearer wa-token')
       return res.status(401).json({ error: { message: 'Invalid OAuth access token' } });
@@ -474,6 +493,7 @@ describe('restaurant sign-up (Relay Hosted)', () => {
       username: 'owner',
       pin: 'owner-pass',
       phone: '0772 123456',
+      email: 'rose@example.com',
     });
     assert.deepEqual(result, { code: CODE, username: `owner@${CODE}` });
     assert.equal((await run('checkRestaurantCode', { code: CODE })).free, false);
@@ -502,6 +522,7 @@ describe('restaurant sign-up (Relay Hosted)', () => {
         username: 'boss',
         pin: 'secret-99',
         phone: '0772000000',
+        email: 'someone@example.com',
       }),
       /is taken/,
     );
@@ -5772,6 +5793,8 @@ const ACCESS = {
     'checkRestaurantCode',
     'signUpRestaurant',
     'getPlans',
+    'requestOwnerReset',
+    'completeOwnerReset',
   ],
   nobody: [
     'bootstrapOwner',
@@ -5783,6 +5806,9 @@ const ACCESS = {
     'platformSaveSettings',
     'platformListPlans',
     'platformSavePlan',
+    'platformGetEmail',
+    'platformSaveEmail',
+    'platformTestEmail',
     'platformGetWhatsApp',
     'platformSaveWhatsApp',
     'platformTestWhatsApp',
@@ -5866,6 +5892,7 @@ const ACCESS = {
     'getShiftReport',
   ],
   admin: [
+    'updateOwnerEmail',
     // Relay Hosted: paying the subscription.
     'getBilling',
     'changePlan',
@@ -6040,6 +6067,7 @@ describe('restaurants are kept apart (Relay Hosted)', () => {
       username: 'owner',
       pin: PINS.owner,
       phone: '0701 234567',
+      email: 'kato@example.com',
     });
     other.owner = await login('owner', PINS.owner, OTHER);
     // Same username and PIN as the first restaurant's rider.
@@ -6881,6 +6909,7 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
       username: 'owner',
       pin: PINS.owner,
       phone: '0701 999888',
+      email: 'bea@example.com',
     });
     owner = await login('owner', PINS.owner, CODE2);
   });
@@ -6985,6 +7014,7 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
       username: 'owner',
       pin: PINS.owner,
       phone: '0701 555444',
+      email: 'gil@example.com',
       plan: 'growth',
     });
     const owner = await login('owner', PINS.owner, code);
@@ -7085,5 +7115,122 @@ describe('one WhatsApp sender for every restaurant (Relay Hosted)', () => {
     assert.equal((await run('platformTestWhatsApp', { to: '0701 222333' }, ops)).sent, 1);
     assert.equal(whatsapp.messages[0].to, '256701222333');
     await rejects(run('platformTestWhatsApp', { to: 'nobody' }, ops), /number to send/);
+  });
+});
+
+describe('owner email: password reset and emails from Relay (Relay Hosted)', () => {
+  let ops;
+  const CODE3 = 'mail-cafe';
+  const M = { useMasterKey: true };
+  before(async () => {
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+  });
+
+  test('platform staff set up the email service and test it', async () => {
+    await rejects(run('platformSaveEmail', { provider: 'pigeon' }, ops), /Choose Resend or Brevo/);
+    await rejects(run('platformSaveEmail', { from: 'nope' }, ops), /not an email address/);
+    await rejects(run('platformSaveEmail', { appUrl: 'relay.app' }, ops), /https/);
+    const saved = await run(
+      'platformSaveEmail',
+      {
+        provider: 'resend',
+        apiKey: 'email-key',
+        from: 'no-reply@relay.example',
+        fromName: 'Relay',
+        appUrl: 'https://relay.example/',
+      },
+      ops,
+    );
+    assert.equal(saved.ready, true);
+    assert.equal(saved.appUrl, 'https://relay.example');
+    assert.equal(JSON.stringify(saved).includes('email-key'), false, 'the key is never sent back');
+    mailbox.length = 0;
+    assert.equal((await run('platformTestEmail', { to: 'ops@relay.example' }, ops)).sent, 1);
+    assert.equal(mailbox[0].to, 'ops@relay.example');
+    // Brevo works the same way.
+    await run('platformSaveEmail', { provider: 'brevo' }, ops);
+    await run('platformTestEmail', { to: 'ops@relay.example' }, ops);
+    assert.equal(mailbox.length, 2);
+    await run('platformSaveEmail', { provider: 'resend' }, ops);
+    await rejects(run('platformGetEmail', {}, s.owner), /platform role required/);
+  });
+
+  test('sign-up needs the owner email and sends a welcome', async () => {
+    const base = {
+      restaurantName: 'Mail Cafe',
+      ownerName: 'Mary',
+      username: 'owner',
+      pin: PINS.owner,
+      phone: '0701 111222',
+    };
+    await rejects(run('signUpRestaurant', base), /Enter your email/);
+    await rejects(run('signUpRestaurant', { ...base, email: 'mary@' }), /Enter your email/);
+    mailbox.length = 0;
+    // (Master key: the tests have used this address's sign-ups for the hour.)
+    await Parse.Cloud.run('signUpRestaurant', { ...base, email: 'Mary@Example.com' }, M);
+    for (let i = 0; i < 20 && !mailbox.length; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(mailbox[0].to, 'mary@example.com');
+    assert.match(mailbox[0].subject, /Welcome to Relay, Mail Cafe/);
+    assert.match(mailbox[0].text, /Restaurant code: mail-cafe/);
+    const owner = await login('owner', PINS.owner, CODE3);
+    assert.equal((await run('getMyProfile', {}, owner)).restaurant.ownerEmail, 'mary@example.com');
+    const listed = (await run('platformListRestaurants', {}, ops)).rows.find(
+      (row) => row.code === CODE3,
+    );
+    assert.equal(listed.ownerEmail, 'mary@example.com');
+  });
+
+  test('a forgotten owner password is reset through an emailed link', async () => {
+    mailbox.length = 0;
+    // A wrong email gets the same answer and no email.
+    assert.deepEqual(
+      await run('requestOwnerReset', { code: CODE3, email: 'someone@example.com' }),
+      { sent: true },
+    );
+    assert.equal(mailbox.length, 0);
+    await run('requestOwnerReset', { code: CODE3, email: 'MARY@example.com' });
+    assert.equal(mailbox.length, 1);
+    const link = mailbox[0].text.match(/https:\/\/relay\.example\/\?reset=([a-f0-9]{64})/);
+    assert.ok(link, 'the email has the reset link');
+    const token = link[1];
+    // Only the hash is kept.
+    const row = await new Parse.Query('Restaurant').equalTo('code', CODE3).first(M);
+    assert.notEqual(row.get('resetTokenHash'), token);
+    await rejects(run('completeOwnerReset', { token, password: '123' }), /at least 6/);
+    await rejects(
+      run('completeOwnerReset', { token: 'f'.repeat(64), password: 'new-pass-9' }),
+      /expired or was already used/,
+    );
+    const done = await run('completeOwnerReset', { token, password: 'new-pass-9' });
+    assert.deepEqual(done, { code: CODE3, username: 'owner' });
+    await rejects(login('owner', PINS.owner, CODE3), /Invalid username\/password/);
+    const owner = await login('owner', 'new-pass-9', CODE3);
+    assert.equal((await run('getMyProfile', {}, owner)).role, 'admin');
+    await rejects(
+      run('completeOwnerReset', { token, password: 'again-pass-9' }),
+      /expired or was already used/,
+    );
+  });
+
+  test('the owner and platform staff can change the email', async () => {
+    const owner = await login('owner', 'new-pass-9', CODE3);
+    await rejects(run('updateOwnerEmail', { email: 'bad' }, owner), /valid email/);
+    await run('updateOwnerEmail', { email: 'mary.new@example.com' }, owner);
+    assert.equal(
+      (await run('getMyProfile', {}, owner)).restaurant.ownerEmail,
+      'mary.new@example.com',
+    );
+    const row = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.code === CODE3);
+    await rejects(
+      run('platformUpdateRestaurant', { id: row.id, ownerEmail: 'x@' }, ops),
+      /not an email address/,
+    );
+    const updated = await run(
+      'platformUpdateRestaurant',
+      { id: row.id, ownerEmail: 'MARY@cafe.example' },
+      ops,
+    );
+    assert.equal(updated.ownerEmail, 'mary@cafe.example');
   });
 });

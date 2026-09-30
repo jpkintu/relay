@@ -9,8 +9,7 @@ const GOOGLE_SIGN_IN = import.meta.env.VITE_ENABLE_GOOGLE_SIGNIN === 'true';
 import { useSession } from '../lib/session';
 import { AuthSide } from './AuthSide';
 import { BrandMark } from './BrandMark';
-import { planPoints, useOfferedPlans } from './Subscription';
-import { formatMoney } from '../lib/format';
+import { PlanCard, useOfferedPlans } from './Subscription';
 import { RelayMark } from './RelayMark';
 import { useImageReady } from '../lib/imageReady';
 import { normaliseCode, rememberRestaurant, signInName } from '../lib/restaurant';
@@ -42,6 +41,14 @@ export function AuthScreen() {
     error: sessionError,
   } = useSession();
   const [signingUp, setSigningUp] = useState(false);
+  // Relay Hosted: the owner's forgotten password (a link is emailed to them).
+  const [forgot, setForgot] = useState(false);
+  const [resetToken, setResetToken] = useState(() =>
+    typeof window === 'undefined'
+      ? ''
+      : new URLSearchParams(window.location.search).get('reset') || '',
+  );
+  const [notice, setNotice] = useState('');
   // Relay's own staff sign in at /platform (no restaurant).
   const platform = window.location.pathname.startsWith('/platform');
   const [username, setUsername] = useState('');
@@ -73,11 +80,33 @@ export function AuthScreen() {
     <main className="auth-shell">
       <AuthSide />
       <section className="auth-panel">
-        <div className="login-card">
+        <div className={`login-card${signingUp && !platform ? ' signup-card' : ''}`}>
           {/* Phones: with a logo, only the restaurant's logo and name show. */}
           {!appInfo.restaurantLogo && <BrandMark className="mobile-brand" />}
           {platform ? (
             <PlatformSignIn onSignedIn={setUser} />
+          ) : resetToken ? (
+            <ResetPassword
+              token={resetToken}
+              onDone={async (code, name) => {
+                window.history.replaceState(null, '', '/');
+                setResetToken('');
+                rememberRestaurant(code);
+                await chooseRestaurant(code);
+                setUsername(name);
+                setNotice('Password changed. Sign in with your new password.');
+              }}
+              onCancel={() => {
+                window.history.replaceState(null, '', '/');
+                setResetToken('');
+              }}
+            />
+          ) : forgot && restaurantCode ? (
+            <ForgotPassword
+              code={restaurantCode}
+              restaurantName={appInfo.restaurantName}
+              onBack={() => setForgot(false)}
+            />
           ) : signingUp ? (
             <SignUp
               trialDays={appInfo.trialDays || 0}
@@ -140,6 +169,7 @@ export function AuthScreen() {
                     />
                   </div>
                 </label>
+                {notice && <p className="form-success">{notice}</p>}
                 {error && <p className="form-error">{error}</p>}
                 {serverError && (
                   <p className="form-error">
@@ -160,6 +190,18 @@ export function AuthScreen() {
               {previewAvailable && (
                 <button className="preview-button" onClick={startPreview}>
                   <Eye size={17} /> Preview rider workspace
+                </button>
+              )}
+              {appInfo.hosted && restaurantCode && (
+                <button
+                  className="link-button forgot-link"
+                  onClick={() => {
+                    setError('');
+                    setNotice('');
+                    setForgot(true);
+                  }}
+                >
+                  Owner? Forgot your password
                 </button>
               )}
               {appInfo.hosted && (
@@ -272,6 +314,7 @@ function SignUp({
     code: '',
     ownerName: '',
     phone: '',
+    email: '',
     username: '',
     pin: '',
     plan: '',
@@ -368,6 +411,19 @@ function SignUp({
           />
         </label>
         <label>
+          Your email
+          <input
+            type="email"
+            value={form.email}
+            onChange={set('email')}
+            autoComplete="email"
+            autoCapitalize="none"
+            placeholder="you@example.com"
+            required
+          />
+          <span className="field-hint">For password resets and emails from Relay.</span>
+        </label>
+        <label>
           Your username
           <input
             value={form.username}
@@ -390,21 +446,22 @@ function SignUp({
             required
           />
         </label>
-        {offered && offered.plans.length > 1 && (
-          <label>
-            Plan
-            <select
-              value={form.plan || offered.plans[0].key}
-              onChange={(e) => setForm((f) => ({ ...f, plan: e.target.value }))}
-            >
+        {offered && offered.plans.length > 0 && (
+          <fieldset className="signup-plans">
+            <legend>Choose your plan</legend>
+            <div className="plan-picker" role="radiogroup" aria-label="Plan">
               {offered.plans.map((plan) => (
-                <option key={plan.key} value={plan.key}>
-                  {plan.name}: {formatMoney(plan.price, offered.currency)} a month ·{' '}
-                  {planPoints(plan).slice(0, 3).join(', ')}
-                </option>
+                <PlanCard
+                  key={plan.key}
+                  plan={plan}
+                  currency={offered.currency}
+                  current={(form.plan || offered.plans[0].key) === plan.key}
+                  badge="Chosen"
+                  onSelect={() => setForm((f) => ({ ...f, plan: plan.key }))}
+                />
               ))}
-            </select>
-          </label>
+            </div>
+          </fieldset>
         )}
         <p className="field-hint">
           You can change the plan later under your subscription. By creating a restaurant you accept{' '}
@@ -483,6 +540,144 @@ function PlatformSignIn({ onSignedIn }: { onSignedIn: (user: Parse.User) => void
           <ArrowRight size={19} />
         </button>
       </form>
+    </>
+  );
+}
+
+// Relay Hosted: the owner asks for a password reset link by email.
+function ForgotPassword({
+  code,
+  restaurantName,
+  onBack,
+}: {
+  code: string;
+  restaurantName: string;
+  onBack: () => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [sent, setSent] = useState(false);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('requestOwnerReset', { code, email });
+      setSent(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not send the link. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <h2>Forgot your password?</h2>
+      <p className="muted">
+        Owners of {restaurantName || 'this restaurant'}: enter the email you signed up with and we
+        will send you a link to choose a new password. Riders and cashiers: ask your owner to reset
+        your PIN.
+      </p>
+      {sent ? (
+        <p className="form-success">
+          If that email belongs to this restaurant&apos;s owner, a link is on its way. It works for
+          one hour. Check your spam folder too.
+        </p>
+      ) : (
+        <form onSubmit={submit}>
+          <label>
+            Your email
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              autoCapitalize="none"
+              required
+            />
+          </label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button" disabled={busy || !email.trim()}>
+            {busy ? 'Sending…' : 'Email me a link'}
+            <ArrowRight size={19} />
+          </button>
+        </form>
+      )}
+      <button className="preview-button" onClick={onBack}>
+        Back to sign in
+      </button>
+    </>
+  );
+}
+
+// Relay Hosted: the emailed link (/?reset=…) sets a new owner password.
+function ResetPassword({
+  token,
+  onDone,
+  onCancel,
+}: {
+  token: string;
+  onDone: (code: string, username: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [password, setPassword] = useState('');
+  const [again, setAgain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (password !== again) {
+      setError('The two passwords are not the same.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const result: { code: string; username: string } = await Parse.Cloud.run(
+        'completeOwnerReset',
+        { token, password },
+      );
+      await onDone(result.code, result.username);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change the password.');
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <h2>Choose a new password.</h2>
+      <p className="muted">At least 6 characters. You are signed out on every device.</p>
+      <form onSubmit={submit}>
+        <label>
+          New password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+        </label>
+        <label>
+          The same again
+          <input
+            type="password"
+            value={again}
+            onChange={(e) => setAgain(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <button className="primary-button" disabled={busy || password.length < 6}>
+          {busy ? 'Saving…' : 'Save new password'}
+          <ArrowRight size={19} />
+        </button>
+      </form>
+      <button className="preview-button" onClick={onCancel}>
+        Back to sign in
+      </button>
     </>
   );
 }

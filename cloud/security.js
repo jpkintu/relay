@@ -501,6 +501,11 @@ const SCHEMAS = {
     priceOverride: N,
     paidUntil: D,
     note: S,
+    // Collected at sign-up: password reset links and Relay's emails.
+    ownerEmail: S,
+    // Forgot password: hash of the emailed token, and when it runs out.
+    resetTokenHash: S,
+    resetTokenExpires: D,
   },
   SubscriptionPayment: {
     amount: N,
@@ -539,6 +544,8 @@ const SCHEMAS = {
     supportContact: S,
     // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
     whatsapp: 'Object',
+    // The email service (lib/email.js), API key included.
+    email: 'Object',
   },
   Notification: {
     recipient: user,

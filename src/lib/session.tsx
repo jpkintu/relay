@@ -93,6 +93,8 @@ export type RestaurantSummary = {
   // Relay Hosted plans (lib/limits.js on the server).
   plan?: string;
   planName?: string;
+  // Relay Hosted: where Relay emails the owner (password resets, reminders).
+  ownerEmail?: string;
   currency: string;
   graceDays: number;
   supportContact: string;

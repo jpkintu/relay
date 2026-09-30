@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { LogOut, RefreshCw } from 'lucide-react';
 import Parse from '../parse';
 import { PlatformWhatsApp } from './PlatformWhatsApp';
+import { PlatformEmail } from './PlatformEmail';
 import { PlatformPlans, type Plan } from './PlatformPlans';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
@@ -91,7 +92,9 @@ export function PlatformConsole() {
     return (rows || []).filter(
       (r) =>
         !q ||
-        [r.name, r.code, r.ownerName, r.billingPhone].some((v) => v.toLowerCase().includes(q)),
+        [r.name, r.code, r.ownerName, r.billingPhone, r.ownerEmail || ''].some((v) =>
+          v.toLowerCase().includes(q),
+        ),
     );
   }, [rows, query]);
   const counts = useMemo(() => {
@@ -192,7 +195,9 @@ export function PlatformConsole() {
                       </td>
                       <td>
                         {r.ownerName}
-                        <small className="cell-sub">{r.billingPhone}</small>
+                        <small className="cell-sub">
+                          {[r.billingPhone, r.ownerEmail].filter(Boolean).join(' · ')}
+                        </small>
                       </td>
                       <td>
                         <span className={`status-pill status-${r.status}`}>{STATUS[r.status]}</span>
@@ -244,6 +249,8 @@ export function PlatformConsole() {
             }}
           />
         )}
+
+        <PlatformEmail />
 
         <PlatformWhatsApp />
 
@@ -329,6 +336,7 @@ function RestaurantEditor({
   const [trialEndsAt, setTrialEndsAt] = useState(toInput(row.trialEndsAt));
   const [paidUntil, setPaidUntil] = useState(toInput(row.paidUntil));
   const [note, setNote] = useState(row.note);
+  const [ownerEmail, setOwnerEmail] = useState(row.ownerEmail || '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
@@ -369,6 +377,7 @@ function RestaurantEditor({
         trialEndsAt: endOfDay(trialEndsAt),
         paidUntil: endOfDay(paidUntil),
         note,
+        ownerEmail,
         ...extra,
       });
       setDone('Saved.');
@@ -431,6 +440,24 @@ function RestaurantEditor({
           Paid until
           <input type="date" value={paidUntil} onChange={(e) => setPaidUntil(e.target.value)} />
           <small>To correct it. Payments below move it on by themselves.</small>
+        </label>
+        <label className="setup-field">
+          Owner email
+          <input
+            type="email"
+            value={ownerEmail}
+            onChange={(e) => setOwnerEmail(e.target.value)}
+            placeholder="owner@example.com"
+          />
+          <small>
+            Password reset links and Relay&apos;s emails go here.
+            {row.ownerEmail && (
+              <>
+                {' '}
+                <a href={`mailto:${row.ownerEmail}`}>Write to them</a>
+              </>
+            )}
+          </small>
         </label>
         <label className="setup-field platform-note">
           Note (only you see it)
