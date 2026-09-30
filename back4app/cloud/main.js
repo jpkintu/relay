@@ -29085,6 +29085,39 @@ var require_efrisApi = __commonJS({
       const pem = forge.pki.privateKeyToPem(key);
       return crypto.createPrivateKey(pem).export({ type: "pkcs8", format: "pem" });
     }
+    function generateKeyPair({ tin, name = "", years = 5 } = {}) {
+      const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+      const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+      const key = forge.pki.privateKeyFromPem(pem);
+      const cert = forge.pki.createCertificate();
+      cert.publicKey = forge.pki.setRsaPublicKey(key.n, key.e);
+      cert.serialNumber = `01${crypto.randomBytes(8).toString("hex")}`;
+      const from = new Date(Date.now() - 864e5);
+      const until = new Date(from);
+      until.setFullYear(until.getFullYear() + years);
+      cert.validity.notBefore = from;
+      cert.validity.notAfter = until;
+      const subject = [
+        { name: "commonName", value: String(tin || "Relay") },
+        ...name ? [{ name: "organizationName", value: String(name).slice(0, 64) }] : [],
+        { name: "countryName", value: "UG" }
+      ];
+      cert.setSubject(subject);
+      cert.setIssuer(subject);
+      cert.setExtensions([
+        { name: "basicConstraints", cA: false },
+        { name: "keyUsage", digitalSignature: true, keyEncipherment: true }
+      ]);
+      cert.sign(key, forge.md.sha256.create());
+      const der = forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes();
+      return {
+        privateKey: pem,
+        certificate: forge.pki.certificateToPem(cert),
+        certificateDer: Buffer.from(der, "binary").toString("base64"),
+        fingerprint: crypto.createHash("sha1").update(Buffer.from(der, "binary")).digest("hex"),
+        validUntil: until.toISOString()
+      };
+    }
     var sign = (content, pem) => crypto.createSign("RSA-SHA1").update(content, "utf8").sign(pem, "base64");
     function decryptSymmetricKey(passwordDes, pem) {
       const key = forge.pki.privateKeyFromPem(pem);
@@ -29202,7 +29235,7 @@ var require_efrisApi = __commonJS({
       return json;
     }
     var keys = /* @__PURE__ */ new Map();
-    var keyId = (settings) => `${settings.environment}:${settings.tin}:${settings.deviceNo}`;
+    var keyId = (settings) => `${settings.environment}:${settings.tin}:${settings.deviceNo}:${crypto.createHash("sha1").update(String(settings.privateKey || "")).digest("hex")}`;
     async function symmetricKey(settings, { fresh = false } = {}) {
       const id = keyId(settings);
       const cached = keys.get(id);
@@ -29397,6 +29430,7 @@ var require_efrisApi = __commonJS({
       };
     }
     module2.exports = {
+      generateKeyPair,
       URLS,
       TAX,
       EfrisError,
@@ -29501,6 +29535,12 @@ var require_efris = __commonJS({
         invoiceKind: settings.invoiceKind || "",
         keyLoaded: !!settings.privateKey,
         keyName: settings.keyName || "",
+        // A key made here (adminGenerateEfrisKey): its certificate can be
+        // downloaded again for the EFRIS portal.
+        certificate: settings.certificate ? {
+          validUntil: settings.certificateValidUntil || "",
+          fingerprint: settings.certificateFingerprint || ""
+        } : null,
         units: settings.units || [],
         lastTest: settings.lastTest || null,
         goodsRegistered: Object.keys(settings.goods || {}).length,
@@ -29554,6 +29594,10 @@ var require_efris = __commonJS({
           throw invalid(error.message);
         }
         settings.keyName = String(p.keyName || "private key").slice(0, 120);
+        delete settings.certificate;
+        delete settings.certificateDer;
+        delete settings.certificateValidUntil;
+        delete settings.certificateFingerprint;
       }
       const identity = (s) => [s.environment, s.tin, s.deviceNo, s.privateKey].join("|");
       if (identity(settings) !== identity(before)) {
@@ -29562,7 +29606,7 @@ var require_efris = __commonJS({
       }
       const { object: config, values } = await loadConfig();
       const enabled = p.enabled === void 0 ? values.efrisEnabled === true : p.enabled === true;
-      if (enabled) {
+      if (enabled && values.efrisEnabled !== true) {
         const gaps = missing(settings);
         if (gaps.length) throw invalid(`Add the ${gaps.join(", ")} before switching EFRIS on`);
         if (!settings.lastTest?.ok) throw invalid("Test the connection before switching EFRIS on");
@@ -29589,6 +29633,56 @@ var require_efris = __commonJS({
       );
       const fresh = await loadConfig();
       return view(settings, fresh.values);
+    });
+    Parse.Cloud.define("adminGenerateEfrisKey", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const { row, settings } = await loadSettings();
+      if (!/^\d{10}$/.test(settings.tin || ""))
+        throw invalid("Save your 10-digit TIN first: it goes into the certificate");
+      if (settings.privateKey && request.params?.replace !== true)
+        throw invalid(
+          "A private key is already saved. Replace it only if you will upload the new certificate"
+        );
+      const { values } = await loadConfig();
+      const made = api.generateKeyPair({
+        tin: settings.tin,
+        name: settings.legalName || values.restaurantName || ""
+      });
+      const replaced = !!settings.privateKey;
+      Object.assign(settings, {
+        privateKey: made.privateKey,
+        keyName: `Made by Relay on ${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`,
+        certificate: made.certificate,
+        certificateDer: made.certificateDer,
+        certificateValidUntil: made.validUntil,
+        certificateFingerprint: made.fingerprint
+      });
+      delete settings.lastTest;
+      await saveSettings(row, settings);
+      await audit(actor, "efris.key_generated", { className: "Secret", id: SECRET_KEY }, null, {
+        replaced,
+        fingerprint: made.fingerprint,
+        validUntil: made.validUntil
+      });
+      return { ...certificateFiles(settings), view: view(settings, values) };
+    });
+    function certificateFiles(settings) {
+      const base = `efris-${settings.tin || "relay"}`;
+      return {
+        crt: { name: `${base}.crt`, text: settings.certificate },
+        cer: { name: `${base}.cer`, base64: settings.certificateDer },
+        fingerprint: settings.certificateFingerprint,
+        validUntil: settings.certificateValidUntil
+      };
+    }
+    Parse.Cloud.define("adminGetEfrisCertificate", async (request) => {
+      await requireAdminUnlock(request);
+      const { settings } = await loadSettings();
+      if (!settings.certificate)
+        throw invalid(
+          "No certificate here: the key was uploaded, so its certificate is the one you made"
+        );
+      return certificateFiles(settings);
     });
     Parse.Cloud.define("adminTestEfris", async (request) => {
       const actor = await requireAdminUnlock(request);

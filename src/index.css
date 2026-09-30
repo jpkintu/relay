@@ -7620,3 +7620,6 @@ table.data tr.selected td {
   padding-top: 20px;
   border-top: 1px solid var(--line-soft, #e5e9f1);
 }
+.efris-keymaker {
+  margin-top: 14px;
+}
