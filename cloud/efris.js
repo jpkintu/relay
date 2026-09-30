@@ -653,4 +653,44 @@ Parse.Cloud.define('issueEfrisReceipt', async (request) => {
   return receiptView(order, values);
 });
 
+// Owner and finance: the fiscal receipts of the sales in a range, to follow
+// up refused or unsent ones (Admin → Tax receipts). { from, to, branchId?,
+// status?: 'issued' | 'failed' | 'pending' }
+Parse.Cloud.define('listEfrisReceipts', async (request) => {
+  await requireRole(request, ['admin', 'finance']);
+  const p = request.params;
+  const { values } = await loadConfig();
+  const { resolveRange } = require('./lib/dates');
+  const range = resolveRange(p, values.timezone, { defaultDays: 7 });
+  if (range.error) throw invalid(range.error);
+  const branch = await require('./branches').branchParam(p.branchId);
+  const query = require('./lib/placed').createdIn('Order', range);
+  if (branch) query.equalTo('branch', branch);
+  query.notEqualTo('status', 'CANCELLED');
+  const rows = await require('./lib/core').findAll(query);
+  const statusOf = (order) =>
+    order.get('efrisStatus') || (due(order, values) ? 'pending' : 'not_due');
+  const all = rows
+    .map((order) => ({
+      id: order.id,
+      code: order.get('orderCode'),
+      at: require('./lib/placed').placedAt(order),
+      total: Number(order.get('total') || 0),
+      customer: order.get('customerName') || '',
+      status: statusOf(order),
+      fdn: order.get('efrisFdn') || '',
+      error: order.get('efrisError') || '',
+      attempts: Number(order.get('efrisAttempts') || 0),
+      issuedAt: order.get('efrisIssuedAt') || null,
+    }))
+    .filter((row) => row.status !== 'not_due')
+    .sort((a, b) => b.at - a.at);
+  const count = (status) => all.filter((row) => row.status === status).length;
+  return {
+    enabled: values.efrisEnabled === true,
+    counts: { issued: count('issued'), failed: count('failed'), pending: count('pending') },
+    rows: p.status ? all.filter((row) => row.status === p.status) : all,
+  };
+});
+
 module.exports = { issue, orderSaved, sweepEfris, receiptView, due };

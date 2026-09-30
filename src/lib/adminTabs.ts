@@ -4,6 +4,7 @@ export const ADMIN_TABS = [
   ['branding', 'Branding'],
   ['payments', 'Payments'],
   ['tax', 'Tax (EFRIS)'],
+  ['whatsapp', 'WhatsApp'],
   ['access', 'Access rules'],
   ['audit', 'Audit log'],
   ['errors', 'Errors'],

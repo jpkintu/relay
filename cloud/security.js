@@ -299,6 +299,8 @@ const SCHEMAS = {
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
     restaurantName: S,
+    // Accounting: cash and bank when the books started (accounting.js).
+    openingBalance: N,
     efrisEnabled: B,
     efrisFrom: D,
     mtnAutoCollect: B,

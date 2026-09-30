@@ -193,6 +193,8 @@ var require_core = __commonJS({
       // Tax (EFRIS): on/off and the day it was switched on (cloud/efris.js).
       efrisEnabled: false,
       efrisFrom: null,
+      // Accounting: cash and bank when the books started (null: not entered).
+      openingBalance: null,
       airtelAutoCollect: false,
       momoDialCode: "256",
       // Card payments at the counter (Settings → Card payments).
@@ -1263,6 +1265,8 @@ var require_security = __commonJS({
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
         restaurantName: S,
+        // Accounting: cash and bank when the books started (accounting.js).
+        openingBalance: N,
         efrisEnabled: B,
         efrisFrom: D,
         mtnAutoCollect: B,
@@ -28609,6 +28613,38 @@ var require_efris = __commonJS({
         throw invalid("This order is not complete yet: it is issued once delivered, served or paid");
       return receiptView(order, values);
     });
+    Parse.Cloud.define("listEfrisReceipts", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      const p = request.params;
+      const { values } = await loadConfig();
+      const { resolveRange } = require_dates();
+      const range = resolveRange(p, values.timezone, { defaultDays: 7 });
+      if (range.error) throw invalid(range.error);
+      const branch = await require_branches().branchParam(p.branchId);
+      const query = require_placed().createdIn("Order", range);
+      if (branch) query.equalTo("branch", branch);
+      query.notEqualTo("status", "CANCELLED");
+      const rows = await require_core().findAll(query);
+      const statusOf = (order) => order.get("efrisStatus") || (due(order, values) ? "pending" : "not_due");
+      const all = rows.map((order) => ({
+        id: order.id,
+        code: order.get("orderCode"),
+        at: require_placed().placedAt(order),
+        total: Number(order.get("total") || 0),
+        customer: order.get("customerName") || "",
+        status: statusOf(order),
+        fdn: order.get("efrisFdn") || "",
+        error: order.get("efrisError") || "",
+        attempts: Number(order.get("efrisAttempts") || 0),
+        issuedAt: order.get("efrisIssuedAt") || null
+      })).filter((row) => row.status !== "not_due").sort((a, b) => b.at - a.at);
+      const count = (status) => all.filter((row) => row.status === status).length;
+      return {
+        enabled: values.efrisEnabled === true,
+        counts: { issued: count("issued"), failed: count("failed"), pending: count("pending") },
+        rows: p.status ? all.filter((row) => row.status === p.status) : all
+      };
+    });
     module2.exports = { issue, orderSaved, sweepEfris, receiptView, due };
   }
 });
@@ -29898,6 +29934,7 @@ var require_reports = __commonJS({
       };
     }
     module2.exports = {
+      isConfirmed,
       branchMix,
       tillTrend,
       growth,
@@ -30404,6 +30441,161 @@ var require_reports2 = __commonJS({
   }
 });
 
+// cloud/whatsapp.js
+var require_whatsapp = __commonJS({
+  "cloud/whatsapp.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, invalid, audit, loadConfig } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var { money } = require_notifications();
+    var { log, errorMessage } = require_log();
+    var SECRET_KEY = "whatsapp";
+    var API = () => process.env.RELAY_WHATSAPP_URL || "https://graph.facebook.com/v20.0";
+    var MAX_RECIPIENTS = 10;
+    async function secretRow() {
+      return new Parse.Query("Secret").equalTo("key", SECRET_KEY).ascending("createdAt").first(MASTER);
+    }
+    async function loadSettings() {
+      const row = await secretRow();
+      return { row, settings: { language: "en", recipients: [], ...row?.get("value") || {} } };
+    }
+    async function saveSettings(row, settings) {
+      const target = row || new Parse.Object("Secret");
+      target.set({ key: SECRET_KEY, value: settings });
+      target.setACL(new Parse.ACL());
+      await target.save(null, MASTER);
+    }
+    function phoneOf(value, dialCode = "256") {
+      let digits = String(value || "").replace(/[^\d]/g, "");
+      if (digits.startsWith("0")) digits = `${dialCode}${digits.slice(1)}`;
+      return /^\d{9,15}$/.test(digits) ? digits : "";
+    }
+    function summaryOf(config, day, data) {
+      const m = (n) => money(config, n || 0);
+      const p = data.payments || {};
+      const lines = [
+        `${config.restaurantName} \xB7 Z-report ${day}`,
+        `Orders: ${data.orders.delivered} delivered of ${data.orders.placed} placed` + (data.orders.cancelled ? `, ${data.orders.cancelled} cancelled` : ""),
+        `Sales: ${m(data.sales.total)} \xB7 kept after rider pay ${m(data.sales.kept)}`,
+        `Paid by: cash ${m(p.cash)} \xB7 mobile money ${m(p.mobileMoneyVerified)}` + (p.cardVerified ? ` \xB7 card ${m(p.cardVerified)}` : ""),
+        p.mobileMoneyPending || p.cardPending ? `Still to check: ${m((p.mobileMoneyPending || 0) + (p.cardPending || 0))}` : "",
+        data.till?.cashWithRidersNow ? `Cash still with riders: ${m(data.till.cashWithRidersNow)}` : "",
+        (data.shifts || []).some((s) => s.variance) ? `Till differences: ${m(data.shifts.reduce((n, s) => n + Math.abs(s.variance || 0), 0))}` : ""
+      ].filter(Boolean);
+      return { text: lines.join("\n"), line: lines.slice(1).join(" | ") };
+    }
+    async function send(settings, to, summary) {
+      const body = settings.templateName ? {
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: settings.templateName,
+          language: { code: settings.language || "en" },
+          components: [{ type: "body", parameters: [{ type: "text", text: summary.line }] }]
+        }
+      } : { messaging_product: "whatsapp", to, type: "text", text: { body: summary.text } };
+      const response = await fetch(`${API()}/${encodeURIComponent(settings.phoneNumberId)}/messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${settings.token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15e3)
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json?.error?.message || `WhatsApp answered ${response.status}`);
+      return json?.messages?.[0]?.id || "";
+    }
+    async function sendAll(settings, summary) {
+      let sent = 0;
+      const errors = [];
+      for (const to of settings.recipients || []) {
+        try {
+          await send(settings, to, summary);
+          sent += 1;
+        } catch (error) {
+          errors.push(`${to}: ${errorMessage(error)}`);
+        }
+      }
+      return { sent, failed: errors.length, error: errors.join("; ").slice(0, 500) };
+    }
+    var ready = (settings) => settings.enabled === true && !!settings.token && !!settings.phoneNumberId && (settings.recipients || []).length > 0;
+    async function sendDailySummary(day, data, config) {
+      const { row, settings } = await loadSettings();
+      if (!ready(settings) || settings.lastSentDay === day) return null;
+      const result = await sendAll(settings, summaryOf(config, day, data));
+      await saveSettings(row, {
+        ...settings,
+        lastSentDay: day,
+        lastResult: { day, at: (/* @__PURE__ */ new Date()).toISOString(), ...result }
+      });
+      if (result.failed)
+        log("warn", "whatsapp.summary_failed", { day, failed: result.failed, error: result.error });
+      return result;
+    }
+    var view = (settings) => ({
+      enabled: settings.enabled === true,
+      phoneNumberId: settings.phoneNumberId || "",
+      tokenSet: !!settings.token,
+      templateName: settings.templateName || "",
+      language: settings.language || "en",
+      recipients: settings.recipients || [],
+      lastResult: settings.lastResult || null
+    });
+    Parse.Cloud.define("adminGetWhatsAppSettings", async (request) => {
+      await requireAdminUnlock(request);
+      return view((await loadSettings()).settings);
+    });
+    Parse.Cloud.define("adminSaveWhatsAppSettings", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params;
+      const { row, settings } = await loadSettings();
+      const { values: config } = await loadConfig();
+      const recipients = (Array.isArray(p.recipients) ? p.recipients : []).map((value) => String(value || "").trim()).filter(Boolean);
+      if (recipients.length > MAX_RECIPIENTS) throw invalid(`At most ${MAX_RECIPIENTS} numbers`);
+      const numbers = recipients.map((value) => phoneOf(value, config.momoDialCode || "256"));
+      const bad = recipients.find((_, i) => !numbers[i]);
+      if (bad) throw invalid(`"${bad}" is not a phone number`);
+      const next = {
+        ...settings,
+        enabled: p.enabled === true,
+        phoneNumberId: String(p.phoneNumberId ?? settings.phoneNumberId ?? "").replace(/[^\d]/g, "").slice(0, 30),
+        templateName: String(p.templateName ?? settings.templateName ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 60),
+        language: String(p.language || settings.language || "en").trim().slice(0, 10),
+        recipients: [...new Set(numbers)]
+      };
+      if (p.token) next.token = String(p.token).trim().slice(0, 1e3);
+      if (next.enabled && !ready(next))
+        throw invalid("Enter the phone number ID, the access token and at least one number");
+      await saveSettings(row, next);
+      await audit(
+        actor,
+        "whatsapp.saved",
+        { className: "Secret", id: SECRET_KEY },
+        view(settings),
+        view(next)
+      );
+      return view(next);
+    });
+    Parse.Cloud.define("adminTestWhatsApp", async (request) => {
+      await requireAdminUnlock(request);
+      const { settings } = await loadSettings();
+      if (!settings.token || !settings.phoneNumberId || !(settings.recipients || []).length)
+        throw invalid("Save the phone number ID, the access token and at least one number first");
+      const { values: config } = await loadConfig();
+      const { buildZReport } = require_owner();
+      const { isoDay } = require_dates();
+      const day = isoDay(/* @__PURE__ */ new Date(), config.timezone);
+      const result = await sendAll(settings, summaryOf(config, day, await buildZReport(day, config)));
+      if (!result.sent) throw invalid(`Not sent: ${result.error}`);
+      return result;
+    });
+    module2.exports = { sendDailySummary, summaryOf, phoneOf };
+  }
+});
+
 // cloud/owner.js
 var require_owner = __commonJS({
   "cloud/owner.js"(exports2, module2) {
@@ -30877,6 +31069,9 @@ var require_owner = __commonJS({
         body: zSummary(config, data),
         link: `/admin/reports/z/${day}`
       });
+      await require_whatsapp().sendDailySummary(day, data, config).catch(
+        (error) => require_log().log("warn", "whatsapp.summary_error", { message: String(error) })
+      );
       return row;
     }
     Parse.Cloud.job("dailyZReport", async () => {
@@ -33565,6 +33760,292 @@ var require_spending = __commonJS({
   }
 });
 
+// cloud/lib/accounts.js
+var require_accounts = __commonJS({
+  "cloud/lib/accounts.js"(exports2, module2) {
+    "use strict";
+    var round = (value) => Math.round(Number(value) || 0);
+    var sum = (rows, pick) => rows.reduce((n, row) => n + round(pick(row)), 0);
+    function byKey(rows, key, amount) {
+      const out = {};
+      for (const row of rows) out[row[key]] = (out[row[key]] || 0) + round(amount(row));
+      return Object.entries(out).map(([k, value]) => ({ key: k, amount: value })).sort((a, b) => b.amount - a.amount);
+    }
+    function profitAndLoss({ orders, purchases, expenses, tillExpenses }) {
+      const food = sum(orders, (o) => o.subtotal);
+      const delivery = sum(orders, (o) => o.deliveryFee);
+      const revenue = food + delivery;
+      const costOfSales = sum(purchases, (p) => p.total);
+      const grossProfit = revenue - costOfSales;
+      const riderPay = sum(orders, (o) => o.commission);
+      const riderDeliveryFees = sum(orders, (o) => o.deliveryPay ?? o.deliveryFee);
+      const expenseRows = byKey(expenses, "category", (e) => e.amount);
+      const fromTills = sum(tillExpenses, (e) => e.amount);
+      const operating = riderPay + sum(expenses, (e) => e.amount) + fromTills;
+      const netProfit = grossProfit - operating;
+      return {
+        revenue: { food, delivery, total: revenue, orders: orders.length },
+        costOfSales: { byCategory: byKey(purchases, "category", (p) => p.total), total: costOfSales },
+        grossProfit,
+        operating: {
+          riderCommission: riderPay - riderDeliveryFees,
+          riderDeliveryFees,
+          expenses: expenseRows,
+          fromTills,
+          total: operating
+        },
+        netProfit,
+        grossMargin: revenue ? Math.round(grossProfit / revenue * 1e3) / 10 : null,
+        netMargin: revenue ? Math.round(netProfit / revenue * 1e3) / 10 : null
+      };
+    }
+    function cashMovements({ orders, supplierPayments, expenses, payouts }) {
+      const received = sum(
+        orders.filter((o) => o.confirmed),
+        (o) => o.total
+      );
+      const toSuppliers = sum(supplierPayments, (p) => p.amount);
+      const onExpenses = sum(expenses, (e) => e.amount);
+      const riderPay = sum(
+        payouts.filter((p) => p.kind === "rider"),
+        (p) => p.amount
+      );
+      const fromTills = sum(
+        payouts.filter((p) => p.kind !== "rider"),
+        (p) => p.amount
+      );
+      return {
+        received,
+        toSuppliers,
+        onExpenses,
+        riderPay,
+        fromTills,
+        net: received - toSuppliers - onExpenses - riderPay - fromTills
+      };
+    }
+    function cashFlow({ opening, movements }) {
+      return {
+        opening,
+        inflows: [{ key: "sales", amount: movements.received }],
+        outflows: [
+          { key: "suppliers", amount: movements.toSuppliers },
+          { key: "expenses", amount: movements.onExpenses },
+          { key: "rider_pay", amount: movements.riderPay },
+          { key: "till_expenses", amount: movements.fromTills }
+        ],
+        net: movements.net,
+        closing: opening + movements.net
+      };
+    }
+    function balanceSheet({ openingBalance, cash, orders, purchases, payouts, profit }) {
+      const receivable = sum(
+        orders.filter((o) => !o.confirmed),
+        (o) => o.total
+      );
+      const owedToSuppliers = sum(purchases, (p) => Math.max(0, round(p.total) - round(p.paid)));
+      const riderPayEarned = sum(orders, (o) => o.commission);
+      const riderPaySettled = sum(
+        payouts.filter((p) => p.kind === "rider"),
+        (p) => round(p.amount) + round(p.deductions)
+      );
+      const owedToRiders = Math.max(0, riderPayEarned - riderPaySettled);
+      const assets = cash + receivable;
+      const liabilities = owedToSuppliers + owedToRiders;
+      const equity = assets - liabilities;
+      return {
+        assets: { cash, receivable, total: assets },
+        liabilities: { suppliers: owedToSuppliers, riders: owedToRiders, total: liabilities },
+        equity: {
+          opening: openingBalance,
+          profit,
+          // Cash shortages, till differences and the like: what makes the books
+          // balance beyond the recorded profit.
+          other: equity - openingBalance - profit,
+          total: equity
+        }
+      };
+    }
+    module2.exports = { profitAndLoss, cashMovements, cashFlow, balanceSheet };
+  }
+});
+
+// cloud/accounting.js
+var require_accounting = __commonJS({
+  "cloud/accounting.js"() {
+    "use strict";
+    var { MASTER, invalid, audit, loadConfig, findAll } = require_core();
+    var { resolveRange, previousRange, isDay, isoDay, startOfDay, addDays } = require_dates();
+    var { isConfirmed } = require_reports();
+    var A = require_accounts();
+    var { factOf } = require_reports2();
+    var { branchParam } = require_branches();
+    var { requireFinance } = require_spending();
+    var inBranch = (query, branch) => branch ? query.equalTo("branch", branch) : query;
+    async function deliveredIn(start, end, branch) {
+      const query = inBranch(new Parse.Query("Order"), branch);
+      query.equalTo("status", "DELIVERED");
+      if (start) query.greaterThanOrEqualTo("deliveredAt", start);
+      query.lessThan("deliveredAt", end);
+      return (await findAll(query)).map((order) => {
+        const fact = factOf(order);
+        return { ...fact, confirmed: isConfirmed(fact) };
+      });
+    }
+    async function spentIn(className, start, end, branch) {
+      const query = inBranch(new Parse.Query(className), branch);
+      query.doesNotExist("voidedAt");
+      if (start) query.greaterThanOrEqualTo("spentAt", start);
+      query.lessThan("spentAt", end);
+      return findAll(query);
+    }
+    async function payoutsIn(start, end, branch) {
+      const query = inBranch(new Parse.Query("TillPayout"), branch);
+      if (start) query.greaterThanOrEqualTo("paidAt", start);
+      query.lessThan("paidAt", end);
+      return (await findAll(query)).map((row) => ({
+        kind: row.get("kind"),
+        amount: Number(row.get("amount") || 0),
+        deductions: Number(row.get("deductions") || 0)
+      }));
+    }
+    function supplierPayments(purchases, fromDay, toDay) {
+      const out = [];
+      for (const row of purchases)
+        for (const payment of row.get("payments") || [])
+          if ((!fromDay || payment.day >= fromDay) && payment.day <= toDay)
+            out.push({ amount: Number(payment.amount || 0) });
+      return out;
+    }
+    var purchaseFacts = (rows) => rows.map((row) => ({
+      total: Number(row.get("total") || 0),
+      paid: Number(row.get("paid") || 0),
+      category: row.get("category") || "other"
+    }));
+    var expenseFacts = (rows) => rows.map((row) => ({ amount: Number(row.get("amount") || 0), category: row.get("category") }));
+    async function profitAndLoss(start, end, branch) {
+      const [orders, purchases, expenses, payouts] = await Promise.all([
+        deliveredIn(start, end, branch),
+        spentIn("Purchase", start, end, branch),
+        spentIn("Expense", start, end, branch),
+        payoutsIn(start, end, branch)
+      ]);
+      return A.profitAndLoss({
+        orders,
+        purchases: purchaseFacts(purchases),
+        expenses: expenseFacts(expenses),
+        tillExpenses: payouts.filter((p) => p.kind !== "rider")
+      });
+    }
+    var openingOf = (config, branch) => branch ? 0 : Math.round(Number(config.openingBalance) || 0);
+    async function cashAt(toDay, config, branch) {
+      const end = startOfDay(addDays(toDay, 1), config.timezone);
+      const [orders, purchases, expenses, payouts] = await Promise.all([
+        deliveredIn(null, end, branch),
+        spentIn("Purchase", null, end, branch),
+        spentIn("Expense", null, end, branch),
+        payoutsIn(null, end, branch)
+      ]);
+      const movements = A.cashMovements({
+        orders,
+        supplierPayments: supplierPayments(purchases, null, toDay),
+        expenses: expenseFacts(expenses),
+        payouts
+      });
+      return { cash: openingOf(config, branch) + movements.net, orders, purchases, expenses, payouts };
+    }
+    function rangeOf(params, config) {
+      const range = resolveRange(params, config.timezone, { defaultDays: 30 });
+      if (range.error) throw invalid(range.error);
+      return range;
+    }
+    Parse.Cloud.define("getProfitAndLoss", async (request) => {
+      await requireFinance(request);
+      const { values: config } = await loadConfig();
+      const range = rangeOf(request.params, config);
+      const before = previousRange(range, config.timezone);
+      const branch = await branchParam(request.params.branchId);
+      const [current, previous] = await Promise.all([
+        profitAndLoss(range.start, range.end, branch),
+        profitAndLoss(before.start, before.end, branch)
+      ]);
+      return {
+        range: { from: range.from, to: range.to },
+        previousRange: { from: before.from, to: before.to },
+        current,
+        previous
+      };
+    });
+    Parse.Cloud.define("getBalanceSheet", async (request) => {
+      await requireFinance(request);
+      const { values: config } = await loadConfig();
+      const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
+      const day = request.params.day || today;
+      if (!isDay(day) || day > today) throw invalid("Choose a day up to today");
+      const branch = await branchParam(request.params.branchId);
+      const at = await cashAt(day, config, branch);
+      const profit = A.profitAndLoss({
+        orders: at.orders,
+        purchases: purchaseFacts(at.purchases),
+        expenses: expenseFacts(at.expenses),
+        tillExpenses: at.payouts.filter((p) => p.kind !== "rider")
+      }).netProfit;
+      const purchases = at.purchases.map((row) => ({
+        total: Number(row.get("total") || 0),
+        paid: (row.get("payments") || []).filter((payment) => payment.day <= day).reduce((n, payment) => n + Number(payment.amount || 0), 0)
+      }));
+      return {
+        day,
+        openingBalance: openingOf(config, branch),
+        openingSet: config.openingBalance !== void 0 && config.openingBalance !== null,
+        sheet: A.balanceSheet({
+          openingBalance: openingOf(config, branch),
+          cash: at.cash,
+          orders: at.orders,
+          purchases,
+          payouts: at.payouts,
+          profit
+        })
+      };
+    });
+    Parse.Cloud.define("getCashFlow", async (request) => {
+      await requireFinance(request);
+      const { values: config } = await loadConfig();
+      const range = rangeOf(request.params, config);
+      const branch = await branchParam(request.params.branchId);
+      const [opening, orders, purchases, expenses, payouts] = await Promise.all([
+        cashAt(addDays(range.from, -1), config, branch).then((at) => at.cash),
+        deliveredIn(range.start, range.end, branch),
+        spentIn("Purchase", null, range.end, branch),
+        spentIn("Expense", range.start, range.end, branch),
+        payoutsIn(range.start, range.end, branch)
+      ]);
+      const movements = A.cashMovements({
+        orders,
+        supplierPayments: supplierPayments(purchases, range.from, range.to),
+        expenses: expenseFacts(expenses),
+        payouts
+      });
+      return {
+        range: { from: range.from, to: range.to },
+        ...A.cashFlow({ opening, movements })
+      };
+    });
+    Parse.Cloud.define("saveOpeningBalance", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const amount = Math.round(Number(request.params.amount));
+      if (!Number.isFinite(amount) || amount < 0 || amount > 1e11)
+        throw invalid("Enter the opening cash and bank balance");
+      const { object: config } = await loadConfig();
+      if (!config) throw invalid("Save the restaurant settings first");
+      const before = { openingBalance: config.get("openingBalance") ?? null };
+      config.set("openingBalance", amount);
+      await config.save(null, MASTER);
+      await audit(actor, "accounting.opening_balance", config, before, { openingBalance: amount });
+      return { openingBalance: amount };
+    });
+  }
+});
+
 // cloud/people.js
 var require_people = __commonJS({
   "cloud/people.js"(exports2, module2) {
@@ -35755,6 +36236,8 @@ require_cashcheck();
 require_shifts();
 require_branches();
 require_spending();
+require_accounting();
+require_whatsapp();
 require_people();
 require_admin();
 require_onboarding();

@@ -525,6 +525,12 @@ async function zReportDue(config, { force = false } = {}) {
     body: zSummary(config, data),
     link: `/admin/reports/z/${day}`,
   });
+  // And on WhatsApp, when the owner set it up (Admin → WhatsApp).
+  await require('./whatsapp')
+    .sendDailySummary(day, data, config)
+    .catch((error) =>
+      require('./lib/log').log('warn', 'whatsapp.summary_error', { message: String(error) }),
+    );
   return row;
 }
 
