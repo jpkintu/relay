@@ -32,7 +32,15 @@ const { cleanLocation } = require('./lib/geo');
 const { recordCustomerOrder } = require('./customers');
 const { checkMobileMoney, checkCard, PENDING } = require('./payments');
 const { money, notifyUser, notifyStaff } = require('./notifications');
-const { priceLines, saveLines, clean, cleanPhone, CHANNELS, PINNED_ONLY } = require('./orders');
+const {
+  priceLines,
+  saveLines,
+  splitFields,
+  clean,
+  cleanPhone,
+  CHANNELS,
+  PINNED_ONLY,
+} = require('./orders');
 
 const ORDER_TYPES = ['delivery', 'eat_in', 'pickup'];
 const COUNTER_TYPES = ['eat_in', 'pickup'];
@@ -221,6 +229,7 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
     ...(pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) }),
     subtotal,
     prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
+    ...splitFields(lines),
     deliveryFee: fee,
     total,
     paymentMethod: method,
@@ -447,7 +456,9 @@ Parse.Cloud.define('getReceipt', async (request) => {
       notes: item.get('notes') || '',
       accompaniments: item.get('accompanimentNames') || [],
       accompanimentPrices: item.get('accompanimentPrices') || [],
+      split: item.get('split') || '',
     })),
+    splits: order.get('splits') || [],
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
     total: Number(order.get('total') || 0),

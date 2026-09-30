@@ -4160,6 +4160,60 @@ describe('printed receipts', () => {
         s.dina,
       );
   });
+
+  test('a split order is one order and one bill, with each split kept apart', async () => {
+    const M = { useMasterKey: true };
+    const placed = await run(
+      'createCounterOrder',
+      {
+        orderType: 'eat_in',
+        table: 'Table 4',
+        items: [
+          { id: item.id, quantity: 1, notes: 'No onions', split: 'Anna' },
+          { id: item.id, quantity: 2, split: 'Ben' },
+          { id: item.id, quantity: 1, split: 'Anna' },
+        ],
+      },
+      s.dina,
+    );
+    const order = await new Parse.Query('Order').get(placed.id, M);
+    assert.deepEqual(order.get('splits'), ['Anna', 'Ben']);
+    assert.equal(order.get('subtotal'), item.price * 4);
+    assert.equal(placed.total, item.price * 4);
+    const receipt = await run('getReceipt', { orderId: placed.id }, s.dina);
+    assert.deepEqual(receipt.splits, ['Anna', 'Ben']);
+    assert.equal(receipt.lines.length, 3);
+    assert.deepEqual(receipt.lines.map((line) => line.split).sort(), ['Anna', 'Anna', 'Ben']);
+    const owner = await run('adminGetOrder', { id: placed.id }, s.owner);
+    assert.deepEqual(owner.splits, ['Anna', 'Ben']);
+    assert.equal(owner.items.find((line) => line.split === 'Ben').qty, 2);
+    // Every line needs a split once any has one; one split is a plain order.
+    await rejects(
+      run(
+        'createCounterOrder',
+        {
+          orderType: 'eat_in',
+          items: [
+            { id: item.id, quantity: 1, split: 'Anna' },
+            { id: item.id, quantity: 1, notes: 'Extra hot' },
+          ],
+        },
+        s.dina,
+      ),
+      /Put every item in a split/,
+    );
+    const single = await run(
+      'createCounterOrder',
+      { orderType: 'eat_in', items: [{ id: item.id, quantity: 1, split: 'Anna' }] },
+      s.dina,
+    );
+    assert.equal((await new Parse.Query('Order').get(single.id, M)).get('splits'), undefined);
+    const plain = await run('getReceipt', { orderId: single.id }, s.dina);
+    assert.deepEqual(plain.splits, []);
+    assert.equal(plain.lines[0].split, '');
+    for (const id of [placed.id, single.id])
+      await run('transitionOrder', { orderId: id, action: 'cancel', reason: 'Split test' }, s.dina);
+  });
 });
 
 describe('reports agree across order sources', () => {

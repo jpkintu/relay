@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import Parse from '../parse';
 import { useConfig } from './session';
 import { formatDate, formatMoney } from './format';
+import { groupBySplit } from './cart';
 
 // Printed kitchen tickets and customer receipts. The browser prints to any
 // printer, including 58 mm / 80 mm thermal receipt printers (set the width in
@@ -40,7 +41,11 @@ type Receipt = {
     accompaniments: string[];
     // Price per portion of each side (0 = free); lines up with accompaniments.
     accompanimentPrices?: number[];
+    // Split orders: the guest or portion the line is for.
+    split?: string;
   }[];
+  // Split orders: the splits in the order entered.
+  splits?: string[];
   subtotal: number;
   deliveryFee: number;
   total: number;
@@ -104,6 +109,7 @@ function styles(width: number) {
     .total td { font-weight: 700; font-size: 1.15em; padding-top: 1mm; }
     .logo { display: block; margin: 0 auto; max-width: 60%; max-height: 24mm;
       object-fit: contain; filter: grayscale(1) contrast(1.2); }
+    .split td { font-weight: 700; padding-top: 1.5mm; border-bottom: 1px solid #000; }
     .stamp { border: 2px solid #000; text-align: center; font-weight: 700; padding: 1mm; margin: 2mm 0; }
   `;
 }
@@ -119,14 +125,23 @@ function kitchenTicket(r: Receipt, timezone: string) {
     ${r.customer ? `<div><b>${escape(r.customer)}</b></div>` : ''}
     ${r.rider ? `<div class="muted">Rider: ${escape(r.rider)}</div>` : ''}
     <hr>
+    ${r.splits?.length ? `<div class="center"><b>SPLIT ORDER · ${r.splits.length} SPLITS</b></div>` : ''}
     <table>
-      ${r.lines
+      ${groupBySplit(r.lines, r.splits)
         .map(
-          (line) => `
+          (group) =>
+            (group.split
+              ? `<tr class="split"><td colspan="2">${escape(group.split)}</td></tr>`
+              : '') +
+            group.lines
+              .map(
+                (line) => `
         <tr><td class="qty">${line.qty}×</td><td><b>${escape(line.name)}</b>
           ${line.accompaniments.map((name) => `<div class="sub">+ ${escape(name)}</div>`).join('')}
           ${line.notes ? `<div class="sub note">! ${escape(line.notes)}</div>` : ''}
         </td></tr>`,
+              )
+              .join(''),
         )
         .join('')}
     </table>
@@ -193,9 +208,16 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string, qr = '') 
     ${r.address ? `<div class="muted">${escape(r.address)}</div>` : ''}
     <hr>
     <table>
-      ${r.lines
+      ${groupBySplit(r.lines, r.splits)
         .map(
-          (line) => `
+          (group) =>
+            (group.split
+              ? `<tr class="split"><td colspan="2">${escape(group.split)}</td>
+          <td class="num">${money(group.lines.reduce((n, line) => n + line.total, 0))}</td></tr>`
+              : '') +
+            group.lines
+              .map(
+                (line) => `
         <tr><td class="qty">${line.qty}×</td><td>${escape(line.name)}</td>
           <td class="num">${money(dishAmount(line))}</td></tr>
         ${line.accompaniments
@@ -205,6 +227,8 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string, qr = '') 
           <td class="num sub">${money((line.accompanimentPrices?.[i] || 0) * line.qty)}</td></tr>`,
           )
           .join('')}`,
+              )
+              .join(''),
         )
         .join('')}
     </table>

@@ -8069,3 +8069,111 @@ table.data tr.selected td {
 .plan-table td:first-child {
   min-width: 170px;
 }
+
+/* Split orders: one order, several guests or portions (order entry, kitchen
+   board, order pages). */
+.split-bar {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.split-bar > .setup-secondary {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.split-bar.on {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.split-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.split-tabs button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 30px;
+  padding: 8px 13px;
+  font-size: 12px;
+}
+.split-tabs button.active {
+  background: var(--ink);
+  color: var(--on-dark);
+}
+.split-tabs .split-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-style: dashed;
+}
+.split-tabs .split-add svg {
+  width: 14px;
+  height: 14px;
+}
+.split-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.split-edit label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.split-edit input {
+  width: 200px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+  background: #fff;
+}
+.split-edit .link-button {
+  font-size: 13px;
+}
+.split-group + .split-group {
+  margin-top: 8px;
+}
+.split-heading {
+  display: flex;
+  justify-content: space-between;
+  margin: 12px 0 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--canvas, #eef0f4);
+  font-size: 13px;
+}
+.ticket .ticket-split-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ticket-split {
+  border-left: 3px solid var(--accent, var(--ink));
+  padding-left: 8px;
+  margin-top: 8px;
+}
+.ticket .ticket-split-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+}
+.ticket-split .ticket-lines {
+  margin-top: 4px;
+}
+tr.split-row td {
+  background: var(--canvas, #eef0f4);
+}

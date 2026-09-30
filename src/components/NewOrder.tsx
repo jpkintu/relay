@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Search,
   ShoppingBag,
+  Split,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
@@ -23,6 +24,9 @@ import {
   cartSubtotal,
   changeQuantity,
   describeLine,
+  groupBySplit,
+  moveAllToSplit,
+  renameSplit,
   previewCommission,
   selectionProblem,
   sidesLabel,
@@ -73,7 +77,14 @@ export type OrderPayload = {
   paymentMethod: string;
   paymentProvider?: string;
   paymentReference?: string;
-  items: { id: string; quantity: number; notes: string; accompaniments: string[] }[];
+  items: {
+    id: string;
+    quantity: number;
+    notes: string;
+    accompaniments: string[];
+    // Split orders: the split (guest or portion) the line is for.
+    split?: string;
+  }[];
   // Counter orders (a cashier taking the order) only:
   orderType?: OrderType;
   riderId?: string;
@@ -134,7 +145,12 @@ type Draft = {
   riderId?: string;
   table?: string;
   payLater?: boolean;
+  // Split order: the splits (guests or portions) and the one items go to.
+  splits?: string[];
+  splitAt?: number;
 };
+
+const MAX_SPLITS = 12;
 
 const newClientId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -193,6 +209,49 @@ export function NewOrder({
   const restored = useMemo(() => (preview ? null : loadDraft(draftKey)), [draftKey, preview]);
   const [draft, setDraft] = useState<Draft>(() => restored ?? emptyDraft());
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
+  // Split order: every item goes to the chosen split; one bill for all.
+  const splits = draft.splits || [];
+  const splitting = splits.length > 0;
+  const splitAt = Math.min(draft.splitAt || 0, Math.max(0, splits.length - 1));
+  const activeSplit = splitting ? splits[splitAt] : '';
+  const [splitName, setSplitName] = useState(activeSplit);
+  useEffect(() => setSplitName(activeSplit), [activeSplit]);
+  const nextSplitName = () => {
+    let n = splits.length + 1;
+    while (splits.includes(`Split ${n}`)) n += 1;
+    return `Split ${n}`;
+  };
+  const startSplit = () =>
+    update({
+      splits: ['Split 1', 'Split 2'],
+      splitAt: 0,
+      cart: moveAllToSplit(draft.cart, 'Split 1'),
+    });
+  const stopSplit = () => update({ splits: [], splitAt: 0, cart: moveAllToSplit(draft.cart, '') });
+  const removeSplit = (name: string) => {
+    const rest = splits.filter((s) => s !== name);
+    if (rest.length < 2) {
+      update({ splits: [], splitAt: 0, cart: moveAllToSplit(draft.cart, '') });
+      return;
+    }
+    // Its items (if any) join the first remaining split.
+    update({
+      splits: rest,
+      splitAt: 0,
+      cart: renameSplit(draft.cart, name, rest[0]),
+    });
+  };
+  const commitSplitName = () => {
+    const name = splitName.trim().slice(0, 30);
+    if (!name || name === activeSplit || splits.includes(name)) {
+      setSplitName(activeSplit);
+      return;
+    }
+    update({
+      splits: splits.map((s) => (s === activeSplit ? name : s)),
+      cart: renameSplit(draft.cart, activeSplit, name),
+    });
+  };
 
   const [items, setItems] = useState<MenuItem[]>(preview ? SAMPLE : []);
   const [menuFee, setMenuFee] = useState(preview ? 3000 : config.defaultDeliveryFee);
@@ -293,7 +352,7 @@ export function NewOrder({
 
   const quickAdd = (item: MenuItem) => {
     if (item.accompanimentGroups.length) setSheet(item);
-    else update({ cart: addToCart(draft.cart, item, 1) });
+    else update({ cart: addToCart(draft.cart, item, 1, [], '', activeSplit) });
   };
 
   const applyCustomer = (customer: Customer, repeat: boolean) => {
@@ -330,7 +389,7 @@ export function NewOrder({
           skipped += 1;
           continue;
         }
-        cart = addToCart(cart, item, line.quantity, chosen, line.notes);
+        cart = addToCart(cart, item, line.quantity, chosen, line.notes, activeSplit);
       }
       patch.cart = cart;
       setNotice(
@@ -376,6 +435,7 @@ export function NewOrder({
           quantity: line.quantity,
           notes: line.notes,
           accompaniments: line.accompaniments.map((a) => a.id),
+          ...(splitting && line.split && { split: line.split }),
         })),
       });
       try {
@@ -615,6 +675,78 @@ export function NewOrder({
       </section>
 
       <section className="menu-section">
+        <div className={`split-bar${splitting ? ' on' : ''}`}>
+          {!splitting ? (
+            <button type="button" className="setup-secondary" onClick={startSplit}>
+              <Split aria-hidden /> Split order
+            </button>
+          ) : (
+            <>
+              <div className="split-tabs" role="tablist" aria-label="Splits">
+                {splits.map((name, i) => {
+                  const count = draft.cart
+                    .filter((line) => line.split === name)
+                    .reduce((n, line) => n + line.quantity, 0);
+                  return (
+                    <button
+                      key={name}
+                      role="tab"
+                      aria-selected={i === splitAt}
+                      className={i === splitAt ? 'active' : ''}
+                      onClick={() => update({ splitAt: i })}
+                    >
+                      {name}
+                      {count > 0 && <b> · {count}</b>}
+                    </button>
+                  );
+                })}
+                {splits.length < MAX_SPLITS && (
+                  <button
+                    type="button"
+                    className="split-add"
+                    onClick={() =>
+                      update({ splits: [...splits, nextSplitName()], splitAt: splits.length })
+                    }
+                  >
+                    <Plus aria-hidden /> Split
+                  </button>
+                )}
+              </div>
+              <div className="split-edit">
+                <label>
+                  <span>Name</span>
+                  <input
+                    value={splitName}
+                    maxLength={30}
+                    placeholder="e.g. a guest's name"
+                    onChange={(e) => setSplitName(e.target.value)}
+                    onBlur={commitSplitName}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        commitSplitName();
+                      }
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => removeSplit(activeSplit)}
+                >
+                  Remove this split
+                </button>
+                <button type="button" className="link-button" onClick={stopSplit}>
+                  Stop splitting
+                </button>
+              </div>
+              <small className="muted">
+                Items you add now go to <b>{activeSplit}</b>. The kitchen gets one order with each
+                split shown apart; the customer pays one bill.
+              </small>
+            </>
+          )}
+        </div>
         <div className="menu-tools">
           <div className="category-tabs">
             {categories.map((c) => (
@@ -680,41 +812,51 @@ export function NewOrder({
       {draft.cart.length > 0 && (
         <section className="menu-section order-summary">
           <p className="eyebrow">This order</p>
-          {draft.cart.map((line) => (
-            <div className="cart-line" key={line.key}>
-              <div>
-                <b>{line.title}</b>
-                {describeLine(line) && (
-                  <small>
-                    {[
-                      sidesLabel(
-                        line.accompaniments.map((a) => a.title),
-                        line.accompaniments.map((a) => a.price || 0),
-                        money,
-                      ),
-                      line.notes,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </small>
-                )}
-              </div>
-              <div className="qty">
-                <button
-                  aria-label={`Remove one ${line.title}`}
-                  onClick={() => update({ cart: changeQuantity(draft.cart, line.key, -1) })}
-                >
-                  <Minus />
-                </button>
-                <strong>{line.quantity}</strong>
-                <button
-                  aria-label={`Add one ${line.title}`}
-                  onClick={() => update({ cart: changeQuantity(draft.cart, line.key, 1) })}
-                >
-                  <Plus />
-                </button>
-              </div>
-              <span>{money(lineTotal(line))}</span>
+          {groupBySplit(draft.cart, splits).map((group) => (
+            <div key={group.split || 'all'} className={group.split ? 'split-group' : undefined}>
+              {group.split && (
+                <p className="split-heading">
+                  <b>{group.split}</b>
+                  <span>{money(cartSubtotal(group.lines))}</span>
+                </p>
+              )}
+              {group.lines.map((line) => (
+                <div className="cart-line" key={line.key}>
+                  <div>
+                    <b>{line.title}</b>
+                    {describeLine(line) && (
+                      <small>
+                        {[
+                          sidesLabel(
+                            line.accompaniments.map((a) => a.title),
+                            line.accompaniments.map((a) => a.price || 0),
+                            money,
+                          ),
+                          line.notes,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </small>
+                    )}
+                  </div>
+                  <div className="qty">
+                    <button
+                      aria-label={`Remove one ${line.title}`}
+                      onClick={() => update({ cart: changeQuantity(draft.cart, line.key, -1) })}
+                    >
+                      <Minus />
+                    </button>
+                    <strong>{line.quantity}</strong>
+                    <button
+                      aria-label={`Add one ${line.title}`}
+                      onClick={() => update({ cart: changeQuantity(draft.cart, line.key, 1) })}
+                    >
+                      <Plus />
+                    </button>
+                  </div>
+                  <span>{money(lineTotal(line))}</span>
+                </div>
+              ))}
             </div>
           ))}
 
@@ -882,7 +1024,9 @@ export function NewOrder({
           item={sheet}
           onClose={() => setSheet(null)}
           onAdd={(quantity, accompaniments, notes) => {
-            update({ cart: addToCart(draft.cart, sheet, quantity, accompaniments, notes) });
+            update({
+              cart: addToCart(draft.cart, sheet, quantity, accompaniments, notes, activeSplit),
+            });
             setSheet(null);
           }}
         />

@@ -5,6 +5,8 @@ import {
   cartSubtotal,
   changeQuantity,
   describeLine,
+  groupBySplit,
+  moveAllToSplit,
   lineTotal,
   previewCommission,
   selectionProblem,
@@ -85,4 +87,29 @@ test('previewCommission matches the server formula', () => {
     900,
   );
   expect(previewCommission(null, 1000)).toBe(0);
+});
+
+describe('split orders', () => {
+  test('the same dish in two splits stays two lines; the bill is merged', () => {
+    let cart = addToCart([], stew, 1, [matooke], '', 'Anna');
+    cart = addToCart(cart, stew, 1, [friedRice], '', 'Ben');
+    cart = addToCart(cart, stew, 1, [matooke], '', 'Ben');
+    cart = addToCart(cart, stew, 1, [matooke], '', 'Anna');
+    expect(cart).toHaveLength(3);
+    expect(cartCount(cart)).toBe(4);
+    expect(cartSubtotal(cart)).toBe(100000);
+    const groups = groupBySplit(cart, ['Ben', 'Anna']);
+    expect(groups.map((g) => g.split)).toEqual(['Ben', 'Anna']);
+    expect(groups[1].lines[0].quantity).toBe(2);
+  });
+
+  test('switching the split off merges the same choices back together', () => {
+    let cart = addToCart([], stew, 1, [matooke], '', 'Anna');
+    cart = addToCart(cart, stew, 2, [matooke], '', 'Ben');
+    cart = moveAllToSplit(cart, '');
+    expect(cart).toHaveLength(1);
+    expect(cart[0].quantity).toBe(3);
+    expect(cart[0].split).toBeUndefined();
+    expect(groupBySplit(cart)).toEqual([{ split: '', lines: cart }]);
+  });
 });

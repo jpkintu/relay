@@ -4,7 +4,7 @@ import { ArrowLeft, Printer } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
-import { sidesLabel } from '../lib/cart';
+import { groupBySplit, sidesLabel } from '../lib/cart';
 import { statusLabel, statusTone } from '../lib/labels';
 import { actionLabel, changedFields } from '../lib/audit';
 import { useCloud, useRiderOptions } from './reports/common';
@@ -31,7 +31,9 @@ type OrderPage = {
     notes: string;
     accompaniments: string[];
     accompanimentPrices?: number[];
+    split?: string;
   }[];
+  splits?: string[];
   subtotal: number;
   deliveryFee: number;
   total: number;
@@ -294,25 +296,39 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
                 </tr>
               </thead>
               <tbody>
-                {o.items.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      {item.name}
-                      {(item.accompaniments.length > 0 || item.notes) && (
-                        <small>
-                          {[
-                            sidesLabel(item.accompaniments, item.accompanimentPrices, money),
-                            item.notes,
-                          ]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </small>
-                      )}
-                    </td>
-                    <td className="num">{item.qty}</td>
-                    <td className="num">{money(item.total)}</td>
-                  </tr>
-                ))}
+                {groupBySplit(o.items, o.splits).flatMap((group) => [
+                  ...(group.split
+                    ? [
+                        <tr key={`split-${group.split}`} className="split-row">
+                          <td colSpan={2}>
+                            <b>{group.split}</b>
+                          </td>
+                          <td className="num">
+                            {money(group.lines.reduce((n, item) => n + item.total, 0))}
+                          </td>
+                        </tr>,
+                      ]
+                    : []),
+                  ...group.lines.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        {item.name}
+                        {(item.accompaniments.length > 0 || item.notes) && (
+                          <small>
+                            {[
+                              sidesLabel(item.accompaniments, item.accompanimentPrices, money),
+                              item.notes,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </small>
+                        )}
+                      </td>
+                      <td className="num">{item.qty}</td>
+                      <td className="num">{money(item.total)}</td>
+                    </tr>
+                  )),
+                ])}
               </tbody>
               <tfoot>
                 <tr>
