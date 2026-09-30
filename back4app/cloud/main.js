@@ -30459,6 +30459,17 @@ var require_reports2 = __commonJS({
   }
 });
 
+// cloud/lib/whatsappSender.js
+var require_whatsappSender = __commonJS({
+  "cloud/lib/whatsappSender.js"(exports2, module2) {
+    "use strict";
+    async function sharedSender() {
+      return null;
+    }
+    module2.exports = { sharedSender };
+  }
+});
+
 // cloud/whatsapp.js
 var require_whatsapp = __commonJS({
   "cloud/whatsapp.js"(exports2, module2) {
@@ -30467,6 +30478,7 @@ var require_whatsapp = __commonJS({
     var { requireAdminUnlock } = require_adminLock();
     var { money } = require_notifications();
     var { log, errorMessage } = require_log();
+    var { sharedSender } = require_whatsappSender();
     var SECRET_KEY = "whatsapp";
     var API = () => process.env.RELAY_WHATSAPP_URL || "https://graph.facebook.com/v20.0";
     var MAX_RECIPIENTS = 10;
@@ -30500,7 +30512,17 @@ var require_whatsapp = __commonJS({
         data.till?.cashWithRidersNow ? `Cash still with riders: ${m(data.till.cashWithRidersNow)}` : "",
         (data.shifts || []).some((s) => s.variance) ? `Till differences: ${m(data.shifts.reduce((n, s) => n + Math.abs(s.variance || 0), 0))}` : ""
       ].filter(Boolean);
-      return { text: lines.join("\n"), line: lines.slice(1).join(" | ") };
+      return { text: lines.join("\n"), line: lines.slice(1).join(" | "), full: lines.join(" | ") };
+    }
+    async function senderFor(settings) {
+      const shared = await sharedSender();
+      if (!shared) return { ...settings, managed: false };
+      return {
+        ...shared,
+        enabled: settings.enabled,
+        recipients: settings.recipients || [],
+        managed: true
+      };
     }
     async function send(settings, to, summary) {
       const body = settings.templateName ? {
@@ -30510,7 +30532,12 @@ var require_whatsapp = __commonJS({
         template: {
           name: settings.templateName,
           language: { code: settings.language || "en" },
-          components: [{ type: "body", parameters: [{ type: "text", text: summary.line }] }]
+          components: [
+            {
+              type: "body",
+              parameters: [{ type: "text", text: settings.managed ? summary.full : summary.line }]
+            }
+          ]
         }
       } : { messaging_product: "whatsapp", to, type: "text", text: { body: summary.text } };
       const response = await fetch(`${API()}/${encodeURIComponent(settings.phoneNumberId)}/messages`, {
@@ -30544,8 +30571,9 @@ var require_whatsapp = __commonJS({
     async function sendDailySummary(day, data, config) {
       if (!await inPlan()) return null;
       const { row, settings } = await loadSettings();
-      if (!ready(settings) || settings.lastSentDay === day) return null;
-      const result = await sendAll(settings, summaryOf(config, day, data));
+      const sender = await senderFor(settings);
+      if (!ready(sender) || settings.lastSentDay === day) return null;
+      const result = await sendAll(sender, summaryOf(config, day, data));
       await saveSettings(row, {
         ...settings,
         lastSentDay: day,
@@ -30555,7 +30583,10 @@ var require_whatsapp = __commonJS({
         log("warn", "whatsapp.summary_failed", { day, failed: result.failed, error: result.error });
       return result;
     }
-    var view = (settings) => ({
+    var view = (settings, shared = null) => ({
+      // Relay Hosted: the platform's WhatsApp sends; only the numbers are theirs.
+      managed: !!shared,
+      sender: shared?.displayNumber || "",
       enabled: settings.enabled === true,
       phoneNumberId: settings.phoneNumberId || "",
       tokenSet: !!settings.token,
@@ -30566,7 +30597,7 @@ var require_whatsapp = __commonJS({
     });
     Parse.Cloud.define("adminGetWhatsAppSettings", async (request) => {
       await requireAdminUnlock(request);
-      return view((await loadSettings()).settings);
+      return view((await loadSettings()).settings, await sharedSender());
     });
     Parse.Cloud.define("adminSaveWhatsAppSettings", async (request) => {
       const actor = await requireAdminUnlock(request);
@@ -30587,35 +30618,41 @@ var require_whatsapp = __commonJS({
         recipients: [...new Set(numbers)]
       };
       if (p.token) next.token = String(p.token).trim().slice(0, 1e3);
+      const shared = await sharedSender();
       if (next.enabled && !await inPlan())
         throw invalid("WhatsApp summaries are not part of your plan");
-      if (next.enabled && !ready(next))
+      if (next.enabled && shared && !next.recipients.length)
+        throw invalid("Enter at least one number to send the summary to");
+      if (next.enabled && !ready(await senderFor(next)))
         throw invalid("Enter the phone number ID, the access token and at least one number");
       await saveSettings(row, next);
       await audit(
         actor,
         "whatsapp.saved",
         { className: "Secret", id: SECRET_KEY },
-        view(settings),
-        view(next)
+        view(settings, shared),
+        view(next, shared)
       );
-      return view(next);
+      return view(next, shared);
     });
     Parse.Cloud.define("adminTestWhatsApp", async (request) => {
       await requireAdminUnlock(request);
       if (!await inPlan()) throw invalid("WhatsApp summaries are not part of your plan");
       const { settings } = await loadSettings();
-      if (!settings.token || !settings.phoneNumberId || !(settings.recipients || []).length)
-        throw invalid("Save the phone number ID, the access token and at least one number first");
+      const sender = await senderFor(settings);
+      if (!sender.token || !sender.phoneNumberId || !sender.recipients.length)
+        throw invalid(
+          sender.managed ? "Save at least one number first" : "Save the phone number ID, the access token and at least one number first"
+        );
       const { values: config } = await loadConfig();
       const { buildZReport } = require_owner();
       const { isoDay } = require_dates();
       const day = isoDay(/* @__PURE__ */ new Date(), config.timezone);
-      const result = await sendAll(settings, summaryOf(config, day, await buildZReport(day, config)));
+      const result = await sendAll(sender, summaryOf(config, day, await buildZReport(day, config)));
       if (!result.sent) throw invalid(`Not sent: ${result.error}`);
       return result;
     });
-    module2.exports = { sendDailySummary, summaryOf, phoneOf };
+    module2.exports = { sendDailySummary, summaryOf, phoneOf, send };
   }
 });
 
