@@ -65,7 +65,7 @@ export type Profile = {
   branch?: { id: string; name: string } | null;
   branchCount?: number;
   // Parts of the app this restaurant has (plan limits on Relay Hosted).
-  features?: { branches: boolean; finance: boolean; accounting: boolean };
+  features?: { branches: boolean; finance: boolean; accounting: boolean; reports?: boolean };
 };
 
 export type AppInfo = {
