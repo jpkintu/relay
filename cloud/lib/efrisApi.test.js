@@ -6,6 +6,7 @@ import {
   aesEncrypt,
   buildInvoice,
   decryptSymmetricKey,
+  generateKeyPair,
   lineTotal,
   openContent,
   privateKeyPem,
@@ -45,6 +46,34 @@ describe('private keys', () => {
   test('something else is refused', () => {
     expect(() => privateKeyPem(b64('hello'))).toThrow();
     expect(() => privateKeyPem('')).toThrow(/Choose/);
+  });
+});
+
+describe('generating a key pair', () => {
+  test('the certificate carries the public half of the private key, for the TIN', () => {
+    const made = generateKeyPair({ tin: '1000029771', name: 'Mama Rose Kitchen Ltd' });
+    const cert = forge.pki.certificateFromPem(made.certificate);
+    expect(cert.subject.getField('CN').value).toBe('1000029771');
+    expect(cert.subject.getField('O').value).toBe('Mama Rose Kitchen Ltd');
+    expect(cert.validity.notAfter.getFullYear()).toBeGreaterThanOrEqual(
+      new Date().getFullYear() + 4,
+    );
+    // What EFRIS will do: check our signature with the uploaded certificate.
+    const publicKey = crypto.createPublicKey(made.certificate);
+    const signature = crypto.sign('sha1', Buffer.from('content'), made.privateKey);
+    expect(crypto.verify('sha1', Buffer.from('content'), publicKey, signature)).toBe(true);
+    // The DER form is the same certificate.
+    const der = new crypto.X509Certificate(Buffer.from(made.certificateDer, 'base64'));
+    expect(der.fingerprint.replace(/:/g, '').toLowerCase()).toBe(made.fingerprint);
+    // And the key it keeps opens what EFRIS encrypts for it.
+    const aes = crypto.randomBytes(16);
+    const passowrdDes = crypto
+      .publicEncrypt(
+        { key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+        Buffer.from(aes.toString('base64')),
+      )
+      .toString('base64');
+    expect(decryptSymmetricKey(passowrdDes, made.privateKey)).toEqual(aes);
   });
 });
 

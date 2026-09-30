@@ -39,7 +39,36 @@ type Settings = {
   missing: string[];
   taxOptions: { value: string; label: string }[];
   counts?: { issued: number; failed: number };
+  certificate: { validUntil: string; fingerprint: string } | null;
 };
+
+type Files = {
+  crt: { name: string; text: string };
+  cer: { name: string; base64: string };
+  fingerprint: string;
+  validUntil: string;
+};
+
+// Saves a certificate to the owner's computer, to upload on the EFRIS portal.
+function download(name: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const saveCrt = (files: Files) =>
+  download(files.crt.name, new Blob([files.crt.text], { type: 'application/x-x509-ca-cert' }));
+const saveCer = (files: Files) =>
+  download(
+    files.cer.name,
+    new Blob([Uint8Array.from(atob(files.cer.base64), (c) => c.charCodeAt(0))], {
+      type: 'application/pkix-cert',
+    }),
+  );
 
 type Form = Omit<
   Settings,
@@ -53,6 +82,7 @@ type Form = Omit<
   | 'missing'
   | 'taxOptions'
   | 'counts'
+  | 'certificate'
 >;
 
 const TEXT: [keyof Form, string, string][] = [
@@ -219,9 +249,10 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
         </div>
         <p className="muted small">
           On the EFRIS portal (efris.ura.go.ug): register a system-to-system device to get its
-          device number, and upload the certificate of your key pair. Keep the private key (a .pfx /
-          .p12 keystore or a .pem file) and choose it here. It stays on the server and is never
-          shown again. Use the test environment first.
+          device number. For the key pair, either let Relay make one below (then upload the
+          certificate it gives you on the portal), or choose your own private key (a .pfx / .p12
+          keystore or a .pem file) whose certificate is already on the portal. The private key stays
+          on the server and is never shown again. Use the test environment first.
         </p>
         <div className="setup-form">
           <label className="setup-field">
@@ -281,6 +312,16 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
             {busy === 'test' ? 'Testing…' : 'Test the connection'}
           </button>
         </div>
+        <KeyMaker
+          view={view}
+          busy={!!busy}
+          beforeMake={async () => {
+            // The TIN goes into the certificate: save what is typed first.
+            await adminRun('adminSaveEfrisSettings', { ...form });
+          }}
+          onDone={onSaved}
+          onError={setError}
+        />
         {t && (
           <p className={t.ok ? 'pay-test good' : 'pay-test bad'}>
             {t.ok ? <CheckCircle2 aria-hidden /> : <XCircle aria-hidden />}{' '}
@@ -406,6 +447,128 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
       </form>
       {notice && <p className="setup-notice">{notice}</p>}
       {error && <p className="ops-error">{error}</p>}
+    </div>
+  );
+}
+
+// No key yet? Relay makes the key pair: the private key stays on the server,
+// the certificate is downloaded and uploaded on the EFRIS portal.
+function KeyMaker({
+  view,
+  busy,
+  beforeMake,
+  onDone,
+  onError,
+}: {
+  view: Settings;
+  busy: boolean;
+  beforeMake: () => Promise<void>;
+  onDone: () => void;
+  onError: (message: string) => void;
+}) {
+  const adminRun = useAdminRun();
+  const { timezone } = useConfig();
+  const [working, setWorking] = useState(false);
+  const [files, setFiles] = useState<Files | null>(null);
+  const run = async (work: () => Promise<void>) => {
+    setWorking(true);
+    onError('');
+    try {
+      await work();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'That did not work');
+    } finally {
+      setWorking(false);
+    }
+  };
+  const make = () =>
+    run(async () => {
+      const replace = view.keyLoaded;
+      if (
+        replace &&
+        !window.confirm(
+          'Replace the saved key? Sales to EFRIS stop working until the new certificate is uploaded on the EFRIS portal.',
+        )
+      )
+        return;
+      await beforeMake();
+      const made = await adminRun<Files>('adminGenerateEfrisKey', { replace });
+      setFiles(made);
+      saveCrt(made);
+      onDone();
+    });
+  const again = () =>
+    run(async () => {
+      const got = files || (await adminRun<Files>('adminGetEfrisCertificate', {}));
+      setFiles(got);
+      saveCrt(got);
+    });
+  const cert = files ? { validUntil: files.validUntil } : view.certificate;
+  return (
+    <div className="efris-keymaker">
+      {cert ? (
+        <>
+          <p className="muted small">
+            Key made by Relay. Upload its certificate on the EFRIS portal (the certificate / public
+            key upload). Valid until{' '}
+            {formatDate(cert.validUntil, timezone, { dateStyle: 'medium' })}.
+          </p>
+          <div className="data-actions">
+            <button
+              type="button"
+              className="setup-secondary"
+              disabled={busy || working}
+              onClick={() => void again()}
+            >
+              Download the certificate (.crt)
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              disabled={busy || working}
+              onClick={() =>
+                void run(async () => {
+                  const got = files || (await adminRun<Files>('adminGetEfrisCertificate', {}));
+                  setFiles(got);
+                  saveCer(got);
+                })
+              }
+            >
+              .cer instead
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              disabled={busy || working}
+              onClick={() => void make()}
+            >
+              Make a new key
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="muted small">
+            {view.keyLoaded
+              ? 'Your own key is saved. You can have Relay make one instead; you then upload its certificate on the EFRIS portal.'
+              : 'No key pair yet? Relay can make one: the private key stays here, and you upload the certificate it gives you on the EFRIS portal. Enter your TIN first.'}
+          </p>
+          <div className="data-actions">
+            <button
+              type="button"
+              className="setup-secondary"
+              disabled={busy || working}
+              onClick={() => void make()}
+            >
+              {working
+                ? 'Making the key…'
+                : view.keyLoaded
+                  ? 'Make a new key here'
+                  : 'Make a key pair'}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

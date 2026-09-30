@@ -104,6 +104,14 @@ function view(settings, values) {
     invoiceKind: settings.invoiceKind || '',
     keyLoaded: !!settings.privateKey,
     keyName: settings.keyName || '',
+    // A key made here (adminGenerateEfrisKey): its certificate can be
+    // downloaded again for the EFRIS portal.
+    certificate: settings.certificate
+      ? {
+          validUntil: settings.certificateValidUntil || '',
+          fingerprint: settings.certificateFingerprint || '',
+        }
+      : null,
     units: settings.units || [],
     lastTest: settings.lastTest || null,
     goodsRegistered: Object.keys(settings.goods || {}).length,
@@ -163,6 +171,11 @@ Parse.Cloud.define('adminSaveEfrisSettings', async (request) => {
       throw invalid(error.message);
     }
     settings.keyName = String(p.keyName || 'private key').slice(0, 120);
+    // An uploaded key has its own certificate, already on the portal.
+    delete settings.certificate;
+    delete settings.certificateDer;
+    delete settings.certificateValidUntil;
+    delete settings.certificateFingerprint;
   }
   // A new account, device or key must be tested again.
   const identity = (s) => [s.environment, s.tin, s.deviceNo, s.privateKey].join('|');
@@ -172,7 +185,9 @@ Parse.Cloud.define('adminSaveEfrisSettings', async (request) => {
   }
   const { object: config, values } = await loadConfig();
   const enabled = p.enabled === undefined ? values.efrisEnabled === true : p.enabled === true;
-  if (enabled) {
+  // Checked when switching on. Once on, a new key or device can be saved
+  // (sales are retried until its connection is tested and works).
+  if (enabled && values.efrisEnabled !== true) {
     const gaps = missing(settings);
     if (gaps.length) throw invalid(`Add the ${gaps.join(', ')} before switching EFRIS on`);
     if (!settings.lastTest?.ok) throw invalid('Test the connection before switching EFRIS on');
@@ -200,6 +215,65 @@ Parse.Cloud.define('adminSaveEfrisSettings', async (request) => {
   );
   const fresh = await loadConfig();
   return view(settings, fresh.values);
+});
+
+// Owner: make a new key pair here, so no tools are needed. The private key
+// is kept (like an uploaded one); the certificate is downloaded and uploaded
+// on the EFRIS portal. Replacing a key in use needs { replace: true }: sales
+// fail until the new certificate is on the portal.
+Parse.Cloud.define('adminGenerateEfrisKey', async (request) => {
+  const actor = await requireAdminUnlock(request);
+  const { row, settings } = await loadSettings();
+  if (!/^\d{10}$/.test(settings.tin || ''))
+    throw invalid('Save your 10-digit TIN first: it goes into the certificate');
+  if (settings.privateKey && request.params?.replace !== true)
+    throw invalid(
+      'A private key is already saved. Replace it only if you will upload the new certificate',
+    );
+  const { values } = await loadConfig();
+  const made = api.generateKeyPair({
+    tin: settings.tin,
+    name: settings.legalName || values.restaurantName || '',
+  });
+  const replaced = !!settings.privateKey;
+  Object.assign(settings, {
+    privateKey: made.privateKey,
+    keyName: `Made by Relay on ${new Date().toISOString().slice(0, 10)}`,
+    certificate: made.certificate,
+    certificateDer: made.certificateDer,
+    certificateValidUntil: made.validUntil,
+    certificateFingerprint: made.fingerprint,
+  });
+  // A new key must be tested again (and its goods are the same TIN's).
+  delete settings.lastTest;
+  await saveSettings(row, settings);
+  await audit(actor, 'efris.key_generated', { className: 'Secret', id: SECRET_KEY }, null, {
+    replaced,
+    fingerprint: made.fingerprint,
+    validUntil: made.validUntil,
+  });
+  return { ...certificateFiles(settings), view: view(settings, values) };
+});
+
+function certificateFiles(settings) {
+  const base = `efris-${settings.tin || 'relay'}`;
+  return {
+    crt: { name: `${base}.crt`, text: settings.certificate },
+    cer: { name: `${base}.cer`, base64: settings.certificateDer },
+    fingerprint: settings.certificateFingerprint,
+    validUntil: settings.certificateValidUntil,
+  };
+}
+
+// Owner: the certificate of a key made here, to upload on the portal again.
+Parse.Cloud.define('adminGetEfrisCertificate', async (request) => {
+  await requireAdminUnlock(request);
+  const { settings } = await loadSettings();
+  if (!settings.certificate)
+    throw invalid(
+      'No certificate here: the key was uploaded, so its certificate is the one you made',
+    );
+  return certificateFiles(settings);
 });
 
 // Owner: check the connection and read the taxpayer, device and URA's units.

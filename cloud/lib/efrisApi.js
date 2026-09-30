@@ -75,6 +75,45 @@ function privateKeyPem(fileBase64, password = '') {
   return crypto.createPrivateKey(pem).export({ type: 'pkcs8', format: 'pem' });
 }
 
+// A new key pair for EFRIS, made on the server so the owner needs no tools:
+// the private key stays with Relay; the certificate (the public key, self
+// signed, as keytool makes it) is what the owner uploads on the EFRIS
+// portal. → { privateKey (PEM, PKCS#8), certificate (PEM), certificateDer
+// (base64), fingerprint, validUntil }.
+function generateKeyPair({ tin, name = '', years = 5 } = {}) {
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const key = forge.pki.privateKeyFromPem(pem);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = forge.pki.setRsaPublicKey(key.n, key.e);
+  cert.serialNumber = `01${crypto.randomBytes(8).toString('hex')}`;
+  const from = new Date(Date.now() - 86400000);
+  const until = new Date(from);
+  until.setFullYear(until.getFullYear() + years);
+  cert.validity.notBefore = from;
+  cert.validity.notAfter = until;
+  const subject = [
+    { name: 'commonName', value: String(tin || 'Relay') },
+    ...(name ? [{ name: 'organizationName', value: String(name).slice(0, 64) }] : []),
+    { name: 'countryName', value: 'UG' },
+  ];
+  cert.setSubject(subject);
+  cert.setIssuer(subject);
+  cert.setExtensions([
+    { name: 'basicConstraints', cA: false },
+    { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
+  ]);
+  cert.sign(key, forge.md.sha256.create());
+  const der = forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes();
+  return {
+    privateKey: pem,
+    certificate: forge.pki.certificateToPem(cert),
+    certificateDer: Buffer.from(der, 'binary').toString('base64'),
+    fingerprint: crypto.createHash('sha1').update(Buffer.from(der, 'binary')).digest('hex'),
+    validUntil: until.toISOString(),
+  };
+}
+
 const sign = (content, pem) =>
   crypto.createSign('RSA-SHA1').update(content, 'utf8').sign(pem, 'base64');
 
@@ -211,7 +250,12 @@ async function post(settings, body) {
 
 // Symmetric keys, per TIN and device, for an hour.
 const keys = new Map();
-const keyId = (settings) => `${settings.environment}:${settings.tin}:${settings.deviceNo}`;
+// Per key too: a new private key never reuses a session agreed under the old.
+const keyId = (settings) =>
+  `${settings.environment}:${settings.tin}:${settings.deviceNo}:${crypto
+    .createHash('sha1')
+    .update(String(settings.privateKey || ''))
+    .digest('hex')}`;
 
 async function symmetricKey(settings, { fresh = false } = {}) {
   const id = keyId(settings);
@@ -435,6 +479,7 @@ function goodsEntry({ code, name, price, settings, currency = '101', modify = fa
 }
 
 module.exports = {
+  generateKeyPair,
   URLS,
   TAX,
   EfrisError,
