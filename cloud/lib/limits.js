@@ -9,7 +9,10 @@ async function checkMemberLimit() {}
 
 // Parts of the app switched on for this restaurant.
 async function features() {
-  return { branches: true, finance: true, accounting: true };
+  // branches: more than one; finance: the finance role; accounting:
+  // purchases, expenses and the statements; reports: the Reports analytics
+  // (the Z-report is always there).
+  return { branches: true, finance: true, accounting: true, reports: true };
 }
 
 module.exports = { checkBranchLimit, checkMemberLimit, features };

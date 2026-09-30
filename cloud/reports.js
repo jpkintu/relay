@@ -521,6 +521,8 @@ async function orderLines(orderIds) {
 // and month on month, menu item sales, riders, payment mix and busy hours.
 Parse.Cloud.define('getOperationsReport', async (request) => {
   await requireRole(request, ['admin', 'finance']);
+  if ((await require('./lib/limits').features()).reports === false)
+    throw invalid('Reports are not part of your plan');
   const p = request.params;
   const { values: config } = await loadConfig();
   const tz = config.timezone;

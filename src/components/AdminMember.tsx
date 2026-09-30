@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, KeyRound } from 'lucide-react';
 import Parse from '../parse';
-import { useConfig, useMoney } from '../lib/session';
+import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate, initials } from '../lib/format';
 import { statusLabel, statusTone } from '../lib/labels';
 import { Stat, useBranchOptions, useCloud } from './reports/common';
@@ -111,6 +111,7 @@ export function AdminMember({ id }: { id: string }) {
   const navigate = useNavigate();
   const { data: m, error, reload } = useCloud<Member>('adminGetMember', { id });
   const openBranches = useBranchOptions().filter((b) => b.active);
+  const financeOn = useSession().profile?.features?.finance !== false;
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState('');
@@ -335,7 +336,7 @@ export function AdminMember({ id }: { id: string }) {
               >
                 <option value="rider">Rider</option>
                 <option value="cashier">Cashier</option>
-                <option value="finance">Finance</option>
+                {(financeOn || m.role === 'finance') && <option value="finance">Finance</option>}
               </select>
             </div>
             {branches.length > 1 && m.role !== 'finance' && (
