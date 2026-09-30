@@ -35200,7 +35200,7 @@ var require_preview = __commonJS({
       const total = await new Parse.Query("DemoOrder").count(MASTER);
       if (!await claimOnce(`preview:seed:${total}`)) {
         for (let i = 0; i < 100; i += 1) {
-          if (await openDemoOrders().count(MASTER)) return;
+          if (await openDemoOrders().count(MASTER) >= SEEDS.length) return;
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
         return;
