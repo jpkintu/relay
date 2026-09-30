@@ -37,7 +37,7 @@ export const LIMIT_NAMES: Record<string, string> = {
   finance: 'Finance staff',
 };
 
-const limitText = (value: number | null) => (value === null ? 'No limit' : String(value));
+const limitText = (value: number | null) => (value === null ? 'Unlimited' : String(value));
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type Draft = {
@@ -232,7 +232,7 @@ export function PlatformPlans({ onChanged }: { onChanged: () => void }) {
               <input
                 inputMode="numeric"
                 value={draft.limits[k]}
-                placeholder="No limit"
+                placeholder="Unlimited"
                 onChange={(e) =>
                   setDraft({
                     ...draft,

@@ -34,7 +34,7 @@ const DEFAULTS = [
   {
     key: 'enterprise',
     name: 'Enterprise',
-    description: 'Branches, finance, accounting and reports, no limits',
+    description: 'Unlimited branches and team, with finance, accounting and reports',
     priceField: 'enterprisePrice',
     limits: { branches: null, cashier: null, rider: null, finance: null },
     features: Object.fromEntries(FEATURES.map((f) => [f, true])),

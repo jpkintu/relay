@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { LogOut } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Check, LogOut, Minus } from 'lucide-react';
 import Parse from '../parse';
 import { formatDate, formatMoney } from '../lib/format';
 import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
@@ -32,6 +32,12 @@ const LIMIT_WORDS: Record<string, [string, string]> = {
   rider: ['rider', 'riders'],
   finance: ['finance member', 'finance members'],
 };
+const LIMIT_LABELS: Record<string, string> = {
+  branches: 'Branches',
+  cashier: 'Cashiers',
+  rider: 'Riders',
+  finance: 'Finance staff',
+};
 const FEATURE_WORDS: Record<string, string> = {
   finance: 'Finance role',
   accounting: 'Purchases, expenses & accounting',
@@ -46,14 +52,30 @@ export function planPoints(plan: OfferedPlan): string[] {
     .filter(([key]) => !(key === 'finance' && plan.limits.finance === 0))
     .map(([key, [one, many]]) => {
       const n = plan.limits[key];
-      return n === null || n === undefined
-        ? `Any number of ${many}`
-        : `${n} ${n === 1 ? one : many}`;
+      return n === null || n === undefined ? `Unlimited ${many}` : `${n} ${n === 1 ? one : many}`;
     });
   const parts = Object.entries(FEATURE_WORDS)
     .filter(([key]) => plan.features[key])
     .map(([, words]) => words);
   return [...limits, ...parts];
+}
+
+// A plan card's table: each limit ("Unlimited" when there is none) and each
+// part of the app, included or not.
+export function planSpec(plan: OfferedPlan) {
+  return {
+    limits: Object.keys(LIMIT_LABELS).map((key) => {
+      const n = plan.limits[key];
+      return {
+        key,
+        label: LIMIT_LABELS[key],
+        value: n === null || n === undefined ? 'Unlimited' : n === 0 ? 'None' : String(n),
+      };
+    }),
+    features: Object.entries(FEATURE_WORDS)
+      .filter(([key]) => key !== 'finance')
+      .map(([key, label]) => ({ key, label, included: !!plan.features[key] })),
+  };
 }
 
 export function useOfferedPlans() {
@@ -64,6 +86,58 @@ export function useOfferedPlans() {
       .catch(() => setData(null));
   }, []);
   return data;
+}
+
+// One plan: price, what it allows and what it includes.
+function PlanCard({
+  plan,
+  currency,
+  current,
+  action,
+}: {
+  plan: OfferedPlan;
+  currency: string;
+  current: boolean;
+  action: ReactNode;
+}) {
+  const spec = planSpec(plan);
+  return (
+    <article
+      className={`plan-card${current ? ' current' : ''}`}
+      aria-current={current || undefined}
+    >
+      <header className="plan-card-head">
+        <h3>{plan.name}</h3>
+        {current && <span className="status-pill good">Your plan</span>}
+      </header>
+      <p className="plan-price">
+        <strong>{formatMoney(plan.price, currency)}</strong>
+        <span>a month</span>
+      </p>
+      {plan.description && <p className="plan-description">{plan.description}</p>}
+      <dl className="plan-limits">
+        {spec.limits.map((limit) => (
+          <div key={limit.key} className={limit.value === 'Unlimited' ? 'unlimited' : ''}>
+            <dt>{limit.label}</dt>
+            <dd>{limit.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <ul className="plan-includes">
+        {spec.features.map((feature) => (
+          <li key={feature.key} className={feature.included ? '' : 'excluded'}>
+            {feature.included ? (
+              <Check aria-label="Included" size={16} />
+            ) : (
+              <Minus aria-label="Not included" size={16} />
+            )}
+            {feature.label}
+          </li>
+        ))}
+      </ul>
+      {!current && <div className="plan-action">{action}</div>}
+    </article>
+  );
 }
 
 // The owner: the plans on offer and a switch between them. Moving to a
@@ -79,21 +153,12 @@ export function PlanPicker() {
   return (
     <div className="plan-picker">
       {offered.plans.map((plan) => (
-        <article key={plan.key} className={plan.key === r.plan ? 'plan-card current' : 'plan-card'}>
-          <h3>{plan.name}</h3>
-          <strong>
-            {formatMoney(plan.price, offered.currency)}
-            <small> a month</small>
-          </strong>
-          {plan.description && <p className="muted small">{plan.description}</p>}
-          <ul>
-            {planPoints(plan).map((point) => (
-              <li key={point}>{point}</li>
-            ))}
-          </ul>
-          {plan.key === r.plan ? (
-            <span className="status-pill good">Your plan</span>
-          ) : (
+        <PlanCard
+          key={plan.key}
+          plan={plan}
+          currency={offered.currency}
+          current={plan.key === r.plan}
+          action={
             <button
               disabled={busy}
               onClick={async () => {
@@ -111,8 +176,8 @@ export function PlanPicker() {
             >
               Switch to {plan.name}
             </button>
-          )}
-        </article>
+          }
+        />
       ))}
       {error && <p className="form-error">{error}</p>}
       <p className="muted small">
