@@ -5708,7 +5708,13 @@ describe('the Admin area opens only with the PIN', () => {
 // (the function checks the person's own records); nobody: master key only,
 // or switched off (preview mode).
 const ACCESS = {
-  public: ['getAppInfo', 'reportClientError', 'checkRestaurantCode', 'signUpRestaurant'],
+  public: [
+    'getAppInfo',
+    'reportClientError',
+    'checkRestaurantCode',
+    'signUpRestaurant',
+    'getPlans',
+  ],
   nobody: [
     'bootstrapOwner',
     'recoverOwner',
@@ -5717,6 +5723,8 @@ const ACCESS = {
     'platformListRestaurants',
     'platformUpdateRestaurant',
     'platformSaveSettings',
+    'platformListPlans',
+    'platformSavePlan',
     'platformGetAudit',
     'platformRecordPayment',
     'platformListPayments',
@@ -6073,12 +6081,21 @@ describe('platform console and access (Relay Hosted)', () => {
     other.rider = await login('rita', PINS.rita, OTHER);
   });
 
+  const planByKey = async (key) =>
+    (await run('platformListPlans', {}, ops)).plans.find((plan) => plan.key === key);
+  const savePlan = async (key, changes) => {
+    const plan = await planByKey(key);
+    return run('platformSavePlan', { ...plan, ...changes }, ops);
+  };
+
   after(async () => {
     await run(
       'platformSaveSettings',
-      { monthlyPrice: 50000, currency: 'UGX', trialDays: 14, graceDays: 7, supportContact: '' },
+      { currency: 'UGX', trialDays: 14, graceDays: 7, supportContact: '' },
       ops,
     );
+    // The payment tests that follow price Basic at 50,000.
+    await savePlan('basic', { price: 50000 });
   });
 
   test('the job creates the platform account from environment variables', async () => {
@@ -6126,11 +6143,13 @@ describe('platform console and access (Relay Hosted)', () => {
       /Master key required/,
     );
 
-    const { rows, settings } = await run('platformListRestaurants', {}, ops);
-    // Relay's starting price until the console sets another.
-    assert.equal(settings.monthlyPrice, 100000);
+    const { rows } = await run('platformListRestaurants', {}, ops);
     // Plans (owner's decision 2026-09-30): Basic 100,000, Enterprise 200,000.
-    assert.equal(settings.enterprisePrice, 200000);
+    const basic = await planByKey('basic');
+    assert.equal(basic.price, 100000);
+    assert.deepEqual(basic.limits, { branches: 1, cashier: 2, rider: 5, finance: 0 });
+    assert.equal(basic.features.accounting, false);
+    assert.equal((await planByKey('enterprise')).price, 200000);
     assert.deepEqual(rows.map((row) => row.code).sort(), [OTHER, CODE]);
     const mine = rows.find((row) => row.code === CODE);
     const theirs = rows.find((row) => row.code === OTHER);
@@ -6151,14 +6170,7 @@ describe('platform console and access (Relay Hosted)', () => {
   });
 
   test('platform settings are checked, saved and shown to restaurants', async () => {
-    const base = {
-      monthlyPrice: 60000,
-      enterprisePrice: 150000,
-      currency: 'ugx',
-      trialDays: 21,
-      graceDays: 5,
-    };
-    await rejects(run('platformSaveSettings', { ...base, monthlyPrice: -1 }, ops), /Monthly price/);
+    const base = { currency: 'ugx', trialDays: 21, graceDays: 5 };
     await rejects(run('platformSaveSettings', { ...base, currency: 'shillings' }, ops), /Currency/);
     await rejects(run('platformSaveSettings', { ...base, graceDays: 90 }, ops), /Grace days/);
     await rejects(run('platformSaveSettings', base, s.owner), /platform role required/);
@@ -6169,10 +6181,11 @@ describe('platform console and access (Relay Hosted)', () => {
     );
     assert.equal(saved.currency, 'UGX');
     assert.equal((await run('getAppInfo')).trialDays, 21);
-    await rejects(
-      run('platformSaveSettings', { ...base, enterprisePrice: -1 }, ops),
-      /Enterprise price/,
-    );
+    // Prices are on the plans.
+    await rejects(savePlan('basic', { price: -1 }), /Price/);
+    await rejects(run('platformSavePlan', { name: 'x' }, s.owner), /platform role required/);
+    await savePlan('basic', { price: 60000 });
+    await savePlan('enterprise', { price: 150000 });
     // This restaurant is on Enterprise.
     const { restaurant } = await run('getMyProfile', {}, s.owner);
     assert.equal(restaurant.monthlyPrice, 150000);
@@ -6194,7 +6207,7 @@ describe('platform console and access (Relay Hosted)', () => {
     assert.equal((await update({ priceOverride: 90000 })).monthlyPrice, 90000);
     // The plan is the platform's to set too; a negotiated price stays.
     assert.equal((await update({ plan: 'enterprise' })).monthlyPrice, 90000);
-    await rejects(update({ plan: 'gold' }), /Plan: basic or enterprise/);
+    await rejects(update({ plan: 'gold' }), /Unknown plan/);
     assert.equal((await update({ plan: 'basic' })).plan, 'basic');
     const back = await update({ priceOverride: null });
     assert.equal(back.priceOverride, null);
@@ -6818,12 +6831,14 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
       finance: false,
       accounting: false,
       reports: false,
+      efris: true,
+      whatsapp: true,
     });
     const billing = await run('getBilling', {}, owner);
     assert.equal(billing.restaurant.plan, 'basic');
-    // Basic's price (the platform console may have changed the defaults of
-    // 100,000 and 200,000 earlier in this run).
-    assert.equal(billing.restaurant.monthlyPrice, billing.restaurant.planPrices.basic);
+    const { plans } = await run('getPlans', {});
+    const price = (key) => plans.find((plan) => plan.key === key).price;
+    assert.equal(billing.restaurant.monthlyPrice, price('basic'));
     await rejects(run('listPurchases', {}, owner), /not part of your plan/);
     await rejects(run('getProfitAndLoss', {}, owner), /not part of your plan/);
     await rejects(run('getOperationsReport', {}, owner), /not part of your plan/);
@@ -6834,7 +6849,7 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
   test('Basic allows one branch, 2 cashiers, 5 riders and no finance', async () => {
     await member('cash1', 'cashier');
     await member('cash2', 'cashier');
-    await rejects(member('cash3', 'cashier'), /allows 2 cashiers.*Upgrade to Enterprise/);
+    await rejects(member('cash3', 'cashier'), /allows 2 cashiers.*Move to a bigger plan/);
     for (const n of [1, 2, 3, 4, 5]) await member(`ride${n}`, 'rider');
     await rejects(member('ride6', 'rider'), /allows 5 riders/);
     await rejects(member('fin1', 'finance'), /no finance role/);
@@ -6852,7 +6867,11 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
   test('upgrading to Enterprise lifts the limits and costs the Enterprise price', async () => {
     const billing = await run('changePlan', { plan: 'enterprise' }, owner);
     assert.equal(billing.restaurant.plan, 'enterprise');
-    assert.equal(billing.restaurant.monthlyPrice, billing.restaurant.planPrices.enterprise);
+    const { plans } = await run('getPlans', {});
+    assert.equal(
+      billing.restaurant.monthlyPrice,
+      plans.find((plan) => plan.key === 'enterprise').price,
+    );
     assert.equal((await run('getMyProfile', {}, owner)).features.accounting, true);
     await member('cash3', 'cashier');
     await member('fin1', 'finance');
@@ -6860,6 +6879,88 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
     assert.ok(Array.isArray((await run('listPurchases', {}, owner)).purchases));
     // Back to Basic only once it fits again.
     await rejects(run('changePlan', { plan: 'basic' }, owner), /Basic allows less than you have/);
-    await rejects(run('changePlan', { plan: 'gold' }, owner), /Choose Basic or Enterprise/);
+    await rejects(run('changePlan', { plan: 'gold' }, owner), /plans on offer/);
+  });
+
+  test('platform staff create a plan with its own limits and parts of the app', async () => {
+    const ops = await Parse.User.logIn('ops', 'ops-pass-123');
+    await rejects(
+      run('platformSavePlan', { name: 'Growth', price: 150000, limits: { branches: 0 } }, ops),
+      /at least 1 branch/,
+    );
+    await rejects(
+      run('platformSavePlan', { name: 'Growth', price: 150000, limits: { rider: 2.5 } }, ops),
+      /rider limit/,
+    );
+    const growth = await run(
+      'platformSavePlan',
+      {
+        name: 'Growth',
+        description: 'Two outlets with finance',
+        price: 150000,
+        limits: { branches: 2, cashier: 4, rider: 10, finance: 1 },
+        features: { branches: true, finance: true, accounting: true, reports: false },
+        active: true,
+      },
+      ops,
+    );
+    assert.equal(growth.key, 'growth');
+    assert.equal(growth.features.reports, false);
+    assert.equal(growth.features.efris, false, 'what is not ticked is left out');
+    await rejects(
+      run('platformSavePlan', { name: 'growth', price: 1 }, ops),
+      /already a plan called/,
+    );
+    const listed = await run('platformListPlans', {}, ops);
+    assert.ok(listed.features.includes('whatsapp'));
+    assert.ok(listed.plans.some((plan) => plan.key === 'growth' && plan.restaurants === 0));
+    assert.ok((await run('getPlans', {})).plans.some((plan) => plan.key === 'growth'));
+
+    // A restaurant moves to it: its limits and parts of the app follow.
+    const code = 'growth-grill';
+    await run('signUpRestaurant', {
+      restaurantName: 'Growth Grill',
+      ownerName: 'Gil',
+      username: 'owner',
+      pin: PINS.owner,
+      phone: '0701 555444',
+      plan: 'growth',
+    });
+    const owner = await login('owner', PINS.owner, code);
+    const profile = await run('getMyProfile', {}, owner);
+    assert.equal(profile.restaurant.plan, 'growth');
+    assert.equal(profile.restaurant.monthlyPrice, 150000);
+    assert.equal(profile.features.accounting, true);
+    assert.equal(profile.features.reports, false);
+    assert.equal(profile.features.efris, false);
+    await rejects(run('getOperationsReport', {}, owner), /not part of your plan/);
+    await run(
+      'adminCreateTeamMember',
+      { name: 'F', username: 'fin1', pin: '7777', role: 'finance' },
+      owner,
+    );
+    await rejects(
+      run(
+        'adminCreateTeamMember',
+        { name: 'F', username: 'fin2', pin: '7777', role: 'finance' },
+        owner,
+      ),
+      /allows 1 finance/,
+    );
+    await run('adminListBranches', {}, owner);
+    await run('adminSaveBranch', { name: 'Second' }, owner);
+    await rejects(run('adminSaveBranch', { name: 'Third' }, owner), /has 2 branches/);
+
+    // Changing the plan changes what its restaurants get straight away.
+    await run(
+      'platformSavePlan',
+      { ...growth, features: { ...growth.features, reports: true } },
+      ops,
+    );
+    assert.ok(Array.isArray((await run('getOperationsReport', {}, owner)).items));
+    // Taken off offer: not offered to new restaurants; its restaurants stay on it.
+    await run('platformSavePlan', { ...growth, active: false }, ops);
+    assert.ok(!(await run('getPlans', {})).plans.some((plan) => plan.key === 'growth'));
+    assert.equal((await run('getMyProfile', {}, owner)).restaurant.plan, 'growth');
   });
 });

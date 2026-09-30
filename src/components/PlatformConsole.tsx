@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { LogOut, RefreshCw } from 'lucide-react';
 import Parse from '../parse';
+import { PlatformPlans, type Plan } from './PlatformPlans';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
 import { AdminErrors } from './AdminErrors';
@@ -12,9 +13,8 @@ import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
 // subscription and size, never its orders or customers (docs/HOSTED.md).
 
 type Settings = {
-  // Basic plan's price, and Enterprise's.
-  monthlyPrice: number;
-  enterprisePrice: number;
+  // The plans (prices are on them; see PlatformPlans).
+  plans: Plan[];
   currency: string;
   trialDays: number;
   graceDays: number;
@@ -205,7 +205,7 @@ export function PlatformConsole() {
                       <td className="num">
                         {formatMoney(r.monthlyPrice, r.currency)}
                         <small className="cell-sub">
-                          {r.plan === 'enterprise' ? 'Enterprise' : 'Basic'}
+                          {r.planName || r.plan}
                           {r.priceOverride !== null && ' · own price'}
                         </small>
                       </td>
@@ -231,6 +231,8 @@ export function PlatformConsole() {
             onClose={() => setSelected(null)}
           />
         )}
+
+        <PlatformPlans onChanged={() => void load()} />
 
         {settings && (
           <SettingsForm
@@ -320,7 +322,7 @@ function RestaurantEditor({
   onClose: () => void;
 }) {
   const [price, setPrice] = useState(row.priceOverride === null ? '' : String(row.priceOverride));
-  const [plan, setPlan] = useState(row.plan === 'enterprise' ? 'enterprise' : 'basic');
+  const [plan, setPlan] = useState(row.plan || '');
   const [trialEndsAt, setTrialEndsAt] = useState(toInput(row.trialEndsAt));
   const [paidUntil, setPaidUntil] = useState(toInput(row.paidUntil));
   const [note, setNote] = useState(row.note);
@@ -396,14 +398,14 @@ function RestaurantEditor({
         <label className="setup-field">
           Plan
           <select value={plan} onChange={(e) => setPlan(e.target.value)}>
-            <option value="basic">
-              Basic ({formatMoney(settings.monthlyPrice, settings.currency)})
-            </option>
-            <option value="enterprise">
-              Enterprise ({formatMoney(settings.enterprisePrice, settings.currency)})
-            </option>
+            {settings.plans.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.name} ({formatMoney(p.price, settings.currency)})
+                {p.active ? '' : ' · not offered'}
+              </option>
+            ))}
           </select>
-          <small>Basic: 1 branch, 2 cashiers, 5 riders, no finance or reports.</small>
+          <small>Limits and parts of the app come with the plan (Plans below).</small>
         </label>
         <label className="setup-field">
           Monthly price ({row.currency})
@@ -412,7 +414,7 @@ function RestaurantEditor({
             value={price}
             onChange={(e) => setPrice(e.target.value.replace(/[^\d]/g, ''))}
             placeholder={`Plan price: ${formatMoney(
-              plan === 'enterprise' ? settings.enterprisePrice : settings.monthlyPrice,
+              settings.plans.find((p) => p.key === plan)?.price ?? 0,
               settings.currency,
             )}`}
           />
@@ -706,8 +708,6 @@ function SettingsForm({
   onSaved: (settings: Settings) => void;
 }) {
   const [form, setForm] = useState({
-    monthlyPrice: String(settings.monthlyPrice),
-    enterprisePrice: String(settings.enterprisePrice ?? 200000),
     currency: settings.currency,
     trialDays: String(settings.trialDays),
     graceDays: String(settings.graceDays),
@@ -725,14 +725,12 @@ function SettingsForm({
     setDone('');
     try {
       const saved: Settings = await Parse.Cloud.run('platformSaveSettings', {
-        monthlyPrice: Number(form.monthlyPrice),
-        enterprisePrice: Number(form.enterprisePrice),
         currency: form.currency,
         trialDays: Number(form.trialDays),
         graceDays: Number(form.graceDays),
         supportContact: form.supportContact,
       });
-      setDone('Saved. New prices apply from each restaurant’s next month.');
+      setDone('Saved.');
       onSaved(saved);
     } catch (e) {
       setError(message(e));
@@ -746,18 +744,6 @@ function SettingsForm({
         <h2>Platform settings</h2>
       </div>
       <form className="platform-form" onSubmit={(e) => void submit(e)}>
-        <label className="setup-field">
-          Basic plan, a month
-          <input inputMode="numeric" value={form.monthlyPrice} onChange={set('monthlyPrice')} />
-        </label>
-        <label className="setup-field">
-          Enterprise plan, a month
-          <input
-            inputMode="numeric"
-            value={form.enterprisePrice}
-            onChange={set('enterprisePrice')}
-          />
-        </label>
         <label className="setup-field">
           Currency
           <input value={form.currency} onChange={set('currency')} maxLength={3} />

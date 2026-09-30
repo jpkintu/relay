@@ -8033,3 +8033,39 @@ table.data tr.selected td {
 .plan-card .status-pill {
   justify-self: start;
 }
+.plan-table .feature-col {
+  text-align: center;
+  font-size: 12px;
+  max-width: 90px;
+}
+.plan-form h3,
+.plan-features {
+  grid-column: 1 / -1;
+}
+.plan-features {
+  border: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.good-text {
+  color: #1b7a4a;
+}
+.login-card select {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 14px 12px;
+  font-size: 14px;
+  outline: none;
+}
+.plan-table th.feature-col {
+  white-space: normal;
+  min-width: 84px;
+  vertical-align: bottom;
+}
+.plan-table td:first-child {
+  min-width: 170px;
+}

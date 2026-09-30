@@ -50,7 +50,13 @@ function publicConfig(values) {
 
 // Relay Hosted: what Relay's terms page (/terms) needs.
 const platformInfo = (platform) => ({
-  monthlyPrice: Number(platform.monthlyPrice) || 0,
+  // The lowest price on offer, and each plan's.
+  monthlyPrice: (platform.plans || []).some((plan) => plan.active)
+    ? Math.min(...platform.plans.filter((plan) => plan.active).map((plan) => plan.price))
+    : Number(platform.monthlyPrice) || 0,
+  plans: (platform.plans || [])
+    .filter((plan) => plan.active)
+    .map((plan) => ({ name: plan.name, price: plan.price })),
   currency: platform.currency,
   graceDays: Number(platform.graceDays) || 0,
   supportContact: platform.supportContact || '',

@@ -53,6 +53,7 @@ const PROTECTED_CLASSES = [
   'Restaurant',
   'PlatformSettings',
   'SubscriptionPayment',
+  'Plan',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -67,6 +68,7 @@ const PRIVATE_CLASSES = [
   'Restaurant',
   'PlatformSettings',
   'SubscriptionPayment',
+  'Plan',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -513,8 +515,20 @@ const SCHEMAS = {
     paidAt: D,
     recordedBy: user,
   },
+  // Relay Hosted plans (lib/plans.js).
+  Plan: {
+    key: S,
+    name: S,
+    description: S,
+    price: N,
+    limits: 'Object',
+    features: 'Object',
+    active: B,
+    sortOrder: N,
+  },
   PlatformSettings: {
     monthlyPrice: N,
+    enterprisePrice: N,
     currency: S,
     trialDays: N,
     graceDays: N,

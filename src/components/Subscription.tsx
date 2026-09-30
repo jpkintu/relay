@@ -14,51 +14,84 @@ export const daysLeft = (until: string | null) =>
   until ? Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / DAY)) : 0;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const priceText = (r: RestaurantSummary) =>
-  `${r.plan === 'enterprise' ? 'Enterprise' : 'Basic'} plan · ${formatMoney(
-    r.monthlyPrice,
-    r.currency,
-  )} a month`;
+  `${r.planName || 'Your'} plan · ${formatMoney(r.monthlyPrice, r.currency)} a month`;
 
-// What each plan includes (the server's limits are in cloud/lib/limits.js).
-export const PLAN_INFO = {
-  basic: {
-    label: 'Basic',
-    points: ['1 branch', 'Up to 2 cashiers and 5 riders', 'Orders, kitchen, cash and Z-report'],
-  },
-  enterprise: {
-    label: 'Enterprise',
-    points: [
-      'Many branches, as many team members as you need',
-      'Finance role, purchases & expenses, accounting (P&L, balance sheet, cash flow)',
-      'Reports and analytics',
-    ],
-  },
-} as const;
+// The plans on offer (set by Relay in the platform console).
+export type OfferedPlan = {
+  key: string;
+  name: string;
+  description: string;
+  price: number;
+  limits: Record<string, number | null>;
+  features: Record<string, boolean>;
+};
 
-// The owner: the two plans and a switch between them. Moving down to Basic
-// needs the restaurant within Basic's limits (the server says what is over).
+const LIMIT_WORDS: Record<string, [string, string]> = {
+  branches: ['branch', 'branches'],
+  cashier: ['cashier', 'cashiers'],
+  rider: ['rider', 'riders'],
+  finance: ['finance member', 'finance members'],
+};
+const FEATURE_WORDS: Record<string, string> = {
+  finance: 'Finance role',
+  accounting: 'Purchases, expenses & accounting',
+  reports: 'Reports & analytics',
+  efris: 'EFRIS tax receipts',
+  whatsapp: 'WhatsApp daily summaries',
+};
+
+// One line per limit and included part, for plan cards and the sign-up list.
+export function planPoints(plan: OfferedPlan): string[] {
+  const limits = Object.entries(LIMIT_WORDS)
+    .filter(([key]) => !(key === 'finance' && plan.limits.finance === 0))
+    .map(([key, [one, many]]) => {
+      const n = plan.limits[key];
+      return n === null || n === undefined
+        ? `Any number of ${many}`
+        : `${n} ${n === 1 ? one : many}`;
+    });
+  const parts = Object.entries(FEATURE_WORDS)
+    .filter(([key]) => plan.features[key])
+    .map(([, words]) => words);
+  return [...limits, ...parts];
+}
+
+export function useOfferedPlans() {
+  const [data, setData] = useState<{ currency: string; plans: OfferedPlan[] } | null>(null);
+  useEffect(() => {
+    Parse.Cloud.run('getPlans')
+      .then(setData)
+      .catch(() => setData(null));
+  }, []);
+  return data;
+}
+
+// The owner: the plans on offer and a switch between them. Moving to a
+// smaller plan needs the restaurant within its limits (the server says what
+// is over).
 export function PlanPicker() {
   const { profile, refresh } = useSession();
   const r = profile?.restaurant;
+  const offered = useOfferedPlans();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  if (!r || !r.planPrices) return null;
-  const current = r.plan === 'enterprise' ? 'enterprise' : 'basic';
+  if (!r || !offered) return null;
   return (
     <div className="plan-picker">
-      {(['basic', 'enterprise'] as const).map((plan) => (
-        <article key={plan} className={plan === current ? 'plan-card current' : 'plan-card'}>
-          <h3>{PLAN_INFO[plan].label}</h3>
+      {offered.plans.map((plan) => (
+        <article key={plan.key} className={plan.key === r.plan ? 'plan-card current' : 'plan-card'}>
+          <h3>{plan.name}</h3>
           <strong>
-            {formatMoney(r.planPrices![plan], r.currency)}
+            {formatMoney(plan.price, offered.currency)}
             <small> a month</small>
           </strong>
+          {plan.description && <p className="muted small">{plan.description}</p>}
           <ul>
-            {PLAN_INFO[plan].points.map((point) => (
+            {planPoints(plan).map((point) => (
               <li key={point}>{point}</li>
             ))}
           </ul>
-          {plan === current ? (
+          {plan.key === r.plan ? (
             <span className="status-pill good">Your plan</span>
           ) : (
             <button
@@ -67,7 +100,7 @@ export function PlanPicker() {
                 setBusy(true);
                 setError('');
                 try {
-                  await Parse.Cloud.run('changePlan', { plan });
+                  await Parse.Cloud.run('changePlan', { plan: plan.key });
                   await refresh();
                 } catch (e) {
                   setError(e instanceof Error ? e.message : 'Could not change the plan');
@@ -76,14 +109,15 @@ export function PlanPicker() {
                 }
               }}
             >
-              Switch to {PLAN_INFO[plan].label}
+              Switch to {plan.name}
             </button>
           )}
         </article>
       ))}
       {error && <p className="form-error">{error}</p>}
       <p className="muted small">
-        A negotiated price stays as agreed. The new plan's price applies from your next payment.
+        A negotiated price stays as agreed. The new plan&apos;s price applies from your next
+        payment.
       </p>
     </div>
   );

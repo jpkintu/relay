@@ -150,19 +150,19 @@ Parse.Cloud.define('getBilling', async (request) => {
 // from the next payment.
 Parse.Cloud.define('changePlan', async (request) => {
   const { user: actor } = await requireRole(request, ['admin']);
-  const plan = request.params?.plan;
   const limits = require('./lib/limits');
-  if (!limits.PLANS[plan]) throw invalid('Choose Basic or Enterprise');
+  const { values: platform } = await platformSettings();
+  const target = platform.plans.find((plan) => plan.active && plan.key === request.params?.plan);
+  if (!target) throw invalid('Choose one of the plans on offer');
   const row = await restaurantRow();
-  const before = limits.planOf(row);
-  if (before === plan) throw invalid(`You are on ${limits.PLANS[plan].label} already`);
-  if (plan === 'basic') {
-    const problems = await limits.overLimits('basic');
-    if (problems.length) throw invalid(`Basic allows less than you have: ${problems.join(', ')}`);
-  }
-  row.set('plan', plan);
+  const before = (await limits.currentPlan())?.key || '';
+  if (before === target.key) throw invalid(`You are on ${target.name} already`);
+  const problems = await limits.overLimits(target);
+  if (problems.length)
+    throw invalid(`${target.name} allows less than you have: ${problems.join(', ')}`);
+  row.set('plan', target.key);
   await tenancy.withoutTenant(() => row.save(null, MASTER));
-  await audit(actor, 'subscription.plan_changed', row, { plan: before }, { plan });
+  await audit(actor, 'subscription.plan_changed', row, { plan: before }, { plan: target.key });
   return billingState();
 });
 

@@ -69,24 +69,33 @@ forget it:
   optionally `IOTEC_ENV=sandbox` (test currency `ITX`) and `IOTEC_API_URL` /
   `IOTEC_AUTH_URL` if ioTec's addresses differ.
 
-## Plans (Basic and Enterprise)
+## Plans
 
-Each restaurant is on a plan (`Restaurant.plan`, `cloud/lib/limits.js`):
+Plans are set by platform staff in the console (Plans), stored in the `Plan`
+class (Relay's own, not any restaurant's; `cloud/lib/plans.js`). Each has a
+price a month, limits (branches, cashiers, riders, finance staff; empty = no
+limit) and the parts of the app it includes (several branches, finance role,
+purchases/expenses/accounting, reports & analytics, EFRIS, WhatsApp
+summaries). Staff can create new plans and change any plan; a change applies
+to its restaurants at once. A plan is never deleted: taken off offer, it is
+no longer offered at sign-up or when owners change plan, and its restaurants
+stay on it.
 
-| Plan       | Price a month (platform settings) | Limits                                                                                                                    |
-| ---------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Basic      | 100,000 (`monthlyPrice`)          | 1 branch, 2 cashiers, 5 riders; no finance role, purchases/expenses, accounting or Reports analytics (the Z-report stays) |
-| Enterprise | 200,000 (`enterprisePrice`)       | none                                                                                                                      |
+The first time plans are needed, two are made (owner's decision 2026-09-30):
 
-- A new restaurant chooses its plan at sign-up (Basic by default). The owner
-  switches under Subscription → Plans (`changePlan`): up at any time; down to
-  Basic only when within Basic's limits. The platform console sets any plan.
-- A negotiated price (`priceOverride`, platform console) wins over the plan's
-  price.
+| Plan       | Price a month | Limits and parts                                                                                  |
+| ---------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| Basic      | 100,000       | 1 branch, 2 cashiers, 5 riders, no finance; no purchases/expenses/accounting or Reports analytics |
+| Enterprise | 200,000       | no limits, everything                                                                             |
+
+- A restaurant chooses a plan at sign-up (the first on offer by default) and
+  the owner switches under Subscription → Plans (`changePlan`; to a smaller
+  plan only within its limits). The console can put a restaurant on any plan.
+- A negotiated price (`priceOverride`) wins over the plan's price.
 - Limits are checked when something is added (a branch, a member, a role
   change, a member switched back on); nothing a restaurant has is taken away.
-  The Enterprise-only parts are refused on the server
-  (`lib/limits.js` → `features()`), and hidden in the app.
+  Parts left out are refused on the server (`lib/limits.js` → `features()`)
+  and hidden in the app.
 
 ## Lessons carried over from Embiro BI
 

@@ -9,6 +9,8 @@ const GOOGLE_SIGN_IN = import.meta.env.VITE_ENABLE_GOOGLE_SIGNIN === 'true';
 import { useSession } from '../lib/session';
 import { AuthSide } from './AuthSide';
 import { BrandMark } from './BrandMark';
+import { planPoints, useOfferedPlans } from './Subscription';
+import { formatMoney } from '../lib/format';
 import { RelayMark } from './RelayMark';
 import { useImageReady } from '../lib/imageReady';
 import { normaliseCode, rememberRestaurant, signInName } from '../lib/restaurant';
@@ -272,8 +274,9 @@ function SignUp({
     phone: '',
     username: '',
     pin: '',
-    plan: 'basic',
+    plan: '',
   });
+  const offered = useOfferedPlans();
   const [codeEdited, setCodeEdited] = useState(false);
   const [codeState, setCodeState] = useState<{ code: string; free: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -387,18 +390,22 @@ function SignUp({
             required
           />
         </label>
-        <label>
-          Plan
-          <select
-            value={form.plan}
-            onChange={(e) => setForm((f) => ({ ...f, plan: e.target.value }))}
-          >
-            <option value="basic">Basic: 1 branch, 2 cashiers, 5 riders</option>
-            <option value="enterprise">
-              Enterprise: branches, finance, accounting and reports
-            </option>
-          </select>
-        </label>
+        {offered && offered.plans.length > 1 && (
+          <label>
+            Plan
+            <select
+              value={form.plan || offered.plans[0].key}
+              onChange={(e) => setForm((f) => ({ ...f, plan: e.target.value }))}
+            >
+              {offered.plans.map((plan) => (
+                <option key={plan.key} value={plan.key}>
+                  {plan.name}: {formatMoney(plan.price, offered.currency)} a month ·{' '}
+                  {planPoints(plan).slice(0, 3).join(', ')}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <p className="field-hint">
           You can change the plan later under your subscription. By creating a restaurant you accept{' '}
           <a href="/terms" target="_blank" rel="noreferrer">

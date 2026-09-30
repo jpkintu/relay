@@ -37,6 +37,8 @@ async function platformSettings() {
     const value = row?.get(key);
     if (value !== undefined && value !== null && value !== '') values[key] = value;
   }
+  // The plans (lib/plans.js), for prices and limits.
+  values.plans = await require('./lib/plans').loadPlans(values);
   return { row, values };
 }
 
@@ -51,12 +53,12 @@ async function cachedPlatform() {
 
 // What a restaurant pays each month: its own (negotiated) price when you set
 // one, else its plan's price.
+const planOfRow = (row, platform) =>
+  require('./lib/plans').planFor(platform.plans || [], row.get('plan') || '');
 const priceOf = (row, platform) => {
   const own = row.get('priceOverride');
   if (typeof own === 'number' && own >= 0) return own;
-  return require('./lib/limits').planOf(row) === 'enterprise'
-    ? Number(platform.enterprisePrice) || 0
-    : Number(platform.monthlyPrice) || 0;
+  return planOfRow(row, platform).price;
 };
 
 // Functions an expired or suspended restaurant can still use: sign-in
@@ -72,6 +74,9 @@ const OPEN_WHEN_CLOSED = new Set([
   'getBilling',
   'startSubscriptionPayment',
   'checkSubscriptionPayment',
+  // Choosing a plan (restaurants.js, billing.js).
+  'getPlans',
+  'changePlan',
 ]);
 
 // Called for every Cloud function run for a restaurant (errors.js). Access
@@ -185,8 +190,11 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     ownerName,
     billingPhone: phone,
     priceOverride: null,
-    // The plan chosen at sign-up (Basic unless Enterprise is asked for).
-    plan: p.plan === 'enterprise' ? 'enterprise' : 'basic',
+    // The plan chosen at sign-up (one offered), else the first offered.
+    plan: (
+      platform.plans.find((x) => x.active && x.key === p.plan) ||
+      platform.plans.find((x) => x.active) || { key: '' }
+    ).key,
   });
   restaurant.setACL(new Parse.ACL());
   await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
@@ -248,11 +256,8 @@ function summarise(row, platform) {
     trialEndsAt: row.get('trialEndsAt')?.toISOString() || null,
     paidUntil: row.get('paidUntil')?.toISOString() || null,
     monthlyPrice: priceOf(row, platform),
-    plan: require('./lib/limits').planOf(row),
-    planPrices: {
-      basic: Number(platform.monthlyPrice) || 0,
-      enterprise: Number(platform.enterprisePrice) || 0,
-    },
+    plan: planOfRow(row, platform).key,
+    planName: planOfRow(row, platform).name,
     currency: platform.currency,
     graceDays: Number(platform.graceDays) || 0,
     supportContact: platform.supportContact || '',
@@ -426,7 +431,8 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
   // The platform may put a restaurant on any plan (over the limits too: what
   // it has is kept, only additions are checked).
   if ('plan' in p) {
-    if (!['basic', 'enterprise'].includes(p.plan)) throw invalid('Plan: basic or enterprise');
+    const { values: platform } = await platformSettings();
+    if (!platform.plans.some((x) => x.key === p.plan)) throw invalid('Unknown plan');
     row.set('plan', p.plan);
   }
   if ('priceOverride' in p) {
@@ -506,22 +512,16 @@ Parse.Cloud.define('platformResetOwner', async (request) => {
   return { username: result.owner.getUsername(), password: result.password };
 });
 
-// Platform: the flat price, currency, trial and grace days and the support
-// contact restaurants see.
+// Platform: the currency, trial and grace days and the support contact
+// restaurants see (prices are on the plans).
 Parse.Cloud.define('platformSaveSettings', async (request) => {
   const actor = await requirePlatform(request);
   const p = request.params || {};
-  const monthlyPrice = Number(p.monthlyPrice);
-  const enterprisePrice = Number(p.enterprisePrice ?? DEFAULT_PLATFORM.enterprisePrice);
   const trialDays = Number(p.trialDays);
   const graceDays = Number(p.graceDays);
   const currency = String(p.currency || '')
     .trim()
     .toUpperCase();
-  if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 100000000)
-    throw invalid('Monthly price: a number from 0 up');
-  if (!Number.isFinite(enterprisePrice) || enterprisePrice < 0 || enterprisePrice > 100000000)
-    throw invalid('Enterprise price: a number from 0 up');
   if (!/^[A-Z]{3}$/.test(currency)) throw invalid('Currency: a 3-letter code such as UGX');
   if (!Number.isInteger(trialDays) || trialDays < 0 || trialDays > 365)
     throw invalid('Trial days: 0 to 365');
@@ -530,9 +530,8 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
   const { row: existing, values: before } = await platformSettings();
   const row = existing || new Parse.Object('PlatformSettings');
   if (!existing) row.setACL(new Parse.ACL());
+  // Prices belong to the plans (platformSavePlan).
   row.set({
-    monthlyPrice: Math.round(monthlyPrice),
-    enterprisePrice: Math.round(enterprisePrice),
     currency,
     trialDays,
     graceDays,
@@ -545,6 +544,127 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
   const { values } = await platformSettings();
   await tenancy.withoutTenant(() => audit(actor, 'platform.settings_saved', row, before, values));
   return values;
+});
+
+// ---------------------------------------------------------------------------
+// Plans (lib/plans.js)
+
+// Anyone (the sign-up form) and owners (Subscription → Plans): the plans on
+// offer, with their prices, limits and parts of the app.
+Parse.Cloud.define('getPlans', async () => {
+  const { values: platform } = await platformSettings();
+  return {
+    currency: platform.currency,
+    plans: platform.plans
+      .filter((plan) => plan.active)
+      .map(({ key, name, description, price, limits, features }) => ({
+        key,
+        name,
+        description,
+        price,
+        limits,
+        features,
+      })),
+  };
+});
+
+// Platform: every plan with how many restaurants are on it.
+Parse.Cloud.define('platformListPlans', async (request) => {
+  await requirePlatform(request);
+  const { values: platform } = await platformSettings();
+  const restaurants = await tenancy.withoutTenant(() =>
+    new Parse.Query('Restaurant').select('plan').findAll({ ...MASTER, batchSize: 500 }),
+  );
+  const planFor = require('./lib/plans').planFor;
+  const counts = {};
+  for (const row of restaurants) {
+    const key = planFor(platform.plans, row.get('plan') || '').key;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  const { FEATURES, LIMITS } = require('./lib/plans');
+  return {
+    currency: platform.currency,
+    features: FEATURES,
+    limits: LIMITS,
+    plans: platform.plans.map((plan) => ({ ...plan, restaurants: counts[plan.key] || 0 })),
+  };
+});
+
+// Platform: add or change a plan. { id?, name, description, price,
+// limits: { branches, cashier, rider, finance } (null = no limit),
+// features: { branches, finance, … }, active, sortOrder? }. A plan is never
+// deleted; one taken off offer keeps its restaurants.
+Parse.Cloud.define('platformSavePlan', async (request) => {
+  const actor = await requirePlatform(request);
+  const p = request.params || {};
+  const plans = require('./lib/plans');
+  const name = String(p.name || '')
+    .trim()
+    .slice(0, 40);
+  if (name.length < 2) throw invalid('Give the plan a name');
+  const price = Number(p.price);
+  if (!Number.isFinite(price) || price < 0 || price > 100000000)
+    throw invalid('Price: a number from 0 up');
+  const limits = {};
+  for (const key of plans.LIMITS) {
+    const value = p.limits?.[key];
+    if (value === null || value === undefined || value === '') limits[key] = null;
+    else {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 0 || n > 10000)
+        throw invalid(`${key} limit: a whole number from 0, or empty for no limit`);
+      limits[key] = n;
+    }
+  }
+  if (limits.branches === 0) throw invalid('A plan needs at least 1 branch');
+  const features = Object.fromEntries(
+    plans.FEATURES.map((key) => [key, p.features?.[key] === true]),
+  );
+  const rows = await tenancy.withoutTenant(() => new Parse.Query('Plan').limit(200).find(MASTER));
+  if (rows.some((row) => row.id !== p.id && row.get('name').toLowerCase() === name.toLowerCase()))
+    throw invalid(`There is already a plan called "${name}"`);
+  let row = p.id ? rows.find((r) => r.id === p.id) : null;
+  if (p.id && !row) throw invalid('Unknown plan');
+  const before = row ? plans.view(row) : null;
+  if (!row) {
+    row = new Parse.Object('Plan');
+    let key =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 30) || 'plan';
+    while (rows.some((r) => r.get('key') === key)) key = `${key}-2`;
+    row.set({ key, sortOrder: rows.length });
+    row.setACL(new Parse.ACL());
+  }
+  const active = p.active === undefined ? row.get('active') !== false : p.active === true;
+  if (!active && !rows.some((r) => r.id !== row.id && r.get('active') !== false))
+    throw invalid('Keep at least one plan on offer');
+  row.set({
+    name,
+    description: String(p.description || '')
+      .trim()
+      .slice(0, 160),
+    price: Math.round(price),
+    limits,
+    features,
+    active,
+    ...(p.sortOrder !== undefined && { sortOrder: Math.round(Number(p.sortOrder) || 0) }),
+  });
+  await tenancy.withoutTenant(() => row.save(null, MASTER));
+  plans.clearPlans();
+  cachedSettings = null;
+  await tenancy.withoutTenant(() =>
+    audit(
+      actor,
+      before ? 'platform.plan_updated' : 'platform.plan_created',
+      row,
+      before,
+      plans.view(row),
+    ),
+  );
+  return plans.view(row);
 });
 
 // Platform: recent changes made in the console. → { rows }

@@ -714,80 +714,99 @@ var require_access = __commonJS({
   }
 });
 
-// cloud/lib/limits.js
-var require_limits = __commonJS({
-  "cloud/lib/limits.js"(exports2, module2) {
+// cloud/lib/plans.js
+var require_plans = __commonJS({
+  "cloud/lib/plans.js"(exports2, module2) {
     "use strict";
-    var PLANS = {
-      basic: {
-        label: "Basic",
-        branches: 1,
-        members: { cashier: 2, rider: 5, finance: 0 },
-        features: { branches: false, finance: false, accounting: false, reports: false }
-      },
-      enterprise: {
-        label: "Enterprise",
-        branches: Infinity,
-        members: {},
-        features: { branches: true, finance: true, accounting: true, reports: true }
-      }
-    };
     var MASTER = { useMasterKey: true };
-    var planOf = (row) => row?.get("plan") === "enterprise" ? "enterprise" : "basic";
-    async function currentRow() {
-      const tenancy = require_tenant();
-      const tenant = tenancy.current();
-      if (!tenant) return null;
-      return tenancy.withoutTenant(
-        () => new Parse.Query("Restaurant").get(tenant, MASTER).catch(() => null)
-      );
-    }
-    async function currentPlan() {
-      const row = await currentRow();
-      return row ? PLANS[planOf(row)] : PLANS.enterprise;
-    }
-    var refuse = (message) => new Parse.Error(
-      Parse.Error.OPERATION_FORBIDDEN,
-      `${message} Upgrade to Enterprise in Subscription to add more.`
-    );
-    async function checkBranchLimit(count) {
-      const plan = await currentPlan();
-      if (count > plan.branches)
-        throw refuse(
-          `The ${plan.label} plan has ${plan.branches} branch${plan.branches === 1 ? "" : "es"}.`
-        );
-    }
-    async function activeMembers(role) {
-      const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
-      if (!roleRow) return 0;
-      const users = roleRow.getUsers().query();
-      users.notEqualTo("active", false);
-      return users.count(MASTER);
-    }
-    async function checkMemberLimit(role) {
-      const plan = await currentPlan();
-      const max = plan.members[role];
-      if (max === void 0) return;
-      if (max === 0) throw refuse(`The ${plan.label} plan has no ${role} role.`);
-      if (await activeMembers(role) >= max)
-        throw refuse(`The ${plan.label} plan allows ${max} ${role}s.`);
-    }
-    async function features() {
-      return { ...(await currentPlan()).features };
-    }
-    async function overLimits(plan) {
-      const target = PLANS[plan];
-      const problems = [];
-      const branches = await new Parse.Query("Branch").notEqualTo("active", false).count(MASTER);
-      if (branches > target.branches)
-        problems.push(`${branches} open branches (${target.branches} allowed)`);
-      for (const [role, max] of Object.entries(target.members)) {
-        const count = await activeMembers(role);
-        if (count > max) problems.push(`${count} active ${role}s (${max} allowed)`);
+    var FEATURES = ["branches", "finance", "accounting", "reports", "efris", "whatsapp"];
+    var LIMITS = ["branches", "cashier", "rider", "finance"];
+    var DEFAULTS = [
+      {
+        key: "basic",
+        name: "Basic",
+        description: "One outlet: orders, kitchen, cash and the Z-report",
+        priceField: "monthlyPrice",
+        limits: { branches: 1, cashier: 2, rider: 5, finance: 0 },
+        features: {
+          branches: false,
+          finance: false,
+          accounting: false,
+          reports: false,
+          efris: true,
+          whatsapp: true
+        }
+      },
+      {
+        key: "enterprise",
+        name: "Enterprise",
+        description: "Branches, finance, accounting and reports, no limits",
+        priceField: "enterprisePrice",
+        limits: { branches: null, cashier: null, rider: null, finance: null },
+        features: Object.fromEntries(FEATURES.map((f) => [f, true]))
       }
-      return problems;
+    ];
+    var withoutTenant = (fn) => require_tenant().withoutTenant(fn);
+    function view(row) {
+      const limits = row.get("limits") || {};
+      const features = row.get("features") || {};
+      return {
+        id: row.id,
+        key: row.get("key"),
+        name: row.get("name"),
+        description: row.get("description") || "",
+        price: Number(row.get("price") || 0),
+        active: row.get("active") !== false,
+        sortOrder: Number(row.get("sortOrder") || 0),
+        limits: Object.fromEntries(
+          LIMITS.map((k) => [k, typeof limits[k] === "number" && limits[k] >= 0 ? limits[k] : null])
+        ),
+        features: Object.fromEntries(FEATURES.map((f) => [f, features[f] !== false]))
+      };
     }
-    module2.exports = { PLANS, planOf, checkBranchLimit, checkMemberLimit, features, overLimits };
+    async function seed(platform) {
+      const rows = DEFAULTS.map((plan, index) => {
+        const row = new Parse.Object("Plan");
+        row.set({
+          key: plan.key,
+          name: plan.name,
+          description: plan.description,
+          price: Math.round(Number(platform[plan.priceField]) || 0),
+          limits: plan.limits,
+          features: plan.features,
+          active: true,
+          sortOrder: index
+        });
+        row.setACL(new Parse.ACL());
+        return row;
+      });
+      await withoutTenant(() => Parse.Object.saveAll(rows, MASTER));
+      return rows;
+    }
+    var cache = null;
+    async function loadPlans(platform, { fresh = false } = {}) {
+      if (!fresh && cache && Date.now() - cache.at < 3e4) return cache.plans;
+      let rows = await withoutTenant(() => new Parse.Query("Plan").limit(200).find(MASTER));
+      if (!rows.length) {
+        const { claimOnce } = require_core();
+        if (await withoutTenant(() => claimOnce("platform:plans:seed"))) rows = await seed(platform);
+        else
+          for (let i = 0; i < 50 && !rows.length; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            rows = await withoutTenant(() => new Parse.Query("Plan").limit(200).find(MASTER));
+          }
+      }
+      const plans = rows.map(view).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+      cache = { plans, at: Date.now() };
+      return plans;
+    }
+    var clearPlans = () => {
+      cache = null;
+    };
+    function planFor(plans, key) {
+      return plans.find((plan) => plan.key === key) || plans.find((plan) => plan.active) || plans[0] || { key: "none", name: "None", price: 0, limits: {}, features: {} };
+    }
+    module2.exports = { FEATURES, LIMITS, loadPlans, clearPlans, planFor, view };
   }
 });
 
@@ -976,6 +995,83 @@ var require_accompaniments = __commonJS({
       return "";
     }
     module2.exports = { normalizeGroups, availableGroups, selectionError };
+  }
+});
+
+// cloud/lib/limits.js
+var require_limits = __commonJS({
+  "cloud/lib/limits.js"(exports2, module2) {
+    "use strict";
+    var { loadPlans, planFor } = require_plans();
+    var MASTER = { useMasterKey: true };
+    var ALL = {
+      branches: true,
+      finance: true,
+      accounting: true,
+      reports: true,
+      efris: true,
+      whatsapp: true
+    };
+    var planOf = (row) => row?.get("plan") || "";
+    async function platformValues() {
+      return (await require_restaurants().platformSettings()).values;
+    }
+    async function currentPlan() {
+      const tenancy = require_tenant();
+      const tenant = tenancy.current();
+      if (!tenant) return null;
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(tenant, MASTER).catch(() => null)
+      );
+      if (!row) return null;
+      return planFor(await loadPlans(await platformValues()), planOf(row));
+    }
+    var refuse = (message) => new Parse.Error(
+      Parse.Error.OPERATION_FORBIDDEN,
+      `${message} Move to a bigger plan in Subscription \u2192 Plans to add more.`
+    );
+    var plural = (n, word) => `${n} ${word}${n === 1 ? "" : word.endsWith("h") ? "es" : "s"}`;
+    async function checkBranchLimit(count) {
+      const plan = await currentPlan();
+      const max = plan?.limits.branches;
+      if (typeof max === "number" && count > max)
+        throw refuse(`The ${plan.name} plan has ${plural(max, "branch")}.`);
+    }
+    async function activeMembers(role) {
+      const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
+      if (!roleRow) return 0;
+      const users = roleRow.getUsers().query();
+      users.notEqualTo("active", false);
+      return users.count(MASTER);
+    }
+    async function checkMemberLimit(role) {
+      const plan = await currentPlan();
+      const max = plan?.limits[role];
+      if (typeof max !== "number") return;
+      if (max === 0) throw refuse(`The ${plan.name} plan has no ${role} role.`);
+      if (await activeMembers(role) >= max)
+        throw refuse(`The ${plan.name} plan allows ${plural(max, role)}.`);
+    }
+    async function features() {
+      const plan = await currentPlan();
+      return plan ? { ...ALL, ...plan.features } : { ...ALL };
+    }
+    async function overLimits(plan) {
+      const problems = [];
+      const max = plan.limits.branches;
+      if (typeof max === "number") {
+        const branches = await new Parse.Query("Branch").notEqualTo("active", false).count(MASTER);
+        if (branches > max) problems.push(`${branches} open branches (${max} allowed)`);
+      }
+      for (const role of ["cashier", "rider", "finance"]) {
+        const limit = plan.limits[role];
+        if (typeof limit !== "number") continue;
+        const count = await activeMembers(role);
+        if (count > limit) problems.push(`${count} active ${role}s (${limit} allowed)`);
+      }
+      return problems;
+    }
+    module2.exports = { planOf, currentPlan, checkBranchLimit, checkMemberLimit, features, overLimits };
   }
 });
 
@@ -1210,7 +1306,8 @@ var require_security = __commonJS({
       // Relay Hosted.
       "Restaurant",
       "PlatformSettings",
-      "SubscriptionPayment"
+      "SubscriptionPayment",
+      "Plan"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -1223,7 +1320,8 @@ var require_security = __commonJS({
       "AdminUnlock",
       "Restaurant",
       "PlatformSettings",
-      "SubscriptionPayment"
+      "SubscriptionPayment",
+      "Plan"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -1655,8 +1753,20 @@ var require_security = __commonJS({
         paidAt: D,
         recordedBy: user
       },
+      // Relay Hosted plans (lib/plans.js).
+      Plan: {
+        key: S,
+        name: S,
+        description: S,
+        price: N,
+        limits: "Object",
+        features: "Object",
+        active: B,
+        sortOrder: N
+      },
       PlatformSettings: {
         monthlyPrice: N,
+        enterprisePrice: N,
         currency: S,
         trialDays: N,
         graceDays: N,
@@ -2713,6 +2823,7 @@ var require_restaurants = __commonJS({
         const value = row?.get(key);
         if (value !== void 0 && value !== null && value !== "") values[key] = value;
       }
+      values.plans = await require_plans().loadPlans(values);
       return { row, values };
     }
     var cachedSettings = null;
@@ -2722,10 +2833,11 @@ var require_restaurants = __commonJS({
       cachedSettings = { values, at: Date.now() };
       return values;
     }
+    var planOfRow = (row, platform) => require_plans().planFor(platform.plans || [], row.get("plan") || "");
     var priceOf = (row, platform) => {
       const own = row.get("priceOverride");
       if (typeof own === "number" && own >= 0) return own;
-      return require_limits().planOf(row) === "enterprise" ? Number(platform.enterprisePrice) || 0 : Number(platform.monthlyPrice) || 0;
+      return planOfRow(row, platform).price;
     };
     var OPEN_WHEN_CLOSED = /* @__PURE__ */ new Set([
       "getAppInfo",
@@ -2736,7 +2848,10 @@ var require_restaurants = __commonJS({
       // Paying the subscription (billing.js).
       "getBilling",
       "startSubscriptionPayment",
-      "checkSubscriptionPayment"
+      "checkSubscriptionPayment",
+      // Choosing a plan (restaurants.js, billing.js).
+      "getPlans",
+      "changePlan"
     ]);
     async function checkAccess(name, restaurant) {
       if (OPEN_WHEN_CLOSED.has(name)) return;
@@ -2811,8 +2926,8 @@ var require_restaurants = __commonJS({
         ownerName,
         billingPhone: phone,
         priceOverride: null,
-        // The plan chosen at sign-up (Basic unless Enterprise is asked for).
-        plan: p.plan === "enterprise" ? "enterprise" : "basic"
+        // The plan chosen at sign-up (one offered), else the first offered.
+        plan: (platform.plans.find((x) => x.active && x.key === p.plan) || platform.plans.find((x) => x.active) || { key: "" }).key
       });
       restaurant.setACL(new Parse.ACL());
       await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
@@ -2870,11 +2985,8 @@ var require_restaurants = __commonJS({
         trialEndsAt: row.get("trialEndsAt")?.toISOString() || null,
         paidUntil: row.get("paidUntil")?.toISOString() || null,
         monthlyPrice: priceOf(row, platform),
-        plan: require_limits().planOf(row),
-        planPrices: {
-          basic: Number(platform.monthlyPrice) || 0,
-          enterprise: Number(platform.enterprisePrice) || 0
-        },
+        plan: planOfRow(row, platform).key,
+        planName: planOfRow(row, platform).name,
         currency: platform.currency,
         graceDays: Number(platform.graceDays) || 0,
         supportContact: platform.supportContact || ""
@@ -3014,7 +3126,8 @@ var require_restaurants = __commonJS({
       const fields = ["plan", "priceOverride", "trialEndsAt", "paidUntil", "suspended", "note"];
       const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
       if ("plan" in p) {
-        if (!["basic", "enterprise"].includes(p.plan)) throw invalid("Plan: basic or enterprise");
+        const { values: platform2 } = await platformSettings();
+        if (!platform2.plans.some((x) => x.key === p.plan)) throw invalid("Unknown plan");
         row.set("plan", p.plan);
       }
       if ("priceOverride" in p) {
@@ -3083,15 +3196,9 @@ var require_restaurants = __commonJS({
     Parse.Cloud.define("platformSaveSettings", async (request) => {
       const actor = await requirePlatform(request);
       const p = request.params || {};
-      const monthlyPrice = Number(p.monthlyPrice);
-      const enterprisePrice = Number(p.enterprisePrice ?? DEFAULT_PLATFORM.enterprisePrice);
       const trialDays = Number(p.trialDays);
       const graceDays = Number(p.graceDays);
       const currency = String(p.currency || "").trim().toUpperCase();
-      if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 1e8)
-        throw invalid("Monthly price: a number from 0 up");
-      if (!Number.isFinite(enterprisePrice) || enterprisePrice < 0 || enterprisePrice > 1e8)
-        throw invalid("Enterprise price: a number from 0 up");
       if (!/^[A-Z]{3}$/.test(currency)) throw invalid("Currency: a 3-letter code such as UGX");
       if (!Number.isInteger(trialDays) || trialDays < 0 || trialDays > 365)
         throw invalid("Trial days: 0 to 365");
@@ -3101,8 +3208,6 @@ var require_restaurants = __commonJS({
       const row = existing || new Parse.Object("PlatformSettings");
       if (!existing) row.setACL(new Parse.ACL());
       row.set({
-        monthlyPrice: Math.round(monthlyPrice),
-        enterprisePrice: Math.round(enterprisePrice),
         currency,
         trialDays,
         graceDays,
@@ -3113,6 +3218,103 @@ var require_restaurants = __commonJS({
       const { values } = await platformSettings();
       await tenancy.withoutTenant(() => audit(actor, "platform.settings_saved", row, before, values));
       return values;
+    });
+    Parse.Cloud.define("getPlans", async () => {
+      const { values: platform } = await platformSettings();
+      return {
+        currency: platform.currency,
+        plans: platform.plans.filter((plan) => plan.active).map(({ key, name, description, price, limits, features }) => ({
+          key,
+          name,
+          description,
+          price,
+          limits,
+          features
+        }))
+      };
+    });
+    Parse.Cloud.define("platformListPlans", async (request) => {
+      await requirePlatform(request);
+      const { values: platform } = await platformSettings();
+      const restaurants = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").select("plan").findAll({ ...MASTER, batchSize: 500 })
+      );
+      const planFor = require_plans().planFor;
+      const counts = {};
+      for (const row of restaurants) {
+        const key = planFor(platform.plans, row.get("plan") || "").key;
+        counts[key] = (counts[key] || 0) + 1;
+      }
+      const { FEATURES, LIMITS } = require_plans();
+      return {
+        currency: platform.currency,
+        features: FEATURES,
+        limits: LIMITS,
+        plans: platform.plans.map((plan) => ({ ...plan, restaurants: counts[plan.key] || 0 }))
+      };
+    });
+    Parse.Cloud.define("platformSavePlan", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const plans = require_plans();
+      const name = String(p.name || "").trim().slice(0, 40);
+      if (name.length < 2) throw invalid("Give the plan a name");
+      const price = Number(p.price);
+      if (!Number.isFinite(price) || price < 0 || price > 1e8)
+        throw invalid("Price: a number from 0 up");
+      const limits = {};
+      for (const key of plans.LIMITS) {
+        const value = p.limits?.[key];
+        if (value === null || value === void 0 || value === "") limits[key] = null;
+        else {
+          const n = Number(value);
+          if (!Number.isInteger(n) || n < 0 || n > 1e4)
+            throw invalid(`${key} limit: a whole number from 0, or empty for no limit`);
+          limits[key] = n;
+        }
+      }
+      if (limits.branches === 0) throw invalid("A plan needs at least 1 branch");
+      const features = Object.fromEntries(
+        plans.FEATURES.map((key) => [key, p.features?.[key] === true])
+      );
+      const rows = await tenancy.withoutTenant(() => new Parse.Query("Plan").limit(200).find(MASTER));
+      if (rows.some((row2) => row2.id !== p.id && row2.get("name").toLowerCase() === name.toLowerCase()))
+        throw invalid(`There is already a plan called "${name}"`);
+      let row = p.id ? rows.find((r) => r.id === p.id) : null;
+      if (p.id && !row) throw invalid("Unknown plan");
+      const before = row ? plans.view(row) : null;
+      if (!row) {
+        row = new Parse.Object("Plan");
+        let key = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "plan";
+        while (rows.some((r) => r.get("key") === key)) key = `${key}-2`;
+        row.set({ key, sortOrder: rows.length });
+        row.setACL(new Parse.ACL());
+      }
+      const active = p.active === void 0 ? row.get("active") !== false : p.active === true;
+      if (!active && !rows.some((r) => r.id !== row.id && r.get("active") !== false))
+        throw invalid("Keep at least one plan on offer");
+      row.set({
+        name,
+        description: String(p.description || "").trim().slice(0, 160),
+        price: Math.round(price),
+        limits,
+        features,
+        active,
+        ...p.sortOrder !== void 0 && { sortOrder: Math.round(Number(p.sortOrder) || 0) }
+      });
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      plans.clearPlans();
+      cachedSettings = null;
+      await tenancy.withoutTenant(
+        () => audit(
+          actor,
+          before ? "platform.plan_updated" : "platform.plan_created",
+          row,
+          before,
+          plans.view(row)
+        )
+      );
+      return plans.view(row);
     });
     Parse.Cloud.define("platformGetAudit", async (request) => {
       await requirePlatform(request);
@@ -33594,19 +33796,19 @@ var require_billing = __commonJS({
     });
     Parse.Cloud.define("changePlan", async (request) => {
       const { user: actor } = await requireRole(request, ["admin"]);
-      const plan = request.params?.plan;
       const limits = require_limits();
-      if (!limits.PLANS[plan]) throw invalid("Choose Basic or Enterprise");
+      const { values: platform } = await platformSettings();
+      const target = platform.plans.find((plan) => plan.active && plan.key === request.params?.plan);
+      if (!target) throw invalid("Choose one of the plans on offer");
       const row = await restaurantRow();
-      const before = limits.planOf(row);
-      if (before === plan) throw invalid(`You are on ${limits.PLANS[plan].label} already`);
-      if (plan === "basic") {
-        const problems = await limits.overLimits("basic");
-        if (problems.length) throw invalid(`Basic allows less than you have: ${problems.join(", ")}`);
-      }
-      row.set("plan", plan);
+      const before = (await limits.currentPlan())?.key || "";
+      if (before === target.key) throw invalid(`You are on ${target.name} already`);
+      const problems = await limits.overLimits(target);
+      if (problems.length)
+        throw invalid(`${target.name} allows less than you have: ${problems.join(", ")}`);
+      row.set("plan", target.key);
       await tenancy.withoutTenant(() => row.save(null, MASTER));
-      await audit(actor, "subscription.plan_changed", row, { plan: before }, { plan });
+      await audit(actor, "subscription.plan_changed", row, { plan: before }, { plan: target.key });
       return billingState();
     });
     Parse.Cloud.define("startSubscriptionPayment", async (request) => {
@@ -37527,7 +37729,9 @@ var require_profile = __commonJS({
       };
     }
     var platformInfo = (platform) => ({
-      monthlyPrice: Number(platform.monthlyPrice) || 0,
+      // The lowest price on offer, and each plan's.
+      monthlyPrice: (platform.plans || []).some((plan) => plan.active) ? Math.min(...platform.plans.filter((plan) => plan.active).map((plan) => plan.price)) : Number(platform.monthlyPrice) || 0,
+      plans: (platform.plans || []).filter((plan) => plan.active).map((plan) => ({ name: plan.name, price: plan.price })),
       currency: platform.currency,
       graceDays: Number(platform.graceDays) || 0,
       supportContact: platform.supportContact || ""
