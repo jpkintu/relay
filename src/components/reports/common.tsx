@@ -87,6 +87,16 @@ export function useBranchOptions() {
   return wanted ? (data?.branches ?? []) : [];
 }
 
+// The open branches the owner can give team members: whenever the plan
+// includes branches, even while there is only the main one (getBranches
+// makes it on first use).
+export function useTeamBranches() {
+  const { profile, preview } = useSession();
+  const wanted = !preview && profile?.role === 'admin' && profile?.features?.branches !== false;
+  const { data } = useCloud<{ branches: BranchOption[] }>('getBranches', {}, wanted);
+  return wanted ? (data?.branches ?? []).filter((b) => b.active) : [];
+}
+
 export function BranchSelect({
   value,
   onChange,

@@ -4450,10 +4450,14 @@ describe('branches', () => {
     };
   };
 
-  test('opening Branches makes the main branch and puts everything in it', async () => {
+  test("the owner's first branch list makes the main branch and puts everything in it", async () => {
     const before = await new Parse.Query('Order').descending('createdAt').first(M);
     assert.equal(before.get('branch'), undefined);
     assert.equal((await run('getMyProfile', {}, s.owner)).branchCount, 0);
+    // Team → Create asks for the branches before Branches was ever opened.
+    const first = await run('getBranches', {}, s.owner);
+    assert.equal(first.branches.length, 1);
+    assert.equal(first.branches[0].main, true);
     const { branches } = await run('adminListBranches', {}, s.owner);
     assert.equal(branches.length, 1);
     main = branches[0];

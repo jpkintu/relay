@@ -9,7 +9,7 @@ import { MenuImport } from './MenuImport';
 import { useAdminRun } from '../lib/adminRun';
 import { useMoney, useSession, type LoginImage } from '../lib/session';
 import { ChangePin } from './Profile';
-import { useBranchOptions, type BranchOption } from './reports/common';
+import { useTeamBranches, type BranchOption } from './reports/common';
 import { PinSheet } from './MapPin';
 
 type Member = {
@@ -557,7 +557,8 @@ export function AdminSetup({
     [pin, setPin] = useState(''),
     [role, setRole] = useState('rider'),
     [memberBranch, setMemberBranch] = useState('');
-  const branches = useBranchOptions().filter((b) => b.active);
+  const teamBranches = useTeamBranches();
+  const mainName = teamBranches.find((b) => b.main)?.name || 'Main branch';
   const [itemBranches, setItemBranches] = useState<string[]>([]);
   const [itemTitle, setItemTitle] = useState(''),
     [itemPrice, setItemPrice] = useState(''),
@@ -671,12 +672,12 @@ export function AdminSetup({
                   </small>
                 )}
               </label>
-              {branches.length > 1 && role !== 'finance' && (
+              {teamBranches.length > 0 && role !== 'finance' && (
                 <label className="setup-field">
                   Branch
                   <select value={memberBranch} onChange={(e) => setMemberBranch(e.target.value)}>
-                    <option value="">Main branch</option>
-                    {branches
+                    <option value="">{mainName}</option>
+                    {teamBranches
                       .filter((b) => !b.main)
                       .map((b) => (
                         <option key={b.id} value={b.id}>
@@ -684,6 +685,9 @@ export function AdminSetup({
                         </option>
                       ))}
                   </select>
+                  {teamBranches.length === 1 && (
+                    <small className="muted">Add more branches in Admin → Branches.</small>
+                  )}
                 </label>
               )}
               <button disabled={busy || preview} className="setup-submit">
@@ -708,6 +712,7 @@ export function AdminSetup({
                     <tr>
                       <th>Name</th>
                       <th>Role</th>
+                      {teamBranches.length > 0 && <th>Branch</th>}
                       <th>Status</th>
                       <th className="num">Cash held</th>
                       <th>Page</th>
@@ -720,12 +725,16 @@ export function AdminSetup({
                           <b>{u.name}</b>
                           <small>
                             {u.code && `${u.code} · `}@{u.username}
-                            {branches.length > 1 &&
-                              u.branchId &&
-                              ` · ${branchLabel(branches, u.branchId)}`}
                           </small>
                         </td>
                         <td data-label="Role">{u.role === 'admin' ? 'Owner' : capital(u.role)}</td>
+                        {teamBranches.length > 0 && (
+                          <td data-label="Branch">
+                            {u.role === 'rider' || u.role === 'cashier'
+                              ? branchLabel(teamBranches, u.branchId || '') || mainName
+                              : 'All branches'}
+                          </td>
+                        )}
                         <td data-label="Status">
                           <span className="team-status">
                             {!u.active ? (
@@ -893,7 +902,7 @@ export function AdminSetup({
                     category: itemCategory,
                     description: itemDescription,
                     accompanimentGroups: itemGroups,
-                    ...(branches.length > 1 && { branchIds: itemBranches }),
+                    ...(teamBranches.length > 0 && { branchIds: itemBranches }),
                   },
                   () => {
                     setItemTitle('');
@@ -947,7 +956,7 @@ export function AdminSetup({
                   onError={setError}
                 />
               )}
-              {branches.length > 1 && (
+              {teamBranches.length > 0 && (
                 <fieldset className="setup-field full-row branch-offer">
                   <legend>Offered at</legend>
                   <label className="setup-checkbox">
@@ -958,7 +967,7 @@ export function AdminSetup({
                     />{' '}
                     Every branch
                   </label>
-                  {branches.map((b) => (
+                  {teamBranches.map((b) => (
                     <label className="setup-checkbox" key={b.id}>
                       <input
                         type="checkbox"
@@ -972,6 +981,12 @@ export function AdminSetup({
                       {b.name}
                     </label>
                   ))}
+                  {teamBranches.length === 1 && (
+                    <small className="muted">
+                      Add more branches in Admin → Branches, then choose where this dish is sold.
+                      Sell it out at one branch from the Stock tab.
+                    </small>
+                  )}
                 </fieldset>
               )}
               <GroupsEditor

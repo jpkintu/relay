@@ -1188,6 +1188,7 @@ var require_branches = __commonJS({
     });
     Parse.Cloud.define("getBranches", async (request) => {
       const { user, role } = await requireRole(request, ROLES);
+      if (role === "admin") await ensureMainBranch(user);
       const rows = await allBranches();
       if (["admin", "finance"].includes(role)) return { branches: rows.map((row) => view(row)) };
       const own = (await branchFor(user))?.id;
