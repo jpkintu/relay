@@ -3577,7 +3577,7 @@ var require_errors = __commonJS({
     });
     var restaurantOf = (row) => {
       const tenant = row.get("tenant");
-      return tenant ? { id: tenant.id, name: tenant.get("name") || "", code: tenant.get("code") || "" } : { id: "none", name: "Relay (no restaurant)", code: "" };
+      return tenant ? { id: tenant.id, name: tenant.get("name") || "", code: tenant.get("code") || "" } : { id: "none", name: "No restaurant (sign-in screen, platform console)", code: "" };
     };
     Parse.Cloud.define("platformListErrors", async (request) => {
       await require_restaurants().requirePlatform(request);
@@ -11539,7 +11539,7 @@ var require_push = __commonJS({
       const testId = `test-${Date.now()}`;
       const devices = await sendToSubscriptions(subs, () => ({
         id: testId,
-        title: "Relay test notification",
+        title: "Test notification",
         body: "Notifications work on this device.",
         link: "/",
         tone: "new",

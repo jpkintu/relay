@@ -206,6 +206,7 @@ export function AdminStart({
     </label>
   );
   const done = stepsDone(progress);
+  const named = !!settings.restaurantName && settings.restaurantName !== 'Restaurant';
   return (
     <div className="start-page">
       <div className="start-progress">
@@ -214,7 +215,7 @@ export function AdminStart({
             {done} of {STEP_COUNT} done.
           </b>{' '}
           {progress.complete
-            ? 'Relay is ready to take orders.'
+            ? `${named ? settings.restaurantName : 'Your restaurant'} is ready to take orders.`
             : 'Finish these and your team can start taking orders.'}
         </p>
         <div

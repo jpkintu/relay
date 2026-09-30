@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Download, Share, X } from 'lucide-react';
 import { useInstall } from '../lib/install';
+import { restaurantTitle, useConfig } from '../lib/session';
 
 const DISMISS_KEY = 'relay:install-dismissed';
 const DISMISS_DAYS = 14;
@@ -14,11 +15,12 @@ function dismissedRecently() {
   }
 }
 
-// Offers to put Relay on the home screen: it then opens full screen like an
+// Offers to put the app on the home screen: it then opens full screen like an
 // app, starts faster and keeps working through a weak signal. `button` is the
 // plain version for profile pages (always shown while installing is possible).
 export function InstallPrompt({ button = false }: { button?: boolean }) {
   const { state, install } = useInstall();
+  const name = restaurantTitle(useConfig().restaurantName);
   const [hidden, setHidden] = useState(dismissedRecently);
   const [iosHelp, setIosHelp] = useState(false);
   if (state === 'installed' || state === 'unavailable') return null;
@@ -28,7 +30,7 @@ export function InstallPrompt({ button = false }: { button?: boolean }) {
       <div className="install-inline">
         {state === 'available' ? (
           <button type="button" className="setup-secondary" onClick={() => void install()}>
-            <Download /> Install Relay on this device
+            <Download /> Install {name} on this device
           </button>
         ) : iosHelp ? (
           <p className="muted small">
@@ -37,7 +39,7 @@ export function InstallPrompt({ button = false }: { button?: boolean }) {
           </p>
         ) : (
           <button type="button" className="setup-secondary" onClick={() => setIosHelp(true)}>
-            <Download /> Add Relay to the Home Screen
+            <Download /> Add {name} to the Home Screen
           </button>
         )}
       </div>
@@ -57,7 +59,7 @@ export function InstallPrompt({ button = false }: { button?: boolean }) {
     <div className="push-prompt card install-prompt">
       <Download aria-hidden className="push-prompt-icon" />
       <div>
-        <strong>Install Relay on this device</strong>
+        <strong>Install {name} on this device</strong>
         {state === 'available' ? (
           <span>
             Opens full screen from your home screen, starts faster and copes with a weak signal.
@@ -65,7 +67,7 @@ export function InstallPrompt({ button = false }: { button?: boolean }) {
         ) : (
           <span>
             Tap <Share aria-label="Share" className="inline-icon" /> Share →{' '}
-            <b>Add to Home Screen</b>. Relay then opens full screen like an app.
+            <b>Add to Home Screen</b>. {name} then opens full screen like an app.
           </span>
         )}
       </div>
@@ -84,7 +86,7 @@ export function OfflineBanner({ online }: { online: boolean }) {
   if (online) return null;
   return (
     <div className="offline-banner" role="status">
-      You are offline. Relay catches up as soon as the connection is back.
+      You are offline. The app catches up as soon as the connection is back.
     </div>
   );
 }

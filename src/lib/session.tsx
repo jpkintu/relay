@@ -139,6 +139,10 @@ function rememberBrand({ restaurantName, restaurantLogo }: AppInfo) {
   }
 }
 
+// The name to show for the app: the restaurant's, unless it is still the
+// placeholder the server starts with.
+export const restaurantTitle = (name?: string) => (name && name !== 'Restaurant' ? name : 'Relay');
+
 // Only used until the server answers; real values come from Configuration.
 const FALLBACK_INFO: AppInfo = {
   restaurantName: 'Relay',
@@ -302,6 +306,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (themeKnown) applyTheme({ ink, accent });
   }, [themeKnown, ink, accent]);
+  // The browser tab and the name iPhones give the home-screen app: the
+  // restaurant's own name once it has one (Relay is only the software).
+  const appName = restaurantTitle(config.restaurantName);
+  useEffect(() => {
+    document.title = appName;
+    document
+      .querySelector('meta[name="apple-mobile-web-app-title"]')
+      ?.setAttribute('content', appName);
+  }, [appName]);
 
   const value: Session = {
     status: loadingProfile ? 'loading' : 'ready',

@@ -22,7 +22,7 @@ export function PrivacyPage() {
       <header>
         <BrandMark logo={appInfo.restaurantLogo} name={appInfo.restaurantName} />
         <a className="privacy-back" href="/">
-          <ArrowLeft aria-hidden /> {user ? 'Back to Relay' : 'Back to sign in'}
+          <ArrowLeft aria-hidden /> {user ? 'Back to the app' : 'Back to sign in'}
         </a>
       </header>
       <article>
