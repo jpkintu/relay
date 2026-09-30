@@ -7326,3 +7326,15 @@ small.block {
 .efris-keymaker {
   margin-top: 14px;
 }
+.efris-own-key summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.efris-own-key input {
+  margin-top: 8px;
+}
+.efris-key-error {
+  display: block;
+  margin-top: 8px;
+  line-height: 1.45;
+}

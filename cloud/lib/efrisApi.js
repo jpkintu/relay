@@ -44,10 +44,28 @@ class EfrisError extends Error {
 
 // The taxpayer's private key from what the owner uploads: a keystore
 // (.pfx / .p12, with its password) or a PEM private key. → PEM (PKCS#8).
+const CERTIFICATE_NOT_KEY =
+  'That file is a certificate (the public key): upload it on the EFRIS portal. Relay needs the private key instead; if you made the key pair in Relay, it is already saved and nothing needs uploading here.';
+
+function isCertificate(bytes, text) {
+  if (/-----BEGIN (TRUSTED )?CERTIFICATE-----/.test(text)) return true;
+  if (text.includes('-----BEGIN')) return false;
+  try {
+    // DER (.cer): parses as an X.509 certificate.
+    new crypto.X509Certificate(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function privateKeyPem(fileBase64, password = '') {
   const bytes = Buffer.from(String(fileBase64 || ''), 'base64');
   if (!bytes.length) throw new EfrisError('Choose the private key file');
   const text = bytes.toString('utf8');
+  // A certificate (.crt / .cer) is the public half: it goes to the EFRIS
+  // portal, not here. Said plainly, as it is the easy mistake to make.
+  if (isCertificate(bytes, text)) throw new EfrisError(CERTIFICATE_NOT_KEY);
   if (text.includes('-----BEGIN')) {
     try {
       const key = crypto.createPrivateKey({ key: text, passphrase: password || undefined });

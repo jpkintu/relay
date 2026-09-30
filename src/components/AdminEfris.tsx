@@ -135,6 +135,7 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
   }));
   const [keyFile, setKeyFile] = useState<File | null>(null);
   const [keyPassword, setKeyPassword] = useState('');
+  const [keyError, setKeyError] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -184,6 +185,29 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
         : `Menu registered with EFRIS (${result.registered} items).`;
     });
 
+  // Only a private key goes here; its certificate goes to the EFRIS portal.
+  const keyInput = (
+    <>
+      <input
+        type="file"
+        accept=".pfx,.p12,.pem,.key"
+        onChange={(e) => {
+          const file = e.target.files?.[0] || null;
+          if (file && /\.(crt|cer|der)$/i.test(file.name)) {
+            setKeyError(
+              'That file is the certificate: upload it on the EFRIS portal. Relay needs the private key; if you made the key pair here, it is already saved.',
+            );
+            e.target.value = '';
+            setKeyFile(null);
+            return;
+          }
+          setKeyError('');
+          setKeyFile(file);
+        }}
+      />
+      {keyError && <span className="ops-error efris-key-error">{keyError}</span>}
+    </>
+  );
   const t = view.lastTest;
   return (
     <div className="data-page">
@@ -279,14 +303,17 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
               onChange={(e) => set('deviceNo')(e.target.value.trim())}
             />
           </label>
-          <label className="setup-field">
-            Private key {view.keyLoaded && <span className="muted">(saved: {view.keyName})</span>}
-            <input
-              type="file"
-              accept=".pfx,.p12,.pem,.key"
-              onChange={(e) => setKeyFile(e.target.files?.[0] || null)}
-            />
-          </label>
+          {view.certificate ? (
+            <details className="setup-field efris-own-key">
+              <summary>Private key: made by Relay (saved). Use your own key instead…</summary>
+              {keyInput}
+            </details>
+          ) : (
+            <label className="setup-field">
+              Private key {view.keyLoaded && <span className="muted">(saved: {view.keyName})</span>}
+              {keyInput}
+            </label>
+          )}
           {keyFile && (
             <label className="setup-field">
               Keystore password

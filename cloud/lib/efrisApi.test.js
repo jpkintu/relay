@@ -43,6 +43,12 @@ describe('private keys', () => {
     expect(() => privateKeyPem(file, 'wrong')).toThrow(/password/);
   });
 
+  test('a certificate chosen by mistake is explained, in either format', () => {
+    const made = generateKeyPair({ tin: '1000029771' });
+    expect(() => privateKeyPem(b64(made.certificate))).toThrow(/certificate \(the public key\)/);
+    expect(() => privateKeyPem(made.certificateDer)).toThrow(/upload it on the EFRIS portal/);
+  });
+
   test('something else is refused', () => {
     expect(() => privateKeyPem(b64('hello'))).toThrow();
     expect(() => privateKeyPem('')).toThrow(/Choose/);
