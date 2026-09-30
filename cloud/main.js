@@ -47,6 +47,7 @@ require('./payouts');
 require('./cashcheck');
 require('./shifts');
 require('./branches');
+require('./spending');
 require('./people');
 require('./admin');
 require('./onboarding');
