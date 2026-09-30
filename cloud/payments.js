@@ -239,7 +239,10 @@ Parse.Cloud.define('resubmitPayment', async (request) => {
 
 const nameOf = (user) =>
   user
-    ? [user.get('riderCode') || user.get('cashierCode'), user.get('name')]
+    ? [
+        user.get('riderCode') || user.get('cashierCode') || user.get('financeCode'),
+        user.get('name'),
+      ]
         .filter(Boolean)
         .join(' · ')
     : '';
@@ -272,17 +275,21 @@ function paymentRow(order) {
 // confirmed and rejected ones with totals per provider (compare these with
 // the Airtel/MTN merchant statements).
 Parse.Cloud.define('getMobileMoneyLedger', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['cashier', 'admin']);
+  // A cashier checks their own branch's payments; the owner every branch.
+  const branch = role === 'cashier' ? (await user.fetch(MASTER)).get('branch') : null;
   // Bring automatic payment requests up to date before listing.
   await require('./collections').sweepRequests();
   const { values: config } = await loadConfig();
   const pendingQuery = new Parse.Query('Order');
   pendingQuery.equalTo('paymentStatus', PENDING);
   pendingQuery.include(['createdBy']);
+  if (branch) pendingQuery.equalTo('branch', branch);
   const checkedQuery = new Parse.Query('Order');
   checkedQuery.containedIn('paymentStatus', ['VERIFIED', 'REJECTED']);
   checkedQuery.greaterThanOrEqualTo('paymentCheckedAt', new Date(Date.now() - 48 * 3600 * 1000));
   checkedQuery.include(['createdBy', 'paymentCheckedBy']);
+  if (branch) checkedQuery.equalTo('branch', branch);
   const [pending, checked] = await Promise.all([
     findAll(pendingQuery).then((rows) => rows.sort((a, b) => a.createdAt - b.createdAt)),
     findAll(checkedQuery).then((rows) =>

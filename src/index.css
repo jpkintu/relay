@@ -7709,3 +7709,36 @@ table.data tr.selected td {
   margin-top: 8px;
   line-height: 1.45;
 }
+
+/* Branches (Admin → Branches) */
+.branch-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.branch-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 12px 0 18px;
+  align-items: end;
+}
+.branch-form .payment-actions,
+.branch-form .form-error,
+.branch-form .setup-checkbox {
+  grid-column: 1 / -1;
+}
+.branch-offer {
+  border: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.branch-offer legend {
+  width: 100%;
+  margin-bottom: 4px;
+}
+.overview-branch {
+  margin-bottom: 12px;
+}

@@ -42,10 +42,14 @@ const SCOPED = new Set([
   'Secret',
   'AdminUnlock',
   'SubscriptionPayment',
+  'Branch',
+  'Supplier',
+  'Purchase',
+  'Expense',
 ]);
 // Secret rows shared by the whole platform (push keys, server address).
 const GLOBAL_SECRETS = new Set(['vapid', 'serverAddress']);
-const BASE_ROLES = ['admin', 'cashier', 'rider'];
+const BASE_ROLES = ['admin', 'finance', 'cashier', 'rider'];
 const SEPARATOR = '__';
 
 const current = () => storage.getStore()?.tenant || null;

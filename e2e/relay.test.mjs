@@ -1309,7 +1309,10 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(labels.includes('R-002 · Ron Rider'));
     s.ritaId = riders.find((r) => r.label.includes('Rita')).id;
     s.ronId = riders.find((r) => r.label.includes('Ron')).id;
-    await rejects(run('getReportOptions', {}, s.rider), /cashier or admin role required/);
+    await rejects(
+      run('getReportOptions', {}, s.rider),
+      /cashier or admin or finance role required/,
+    );
   });
 
   test('the payments ledger lists every cash and mobile money transaction', async () => {
@@ -1347,7 +1350,10 @@ describe('ledgers, earnings and reports', () => {
     assert.ok(rita.handovers.every((h) => h.riderId === s.ritaId));
     const empty = await run('getPaymentsLedger', { from: '2020-01-01', to: '2020-01-31' }, s.owner);
     assert.equal(empty.transactions.length, 0);
-    await rejects(run('getPaymentsLedger', range, s.rider), /cashier or admin role required/);
+    await rejects(
+      run('getPaymentsLedger', range, s.rider),
+      /cashier or admin or finance role required/,
+    );
     await rejects(
       run('getPaymentsLedger', { from: '2026-02-30', to: '2026-03-01' }, s.owner),
       /Dates must look like/,
@@ -1371,7 +1377,7 @@ describe('ledgers, earnings and reports', () => {
     assert.equal(done.rows.length, delivered.length);
     const past = await run('adminSearchOrders', { from: '2020-01-01', to: '2020-01-02' }, s.owner);
     assert.equal(past.rows.length, 0);
-    await rejects(run('adminSearchOrders', range, s.cashier), /admin role required/);
+    await rejects(run('adminSearchOrders', range, s.cashier), /admin or finance role required/);
   });
 
   test('admin order search filters by channel and cash status, and pages', async () => {
@@ -1424,7 +1430,7 @@ describe('ledgers, earnings and reports', () => {
       rita.riders.map((r) => r.riderId),
       [s.ritaId],
     );
-    await rejects(run('getCommissionLedger', range, s.rider), /admin role required/);
+    await rejects(run('getCommissionLedger', range, s.rider), /admin or finance role required/);
   });
 
   test('riders see only their own earnings, by week or month', async () => {
@@ -1451,7 +1457,10 @@ describe('ledgers, earnings and reports', () => {
     // The owner can look at any rider.
     const rita = await run('getRiderEarnings', { ...range, riderId: s.ritaId }, s.owner);
     assert.ok(rita.deliveries.length > 0);
-    await rejects(run('getRiderEarnings', range, s.cashier), /rider or admin role required/);
+    await rejects(
+      run('getRiderEarnings', range, s.cashier),
+      /rider or admin or finance role required/,
+    );
   });
 
   test('the operations report covers revenue, growth and menu item sales', async () => {
@@ -1492,7 +1501,7 @@ describe('ledgers, earnings and reports', () => {
       report.summary.commission - report.summary.deliveryFees,
     );
     assert.ok(report.riders.length >= 2);
-    await rejects(run('getOperationsReport', range, s.cashier), /admin role required/);
+    await rejects(run('getOperationsReport', range, s.cashier), /admin or finance role required/);
     await rejects(
       run('getOperationsReport', { from: '2025-01-01', to: '2026-06-30' }, s.owner),
       /at most 366 days/,
@@ -2164,7 +2173,7 @@ describe('cashier shifts and till reconciliation', () => {
     assert.ok(report.trend.days.some((d) => d.short >= 1000 && d.net <= -1000));
     const cashierRow = report.trend.cashiers.find((c) => c.cashier === row.cashier);
     assert.ok(cashierRow.short >= 1000);
-    await rejects(run('getShiftReport', {}, s.cleo), /admin role required/);
+    await rejects(run('getShiftReport', {}, s.cleo), /admin or finance role required/);
 
     // The owner settles it: 600 was a till payment nobody recorded, the rest is written off.
     const M = { useMasterKey: true };
@@ -3135,7 +3144,7 @@ describe('owner reporting and control', () => {
   });
 
   test('the dashboard is computed on the server, for the owner only', async () => {
-    await rejects(run('getDashboard', {}, s.dina), /admin role required/);
+    await rejects(run('getDashboard', {}, s.dina), /admin or finance role required/);
     const d = await run('getDashboard', {}, s.owner);
     assert.match(d.day, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(d.days.length, 30);
@@ -3298,7 +3307,7 @@ describe('owner reporting and control', () => {
       'order.deliver',
     ])
       assert.ok(actions.includes(action), action);
-    await rejects(run('adminGetOrder', { id: placed.id }, s.val), /admin role required/);
+    await rejects(run('adminGetOrder', { id: placed.id }, s.val), /admin or finance role required/);
   });
 
   test('the audit log filters by kind, person and record', async () => {
@@ -3353,7 +3362,7 @@ describe('owner reporting and control', () => {
     assert.equal(z.sales.total, z.sales.food + z.sales.deliveryFees);
     assert.ok(z.riders.some((r) => r.rider.includes('Val')));
     assert.ok(z.items.length >= 1);
-    await rejects(run('adminGetZReport', {}, s.dina), /admin role required/);
+    await rejects(run('adminGetZReport', {}, s.dina), /admin or finance role required/);
     await rejects(run('adminGetZReport', { day: '2999-01-01' }, s.owner), /up to today/);
     const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
     const past = await run('adminGetZReport', { day: yesterday }, s.owner);
@@ -4374,6 +4383,216 @@ describe('card payments at the counter', () => {
   });
 });
 
+describe('branches', () => {
+  const M = { useMasterKey: true };
+  let settings;
+  let items;
+  let main;
+  let ntinda;
+  let nia;
+  let nora;
+  const made = [];
+  const line = (item) => [{ id: item.id, quantity: 1 }];
+  const counter = async (params, user) => {
+    const placed = await run('createCounterOrder', params, user);
+    made.push([placed.id, user]);
+    return placed;
+  };
+  const fetch = (id) => new Parse.Query('Order').get(id, M);
+
+  before(async () => {
+    ({ settings } = await run('adminListSetup', {}, s.owner));
+    await run(
+      'adminSaveSettings',
+      { ...settings, moduleCallIn: true, moduleCounter: true },
+      s.owner,
+    );
+    items = (await run('getOperationalMenu', {}, s.dina)).items.filter(
+      (i) => !i.accompanimentGroups.length,
+    );
+  });
+  after(async () => {
+    for (const [id, user] of made) {
+      const order = await fetch(id);
+      if (!['DELIVERED', 'CANCELLED'].includes(order.get('status')))
+        await run(
+          'transitionOrder',
+          { orderId: id, action: 'cancel', reason: 'Branch test' },
+          user,
+        );
+    }
+    for (const item of items.slice(0, 2))
+      await run('adminSaveMenuItem', { ...(await menuItem(item.id)), branchIds: [] }, s.owner);
+    await run('adminSaveSettings', settings, s.owner);
+  });
+  const menuItem = async (id) => {
+    const row = (await run('adminListSetup', {}, s.owner)).menu.find((m) => m.id === id);
+    return {
+      id: row.id,
+      title: row.title,
+      price: row.price,
+      category: row.category,
+      active: row.active,
+      availableToday: row.availableToday,
+    };
+  };
+
+  test('opening Branches makes the main branch and puts everything in it', async () => {
+    const before = await new Parse.Query('Order').descending('createdAt').first(M);
+    assert.equal(before.get('branch'), undefined);
+    assert.equal((await run('getMyProfile', {}, s.owner)).branchCount, 0);
+    const { branches } = await run('adminListBranches', {}, s.owner);
+    assert.equal(branches.length, 1);
+    main = branches[0];
+    assert.equal(main.main, true);
+    assert.equal(main.name, 'Main branch');
+    assert.equal((await fetch(before.id)).get('branch').id, main.id);
+    const dina = await new Parse.Query(Parse.User).get(s.dina.id, M);
+    assert.equal(dina.get('branch').id, main.id);
+    assert.equal((await run('getMyProfile', {}, s.dina)).branch.name, 'Main branch');
+    await rejects(run('adminListBranches', {}, s.dina), /admin role required/);
+  });
+
+  test('the owner adds a branch and staff work there', async () => {
+    ntinda = await run(
+      'adminSaveBranch',
+      { name: 'Ntinda', address: 'Ntinda shopping centre', phone: '0772000222' },
+      s.owner,
+    );
+    await rejects(run('adminSaveBranch', { name: 'ntinda' }, s.owner), /already a branch/);
+    await rejects(
+      run('adminSaveBranch', { id: main.id, name: main.name, active: false }, s.owner),
+      /main branch cannot be closed/,
+    );
+    assert.equal((await run('getMyProfile', {}, s.owner)).branchCount, 2);
+    const cashier = await run(
+      'adminCreateTeamMember',
+      {
+        name: 'Nia Ntinda',
+        username: 'nia-ntinda',
+        pin: '4455',
+        role: 'cashier',
+        branchId: ntinda.id,
+      },
+      s.owner,
+    );
+    const rider = await run(
+      'adminCreateTeamMember',
+      {
+        name: 'Nora Ntinda',
+        username: 'nora-ntinda',
+        pin: '5566',
+        role: 'rider',
+        branchId: ntinda.id,
+      },
+      s.owner,
+    );
+    nia = await login('nia-ntinda', '4455');
+    nora = await login('nora-ntinda', '5566');
+    assert.equal((await run('getMyProfile', {}, nia)).branch.id, ntinda.id);
+    await run('startShift', { kind: 'cashier', openingFloat: 0 }, nia);
+    const riders = await run('getAssignableRiders', {}, nia);
+    assert.deepEqual(
+      riders.map((r) => r.id),
+      [rider.id],
+      'a cashier sends only their branch riders',
+    );
+    assert.ok((await run('getAssignableRiders', {}, s.owner)).length > 1);
+    // A branch with people working at it cannot be closed.
+    await rejects(
+      run('adminSaveBranch', { id: ntinda.id, name: 'Ntinda', active: false }, s.owner),
+      /Move its 2 team member/,
+    );
+    const listed = (await run('adminListBranches', {}, s.owner)).branches.find(
+      (b) => b.id === ntinda.id,
+    );
+    assert.deepEqual(listed.members, { riders: 1, cashiers: 1 });
+    // A member can be moved; a rider's orders go to their branch.
+    const { team } = await run('adminListSetup', {}, s.owner);
+    assert.equal(team.find((m) => m.id === cashier.id).branchId, ntinda.id);
+    await rejects(
+      run('adminUpdateMember', { id: cashier.id, branchId: 'nope' }, s.owner),
+      /Unknown branch/,
+    );
+    await run('startShift', { kind: 'rider' }, nora);
+    const placed = await run(
+      'createOrder',
+      {
+        customerName: 'Branch Beth',
+        deliveryAddress: 'Ntinda',
+        paymentMethod: 'cash',
+        items: line(items[0]),
+      },
+      nora,
+    );
+    made.push([placed.id, nora]);
+    assert.equal((await fetch(placed.id)).get('branch').id, ntinda.id);
+  });
+
+  test('dishes are offered per branch and sold out per branch', async () => {
+    const [onlyMain, both] = items;
+    await run(
+      'adminSaveMenuItem',
+      { ...(await menuItem(onlyMain.id)), branchIds: [main.id] },
+      s.owner,
+    );
+    const ntindaMenu = (await run('getOperationalMenu', {}, nia)).items.map((i) => i.id);
+    assert.ok(!ntindaMenu.includes(onlyMain.id), 'not offered at Ntinda');
+    assert.ok(
+      (await run('getOperationalMenu', {}, s.dina)).items.some((i) => i.id === onlyMain.id),
+    );
+    await rejects(counter({ orderType: 'eat_in', items: line(onlyMain) }, nia), /is not available/);
+    // Sold out at Ntinda only.
+    await run('setAvailability', { type: 'menuItem', id: both.id, available: false }, nia);
+    assert.ok(!(await run('getOperationalMenu', {}, nia)).items.some((i) => i.id === both.id));
+    assert.ok((await run('getOperationalMenu', {}, s.dina)).items.some((i) => i.id === both.id));
+    const stock = await run('getStock', { branchId: ntinda.id }, s.owner);
+    assert.equal(stock.branch.name, 'Ntinda');
+    assert.equal(stock.items.find((i) => i.id === both.id).available, false);
+    assert.ok(!stock.items.some((i) => i.id === onlyMain.id), 'Ntinda does not list it');
+    const mainStock = await run('getStock', {}, s.dina);
+    assert.equal(mainStock.items.find((i) => i.id === both.id).available, true);
+    await run('setAvailability', { type: 'menuItem', id: both.id, available: true }, nia);
+    assert.ok((await run('getOperationalMenu', {}, nia)).items.some((i) => i.id === both.id));
+  });
+
+  test('orders, payments and reports split by branch', async () => {
+    const [, dish] = items;
+    const here = await counter({ orderType: 'eat_in', items: line(dish) }, nia);
+    const there = await counter({ orderType: 'eat_in', items: line(dish) }, s.dina);
+    assert.equal((await fetch(here.id)).get('branch').id, ntinda.id);
+    assert.equal((await fetch(there.id)).get('branch').id, main.id);
+    for (const [order, user] of [
+      [here, nia],
+      [there, s.dina],
+    ])
+      for (const action of ['accept', 'ready', 'complete'])
+        await run('transitionOrder', { orderId: order.id, action }, user);
+
+    const found = await run('adminSearchOrders', { branchId: ntinda.id }, s.owner);
+    assert.ok(found.rows.some((r) => r.id === here.id));
+    assert.ok(!found.rows.some((r) => r.id === there.id));
+    const report = await run('getOperationsReport', { branchId: ntinda.id }, s.owner);
+    const all = await run('getOperationsReport', {}, s.owner);
+    assert.ok(report.summary.orders < all.summary.orders);
+    assert.ok(all.branches.some((b) => b.name === 'Ntinda' && b.delivered >= 1));
+    assert.ok(all.branches.some((b) => b.name === 'Main branch'));
+    const today = await run('getDashboard', { branchId: ntinda.id }, s.owner);
+    assert.ok(today.today.orders >= 1);
+    assert.ok(today.today.orders < (await run('getDashboard', {}, s.owner)).today.orders);
+    const z = await run('adminGetZReport', { branchId: ntinda.id }, s.owner);
+    assert.equal(z.branchId, ntinda.id);
+    assert.equal(z.live, true);
+    // The Ntinda cashier's payments ledger is their branch's only.
+    const ledger = await run('getPaymentsLedger', { method: 'cash' }, nia);
+    assert.ok(ledger.transactions.some((t) => t.id === here.id));
+    assert.ok(!ledger.transactions.some((t) => t.id === there.id));
+    const shifts = await run('getShiftReport', { branchId: ntinda.id }, s.owner);
+    assert.ok(shifts.shifts.every((row) => /Nia/.test(row.cashier)));
+    await rejects(run('getDashboard', { branchId: 'bogus!' }, s.owner), /Unknown branch/);
+  });
+});
+
 describe('getting started: setup progress and menu import', () => {
   test('setup progress counts the restaurant own dishes and team', async () => {
     const progress = await run('getSetupProgress', {}, s.owner);
@@ -5181,8 +5400,9 @@ const ACCESS = {
     'checkPaymentRequest',
   ],
   rider: ['createOrder', 'createHandover', 'getMyHandovers', 'getMyPay', 'setMyAvailability'],
-  riderOrAdmin: ['getRiderEarnings'],
+  riderOrReports: ['getRiderEarnings'],
   anyRole: ['searchCustomers', 'getOperationalMenu'],
+  everyRole: ['getBranches'],
   cashier: ['recordTillPayout'],
   staff: [
     'confirmHandover',
@@ -5200,10 +5420,17 @@ const ACCESS = {
     'getMobileMoneyLedger',
     'getRiderPay',
     'payRider',
-    'getTillPayouts',
-    'getReportOptions',
-    'getPaymentsLedger',
-    'issueEfrisReceipt',
+  ],
+  staffOrFinance: ['getTillPayouts', 'getReportOptions', 'getPaymentsLedger', 'issueEfrisReceipt'],
+  reports: [
+    'getDashboard',
+    'adminGetZReport',
+    'adminListZReports',
+    'adminGetOrder',
+    'adminSearchOrders',
+    'getCommissionLedger',
+    'getOperationsReport',
+    'getShiftReport',
   ],
   admin: [
     // Relay Hosted: paying the subscription.
@@ -5238,20 +5465,12 @@ const ACCESS = {
     'adminRunCashCheck',
     'resolveOrderIssue',
     'adminListIssues',
-    'adminGetOrder',
     'adminOverrideOrder',
-    'getDashboard',
     'adminGetAuditLog',
-    'adminGetZReport',
-    'adminListZReports',
     'adminSettleTillDifference',
     'adminResetPin',
     'adminGetMember',
-    'adminSearchOrders',
-    'getCommissionLedger',
-    'getOperationsReport',
     'adminApplySecurity',
-    'getShiftReport',
     'getSetupProgress',
     'adminImportMenu',
     'adminFinishSetup',
@@ -5270,19 +5489,27 @@ const ACCESS = {
     'adminTestPaymentConnection',
     'adminMtnSandboxUser',
     'adminGetServerAddress',
+    'adminListBranches',
+    'adminSaveBranch',
   ],
 };
 const ALLOWED = {
-  public: ['anonymous', 'rider', 'cashier', 'admin'],
+  public: ['anonymous', 'rider', 'cashier', 'finance', 'admin'],
   nobody: [],
-  signedIn: ['rider', 'cashier', 'admin'],
+  signedIn: ['rider', 'cashier', 'finance', 'admin'],
   rider: ['rider'],
-  riderOrAdmin: ['rider', 'admin'],
+  riderOrReports: ['rider', 'finance', 'admin'],
   anyRole: ['rider', 'cashier', 'admin'],
+  everyRole: ['rider', 'cashier', 'finance', 'admin'],
   cashier: ['cashier'],
   staff: ['cashier', 'admin'],
+  staffOrFinance: ['cashier', 'finance', 'admin'],
+  // Owner-end reporting: the owner and the finance role.
+  reports: ['finance', 'admin'],
   admin: ['admin'],
 };
+// Finance has no shifts: nothing to start at a till or on the road.
+const REFUSED = { startShift: ['finance'] };
 // How the server says "not you": no session, the wrong role, master key
 // only, or switched off. Other errors (a missing field, no open shift) mean
 // the caller got past the permission check.
@@ -5300,11 +5527,13 @@ describe('permission matrix: every Cloud function × every role', () => {
     for (const [username, pin, role] of [
       ['matrix-rider', '7001', 'rider'],
       ['matrix-cashier', '7002', 'cashier'],
+      ['matrix-finance', '7004', 'finance'],
       ['matrix-gone', '7003', 'rider'],
     ])
       await run('adminCreateTeamMember', { name: username, username, pin, role }, s.owner);
     callers.rider = await login('matrix-rider', '7001');
     callers.cashier = await login('matrix-cashier', '7002');
+    callers.finance = await login('matrix-finance', '7004');
     callers.admin = s.owner;
     // A deactivated member keeps a session token but may call nothing.
     const gone = await login('matrix-gone', '7003');
@@ -5338,7 +5567,7 @@ describe('permission matrix: every Cloud function × every role', () => {
     const wrong = [];
     for (const [rule, names] of Object.entries(ACCESS))
       for (const name of names)
-        for (const who of ['anonymous', 'rider', 'cashier', 'admin', 'inactive']) {
+        for (const who of ['anonymous', 'rider', 'cashier', 'finance', 'admin', 'inactive']) {
           const user = callers[who];
           let denied = false;
           let message = '';
@@ -5348,7 +5577,8 @@ describe('permission matrix: every Cloud function × every role', () => {
             message = String(error.message);
             denied = error.code === Parse.Error.INVALID_SESSION_TOKEN || DENIED.test(message);
           }
-          const expected = ALLOWED[rule].includes(who) && who !== 'inactive';
+          const expected =
+            ALLOWED[rule].includes(who) && who !== 'inactive' && !REFUSED[name]?.includes(who);
           if (denied === expected)
             wrong.push(
               `${name} as ${who}: ${expected ? 'denied' : 'allowed'} (${message || 'ok'})`,
@@ -5942,6 +6172,37 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
     } finally {
       process.env.IOTEC_CLIENT_ID = saved;
     }
+  });
+});
+
+describe('the finance role', () => {
+  test('finance reads the owner end but changes nothing sensitive', async () => {
+    const created = await run(
+      'adminCreateTeamMember',
+      { name: 'Fiona Finance', username: 'fiona', pin: '8642', role: 'finance' },
+      s.owner,
+    );
+    assert.match(created.code, /^F-\d{3}$/);
+    const fiona = await login('fiona', '8642');
+    const profile = await run('getMyProfile', {}, fiona);
+    assert.equal(profile.role, 'finance');
+    const order = (await run('adminSearchOrders', {}, fiona)).rows[0];
+    if (order) {
+      const detail = await run('adminGetOrder', { id: order.id }, fiona);
+      assert.deepEqual(detail.can, {}, 'finance gets no override actions');
+      await rejects(
+        run('adminOverrideOrder', { id: order.id, action: 'cancel', reason: 'x' }, fiona),
+        /admin role required/,
+      );
+    }
+    await rejects(run('getStock', {}, fiona), /role required/);
+    await rejects(run('adminListSetup', {}, fiona), /admin role required/);
+    // The owner can move them to another role and back.
+    await run('adminChangeRole', { userId: created.id, role: 'cashier' }, s.owner);
+    assert.equal((await run('getMyProfile', {}, fiona)).role, 'cashier');
+    await run('adminChangeRole', { userId: created.id, role: 'finance' }, s.owner);
+    assert.equal((await run('getMyProfile', {}, fiona)).role, 'finance');
+    s.fiona = fiona;
   });
 });
 

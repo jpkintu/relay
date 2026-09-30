@@ -128,6 +128,11 @@ Parse.Cloud.define('getMyPay', async (request) => {
 
 async function newPayout(fields, config) {
   const row = new Parse.Object('TillPayout');
+  // Paid from a cashier's till: that till's branch; else the rider's.
+  const branch = await require('./branches').branchFor(
+    fields.shift ? fields.paidBy : fields.rider || fields.paidBy,
+  );
+  if (branch) row.set('branch', branch);
   row.set({
     payoutCode: await nextDailyCode('PO', 3, config.timezone, {
       className: 'TillPayout',
@@ -255,9 +260,9 @@ Parse.Cloud.define('recordTillPayout', async (request) => {
 
 // Payouts in a date range (owner), or the caller's own shift (cashier).
 Parse.Cloud.define('getTillPayouts', async (request) => {
-  const { user, role } = await requireRole(request, ['cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['cashier', 'admin', 'finance']);
   const query = new Parse.Query('TillPayout');
-  if (role === 'admin') {
+  if (role !== 'cashier') {
     const { values: config } = await loadConfig();
     const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
     if (range.error) throw invalid(range.error);

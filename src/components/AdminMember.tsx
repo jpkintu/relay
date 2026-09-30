@@ -5,7 +5,7 @@ import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate, initials } from '../lib/format';
 import { statusLabel, statusTone } from '../lib/labels';
-import { Stat, useCloud } from './reports/common';
+import { Stat, useBranchOptions, useCloud } from './reports/common';
 import { CommissionEditor } from './AdminSetup';
 import type { MyHandover } from './RiderMoney';
 
@@ -53,6 +53,7 @@ type Member = {
   phone: string;
   role: string;
   code: string;
+  branchId?: string;
   active: boolean;
   available: boolean | null;
   pinLocked: boolean;
@@ -109,6 +110,7 @@ export function AdminMember({ id }: { id: string }) {
   const { timezone } = useConfig();
   const navigate = useNavigate();
   const { data: m, error, reload } = useCloud<Member>('adminGetMember', { id });
+  const openBranches = useBranchOptions().filter((b) => b.active);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState('');
@@ -159,7 +161,8 @@ export function AdminMember({ id }: { id: string }) {
       </div>
     );
 
-  const staff = m.role === 'rider' || m.role === 'cashier';
+  const staff = m.role === 'rider' || m.role === 'cashier' || m.role === 'finance';
+  const branches = openBranches;
   const r = m.rider;
   const c = m.cashier;
   const limitValue = limit ?? (m.cashLimit === null ? '' : String(m.cashLimit));
@@ -332,8 +335,37 @@ export function AdminMember({ id }: { id: string }) {
               >
                 <option value="rider">Rider</option>
                 <option value="cashier">Cashier</option>
+                <option value="finance">Finance</option>
               </select>
             </div>
+            {branches.length > 1 && m.role !== 'finance' && (
+              <div className="member-action">
+                <div>
+                  <b>Branch</b>
+                  <small>Where they work: their kitchen board, orders and cash.</small>
+                </div>
+                <select
+                  aria-label="Branch"
+                  value={m.branchId || ''}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const branch = branches.find((b) => b.id === e.target.value);
+                    void act(
+                      'adminUpdateMember',
+                      { id: m.id, branchId: e.target.value },
+                      `Now at ${branch?.name || 'that branch'}.`,
+                    );
+                  }}
+                >
+                  {!m.branchId && <option value="">Choose a branch</option>}
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="member-action">
               <div>
                 <b>PIN</b>

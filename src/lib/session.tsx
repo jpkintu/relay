@@ -7,7 +7,7 @@ import { forgetPush } from './push';
 import { applyTheme, type Theme } from './theme';
 import { rememberRestaurant, restaurantCode } from './restaurant';
 
-export type Role = 'admin' | 'cashier' | 'rider';
+export type Role = 'admin' | 'finance' | 'cashier' | 'rider';
 
 export type AppConfig = {
   restaurantName: string;
@@ -66,6 +66,11 @@ export type Profile = {
   // Relay Hosted: Relay's own staff (no restaurant) get the platform console.
   platform?: boolean;
   config: AppConfig;
+  // Where a rider or cashier works; how many open branches there are.
+  branch?: { id: string; name: string } | null;
+  branchCount?: number;
+  // Parts of the app this restaurant has (plan limits on Relay Hosted).
+  features?: { branches: boolean; finance: boolean; accounting: boolean };
 };
 
 export type RestaurantSummary = {
@@ -329,5 +334,9 @@ export function useMoney() {
 }
 
 export function homePath(role: Role | null): string {
-  return role === 'admin' ? '/admin' : role === 'cashier' ? '/cashier' : '/rider';
+  return role === 'admin' || role === 'finance'
+    ? '/admin'
+    : role === 'cashier'
+      ? '/cashier'
+      : '/rider';
 }

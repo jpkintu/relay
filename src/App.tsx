@@ -46,13 +46,16 @@ const PRELOAD: Record<Role, () => Promise<unknown>> = {
   rider: loadRider,
   cashier: loadCashier,
   admin: loadAdmin,
+  finance: loadAdmin,
 };
 
 // Which roles may open each workspace. Admins can also run the kitchen board.
 const ACCESS: Record<string, Role[]> = {
   rider: ['rider'],
   cashier: ['cashier', 'admin'],
-  admin: ['admin'],
+  // Finance works in the owner's workspace with the sensitive sections left
+  // out (AdminWorkspace) and no kitchen board.
+  admin: ['admin', 'finance'],
 };
 
 function AppRoutes() {

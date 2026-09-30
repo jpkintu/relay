@@ -14,6 +14,7 @@ import {
   BarChart3,
   TriangleAlert,
   Rocket,
+  Store,
 } from 'lucide-react';
 import Parse from '../parse';
 import { SubscriptionNotice } from './Subscription';
@@ -42,6 +43,7 @@ const AdminMember = lazyScreen(() => import('./AdminMember').then((m) => m.Admin
 const AdminOrder = lazyScreen(() => import('./AdminOrder').then((m) => m.AdminOrder));
 const AdminSite = lazyScreen(() => import('./AdminSite').then((m) => m.AdminSite));
 const AdminStart = lazyScreen(() => import('./AdminStart').then((m) => m.AdminStart));
+const AdminBranches = lazyScreen(() => import('./AdminBranches').then((m) => m.AdminBranches));
 const ZReportPage = lazyScreen(() => import('./reports/ZReport').then((m) => m.ZReportPage));
 
 const NAV = [
@@ -53,12 +55,23 @@ const NAV = [
   [HandCoins, 'Payments ledger', 'payments'],
   [CircleDollarSign, 'Commissions', 'commissions'],
   [Users, 'Team', 'team'],
+  [Store, 'Branches', 'branches'],
   [ClipboardList, 'Menu', 'menu'],
   // Settings, branding, payments, access rules, audit log, errors and data &
   // privacy, behind the owner's PIN (AdminSite).
   [ShieldCheck, 'Admin', 'site'],
 ] as const;
 type Section = (typeof NAV)[number][1];
+// What the finance role sees: reporting and money, none of the owner's
+// sensitive sections (team, menu, Admin) and not the kitchen board. The
+// server enforces the same (requireRole in each Cloud function).
+export const FINANCE_SECTIONS: Section[] = [
+  'Overview',
+  'Reports',
+  'Orders',
+  'Payments ledger',
+  'Commissions',
+];
 // Pages that moved into Admin keep working from old links and bookmarks.
 const MOVED: Record<string, AdminTab> = {
   settings: 'settings',
@@ -70,7 +83,12 @@ const MOVED: Record<string, AdminTab> = {
 const isAdminTab = (value: string): value is AdminTab => ADMIN_TABS.some(([id]) => id === value);
 
 export function AdminWorkspace() {
-  const { preview, logout } = useSession();
+  const { preview, logout, profile } = useSession();
+  const finance = profile?.role === 'finance';
+  const features = profile?.features;
+  const allowed = (label: Section) =>
+    (!finance || FINANCE_SECTIONS.includes(label)) &&
+    (label !== 'Branches' || features?.branches !== false);
   const { timezone, restaurantNameSet, restaurantName, restaurantLogo } = useConfig();
   const navigate = useNavigate();
   const device = useDevice();
@@ -104,7 +122,7 @@ export function AdminWorkspace() {
   // The Problems and Errors counts in the menu and how far setup has got;
   // the Overview loads its own figures.
   const load = useCallback(async () => {
-    if (preview) return;
+    if (preview || finance) return;
     try {
       const [issues, errors, setup] = await Promise.all([
         Parse.Cloud.run('adminListIssues', { state: 'open' }) as Promise<{ open: number }>,
@@ -118,7 +136,7 @@ export function AdminWorkspace() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to load operations');
     }
-  }, [preview]);
+  }, [preview, finance]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -129,7 +147,7 @@ export function AdminWorkspace() {
   });
   if (slug === 'cash') return <Navigate to="/admin/payments" replace />;
   if (MOVED[slug]) return <Navigate to={`/admin/site/${MOVED[slug]}`} replace />;
-  if (!current) return <Navigate to="/admin" replace />;
+  if (!current || !allowed(current[1])) return <Navigate to="/admin" replace />;
   return (
     <main className="admin-shell">
       <aside className={menuOpen && compact ? 'admin-side menu-open' : 'admin-side'}>
@@ -148,9 +166,10 @@ export function AdminWorkspace() {
         <nav id="admin-nav" aria-label="Admin sections">
           {NAV.filter(
             ([, label]) =>
-              label !== 'Get started' ||
-              section === label ||
-              (!preview && progress !== null && !progress.finished),
+              allowed(label) &&
+              (label !== 'Get started' ||
+                section === label ||
+                (!preview && progress !== null && !progress.finished)),
           ).map(([Icon, label]) => (
             <button
               key={label}
@@ -171,10 +190,12 @@ export function AdminWorkspace() {
               )}
             </button>
           ))}
-          <button onClick={() => navigate('/cashier')}>
-            <UtensilsCrossed />
-            Kitchen board
-          </button>
+          {!finance && (
+            <button onClick={() => navigate('/cashier')}>
+              <UtensilsCrossed />
+              Kitchen board
+            </button>
+          )}
           <button className="admin-logout" onClick={() => void logout()}>
             <LogOut />
             Log out
@@ -229,7 +250,7 @@ export function AdminWorkspace() {
                 </button>
               </div>
             )}
-            {restaurantNameSet === false && !preview && progress?.finished && (
+            {restaurantNameSet === false && !preview && !finance && progress?.finished && (
               <div className="setup-notice">
                 <span>
                   Your restaurant name is not set, so riders and the sign-in screen show
@@ -253,9 +274,15 @@ export function AdminWorkspace() {
               <AdminStart onChanged={() => void load()} goTo={(label) => setSection(label)} />
             ))}
           {preview &&
-          ['Reports', 'Orders', 'Problems', 'Payments ledger', 'Commissions', 'Admin'].includes(
-            section,
-          ) ? (
+          [
+            'Reports',
+            'Orders',
+            'Problems',
+            'Payments ledger',
+            'Commissions',
+            'Admin',
+            'Branches',
+          ].includes(section) ? (
             <p className="info-card">Sign in as the owner to see reports and ledgers.</p>
           ) : (
             <>
@@ -277,9 +304,10 @@ export function AdminWorkspace() {
               {section === 'Problems' && <AdminProblems onChanged={() => void load()} />}
               {section === 'Payments ledger' && <PaymentsLedger />}
               {section === 'Commissions' && <Commissions />}
+              {section === 'Branches' && <AdminBranches />}
             </>
           )}
-          {memberId && <AdminMember key={memberId} id={memberId} />}
+          {memberId && !finance && <AdminMember key={memberId} id={memberId} />}
           {!memberId && (section === 'Team' || section === 'Menu') && (
             <AdminSetup section={section} preview={preview} />
           )}

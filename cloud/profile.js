@@ -104,11 +104,14 @@ Parse.Cloud.define('getAppInfo', async () => {
 Parse.Cloud.define('getMyProfile', async (request) => {
   const user = requireUser(request);
   await user.fetch(MASTER);
-  const [role, { values }, restaurant] = await Promise.all([
+  const [role, { values }, restaurant, branches, features] = await Promise.all([
     getRoleName(user),
     loadConfig(),
     restaurantSummary(),
+    new Parse.Query('Branch').notEqualTo('active', false).find(MASTER),
+    require('./lib/limits').features(),
   ]);
+  const own = branches.find((row) => row.id === user.get('branch')?.id);
   return {
     // Relay Hosted: the person's restaurant (null for platform staff).
     restaurant,
@@ -117,7 +120,7 @@ Parse.Cloud.define('getMyProfile', async (request) => {
     name: user.get('name') || user.getUsername(),
     phone: user.get('phone') || '',
     role,
-    code: user.get('riderCode') || user.get('cashierCode') || '',
+    code: user.get('riderCode') || user.get('cashierCode') || user.get('financeCode') || '',
     // Riders only: false while on a break (new orders are refused).
     available: role === 'rider' ? user.get('available') !== false : null,
     commission:
@@ -131,6 +134,12 @@ Parse.Cloud.define('getMyProfile', async (request) => {
     canInitialize: false,
     // Relay Hosted: platform staff (no restaurant) get the platform console.
     platform: !restaurant && role === null ? await isPlatform(user) : false,
+    // Where they work (riders and cashiers), and how many open branches the
+    // restaurant has (branch filters show when there are two or more).
+    branch: own ? { id: own.id, name: own.get('name') } : null,
+    branchCount: branches.length,
+    // Parts of the app this restaurant has (lib/limits.js).
+    features,
     config: publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
   };
 });

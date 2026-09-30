@@ -24,6 +24,7 @@ const { applySecurity } = require('./security');
 // Classes a record may link to come first.
 const ORDER = [
   'Configuration',
+  'Branch',
   '_User',
   'MenuCategory',
   'Accompaniment',
@@ -62,13 +63,14 @@ const USER_FIELDS = [
   'active',
   'riderCode',
   'cashierCode',
+  'financeCode',
   'commissionType',
   'commissionPerOrder',
   'commissionPercent',
   'maxFloat',
   'available',
 ];
-const ROLES = ['admin', 'cashier', 'rider'];
+const ROLES = ['admin', 'finance', 'cashier', 'rider'];
 
 // Lists of links, which the backup file writes as { objectId } only.
 const ARRAY_LINKS = {

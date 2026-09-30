@@ -50,6 +50,7 @@ require('./cash');
 require('./payouts');
 require('./cashcheck');
 require('./shifts');
+require('./branches');
 require('./people');
 require('./admin');
 require('./onboarding');

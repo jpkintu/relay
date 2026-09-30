@@ -133,7 +133,9 @@ export function AdminData() {
       const people = new Map(
         team.map((u) => [
           String(u.objectId),
-          [u.riderCode || u.cashierCode, u.name || u.username].filter(Boolean).join(' · '),
+          [u.riderCode || u.cashierCode || u.financeCode, u.name || u.username]
+            .filter(Boolean)
+            .join(' · '),
         ]),
       );
       orders.sort((a, b) => when(a.createdAt).localeCompare(when(b.createdAt)));

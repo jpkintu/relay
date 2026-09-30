@@ -23,6 +23,7 @@ import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
 import { personLabel } from '../lib/people';
 import { formatDate } from '../lib/format';
+import { inBranch } from '../lib/branch';
 import {
   PaymentRequestStatus,
   payerPhoneProblem,
@@ -33,7 +34,7 @@ import { BrandMark } from './BrandMark';
 import { NotificationBell } from './NotificationBell';
 import { PushPrompt } from './PushPrompt';
 import { InstallPrompt } from './InstallPrompt';
-import { Stat } from './reports/common';
+import { BranchSelect, Stat, useBranchOptions } from './reports/common';
 import { useLiveRefresh } from '../lib/live';
 import { NewOrder } from './NewOrder';
 import { usePrint } from '../lib/print';
@@ -87,8 +88,10 @@ const PAYMENT: Record<string, string> = {
   prepaid: 'Prepaid',
 };
 
-async function loadLiveTickets(): Promise<Ticket[]> {
-  const query = new Parse.Query('Order');
+// A cashier's board, payments and handovers are their branch's (the owner
+// sees every branch).
+async function loadLiveTickets(branchId?: string | null): Promise<Ticket[]> {
+  const query = inBranch(new Parse.Query('Order'), branchId);
   query.containedIn('status', ['PLACED', 'ACCEPTED', 'PREPARING', 'READY']);
   query.include('createdBy');
   query.ascending('createdAt');
@@ -139,20 +142,21 @@ async function loadLiveTickets(): Promise<Ticket[]> {
 const minutesSince = (date: Date | null) =>
   date ? Math.max(0, Math.round((Date.now() - date.getTime()) / 60000)) : 0;
 
-async function countPendingPayments(): Promise<number> {
-  const query = new Parse.Query('Order');
+async function countPendingPayments(branchId?: string | null): Promise<number> {
+  const query = inBranch(new Parse.Query('Order'), branchId);
   query.equalTo('paymentStatus', 'PENDING_VERIFICATION');
   return query.count();
 }
 
-async function countPendingHandovers(): Promise<number> {
-  const query = new Parse.Query('CashHandover');
+async function countPendingHandovers(branchId?: string | null): Promise<number> {
+  const query = inBranch(new Parse.Query('CashHandover'), branchId);
   query.equalTo('status', 'pending');
   return query.count();
 }
 
 export function CashierWorkspace() {
   const { preview, profile, logout, config } = useSession();
+  const myBranch = profile?.role === 'cashier' ? profile.branch?.id : null;
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [pendingHandovers, setPendingHandovers] = useState(0);
@@ -181,15 +185,15 @@ export function CashierWorkspace() {
   useEffect(() => {
     if (preview) return;
     const refresh = () => {
-      countPendingHandovers()
+      countPendingHandovers(myBranch)
         .then(setPendingHandovers)
         .catch(() => undefined);
-      countPendingPayments()
+      countPendingPayments(myBranch)
         .then(setPendingPayments)
         .catch(() => undefined);
     };
     void refresh();
-  }, [preview, pathname, liveTick]);
+  }, [preview, pathname, liveTick, myBranch]);
 
   const modules = profile?.config.modules;
   const takesOrders = !!(modules?.callIn || modules?.counter);
@@ -356,6 +360,7 @@ function KitchenBoard() {
   const money = useMoney();
   const me = user?.id || '';
   const isCashier = profile?.role === 'cashier';
+  const myBranch = isCashier ? profile?.branch?.id : null;
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [mineOnly, setMineOnly] = useState(false);
   const [passing, setPassing] = useState<string | null>(null);
@@ -416,13 +421,13 @@ function KitchenBoard() {
           })),
         );
       } else {
-        setTickets(await loadLiveTickets());
+        setTickets(await loadLiveTickets(myBranch));
       }
       setError('');
     } catch {
       setError('Could not refresh the live board.');
     }
-  }, [preview]);
+  }, [preview, myBranch]);
 
   useEffect(() => {
     void load();
@@ -986,11 +991,22 @@ function KitchenBoard() {
 }
 
 // Day-to-day availability: mark dishes and accompaniments sold out or back.
+// Per branch: a cashier changes their own branch; the owner picks one, or
+// "every branch" to sell something out everywhere.
 function StockPanel() {
   const { preview } = useSession();
+  const branches = useBranchOptions();
+  const [branchId, setBranchId] = useState('');
   const [stock, setStock] = useState<{
-    items: { id: string; title: string; category: string; available: boolean }[];
-    accompaniments: { id: string; title: string; available: boolean }[];
+    branch: { id: string; name: string } | null;
+    items: {
+      id: string;
+      title: string;
+      category: string;
+      available: boolean;
+      everywhere?: boolean;
+    }[];
+    accompaniments: { id: string; title: string; available: boolean; everywhere?: boolean }[];
   } | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -998,12 +1014,12 @@ function StockPanel() {
   const load = useCallback(async () => {
     if (preview) return;
     try {
-      setStock(await Parse.Cloud.run('getStock'));
+      setStock(await Parse.Cloud.run('getStock', branchId ? { branchId } : {}));
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load stock');
     }
-  }, [preview]);
+  }, [preview, branchId]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -1011,7 +1027,12 @@ function StockPanel() {
   const toggle = async (type: 'menuItem' | 'accompaniment', id: string, available: boolean) => {
     setBusy(id);
     try {
-      await Parse.Cloud.run('setAvailability', { type, id, available });
+      await Parse.Cloud.run('setAvailability', {
+        type,
+        id,
+        available,
+        ...(branchId && { branchId }),
+      });
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not update');
@@ -1022,7 +1043,7 @@ function StockPanel() {
 
   const row = (
     type: 'menuItem' | 'accompaniment',
-    entry: { id: string; title: string; available: boolean },
+    entry: { id: string; title: string; available: boolean; everywhere?: boolean },
     detail?: string,
   ) => (
     <div className={entry.available ? 'stock-row' : 'stock-row sold-out'} key={entry.id}>
@@ -1030,9 +1051,20 @@ function StockPanel() {
         <b>{entry.title}</b>
         {detail && <small>{detail}</small>}
       </div>
-      <span>{entry.available ? 'Available' : 'Sold out'}</span>
+      <span>
+        {entry.available
+          ? 'Available'
+          : entry.everywhere && stock?.branch
+            ? 'Sold out everywhere'
+            : 'Sold out'}
+      </span>
       <button
-        disabled={busy === entry.id}
+        disabled={busy === entry.id || (!!entry.everywhere && !!stock?.branch)}
+        title={
+          entry.everywhere && stock?.branch
+            ? 'Sold out at every branch: the owner brings it back'
+            : undefined
+        }
         onClick={() => void toggle(type, entry.id, !entry.available)}
       >
         {entry.available ? 'Mark sold out' : 'Back in stock'}
@@ -1046,8 +1078,21 @@ function StockPanel() {
         <div>
           <h1>Stock</h1>
         </div>
-        <span>Sold-out items disappear from riders’ menus straight away.</span>
+        <span>
+          Sold-out items disappear from riders’ menus straight away
+          {stock?.branch ? ` at ${stock.branch.name}` : ''}.
+        </span>
       </div>
+      {branches.length > 1 && (
+        <div className="filter-bar">
+          <BranchSelect
+            value={branchId}
+            onChange={setBranchId}
+            branches={branches.filter((b) => b.active)}
+            allLabel="Every branch"
+          />
+        </div>
+      )}
       {error && <p className="ops-error">{error}</p>}
       {preview && <p className="setup-notice">Stock control needs a signed-in cashier.</p>}
       {stock && (

@@ -45,6 +45,7 @@ const PROTECTED_CLASSES = [
   'ZReport',
   'ErrorLog',
   'AdminUnlock',
+  'Branch',
   // Relay Hosted.
   'Restaurant',
   'PlatformSettings',
@@ -117,8 +118,12 @@ const N = 'Number';
 const B = 'Boolean';
 const D = 'Date';
 const user = ['Pointer', '_User'];
+const branch = ['Pointer', 'Branch'];
 const SCHEMAS = {
+  // Outlets of the restaurant (branches.js).
+  Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N },
   Order: {
+    branch,
     // Tax (EFRIS): the fiscal document for the sale (cloud/efris.js).
     efrisStatus: S,
     efrisFdn: S,
@@ -221,6 +226,7 @@ const SCHEMAS = {
     extrasPerUnit: N,
   },
   CashHandover: {
+    branch,
     handoverCode: S,
     rider: user,
     cashier: user,
@@ -249,6 +255,7 @@ const SCHEMAS = {
     receivedByOwner: B,
   },
   TillPayout: {
+    branch,
     payoutCode: S,
     kind: S,
     rider: user,
@@ -265,6 +272,7 @@ const SCHEMAS = {
     paidAt: D,
   },
   Shift: {
+    branch,
     operator: user,
     kind: S,
     status: S,
@@ -340,6 +348,9 @@ const SCHEMAS = {
     category: S,
     active: B,
     availableToday: B,
+    // Branches that offer it (none: all) and where it is sold out today.
+    branchIds: 'Array',
+    soldOutAt: 'Array',
     sortOrder: N,
     accompanimentGroups: 'Array',
     description: S,
@@ -349,7 +360,14 @@ const SCHEMAS = {
     prepMinutes: N,
   },
   ZReport: { day: S, data: 'Object', generatedAt: D, auto: B },
-  Accompaniment: { title: S, active: B, available: B, sortOrder: N, price: N },
+  Accompaniment: {
+    title: S,
+    active: B,
+    available: B,
+    sortOrder: N,
+    price: N,
+    soldOutAt: 'Array',
+  },
   Customer: {
     key: S,
     name: S,
@@ -467,6 +485,9 @@ const USER_FIELDS = {
   payRound: N,
   available: B,
   maxFloat: N,
+  financeCode: S,
+  // Where they work (branches.js).
+  branch: ['Pointer', 'Branch'],
   // Restored from a backup (restore.js).
   restoredFrom: S,
   restoredCreatedAt: D,
@@ -486,6 +507,7 @@ for (const className of [
   'Accompaniment',
   'Customer',
   'ZReport',
+  'Branch',
 ])
   Object.assign(SCHEMAS[className], {
     restoredFrom: S,
@@ -524,7 +546,9 @@ async function applySchemas() {
   const needsTenant = !userFields.includes('tenant');
   if (missing.length || needsTenant) {
     const schema = new Parse.Schema('_User');
-    for (const [field, type] of missing) schema.addField(field, type);
+    for (const [field, type] of missing)
+      if (Array.isArray(type)) schema.addField(field, type[0], { targetClass: type[1] });
+      else schema.addField(field, type);
     if (needsTenant) schema.addPointer('tenant', 'Restaurant');
     await schema.update();
   }
@@ -619,10 +643,20 @@ async function applySecurity({ schemas = true } = {}) {
     'AuditLog',
   ])
     updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ['admin'])));
+  updated.Branch = await eachObject('Branch', (o) =>
+    saveAcl(o, readAcl(null, ['admin', 'finance', 'cashier', 'rider'])),
+  );
   updated._User = await eachObject(Parse.User, async (user) => {
     const role = await getRoleName(user);
     let changed = false;
-    const codeField = role === 'rider' ? 'riderCode' : role === 'cashier' ? 'cashierCode' : null;
+    const codeField =
+      role === 'rider'
+        ? 'riderCode'
+        : role === 'cashier'
+          ? 'cashierCode'
+          : role === 'finance'
+            ? 'financeCode'
+            : null;
     if (codeField && (!user.get(codeField) || isBrokenCode(user.get(codeField)))) {
       user.set(codeField, await nextStaffCode(role));
       changed = true;
@@ -636,6 +670,11 @@ async function applySecurity({ schemas = true } = {}) {
     return changed;
   });
   updated.repairedCodes = await repairCodes();
+  // Anything saved without a branch (restored, or from before) goes in the
+  // main branch, once the restaurant has branches.
+  const branches = require('./branches');
+  const main = await branches.mainBranch();
+  if (main) updated.branchless = await branches.backfill(main);
   return updated;
 }
 

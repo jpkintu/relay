@@ -5,7 +5,10 @@
 const { dateKey } = require('./dates');
 
 const MASTER = { useMasterKey: true };
-const ROLE_NAMES = ['admin', 'cashier', 'rider'];
+// Highest privilege first. Finance: reports, accounting, purchases and
+// expenses, tax receipts; none of the owner's sensitive functions (team,
+// menu, settings, keys, data) and not the kitchen board.
+const ROLE_NAMES = ['admin', 'finance', 'cashier', 'rider'];
 
 const DEFAULT_CONFIG = {
   restaurantName: 'Restaurant',
@@ -232,7 +235,10 @@ async function requireCashierShift(user, role) {
 // "R-001 · Rita" style label for notifications and ledgers.
 const personName = (user) =>
   user
-    ? [user.get('riderCode') || user.get('cashierCode'), user.get('name') || user.get('username')]
+    ? [
+        user.get('riderCode') || user.get('cashierCode') || user.get('financeCode'),
+        user.get('name') || user.get('username'),
+      ]
         .filter(Boolean)
         .join(' · ')
     : '';
@@ -322,11 +328,14 @@ async function nextDailyCode(prefix, digits, timezone, { className, field, date 
 
 // e.g. R-001 for riders, C-001 for cashiers.
 async function nextStaffCode(role) {
-  const prefix = role === 'rider' ? 'R' : 'C';
+  const prefix = role === 'rider' ? 'R' : role === 'finance' ? 'F' : 'C';
   return uniqueCode(
     `staff:${prefix}`,
     (n) => `${prefix}-${String(n).padStart(3, '0')}`,
-    codeTakenIn(Parse.User, role === 'rider' ? 'riderCode' : 'cashierCode'),
+    codeTakenIn(
+      Parse.User,
+      role === 'rider' ? 'riderCode' : role === 'finance' ? 'financeCode' : 'cashierCode',
+    ),
   );
 }
 

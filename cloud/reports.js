@@ -12,13 +12,17 @@ const R = require('./lib/reports');
 const { orderRiderPay } = require('./lib/money');
 const { placedAt, createdIn } = require('./lib/placed');
 const { payOwed } = require('./payouts');
+const { branchParam } = require('./branches');
 
 const MAX_ROWS = 2000;
 const PERIODS = ['day', 'week', 'month'];
 
 const nameOf = (user) =>
   user
-    ? [user.get('riderCode') || user.get('cashierCode'), user.get('name') || user.get('username')]
+    ? [
+        user.get('riderCode') || user.get('cashierCode') || user.get('financeCode'),
+        user.get('name') || user.get('username'),
+      ]
         .filter(Boolean)
         .join(' · ')
     : '';
@@ -50,8 +54,9 @@ function periodOf(params, range) {
   return range.days <= 31 ? 'day' : range.days <= 120 ? 'week' : 'month';
 }
 
-// Orders whose `field` falls inside the range (optionally one rider's).
-function ordersIn(range, field, riderId) {
+// Orders whose `field` falls inside the range (optionally one rider's, and
+// one branch's: a Branch from branchParam).
+function ordersIn(range, field, riderId, branch) {
   // Placed time counts restored orders by their original time (lib/placed.js).
   const query = field === 'createdAt' ? createdIn('Order', range) : new Parse.Query('Order');
   if (field !== 'createdAt') {
@@ -60,6 +65,7 @@ function ordersIn(range, field, riderId) {
   }
   const rider = riderPointer(riderId);
   if (rider) query.equalTo('createdBy', rider);
+  if (branch) query.equalTo('branch', branch);
   query.include('createdBy');
   return query;
 }
@@ -85,6 +91,7 @@ function factOf(order) {
       (phone ? `tel:${phone}` : !fromCounter && name ? `name:${name}` : ''),
     riderId: rider?.id || '',
     rider: nameOf(rider),
+    branchId: order.get('branch')?.id || '',
     total: Number(order.get('total') || 0),
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
@@ -107,7 +114,7 @@ const rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days
 
 // Riders for the filter drop-downs (everyone who has ever had a rider code).
 Parse.Cloud.define('getReportOptions', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
+  await requireRole(request, ['cashier', 'admin', 'finance']);
   const query = new Parse.Query(Parse.User);
   query.exists('riderCode');
   const riders = (await findAll(query)).sort((a, b) =>
@@ -125,7 +132,7 @@ Parse.Cloud.define('getReportOptions', async (request) => {
 // Every cash collection, mobile money and card payment in the range, for
 // reconciliation: cash by delivery date, mobile money and card by order date.
 Parse.Cloud.define('getPaymentsLedger', async (request) => {
-  await requireRole(request, ['cashier', 'admin']);
+  const { user, role } = await requireRole(request, ['cashier', 'admin', 'finance']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
@@ -133,16 +140,21 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
   const wantCash = ['all', 'cash'].includes(method);
   const wantMomo = ['all', 'mobile_money'].includes(method);
   const wantCard = ['all', 'card'].includes(method);
+  // Cashiers see their own branch; the owner and finance choose.
+  const branch =
+    role === 'cashier'
+      ? (await user.fetch({ useMasterKey: true })).get('branch') || null
+      : await branchParam(p.branchId);
 
-  const cashQuery = ordersIn(range, 'deliveredAt', p.riderId);
+  const cashQuery = ordersIn(range, 'deliveredAt', p.riderId, branch);
   cashQuery.equalTo('paymentMethod', 'cash');
   cashQuery.equalTo('status', 'DELIVERED');
   cashQuery.include('tillCashier');
-  const momoQuery = ordersIn(range, 'createdAt', p.riderId);
+  const momoQuery = ordersIn(range, 'createdAt', p.riderId, branch);
   momoQuery.equalTo('paymentMethod', 'mobile_money');
   momoQuery.include('paymentCheckedBy');
   // Card payments on the counter's card machine, checked like mobile money.
-  const cardQuery = ordersIn(range, 'createdAt', p.riderId);
+  const cardQuery = ordersIn(range, 'createdAt', p.riderId, branch);
   cardQuery.equalTo('paymentMethod', 'card');
   cardQuery.include('paymentCheckedBy');
   const handoverQuery = createdIn('CashHandover', {
@@ -150,6 +162,7 @@ Parse.Cloud.define('getPaymentsLedger', async (request) => {
     end: new Date(range.end.getTime() + 7 * 864e5),
   });
   if (p.riderId) handoverQuery.equalTo('rider', riderPointer(p.riderId));
+  if (branch) handoverQuery.equalTo('branch', branch);
   handoverQuery.include(['rider', 'cashier']);
 
   const [cashOrders, momoOrders, cardOrders, handovers] = await Promise.all([
@@ -316,12 +329,12 @@ const CASH_STATUSES = [
 // cashStatus. The summary covers every match; rows come 2,000 per `page`
 // (0 = newest).
 Parse.Cloud.define('adminSearchOrders', async (request) => {
-  await requireRole(request, ['admin']);
+  await requireRole(request, ['admin', 'finance']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
   const method = methodOf(p);
-  const query = ordersIn(range, 'createdAt', p.riderId);
+  const query = ordersIn(range, 'createdAt', p.riderId, await branchParam(p.branchId));
   if (method !== 'all') query.equalTo('paymentMethod', method);
   if (p.status) {
     if (!ORDER_STATUSES.includes(p.status)) throw invalid('Unknown status filter');
@@ -359,13 +372,13 @@ Parse.Cloud.define('adminSearchOrders', async (request) => {
 // what is paid or still owed. `paid`: 'all' (default), 'paid' or 'owed'.
 const PAID_FILTERS = ['all', 'paid', 'owed'];
 Parse.Cloud.define('getCommissionLedger', async (request) => {
-  await requireRole(request, ['admin']);
+  await requireRole(request, ['admin', 'finance']);
   const p = request.params;
   const paidFilter = p.paid || 'all';
   if (!PAID_FILTERS.includes(paidFilter)) throw invalid('Show all, paid or owed');
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 7 });
-  const query = ordersIn(range, 'deliveredAt', p.riderId);
+  const query = ordersIn(range, 'deliveredAt', p.riderId, await branchParam(p.branchId));
   query.equalTo('status', 'DELIVERED');
   // Rider deliveries only: eat-in and pick-up orders have no rider pay.
   query.exists('createdBy');
@@ -431,9 +444,9 @@ async function earningsFacts(range, riderId) {
 // A rider's own earnings (admins may pass riderId), grouped by week or month
 // of delivery, with the same-length period before for comparison.
 Parse.Cloud.define('getRiderEarnings', async (request) => {
-  const { user, role } = await requireRole(request, ['rider', 'admin']);
+  const { user, role } = await requireRole(request, ['rider', 'admin', 'finance']);
   const p = request.params;
-  const riderId = role === 'admin' ? p.riderId || user.id : user.id;
+  const riderId = role === 'rider' ? user.id : p.riderId || user.id;
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 56 });
   const period = periodOf(p, range);
@@ -507,16 +520,18 @@ async function orderLines(orderIds) {
 // The owner's report: revenue over time, growth against the previous period
 // and month on month, menu item sales, riders, payment mix and busy hours.
 Parse.Cloud.define('getOperationsReport', async (request) => {
-  await requireRole(request, ['admin']);
+  await requireRole(request, ['admin', 'finance']);
   const p = request.params;
   const { values: config } = await loadConfig();
   const tz = config.timezone;
   const range = rangeOf(p, config, { defaultDays: 30 });
   const period = periodOf(p, range);
   const before = previousRange(range, tz);
-  const [facts, previousFacts] = await Promise.all([
-    findAll(ordersIn(range, 'createdAt', p.riderId)).then((rows) => rows.map(factOf)),
-    findAll(ordersIn(before, 'createdAt', p.riderId)).then((rows) => rows.map(factOf)),
+  const branch = await branchParam(p.branchId);
+  const [facts, previousFacts, branches] = await Promise.all([
+    findAll(ordersIn(range, 'createdAt', p.riderId, branch)).then((rows) => rows.map(factOf)),
+    findAll(ordersIn(before, 'createdAt', p.riderId, branch)).then((rows) => rows.map(factOf)),
+    findAll(new Parse.Query('Branch')),
   ]);
   const delivered = facts.filter((f) => f.status === 'DELIVERED');
   const lines = await orderLines(delivered.map((f) => f.id));
@@ -548,6 +563,11 @@ Parse.Cloud.define('getOperationsReport', async (request) => {
     riders: R.riderStats(facts),
     payments: R.paymentMix(facts),
     channels: R.channelMix(facts),
+    // Sales per branch (when the restaurant has more than one).
+    branches:
+      branches.length > 1
+        ? R.branchMix(facts, Object.fromEntries(branches.map((b) => [b.id, b.get('name')])))
+        : [],
     ...R.timeOfDay(facts, (f) => localClock(f.createdAt, tz)),
   };
 });

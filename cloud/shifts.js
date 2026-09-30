@@ -7,7 +7,7 @@ const {
   readAcl,
   audit,
   riderFloat,
-  adminOnly,
+  requireRole,
   loadConfig,
   personName,
   verifyPin,
@@ -175,6 +175,8 @@ Parse.Cloud.define('startShift', async (request) => {
   const opening = Number(raw || 0);
   if (!Number.isFinite(opening) || opening < 0) throw invalid('Invalid opening cash');
   const row = new Parse.Object('Shift');
+  const branch = await require('./branches').branchFor(user);
+  if (branch) row.set('branch', branch);
   row.set({
     operator: user,
     kind,
@@ -273,11 +275,13 @@ Parse.Cloud.define('endShift', async (request) => {
 
 // Owner: cashier shifts in a date range with their till reconciliation.
 Parse.Cloud.define('getShiftReport', async (request) => {
-  await adminOnly(request);
+  await requireRole(request, ['admin', 'finance']);
   const { values: config } = await loadConfig();
   const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
   if (range.error) throw invalid(range.error);
   const query = new Parse.Query('Shift');
+  const branch = await require('./branches').branchParam(request.params.branchId);
+  if (branch) query.equalTo('branch', branch);
   query.equalTo('kind', 'cashier');
   query.greaterThanOrEqualTo('startedAt', range.start);
   query.lessThan('startedAt', range.end);
