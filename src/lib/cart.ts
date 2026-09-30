@@ -29,11 +29,24 @@ export type CartLine = {
   quantity: number;
   notes: string;
   accompaniments: AccompanimentOption[];
+  // Split orders: the split (a guest or portion) this line is for.
+  split?: string;
 };
 
-// Same dish + same accompaniments + same notes → one line with a quantity.
-export function lineKey(itemId: string, accompanimentIds: string[], notes: string): string {
-  return [itemId, [...accompanimentIds].sort().join('+'), notes.trim().toLowerCase()].join('|');
+// Same dish + same accompaniments + same notes (in the same split) → one line
+// with a quantity.
+export function lineKey(
+  itemId: string,
+  accompanimentIds: string[],
+  notes: string,
+  split = '',
+): string {
+  return [
+    itemId,
+    [...accompanimentIds].sort().join('+'),
+    notes.trim().toLowerCase(),
+    ...(split ? [split] : []),
+  ].join('|');
 }
 
 export function addToCart(
@@ -42,11 +55,13 @@ export function addToCart(
   quantity: number,
   accompaniments: AccompanimentOption[] = [],
   notes = '',
+  split = '',
 ): CartLine[] {
   const key = lineKey(
     item.id,
     accompaniments.map((a) => a.id),
     notes,
+    split,
   );
   const existing = cart.find((line) => line.key === key);
   if (existing)
@@ -63,9 +78,46 @@ export function addToCart(
       quantity,
       notes: notes.trim(),
       accompaniments,
+      ...(split && { split }),
     },
   ];
 }
+
+// Lines grouped by split, splits in `order` first (then any others as they
+// come). Lines without a split form one group with split ''.
+export function groupBySplit<T extends { split?: string }>(
+  lines: T[],
+  order: string[] = [],
+): { split: string; lines: T[] }[] {
+  const names = [...new Set([...order, ...lines.map((line) => line.split || '')])];
+  return names
+    .map((split) => ({ split, lines: lines.filter((line) => (line.split || '') === split) }))
+    .filter((group) => group.lines.length);
+}
+
+// Moves lines between splits, merging lines that become the same.
+// `to(line)`: the split the line should end up in.
+function resplit(cart: CartLine[], to: (line: CartLine) => string): CartLine[] {
+  return cart.reduce<CartLine[]>(
+    (next, line) =>
+      addToCart(
+        next,
+        { id: line.itemId, title: line.title, price: line.price },
+        line.quantity,
+        line.accompaniments,
+        line.notes,
+        to(line),
+      ),
+    [],
+  );
+}
+
+// Put every line in one split ('' = not split).
+export const moveAllToSplit = (cart: CartLine[], split: string) => resplit(cart, () => split);
+
+// A split renamed (e.g. "Split 2" → "Ben").
+export const renameSplit = (cart: CartLine[], from: string, to: string) =>
+  resplit(cart, (line) => (line.split === from ? to : line.split || ''));
 
 export function changeQuantity(cart: CartLine[], key: string, delta: number): CartLine[] {
   return cart

@@ -126,6 +126,8 @@ const SCHEMAS = {
   Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N },
   Order: {
     branch,
+    // Split orders: the splits in the order entered (lines carry `split`).
+    splits: 'Array',
     // Tax (EFRIS): the fiscal document for the sale (cloud/efris.js).
     efrisStatus: S,
     efrisFdn: S,
@@ -226,6 +228,8 @@ const SCHEMAS = {
     // sum per unit; lineTotal = (unitPriceSnapshot + extrasPerUnit) × quantity.
     accompanimentPrices: 'Array',
     extrasPerUnit: N,
+    // Split orders: the split (guest or portion) this line belongs to.
+    split: S,
   },
   CashHandover: {
     branch,

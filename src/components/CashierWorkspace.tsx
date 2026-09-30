@@ -16,6 +16,7 @@ import {
   Plus,
 } from 'lucide-react';
 import Parse from '../parse';
+import { groupBySplit } from '../lib/cart';
 import { CashierHandovers } from './CashierHandovers';
 import { CashierPayouts } from './CashierPayouts';
 import { CashierProfile } from './Profile';
@@ -40,7 +41,8 @@ import { NewOrder } from './NewOrder';
 import { usePrint } from '../lib/print';
 
 type Stage = 'Incoming' | 'Preparing' | 'Ready';
-type TicketLine = { text: string; details: string };
+// `split`: split orders only, the guest or portion the line is for.
+type TicketLine = { text: string; details: string; split?: string };
 type Ticket = {
   id: string;
   // Longest prep time of its dishes (0 = not set: late after 20 min).
@@ -109,8 +111,19 @@ async function loadLiveTickets(branchId?: string | null): Promise<Ticket[]> {
       details: [(item.get('accompanimentNames') || []).join(', '), item.get('notes')]
         .filter(Boolean)
         .join(' · '),
+      split: item.get('split') || '',
     };
     lines.set(orderId, [...(lines.get(orderId) || []), line]);
+  }
+  // Split orders: lines in the order the splits were entered.
+  for (const order of orders) {
+    const splits: string[] = order.get('splits') || [];
+    const own = lines.get(order.id!);
+    if (splits.length && own)
+      lines.set(
+        order.id!,
+        groupBySplit(own, splits).flatMap((group) => group.lines),
+      );
   }
   return orders.map((order) => ({
     id: order.id!,
@@ -619,14 +632,24 @@ function KitchenBoard() {
                       )}
                     </div>
                     <h3>{ticket.customer}</h3>
-                    <ul className="ticket-lines">
-                      {ticket.lines.map((line, index) => (
-                        <li key={index}>
-                          {line.text}
-                          {line.details && <small>{line.details}</small>}
-                        </li>
-                      ))}
-                    </ul>
+                    {ticket.lines.some((line) => line.split) && (
+                      <p className="ticket-split-note">
+                        Split order · {new Set(ticket.lines.map((line) => line.split)).size} splits
+                      </p>
+                    )}
+                    {groupBySplit(ticket.lines).map((group) => (
+                      <div key={group.split || 'all'} className={group.split ? 'ticket-split' : ''}>
+                        {group.split && <p className="ticket-split-name">{group.split}</p>}
+                        <ul className="ticket-lines">
+                          {group.lines.map((line, index) => (
+                            <li key={index}>
+                              {line.text}
+                              {line.details && <small>{line.details}</small>}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
                     {ticket.issue && <p className="ticket-issue">⚠ {ticket.issue}</p>}
                     {ticket.paymentStatus && (
                       <p className={`ticket-payment payment-${ticket.paymentStatus.toLowerCase()}`}>
