@@ -221,7 +221,7 @@ Parse.Cloud.define('sendTestPush', async (request) => {
   const testId = `test-${Date.now()}`;
   const devices = await sendToSubscriptions(subs, () => ({
     id: testId,
-    title: 'Relay test notification',
+    title: 'Test notification',
     body: 'Notifications work on this device.',
     link: '/',
     tone: 'new',
