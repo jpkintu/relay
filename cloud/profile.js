@@ -44,6 +44,8 @@ function publicConfig(values) {
             onShift: values.drawerOnShift !== false,
           }
         : null,
+    // Online orders (online.js): on, and taking orders now (staff pause it).
+    online: values.onlineOrders === true ? { open: values.onlineOpen !== false } : null,
     modules: {
       riderOrders: values.moduleRiderOrders !== false,
       callIn: values.moduleCallIn === true,

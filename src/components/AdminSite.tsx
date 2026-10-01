@@ -8,6 +8,7 @@ import { ADMIN_TABS, type AdminTab } from '../lib/adminTabs';
 
 const AdminSetup = lazyScreen(() => import('./AdminSetup').then((m) => m.AdminSetup));
 const AdminPayments = lazyScreen(() => import('./AdminPayments').then((m) => m.AdminPayments));
+const AdminOnline = lazyScreen(() => import('./AdminOnline').then((m) => m.AdminOnline));
 const AdminEfris = lazyScreen(() => import('./AdminEfris').then((m) => m.AdminEfris));
 const AdminWhatsApp = lazyScreen(() => import('./AdminWhatsApp').then((m) => m.AdminWhatsApp));
 const AccessRules = lazyScreen(() => import('./AccessRules').then((m) => m.AccessRules));
@@ -135,6 +136,7 @@ export function AdminSite({
         {tab === 'settings' && <AdminSetup section="Settings" preview={false} />}
         {tab === 'branding' && <AdminSetup section="Branding" preview={false} />}
         {tab === 'payments' && <AdminPayments />}
+        {tab === 'online' && <AdminOnline />}
         {tab === 'tax' && <AdminEfris />}
         {tab === 'whatsapp' && <AdminWhatsApp />}
         {tab === 'access' && <AccessRules />}

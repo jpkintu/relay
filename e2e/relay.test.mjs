@@ -5685,7 +5685,14 @@ describe('the Admin area opens only with the PIN', () => {
 // (the function checks the person's own records); nobody: master key only,
 // or switched off (preview mode).
 const ACCESS = {
-  public: ['getAppInfo', 'reportClientError'],
+  public: [
+    'getAppInfo',
+    'reportClientError',
+    'getOnlineMenu',
+    'placeOnlineOrder',
+    'getOnlineOrder',
+    'cancelOnlineOrder',
+  ],
   nobody: [
     'bootstrapOwner',
     'recoverOwner',
@@ -5717,6 +5724,7 @@ const ACCESS = {
   everyRole: ['getBranches'],
   cashier: ['recordTillPayout'],
   staff: [
+    'setOnlineOpen',
     'logDrawerOpen',
     'confirmHandover',
     'disputeHandover',
@@ -5764,6 +5772,8 @@ const ACCESS = {
     'getShiftReport',
   ],
   admin: [
+    'adminSaveOnlineOrdering',
+    'adminGetOnlineOrdering',
     'adminGetEfrisSettings',
     'adminSaveEfrisSettings',
     'adminTestEfris',
@@ -6206,5 +6216,147 @@ describe('sign-in lockout and session length (S5, S7)', () => {
     } finally {
       delete process.env.RELAY_SESSION_DAYS;
     }
+  });
+});
+
+describe('online orders: the public menu, a QR code away (online.js)', () => {
+  const M = { useMasterKey: true };
+  let dish;
+  const order = (extra = {}) => ({
+    items: [{ id: dish.id, quantity: 2 }],
+    customerName: 'Web Customer',
+    customerPhone: '0772 123 456',
+    orderType: 'pickup',
+    paymentMethod: 'cash',
+    ...extra,
+  });
+  const byToken = (token) => new Parse.Query('Order').equalTo('onlineToken', token).first(M);
+
+  test('off until the owner switches it on, with at least one way to get and pay', async () => {
+    assert.equal((await run('getOnlineMenu', {})).enabled, false);
+    await rejects(run('placeOnlineOrder', {}), /does not take online orders/);
+    await rejects(
+      run(
+        'adminSaveOnlineOrdering',
+        { onlineOrders: true, onlinePickup: false, onlineDelivery: false },
+        s.owner,
+      ),
+      /pick-up, delivery or both/,
+    );
+    const saved = await run(
+      'adminSaveOnlineOrdering',
+      {
+        onlineOrders: true,
+        onlinePickup: true,
+        onlineDelivery: true,
+        onlineCash: true,
+        onlineMobileMoney: true,
+        onlineNote: 'Delivery within Kampala',
+      },
+      s.owner,
+    );
+    assert.equal(saved.onlineOrders, true);
+    assert.equal((await run('getMyProfile', {}, s.owner)).config.online.open, true);
+  });
+
+  test('anyone sees the live menu, with the ways to pay', async () => {
+    const menu = await run('getOnlineMenu', {});
+    assert.equal(menu.enabled, true);
+    assert.equal(menu.open, true);
+    assert.equal(menu.note, 'Delivery within Kampala');
+    assert.ok(menu.items.length > 0);
+    assert.ok(menu.mobileMoney.length > 0, 'merchant codes are offered');
+    dish = menu.items.find((item) => item.accompanimentGroups.every((g) => g.min === 0));
+    assert.ok(dish, 'a dish without required sides');
+  });
+
+  test('a pick-up paid in cash: an open bill on the kitchen board, nobody holding it', async () => {
+    await rejects(run('placeOnlineOrder', order({ customerName: '' })), /Enter your name/);
+    await rejects(run('placeOnlineOrder', order({ customerPhone: '12' })), /phone number/);
+    await rejects(run('placeOnlineOrder', order({ orderType: 'eat_in' })), /pick-up or delivery/);
+    const placed = await run('placeOnlineOrder', order({ requestId: 'web-test-1' }));
+    assert.match(placed.token, /^[a-f0-9]{32}$/);
+    assert.equal(placed.total, dish.price * 2);
+    // Sent twice (a lost connection): one order.
+    const again = await run('placeOnlineOrder', order({ requestId: 'web-test-1' }));
+    assert.equal(again.duplicate, true);
+    assert.equal(again.token, placed.token);
+    const row = await byToken(placed.token);
+    assert.equal(row.get('channel'), 'online');
+    assert.equal(row.get('source'), 'counter');
+    assert.equal(row.get('status'), 'PLACED');
+    assert.equal(row.get('billOpen'), true);
+    assert.equal(row.get('cashier'), undefined);
+    // Staff can read it; the public cannot query orders.
+    await rejects(
+      new Parse.Query('Order').equalTo('objectId', row.id).find(),
+      /needs to be authenticated/,
+    );
+    const tracked = await run('getOnlineOrder', { token: placed.token });
+    assert.equal(tracked.status, 'PLACED');
+    assert.equal(tracked.orderType, 'pickup');
+    assert.equal(tracked.lines[0].quantity, 2);
+    assert.equal(JSON.stringify(tracked).includes('0772'), false, 'no phone number in the answer');
+    // The customer cancels while the kitchen has not started.
+    await run('cancelOnlineOrder', { token: placed.token });
+    assert.equal((await run('getOnlineOrder', { token: placed.token })).status, 'CANCELLED');
+    await rejects(run('cancelOnlineOrder', { token: placed.token }), /has started/);
+    await rejects(run('getOnlineOrder', { token: 'f'.repeat(32) }), /Order not found/);
+  });
+
+  test('a delivery paid cash to the rider; the counter gives it a rider', async () => {
+    await rejects(run('placeOnlineOrder', order({ orderType: 'delivery' })), /delivery address/);
+    const placed = await run(
+      'placeOnlineOrder',
+      order({
+        orderType: 'delivery',
+        deliveryAddress: 'Plot 4, Ntinda',
+        customerPhone: '0772 222 333',
+      }),
+    );
+    const row = await byToken(placed.token);
+    assert.equal(row.get('orderType'), 'delivery');
+    assert.equal(row.get('cashStatus'), 'NOT_COLLECTED');
+    assert.equal(row.get('amountToCollect'), row.get('total'));
+    assert.ok(row.get('deliveryFee') >= 0);
+    const riders = await run('getAssignableRiders', {}, s.owner);
+    const rider = riders.find((r) => r.onShift && r.available) || riders[0];
+    if (rider) {
+      await run('assignOrderRider', { orderId: row.id, riderId: rider.id }, s.owner);
+      assert.equal((await byToken(placed.token)).get('createdBy').id, rider.id);
+    }
+  });
+
+  test('mobile money by merchant code: the cashier checks the transaction ID', async () => {
+    const menu = await run('getOnlineMenu', {});
+    const account = menu.mobileMoney.find((a) => !a.auto);
+    const placed = await run(
+      'placeOnlineOrder',
+      order({
+        paymentMethod: 'mobile_money',
+        paymentProvider: account.provider,
+        paymentReference: 'WEB12345',
+        customerPhone: '0772 444 555',
+      }),
+    );
+    const row = await byToken(placed.token);
+    assert.equal(row.get('paymentStatus'), 'PENDING_VERIFICATION');
+    assert.equal(row.get('paymentReference'), 'WEB12345');
+    assert.equal(row.get('billOpen'), undefined);
+    assert.equal(row.get('amountToCollect'), 0);
+  });
+
+  test('staff pause online orders when the kitchen is full', async () => {
+    const cashier = await login('carl', PINS.carl);
+    await run('setOnlineOpen', { open: false }, cashier);
+    assert.equal((await run('getOnlineMenu', {})).open, false);
+    await rejects(
+      run('placeOnlineOrder', order({ customerPhone: '0772 666 777' })),
+      /not taking online orders right now/,
+    );
+    await run('setOnlineOpen', { open: true }, cashier);
+    await run('adminSaveOnlineOrdering', { onlineOrders: false }, s.owner);
+    assert.equal((await run('getOnlineMenu', {})).enabled, false);
+    assert.equal((await run('getMyProfile', {}, s.owner)).config.online, null);
   });
 });

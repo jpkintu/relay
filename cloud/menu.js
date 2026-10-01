@@ -21,17 +21,10 @@ async function branchOfRequest(user, role, id) {
   return branchFor(user);
 }
 
-// What a rider can order right now. Accompaniment groups only list
-// accompaniments that are active and not sold out.
-Parse.Cloud.define('getOperationalMenu', async (request) => {
-  const { user, role } = await requireRole(request, ['rider', 'cashier', 'admin']);
-  // The owner orders for the main branch unless they pick one (as
-  // createCounterOrder does).
-  const branchId = (
-    role === 'admin' && request.params.branchId
-      ? await branchParam(request.params.branchId)
-      : await branchFor(user)
-  )?.id;
+// What can be ordered right now at a branch (the online menu too).
+// Accompaniment groups only list accompaniments that are active and not
+// sold out.
+async function operationalMenu(branchId) {
   const query = new Parse.Query('MenuItem');
   query.equalTo('active', true);
   query.equalTo('availableToday', true);
@@ -79,6 +72,19 @@ Parse.Cloud.define('getOperationalMenu', async (request) => {
     deliveryFee: config.defaultDeliveryFee,
     currencySymbol: config.currencySymbol,
   };
+}
+
+// What a rider can order right now.
+Parse.Cloud.define('getOperationalMenu', async (request) => {
+  const { user, role } = await requireRole(request, ['rider', 'cashier', 'admin']);
+  // The owner orders for the main branch unless they pick one (as
+  // createCounterOrder does).
+  const branchId = (
+    role === 'admin' && request.params.branchId
+      ? await branchParam(request.params.branchId)
+      : await branchFor(user)
+  )?.id;
+  return operationalMenu(branchId);
 });
 
 // Everything staff can switch on or off during service.
@@ -153,3 +159,5 @@ Parse.Cloud.define('setAvailability', async (request) => {
   });
   return { id: row.id, available };
 });
+
+module.exports = { operationalMenu };

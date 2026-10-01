@@ -34,6 +34,7 @@ const RiderWorkspace = lazyScreen(loadRider);
 const CashierWorkspace = lazyScreen(loadCashier);
 const AdminWorkspace = lazyScreen(loadAdmin);
 const PrivacyPage = lazyScreen(() => import('./components/PrivacyPage').then((m) => m.PrivacyPage));
+const OnlineOrder = lazyScreen(() => import('./components/OnlineOrder').then((m) => m.OnlineOrder));
 // Started as soon as the role is known, alongside the profile's other requests.
 const PRELOAD: Record<Role, () => Promise<unknown>> = {
   rider: loadRider,
@@ -83,6 +84,13 @@ function AppScreens() {
     }
   }, [user, role, navigate]);
 
+  // The restaurant's public menu and order tracking: no sign-in.
+  if (pathname === '/order' || pathname.startsWith('/order/'))
+    return (
+      <Suspense fallback={<Splash />}>
+        <OnlineOrder />
+      </Suspense>
+    );
   // The privacy notice is open to everyone, signed in or not.
   if (pathname === '/privacy')
     return (
