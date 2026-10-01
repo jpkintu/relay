@@ -54,6 +54,7 @@ const PROTECTED_CLASSES = [
   'PlatformSettings',
   'SubscriptionPayment',
   'Plan',
+  'PlatformBroadcast',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -69,6 +70,7 @@ const PRIVATE_CLASSES = [
   'PlatformSettings',
   'SubscriptionPayment',
   'Plan',
+  'PlatformBroadcast',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -536,6 +538,18 @@ const SCHEMAS = {
     features: 'Object',
     active: B,
     sortOrder: N,
+  },
+  // Emails from platform staff to owners (platformBroadcast.js).
+  PlatformBroadcast: {
+    subject: S,
+    message: S,
+    audience: 'Object',
+    total: N,
+    sent: N,
+    failed: N,
+    state: S,
+    byName: S,
+    finishedAt: D,
   },
   PlatformSettings: {
     monthlyPrice: N,

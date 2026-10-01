@@ -110,6 +110,8 @@ const TAGS = {
   today: { label: 'Payment due', bg: '#ffe6dc', fg: '#a8361a' },
   overdue: { label: 'Overdue', bg: '#fde2e2', fg: '#a11a1a' },
   paid: { label: 'Paid', bg: '#dff5e6', fg: '#17653a' },
+  news: { label: 'From Relay', bg: '#e8eefc', fg: '#1d3fa8' },
+  reward: { label: 'Referral reward', bg: '#dff5e6', fg: '#17653a' },
 };
 
 const billingRows = [
@@ -369,6 +371,55 @@ const KINDS = {
       '{{{SUPPORT_LINE}}}',
     ].join('\n'),
   },
+
+  announcement: {
+    label: 'Message to owners',
+    when: 'When platform staff email owners from the console (Email owners).',
+    subject: '{{{SUBJECT}}}',
+    variables: [...COMMON, 'SUBJECT', 'MESSAGE'],
+    html: layout({
+      title: '{{{SUBJECT}}}',
+      preheader: '{{{SUBJECT}}}',
+      tag: TAGS.news,
+      heading: '{{{SUBJECT}}}',
+      blocks: [para('Hello {{{OWNER_NAME}}},'), para('{{{MESSAGE}}}', 'white-space:pre-line;')],
+    }),
+    text: ['Hello {{{OWNER_NAME}}},', '', '{{{MESSAGE}}}', '', '{{{SUPPORT_LINE}}}'].join('\n'),
+  },
+
+  referral_credit: {
+    label: 'Referral reward',
+    when: 'When a restaurant that signed up with this restaurant’s code makes its first payment.',
+    subject: '{{{RESTAURANT_NAME}}}: {{{MONTHS_TEXT}}} free, thank you for the referral',
+    variables: [...COMMON, 'REFERRED_NAME', 'MONTHS_TEXT', 'PAID_UNTIL', 'BILLING_URL'],
+    html: layout({
+      title: 'Referral reward',
+      preheader: '{{{REFERRED_NAME}}} joined Relay with your code: {{{MONTHS_TEXT}}} free.',
+      tag: TAGS.reward,
+      heading: 'You earned {{{MONTHS_TEXT}}} free',
+      blocks: [
+        para('Hello {{{OWNER_NAME}}},'),
+        para(
+          '{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}.',
+        ),
+        details([row('Now paid until', '{{{PAID_UNTIL}}}')]),
+        button('View billing', '{{{BILLING_URL}}}'),
+        small(
+          'Share your restaurant code with other restaurants: they save on their first payment and you get more free time.',
+        ),
+      ],
+    }),
+    text: [
+      'Hello {{{OWNER_NAME}}},',
+      '',
+      '{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment.',
+      'We added {{{MONTHS_TEXT}}} to {{{RESTAURANT_NAME}}}. Now paid until {{{PAID_UNTIL}}}.',
+      '',
+      'Billing: {{{BILLING_URL}}}',
+      '',
+      '{{{SUPPORT_LINE}}}',
+    ].join('\n'),
+  },
 };
 
 // Example values (the console's test send, and the docs).
@@ -396,6 +447,11 @@ const SAMPLE = {
   PERIOD: '1 month',
   PAID_UNTIL: '15 November 2026',
   REFERENCE: 'MTN 1234567890',
+  SUBJECT: 'New: WhatsApp daily summaries',
+  MESSAGE:
+    'Your end-of-day Z-report can now reach you on WhatsApp.\nTurn it on in Admin → WhatsApp.',
+  REFERRED_NAME: 'Mama Rose Kitchen',
+  MONTHS_TEXT: '1 month',
 };
 
 const escapeHtml = (value) =>

@@ -53,6 +53,7 @@ process.env.RELAY_IP_URL = `http://localhost:${MOMO_PORT}/ip`;
 process.env.RELAY_EFRIS_URL = `http://localhost:${MOMO_PORT}/efris`;
 process.env.RELAY_WHATSAPP_URL = `http://localhost:${MOMO_PORT}/whatsapp`;
 process.env.RELAY_EMAIL_URL = `http://localhost:${MOMO_PORT}/email`;
+process.env.RELAY_BROADCAST_DELAY_MS = '0';
 // The email service stand-in (Resend and Brevo APIs): emails it accepted.
 const mailbox = [];
 // The WhatsApp Cloud API stand-in: messages it accepted.
@@ -5820,6 +5821,10 @@ const ACCESS = {
     'platformSaveEmail',
     'platformTestEmail',
     'platformEmailTemplate',
+    'platformBroadcastPreview',
+    'platformSendBroadcast',
+    'platformListBroadcasts',
+    'platformRevenue',
     'platformGetWhatsApp',
     'platformSaveWhatsApp',
     'platformTestWhatsApp',
@@ -7387,5 +7392,98 @@ describe('owner email: password reset and emails from Relay (Relay Hosted)', () 
     assert.match(mine()[0].text, /Paid for: 1 year/);
     assert.match(mine()[0].text, /Reference: Bank slip 77/);
     assert.match(mine()[0].text, /Invoice: INV-MAIL-CAFE-/);
+  });
+
+  test('platform staff email owners: audience, test, send, history', async () => {
+    const owner = await login('owner', 'new-pass-9', CODE3);
+    await rejects(run('platformBroadcastPreview', {}, owner), /platform role required/);
+    await rejects(
+      run('platformSendBroadcast', { subject: 'Hi', message: 'x'.repeat(20) }, ops),
+      /Subject: 3 to 150/,
+    );
+    await rejects(
+      run('platformSendBroadcast', { subject: 'Hello', message: 'short' }, ops),
+      /Message: 10 to 5,000/,
+    );
+    const all = await run('platformBroadcastPreview', { status: 'all' }, ops);
+    assert.ok(all.count >= 3, `reaches ${all.count}`);
+    const paid = await run('platformBroadcastPreview', { status: 'active' }, ops);
+    assert.ok(paid.count >= 1 && paid.count < all.count);
+    const draft = {
+      subject: 'News for {restaurant}',
+      message: 'Hello {owner}, prices stay the same next year.\nThank you.',
+      status: 'all',
+    };
+    mailbox.length = 0;
+    const test = await run('platformSendBroadcast', { ...draft, testTo: 'ops@relay.example' }, ops);
+    assert.equal(test.sent, 1);
+    assert.equal(mailbox.length, 1);
+    assert.equal(mailbox[0].to, 'ops@relay.example');
+    assert.match(mailbox[0].subject, /^News for /);
+    assert.equal(mailbox[0].html.includes('{{{'), false);
+    assert.equal(
+      (await run('platformListBroadcasts', {}, ops)).rows.length,
+      0,
+      'a test is not kept',
+    );
+
+    mailbox.length = 0;
+    const started = await run('platformSendBroadcast', draft, ops);
+    assert.equal(started.total, all.count);
+    let row;
+    for (let i = 0; i < 100; i += 1) {
+      row = (await run('platformListBroadcasts', {}, ops)).rows.find((r) => r.id === started.id);
+      if (row.state === 'done') break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(row.state, 'done');
+    assert.equal(row.sent, all.count);
+    assert.equal(row.failed, 0);
+    assert.equal(mailbox.length, all.count);
+    const mary = mailbox.find((m) => m.to === 'mary@cafe.example');
+    assert.equal(mary.subject, 'News for Mail Cafe');
+    assert.match(mary.text, /Hello Mary, prices stay the same next year\.\nThank you\./);
+    const audit = await run('platformGetAudit', {}, ops);
+    assert.ok(audit.rows.some((r) => r.action === 'platform.broadcast_sent'));
+  });
+
+  test('the revenue dashboard adds up for platform staff only', async () => {
+    const owner = await login('owner', 'new-pass-9', CODE3);
+    await rejects(run('platformRevenue', {}, owner), /platform role required/);
+    const revenue = await run('platformRevenue', {}, ops);
+    const { rows } = await run('platformListRestaurants', {}, ops);
+    const payments = (await run('platformListPayments', {}, ops)).rows.filter(
+      (p) => p.status === 'paid',
+    );
+    assert.equal(revenue.months.length, 12);
+    assert.equal(revenue.restaurants, rows.length);
+    assert.equal(
+      Object.values(revenue.status).reduce((a, b) => a + b, 0),
+      rows.length,
+    );
+    const total = payments.reduce((sum, p) => sum + p.amount, 0);
+    assert.equal(revenue.allTime, total);
+    // Every payment in the tests was made this month.
+    assert.equal(revenue.thisMonth, total);
+    assert.equal(revenue.months[11].amount, total);
+    assert.equal(revenue.months[11].payments, payments.length);
+    const paying = rows.filter((r) => r.status === 'active' || r.status === 'past_due');
+    assert.equal(
+      revenue.mrr,
+      paying.reduce((sum, r) => sum + r.monthlyPrice, 0),
+    );
+    assert.equal(
+      revenue.plans.reduce((sum, plan) => sum + plan.restaurants, 0),
+      paying.length,
+    );
+    const paidIds = new Set(payments.map((p) => p.restaurantId));
+    assert.equal(revenue.conversion.converted, paidIds.size);
+    assert.ok(revenue.conversion.eligible >= paidIds.size);
+    assert.equal(
+      revenue.dueIn30Days,
+      revenue.upcoming.reduce((sum, row) => sum + row.amount, 0),
+    );
+    for (const row of revenue.upcoming)
+      assert.ok(new Date(row.dueAt) - Date.now() <= 30 * 86400000);
   });
 });

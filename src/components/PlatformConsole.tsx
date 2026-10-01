@@ -3,6 +3,8 @@ import { LogOut, RefreshCw } from 'lucide-react';
 import Parse from '../parse';
 import { PlatformWhatsApp } from './PlatformWhatsApp';
 import { PlatformEmail } from './PlatformEmail';
+import { PlatformBroadcast } from './PlatformBroadcast';
+import { PlatformRevenue } from './PlatformRevenue';
 import { PlatformPlans, type Plan } from './PlatformPlans';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
@@ -98,18 +100,6 @@ export function PlatformConsole() {
         ),
     );
   }, [rows, query]);
-  const counts = useMemo(() => {
-    const all = rows || [];
-    return {
-      total: all.length,
-      trial: all.filter((r) => r.status === 'trial').length,
-      paid: all.filter((r) => r.status === 'active').length,
-      late: all.filter((r) => r.status === 'past_due' || r.status === 'expired').length,
-      monthly: all
-        .filter((r) => r.status === 'active' || r.status === 'past_due')
-        .reduce((sum, r) => sum + r.monthlyPrice, 0),
-    };
-  }, [rows]);
   const current = rows?.find((r) => r.id === selected) || null;
   const currency = settings?.currency || '';
   const names = useMemo(() => new Map((rows || []).map((r) => [r.id, r.name])), [rows]);
@@ -131,25 +121,7 @@ export function PlatformConsole() {
       </header>
       <main className="platform-main">
         {error && <p className="form-error">{error}</p>}
-        <div className="admin-metrics">
-          <article>
-            <span>Restaurants</span>
-            <strong>{counts.total}</strong>
-            <small>
-              {counts.trial} on trial · {counts.paid} paid
-            </small>
-          </article>
-          <article>
-            <span>Need to renew</span>
-            <strong>{counts.late}</strong>
-            <small>In grace days or expired</small>
-          </article>
-          <article>
-            <span>Monthly billing</span>
-            <strong>{formatMoney(counts.monthly, currency)}</strong>
-            <small>Paid restaurants at their prices</small>
-          </article>
-        </div>
+        <PlatformRevenue timeZone={TIMEZONE} />
 
         <section className="admin-panel">
           <div className="panel-title">
@@ -253,6 +225,8 @@ export function PlatformConsole() {
 
         <PlatformEmail />
 
+        {settings && <PlatformBroadcast plans={settings.plans} timeZone={TIMEZONE} />}
+
         <PlatformWhatsApp />
 
         <ApplySecurity onDone={() => void load()} />
@@ -290,7 +264,9 @@ export function PlatformConsole() {
                               )} for ${String(c.after.months)} month(s)${
                                 c.after.reference ? ` (${String(c.after.reference)})` : ''
                               }`
-                            : `changed ${names.get(c.entityId) || 'a restaurant'}`}
+                            : c.action === 'platform.broadcast_sent'
+                              ? `emailed ${String(c.after.total ?? '')} owners: “${String(c.after.subject ?? '')}”`
+                              : `changed ${names.get(c.entityId) || 'a restaurant'}`}
                     {c.action === 'platform.restaurant_updated' ||
                     c.action === 'platform.settings_saved'
                       ? describe(c)

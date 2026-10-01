@@ -8439,3 +8439,46 @@ tr.split-row td {
 .data .actions-cell button + button {
   margin-left: 6px;
 }
+
+/* Platform console → Email owners */
+.broadcast .broadcast-reach {
+  margin: 0;
+  color: var(--muted, #5b6478);
+}
+.broadcast textarea {
+  width: 100%;
+  font: inherit;
+}
+
+/* Platform console → Revenue */
+.platform-revenue .admin-metrics {
+  grid-template-columns: repeat(3, 1fr);
+  margin: 18px 0 24px;
+}
+.platform-revenue .metric-alert strong {
+  color: var(--danger, #b42318);
+}
+.platform-revenue h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.revenue-chart {
+  margin-bottom: 24px;
+}
+.revenue-tables {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.revenue-tables h3 + .table-scroll + h3,
+.revenue-tables .table-scroll + h3 {
+  margin-top: 20px;
+}
+@media (max-width: 900px) {
+  .platform-revenue .admin-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .revenue-tables {
+    grid-template-columns: 1fr;
+  }
+}

@@ -922,7 +922,9 @@ var require_emailTemplates = __commonJS({
       soon: { label: "Payment due soon", bg: "#fff3d6", fg: "#8a5a00" },
       today: { label: "Payment due", bg: "#ffe6dc", fg: "#a8361a" },
       overdue: { label: "Overdue", bg: "#fde2e2", fg: "#a11a1a" },
-      paid: { label: "Paid", bg: "#dff5e6", fg: "#17653a" }
+      paid: { label: "Paid", bg: "#dff5e6", fg: "#17653a" },
+      news: { label: "From Relay", bg: "#e8eefc", fg: "#1d3fa8" },
+      reward: { label: "Referral reward", bg: "#dff5e6", fg: "#17653a" }
     };
     var billingRows = [
       row("Plan", "{{{PLAN_NAME}}}"),
@@ -1173,6 +1175,53 @@ var require_emailTemplates = __commonJS({
           "",
           "{{{SUPPORT_LINE}}}"
         ].join("\n")
+      },
+      announcement: {
+        label: "Message to owners",
+        when: "When platform staff email owners from the console (Email owners).",
+        subject: "{{{SUBJECT}}}",
+        variables: [...COMMON, "SUBJECT", "MESSAGE"],
+        html: layout({
+          title: "{{{SUBJECT}}}",
+          preheader: "{{{SUBJECT}}}",
+          tag: TAGS.news,
+          heading: "{{{SUBJECT}}}",
+          blocks: [para("Hello {{{OWNER_NAME}}},"), para("{{{MESSAGE}}}", "white-space:pre-line;")]
+        }),
+        text: ["Hello {{{OWNER_NAME}}},", "", "{{{MESSAGE}}}", "", "{{{SUPPORT_LINE}}}"].join("\n")
+      },
+      referral_credit: {
+        label: "Referral reward",
+        when: "When a restaurant that signed up with this restaurant\u2019s code makes its first payment.",
+        subject: "{{{RESTAURANT_NAME}}}: {{{MONTHS_TEXT}}} free, thank you for the referral",
+        variables: [...COMMON, "REFERRED_NAME", "MONTHS_TEXT", "PAID_UNTIL", "BILLING_URL"],
+        html: layout({
+          title: "Referral reward",
+          preheader: "{{{REFERRED_NAME}}} joined Relay with your code: {{{MONTHS_TEXT}}} free.",
+          tag: TAGS.reward,
+          heading: "You earned {{{MONTHS_TEXT}}} free",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}."
+            ),
+            details([row("Now paid until", "{{{PAID_UNTIL}}}")]),
+            button("View billing", "{{{BILLING_URL}}}"),
+            small(
+              "Share your restaurant code with other restaurants: they save on their first payment and you get more free time."
+            )
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment.",
+          "We added {{{MONTHS_TEXT}}} to {{{RESTAURANT_NAME}}}. Now paid until {{{PAID_UNTIL}}}.",
+          "",
+          "Billing: {{{BILLING_URL}}}",
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
       }
     };
     var SAMPLE = {
@@ -1198,7 +1247,11 @@ var require_emailTemplates = __commonJS({
       DAYS_TO_CLOSE: "7",
       PERIOD: "1 month",
       PAID_UNTIL: "15 November 2026",
-      REFERENCE: "MTN 1234567890"
+      REFERENCE: "MTN 1234567890",
+      SUBJECT: "New: WhatsApp daily summaries",
+      MESSAGE: "Your end-of-day Z-report can now reach you on WhatsApp.\nTurn it on in Admin \u2192 WhatsApp.",
+      REFERRED_NAME: "Mama Rose Kitchen",
+      MONTHS_TEXT: "1 month"
     };
     var escapeHtml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     function fill(template, variables, escape2 = (value) => value) {
@@ -1812,7 +1865,8 @@ var require_security = __commonJS({
       "Restaurant",
       "PlatformSettings",
       "SubscriptionPayment",
-      "Plan"
+      "Plan",
+      "PlatformBroadcast"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -1826,7 +1880,8 @@ var require_security = __commonJS({
       "Restaurant",
       "PlatformSettings",
       "SubscriptionPayment",
-      "Plan"
+      "Plan",
+      "PlatformBroadcast"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -2279,6 +2334,18 @@ var require_security = __commonJS({
         features: "Object",
         active: B,
         sortOrder: N
+      },
+      // Emails from platform staff to owners (platformBroadcast.js).
+      PlatformBroadcast: {
+        subject: S,
+        message: S,
+        audience: "Object",
+        total: N,
+        sent: N,
+        failed: N,
+        state: S,
+        byName: S,
+        finishedAt: D
       },
       PlatformSettings: {
         monthlyPrice: N,
@@ -37453,6 +37520,265 @@ var require_platformWhatsapp = __commonJS({
   }
 });
 
+// cloud/platformBroadcast.js
+var require_platformBroadcast = __commonJS({
+  "cloud/platformBroadcast.js"() {
+    "use strict";
+    var { MASTER, invalid, audit } = require_core();
+    var tenancy = require_tenant();
+    var { accessOf } = require_access();
+    var { requirePlatform, platformSettings } = require_restaurants();
+    var { loadEmail, ready, validEmail, sendKind } = require_email();
+    var { ownerVariables } = require_platformEmail();
+    var { log, errorMessage } = require_log();
+    var STATUSES = ["all", "trial", "active", "past_due", "expired"];
+    var delayMs = () => Number(process.env.RELAY_BROADCAST_DELAY_MS ?? 600);
+    var personal = (text, row) => String(text).replace(/\{restaurant\}/gi, row.get("name") || "").replace(/\{owner\}/gi, row.get("ownerName") || "");
+    function audienceOf(params) {
+      const status = STATUSES.includes(params?.status) ? params.status : "all";
+      const plan = String(params?.plan || "");
+      return { status, plan };
+    }
+    async function recipients(audience) {
+      const { values: platform } = await platformSettings();
+      const query = new Parse.Query("Restaurant");
+      query.notEqualTo("suspended", true);
+      const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
+      const chosen = rows.filter((row) => {
+        if (audience.plan && (row.get("plan") || "") !== audience.plan) return false;
+        if (audience.status === "all") return true;
+        return accessOf(row, platform.graceDays).status === audience.status;
+      });
+      return {
+        platform,
+        rows: chosen.filter((row) => validEmail(row.get("ownerEmail"))),
+        withoutEmail: chosen.filter((row) => !validEmail(row.get("ownerEmail"))).length
+      };
+    }
+    function checkMessage(params) {
+      const subject = String(params?.subject || "").trim();
+      const message = String(params?.message || "").trim();
+      if (subject.length < 3 || subject.length > 150) throw invalid("Subject: 3 to 150 characters");
+      if (message.length < 10 || message.length > 5e3)
+        throw invalid("Message: 10 to 5,000 characters");
+      return { subject, message };
+    }
+    var view = (row) => ({
+      id: row.id,
+      subject: row.get("subject"),
+      message: row.get("message"),
+      audience: row.get("audience") || { status: "all", plan: "" },
+      total: row.get("total") || 0,
+      sent: row.get("sent") || 0,
+      failed: row.get("failed") || 0,
+      state: row.get("state") || "done",
+      by: row.get("byName") || "",
+      createdAt: row.createdAt?.toISOString() || null,
+      finishedAt: row.get("finishedAt")?.toISOString() || null
+    });
+    Parse.Cloud.define("platformBroadcastPreview", async (request) => {
+      await requirePlatform(request);
+      const { rows, withoutEmail } = await recipients(audienceOf(request.params));
+      return {
+        count: rows.length,
+        withoutEmail,
+        sample: rows.slice(0, 5).map((row) => row.get("name"))
+      };
+    });
+    Parse.Cloud.define("platformSendBroadcast", async (request) => {
+      const actor = await requirePlatform(request);
+      const { subject, message } = checkMessage(request.params);
+      const audience = audienceOf(request.params);
+      const { email } = await loadEmail();
+      if (!ready(email)) throw invalid("Set up the email service first (Email, above)");
+      const { platform, rows } = await recipients(audience);
+      const variables = (row2) => ({
+        ...ownerVariables(row2, platform),
+        SUBJECT: personal(subject, row2),
+        MESSAGE: personal(message, row2)
+      });
+      const testTo = String(request.params?.testTo || "").trim().toLowerCase();
+      if (testTo) {
+        if (!validEmail(testTo)) throw invalid("Enter the address to send the test to");
+        const example = rows[0] || {
+          get: (key) => ({ name: "Your restaurant", ownerName: "there" })[key] || ""
+        };
+        try {
+          await sendKind(email, "announcement", testTo, variables(example));
+        } catch (error) {
+          throw invalid(`Not sent: ${errorMessage(error)}`);
+        }
+        return { test: true, sent: 1 };
+      }
+      if (!rows.length) throw invalid("No owner in this audience has an email address");
+      const row = new Parse.Object("PlatformBroadcast");
+      row.set({
+        subject,
+        message,
+        audience,
+        total: rows.length,
+        sent: 0,
+        failed: 0,
+        state: "sending",
+        byName: actor.get("name") || actor.getUsername()
+      });
+      row.setACL(new Parse.ACL());
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.broadcast_sent", row, null, { subject, audience, total: rows.length })
+      );
+      void (async () => {
+        let sent = 0;
+        let failed = 0;
+        for (const [index, restaurant] of rows.entries()) {
+          try {
+            await sendKind(email, "announcement", restaurant.get("ownerEmail"), variables(restaurant));
+            sent += 1;
+          } catch (error) {
+            failed += 1;
+            log("warn", "broadcast.email_failed", {
+              broadcast: row.id,
+              restaurant: restaurant.id,
+              error: errorMessage(error)
+            });
+          }
+          if (index % 10 === 9 || index === rows.length - 1) {
+            row.set({ sent, failed });
+            if (index === rows.length - 1) row.set({ state: "done", finishedAt: /* @__PURE__ */ new Date() });
+            await tenancy.withoutTenant(() => row.save(null, MASTER));
+          }
+          if (delayMs() > 0 && index < rows.length - 1)
+            await new Promise((resolve) => setTimeout(resolve, delayMs()));
+        }
+      })().catch(
+        (error) => log("error", "broadcast.failed", { broadcast: row.id, error: errorMessage(error) })
+      );
+      return view(row);
+    });
+    Parse.Cloud.define("platformListBroadcasts", async (request) => {
+      await requirePlatform(request);
+      const query = new Parse.Query("PlatformBroadcast");
+      query.descending("createdAt");
+      query.limit(20);
+      const rows = await tenancy.withoutTenant(() => query.find(MASTER));
+      return { rows: rows.map(view) };
+    });
+  }
+});
+
+// cloud/platformRevenue.js
+var require_platformRevenue = __commonJS({
+  "cloud/platformRevenue.js"(exports2, module2) {
+    "use strict";
+    var { MASTER } = require_core();
+    var tenancy = require_tenant();
+    var { accessOf } = require_access();
+    var { requirePlatform, platformSettings, priceOf } = require_restaurants();
+    var DAY = 864e5;
+    var TIME_ZONE = process.env.RELAY_EMAIL_TZ || "Africa/Kampala";
+    var monthKey = (date) => new Intl.DateTimeFormat("en-CA", { timeZone: TIME_ZONE, year: "numeric", month: "2-digit" }).format(date).slice(0, 7);
+    function lastMonths(count, now = /* @__PURE__ */ new Date()) {
+      const [year, month] = monthKey(now).split("-").map(Number);
+      return Array.from({ length: count }, (_, i) => {
+        const d = new Date(Date.UTC(year, month - 1 - (count - 1 - i), 15));
+        return d.toISOString().slice(0, 7);
+      });
+    }
+    Parse.Cloud.define("platformRevenue", async (request) => {
+      await requirePlatform(request);
+      const { values: platform } = await platformSettings();
+      const now = Date.now();
+      const [restaurants, payments] = await tenancy.withoutTenant(
+        () => Promise.all([
+          new Parse.Query("Restaurant").findAll({ ...MASTER, batchSize: 500 }),
+          new Parse.Query("SubscriptionPayment").equalTo("status", "paid").findAll({ ...MASTER, batchSize: 1e3 })
+        ])
+      );
+      const months = lastMonths(12);
+      const byMonth = Object.fromEntries(months.map((key) => [key, { amount: 0, payments: 0 }]));
+      const everPaid = /* @__PURE__ */ new Set();
+      let allTime = 0;
+      for (const payment of payments) {
+        const amount = Number(payment.get("amount")) || 0;
+        allTime += amount;
+        everPaid.add(payment.get("tenant")?.id);
+        const key = monthKey(payment.get("paidAt") || payment.createdAt);
+        if (byMonth[key]) {
+          byMonth[key].amount += amount;
+          byMonth[key].payments += 1;
+        }
+      }
+      const planName = Object.fromEntries((platform.plans || []).map((p) => [p.key, p.name]));
+      const status = { trial: 0, active: 0, past_due: 0, expired: 0, suspended: 0 };
+      const plans = {};
+      const upcoming = [];
+      const overdue = [];
+      let mrr = 0;
+      let trialEnded = 0;
+      for (const row of restaurants) {
+        const access = accessOf(row, platform.graceDays, now);
+        status[access.status] = (status[access.status] || 0) + 1;
+        const price = priceOf(row, platform);
+        const base = {
+          id: row.id,
+          name: row.get("name"),
+          code: row.get("code"),
+          plan: planName[row.get("plan")] || row.get("plan") || "",
+          amount: price
+        };
+        const paying = access.status === "active" || access.status === "past_due";
+        if (paying) {
+          mrr += price;
+          const key = row.get("plan") || "";
+          plans[key] = plans[key] || { name: base.plan, restaurants: 0, mrr: 0 };
+          plans[key].restaurants += 1;
+          plans[key].mrr += price;
+        }
+        const trialEnd = row.get("trialEndsAt")?.getTime() || 0;
+        if (everPaid.has(row.id) || trialEnd && trialEnd < now) trialEnded += 1;
+        const until = access.until?.getTime() || 0;
+        if ((access.status === "trial" || access.status === "active") && until - now <= 30 * DAY)
+          upcoming.push({
+            ...base,
+            kind: access.status === "trial" ? "trial_ends" : "renewal",
+            dueAt: new Date(until).toISOString()
+          });
+        if (access.status === "past_due")
+          overdue.push({
+            ...base,
+            dueAt: new Date(until - Number(platform.graceDays || 0) * DAY).toISOString(),
+            closesAt: new Date(until).toISOString()
+          });
+      }
+      upcoming.sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+      overdue.sort((a, b) => a.closesAt.localeCompare(b.closesAt));
+      const thisKey = months[11];
+      const lastKey = months[10];
+      const converted = restaurants.filter((row) => everPaid.has(row.id)).length;
+      return {
+        currency: platform.currency,
+        months: months.map((key) => ({ month: key, ...byMonth[key] })),
+        thisMonth: byMonth[thisKey].amount,
+        lastMonth: byMonth[lastKey].amount,
+        allTime,
+        // Monthly recurring revenue: what the paying restaurants pay a month.
+        mrr,
+        restaurants: restaurants.length,
+        status,
+        plans: Object.values(plans).sort((a, b) => b.mrr - a.mrr),
+        // Trial to paid: restaurants that ever paid, of those whose trial ended
+        // (or who paid without one).
+        conversion: { converted, eligible: trialEnded },
+        upcoming,
+        dueIn30Days: upcoming.reduce((sum, row) => sum + row.amount, 0),
+        overdue,
+        overdueAmount: overdue.reduce((sum, row) => sum + row.amount, 0)
+      };
+    });
+    module2.exports = { lastMonths, monthKey };
+  }
+});
+
 // cloud/people.js
 var require_people = __commonJS({
   "cloud/people.js"(exports2, module2) {
@@ -38968,6 +39294,8 @@ require_accounting();
 require_whatsapp();
 require_platformWhatsapp();
 require_platformEmail();
+require_platformBroadcast();
+require_platformRevenue();
 require_people();
 require_admin();
 require_onboarding();

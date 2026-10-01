@@ -159,6 +159,24 @@ Or, with the master key, call the function `createPlatformAdmin` with `{
 "username": "…", "password": "…", "name": "…" }` (API console → REST → POST
 `functions/createPlatformAdmin`, Use Master Key).
 
+**Revenue** (top of the console, `platformRevenue`): money received this
+month against last month, monthly recurring revenue (what paid restaurants
+pay a month, and the yearly rate), paying restaurants, trial-to-paid
+conversion (restaurants that ever paid, of those whose trial ended), the
+amount due in the next 30 days and the overdue amount; a bar chart of money
+received per month over 12 months; and tables of what is coming up (renewals
+and trials ending), who is overdue (in grace days, with the closing date) and
+paying restaurants per plan. Months are Kampala months.
+
+**Email owners** (`platformBroadcastPreview`, `platformSendBroadcast`,
+`platformListBroadcasts`): choose who (all, on trial, paid, overdue, closed;
+any plan or one), write a subject and message (`{restaurant}` and `{owner}`
+become each restaurant's own), send a test to yourself, then send. It goes in
+the background, one email per owner through the email service (the
+`announcement` kind, so it can use a Resend template too) at about two a
+second; the list below shows each send with how many went out and failed.
+Suspended restaurants and owners without an email are left out.
+
 The console shows every restaurant's name, code, owner, billing phone, status,
 trial or paid-until date, price, staff count and orders in the last 30 days,
 never its orders, customers or money. For each restaurant you can set its own
