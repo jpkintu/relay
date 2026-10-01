@@ -941,6 +941,12 @@ button {
 .ops-header nav {
   display: flex;
   align-self: stretch;
+  /* Many tabs on a narrow screen scroll sideways instead of running off it. */
+  min-width: 0;
+  overflow-x: auto;
+}
+.ops-header nav button {
+  flex-shrink: 0;
 }
 .ops-header nav button {
   border: 0;
@@ -1372,6 +1378,44 @@ button {
 }
 .table-row .status-pill {
   justify-self: start;
+}
+/* Cashier tabs: compact on mid-size screens so every tab stays in view. */
+@media (max-width: 1600px) {
+  .ops-header {
+    padding: 0 20px;
+    gap: 16px;
+  }
+  .ops-header nav button {
+    padding: 0 10px;
+    gap: 6px;
+    font-size: 14px;
+  }
+}
+@media (max-width: 1439px) {
+  /* Too many tabs for one row: they wrap onto a second one. */
+  .ops-header {
+    height: auto;
+    min-height: 76px;
+    gap: 10px;
+  }
+  .ops-header nav {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  .ops-header nav button {
+    padding: 0 9px;
+    min-height: 38px;
+    font-size: 13px;
+  }
+}
+@media (max-width: 1279px) {
+  /* Inactive tabs show their icon only; hovering names them. */
+  .ops-header nav button:not(.active) {
+    font-size: 0;
+  }
+  .ops-header nav button:not(.active) b {
+    font-size: 12px;
+  }
 }
 @media (max-width: 850px) {
   .role-switch {
