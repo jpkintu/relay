@@ -749,6 +749,11 @@ Parse.Cloud.define('adminSaveSettings', async (request) => {
     receiptHeader: merchantField(p.receiptHeader ?? current.receiptHeader, 300),
     receiptFooter: merchantField(p.receiptFooter ?? current.receiptFooter, 200),
     autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true,
+    cashDrawer: (p.cashDrawer ?? current.cashDrawer) === true,
+    drawerOnSale: (p.drawerOnSale ?? current.drawerOnSale) !== false,
+    drawerOnHandover: (p.drawerOnHandover ?? current.drawerOnHandover) !== false,
+    drawerOnPayout: (p.drawerOnPayout ?? current.drawerOnPayout) !== false,
+    drawerOnShift: (p.drawerOnShift ?? current.drawerOnShift) !== false,
   });
   config.setACL(readAcl(null, ['admin']));
   await config.save(null, MASTER);

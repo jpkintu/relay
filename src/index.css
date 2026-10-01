@@ -7807,3 +7807,65 @@ tr.split-row td {
   gap: 8px;
   line-height: 1.5;
 }
+
+/* Cash drawer */
+.drawer-open {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.drawer-open input {
+  flex: 1;
+  min-width: 220px;
+}
+.drawer-modes {
+  display: grid;
+  gap: 10px;
+}
+.drawer-mode {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.drawer-mode.chosen {
+  border-color: var(--ink);
+  background: var(--surface-2, #eef1f7);
+}
+.drawer-mode.unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.drawer-mode span {
+  display: grid;
+  gap: 4px;
+}
+.drawer-mode small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+.drawer-settings {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.drawer-pin {
+  max-width: 260px;
+  margin-top: 14px;
+}
+.drawer-page .platform-actions {
+  margin-top: 14px;
+  align-items: center;
+}
+.drawer-openings {
+  margin-top: 12px;
+}
+.drawer-page .platform-actions {
+  display: flex;
+  gap: 12px;
+}

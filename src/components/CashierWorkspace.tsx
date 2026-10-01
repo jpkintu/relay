@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
+  Archive,
   Check,
   ChevronRight,
   ClipboardCheck,
@@ -19,6 +20,8 @@ import Parse from '../parse';
 import { groupBySplit } from '../lib/cart';
 import { CashierHandovers } from './CashierHandovers';
 import { CashierPayouts } from './CashierPayouts';
+import { CashierDrawer } from './CashierDrawer';
+import { openDrawer } from '../lib/drawer';
 import { CashierProfile } from './Profile';
 import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
@@ -222,7 +225,9 @@ export function CashierWorkspace() {
             ? 'payments'
             : pathname.startsWith('/cashier/payouts')
               ? 'payouts'
-              : 'orders';
+              : pathname.startsWith('/cashier/drawer')
+                ? 'drawer'
+                : 'orders';
   return (
     <main className="ops-shell">
       <header className="ops-header">
@@ -263,6 +268,15 @@ export function CashierWorkspace() {
             <Banknote />
             Payouts
           </button>
+          {config.drawer && (
+            <button
+              className={tab === 'drawer' ? 'active' : ''}
+              onClick={() => navigate('/cashier/drawer')}
+            >
+              <Archive />
+              Drawer
+            </button>
+          )}
           <button
             className={tab === 'stock' ? 'active' : ''}
             onClick={() => navigate('/cashier/stock')}
@@ -335,7 +349,19 @@ export function CashierWorkspace() {
                     onBack={() => navigate('/cashier')}
                     onGoToCash={() => navigate('/cashier')}
                     onOpenOrder={() => navigate('/cashier')}
-                    onPlaced={(payload) => Parse.Cloud.run('createCounterOrder', payload)}
+                    onPlaced={async (payload) => {
+                      const placed = await Parse.Cloud.run('createCounterOrder', payload);
+                      // Cash taken at the counter now: open the drawer.
+                      const p = payload as Record<string, unknown>;
+                      if (
+                        config.drawer?.onSale &&
+                        p.orderType !== 'delivery' &&
+                        p.payLater !== true &&
+                        (p.paymentMethod || 'cash') === 'cash'
+                      )
+                        void openDrawer('sale', { ref: placed?.id });
+                      return placed;
+                    }}
                   />
                 </div>
               }
@@ -345,6 +371,7 @@ export function CashierWorkspace() {
           <Route path="stock" element={<StockPanel />} />
           <Route path="payments" element={<MobileMoneyLedger />} />
           <Route path="payouts" element={<CashierPayouts />} />
+          <Route path="drawer" element={<CashierDrawer />} />
           <Route
             path="shift"
             element={
@@ -536,6 +563,8 @@ function KitchenBoard() {
         ...(payMethod === 'card' && { paymentProvider: 'card', paymentReference: payRef.trim() }),
       });
       if (request) setRequesting({ id: ticket.id, code: ticket.code });
+      if (payMethod === 'cash' && config.drawer?.onSale)
+        void openDrawer('payment', { ref: ticket.id });
       setPaying(null);
       setPayRef('');
       setPayPhone('');
