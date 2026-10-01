@@ -431,6 +431,19 @@ It runs without a job: at most hourly on the back of any owner using the app
 (`RELAY_RETENTION_CHECK_MS`), whenever platform staff open the console, and in
 the `billing` job when one is scheduled.
 
+## Sign-in lockout and session length (S5, S7)
+
+One Back4App setting covers every restaurant: Server Settings → Custom Parse
+Options `{"accountLockout": {"threshold": 5, "duration": 15}, "sessionLength":
+2592000}` (docs/ROADMAP.md §2). Platform console → Settings & errors →
+**Sign-in protection** shows whether it is on (`platformSecurityStatus`);
+restaurants see the same under Admin → Access & security, and are told
+Relay sets it. An owner unlocks their team (Team → Unlock sign-in); platform
+staff unlock an owner with **Reset owner password**. Sign-ins end after 30
+days for staff, 14 for owners and finance, and **1 day for platform staff**
+(`RELAY_PLATFORM_SESSION_DAYS`), checked inside the restaurant's context on
+every Cloud function call.
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,
