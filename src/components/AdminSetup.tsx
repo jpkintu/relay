@@ -1318,6 +1318,19 @@ export function AdminSetup({
                     Open it {label.charAt(0).toLowerCase() + label.slice(1)}
                   </label>
                 ))}
+              {settings.cashDrawer && (
+                <p className="muted">
+                  After saving, connect each till from the{' '}
+                  <button
+                    type="button"
+                    className="setup-secondary"
+                    onClick={() => navigate('/cashier/drawer')}
+                  >
+                    Drawer screen
+                  </button>{' '}
+                  (cashiers see it as the Drawer tab).
+                </p>
+              )}
               {settings.cashDrawer && <DrawerOpenings />}
             </div>
             <div className="full-row merchant-settings modules">
