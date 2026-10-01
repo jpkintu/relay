@@ -8636,3 +8636,31 @@ tr.split-row td {
   border-color: var(--ink);
   color: var(--on-dark, #fff);
 }
+
+/* Moving down: choose what stays */
+.downgrade-chooser,
+.downgrade-pending {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 20px;
+  background: var(--surface);
+}
+.downgrade-chooser h3 {
+  margin: 0 0 6px;
+}
+.downgrade-chooser fieldset {
+  border: 0;
+  padding: 0;
+  margin: 14px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.downgrade-chooser legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.downgrade-pending {
+  background: var(--warn-soft, #fff7e0);
+  line-height: 1.5;
+}

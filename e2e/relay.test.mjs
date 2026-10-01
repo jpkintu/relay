@@ -5919,6 +5919,7 @@ const ACCESS = {
     'checkSubscriptionPayment',
     'startTrialInstead',
     'startPlanUpgrade',
+    'getDowngradeChoices',
     'adminGetEfrisSettings',
     'adminSaveEfrisSettings',
     'adminTestEfris',
@@ -7144,6 +7145,105 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
     assert.equal(kept.plan.renewal, 'enterprise');
     assert.equal(kept.plan.renewalFrom, null);
     await rejects(run('changePlan', { plan: 'enterprise' }, step), /on Enterprise already/);
+  });
+
+  test('moving down: the owner keeps one branch and the team within the limits; history stays', async () => {
+    // Basic Bites is on Enterprise (paid), with two branches, 3 cashiers and
+    // a finance member: more than Basic allows.
+    await rejects(
+      run('changePlan', { plan: 'basic' }, owner),
+      /choose the branch and team that stay/,
+    );
+    const choices = await run('getDowngradeChoices', { plan: 'basic' }, owner);
+    assert.equal(choices.fits, false);
+    assert.equal(choices.maxBranches, 1);
+    assert.equal(choices.branches.length, 2);
+    assert.equal(choices.roles.cashier.max, 2);
+    assert.equal(choices.roles.cashier.members.length, 3);
+    assert.equal(choices.roles.finance.max, 0);
+    const main = choices.branches.find((b) => b.main);
+    const second = choices.branches.find((b) => !b.main);
+    const id = (username) =>
+      [...choices.roles.cashier.members, ...choices.roles.rider.members].find(
+        (m) => m.username === username,
+      ).id;
+    const riders = choices.roles.rider.members.map((m) => m.id);
+    await rejects(
+      run(
+        'changePlan',
+        {
+          plan: 'basic',
+          keep: {
+            branches: [main.id],
+            members: [id('cash1'), id('cash2'), id('cash3'), ...riders],
+          },
+        },
+        owner,
+      ),
+      /allows 2 cashiers/,
+    );
+    await rejects(
+      run(
+        'changePlan',
+        { plan: 'basic', keep: { branches: [main.id, second.id], members: [] } },
+        owner,
+      ),
+      /allows 1 branch/,
+    );
+    const billing = await run(
+      'changePlan',
+      {
+        plan: 'basic',
+        keep: { branches: [main.id], members: [id('cash1'), id('cash2'), ...riders] },
+      },
+      owner,
+    );
+    assert.equal(billing.plan.current, 'enterprise');
+    assert.equal(billing.plan.renewal, 'basic');
+    assert.deepEqual(billing.plan.pending.keepBranches, [main.name]);
+    assert.deepEqual(billing.plan.pending.closeBranches, [second.name]);
+    assert.deepEqual(billing.plan.pending.deactivate.sort(), ['cash3', 'fin1']);
+    // Nothing changes before the date.
+    assert.equal((await run('adminListBranches', {}, owner)).branches.length, 2);
+
+    // The date comes (set directly for the test): the next request applies it.
+    const row = await new Parse.Query('Restaurant')
+      .equalTo('code', CODE2)
+      .first({ useMasterKey: true });
+    row.set('nextPlanFrom', new Date(Date.now() - 60000));
+    await row.save(null, { useMasterKey: true });
+    // A console change clears the server's short restaurant cache.
+    await run(
+      'platformUpdateRestaurant',
+      { id: row.id, note: 'Moving to Basic' },
+      await Parse.User.logIn('ops', 'ops-pass-123'),
+    );
+    let profile;
+    for (let i = 0; i < 50; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      profile = await run('getMyProfile', {}, owner);
+      const branches = (await run('adminListBranches', {}, owner)).branches;
+      if (branches.some((b) => !b.active)) break;
+    }
+    assert.equal(profile.restaurant.plan, 'basic');
+    assert.equal(profile.features.accounting, false);
+    const branches = (await run('adminListBranches', {}, owner)).branches;
+    assert.equal(branches.find((b) => b.id === second.id).active, false);
+    assert.equal(branches.find((b) => b.id === main.id).active, true);
+    // Closed branches stay in the owner's filters, for their history.
+    assert.ok((await run('getBranches', {}, owner)).branches.some((b) => b.id === second.id));
+    const { team } = await run('adminListSetup', {}, owner);
+    const active = (username) => team.find((m) => m.username === username).active;
+    assert.equal(active('cash3'), false);
+    assert.equal(active('fin1'), false);
+    assert.equal(active('cash1'), true);
+    assert.equal(active('ride5'), true);
+    await rejects(run('getMyProfile', {}, await login('cash3', '7777', CODE2)), /inactive/);
+    const { items } = await run('getNotifications', {}, owner);
+    assert.ok(items.some((n) => /You are now on Basic/.test(n.title)));
+    const billingAfter = await run('getBilling', {}, owner);
+    assert.equal(billingAfter.plan.current, 'basic');
+    assert.equal(billingAfter.plan.pending, null);
   });
 
   test('platform staff create a plan with its own limits and parts of the app', async () => {

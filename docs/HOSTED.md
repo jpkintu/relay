@@ -293,7 +293,19 @@ months, phone, plan }`); the plan changes when it is paid.
 - **Moving down** (`changePlan { plan }`): only from the next period. The
   current plan stays until the paid period (or trial) ends; the next period
   is priced on the smaller plan. Choosing the current plan again cancels it.
-  The restaurant must fit the smaller plan's limits.
+  When the restaurant has more than the smaller plan allows, the owner
+  chooses what stays (`getDowngradeChoices`, then `changePlan { plan, keep:
+{ branches, members } }`): the branch(es) to keep open, then per limited
+  role the team members to keep (only from the kept branches). Billing shows
+  what stays and what closes. On the date (`downgrade.js`, run by the next
+  request, the owner's app or the `billing` job) the other branches are closed
+  (the main branch moves to a kept one) and the other members are deactivated
+  and signed out. Nothing is deleted: orders, payments, shifts and handovers
+  of every branch stay in orders, ledgers and reports (closed branches remain
+  in the owner's branch filters), and branches and members can be reopened
+  after moving up again. Members added after the choice are deactivated unless
+  they fit; with no choice saved, the main branch and the longest-serving
+  members within the limits stay.
 - A price agreed with Relay (`priceOverride`) changes plan through Relay only;
   platform staff changing the plan in the console apply it at once.
 

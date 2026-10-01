@@ -265,7 +265,10 @@ var require_tenant = __commonJS({
         suspended: row.get("suspended") === true,
         trialEndsAt: row.get("trialEndsAt") || null,
         paidUntil: row.get("paidUntil") || null,
-        payFirst: row.get("payFirst") === true
+        payFirst: row.get("payFirst") === true,
+        // A move to a smaller plan, applied once its date comes (downgrade.js).
+        nextPlan: row.get("nextPlan") || "",
+        nextPlanFrom: row.get("nextPlanFrom") || null
       } : null;
       cache.set(key, { restaurant, at: Date.now() });
       if (cache.size > 5e3) cache.clear();
@@ -915,570 +918,6 @@ var require_limits = __commonJS({
       features,
       overLimits
     };
-  }
-});
-
-// cloud/lib/emailTemplates.js
-var require_emailTemplates = __commonJS({
-  "cloud/lib/emailTemplates.js"(exports2, module2) {
-    "use strict";
-    var INK = "#0f1b3d";
-    var ACCENT = "#e8542f";
-    var MUTED = "#5b6478";
-    var LINE = "#e3e6ee";
-    var COMMON = ["OWNER_NAME", "RESTAURANT_NAME", "SUPPORT_LINE"];
-    var BILLING = [
-      "PLAN_NAME",
-      "AMOUNT",
-      "ANNUAL_AMOUNT",
-      "DUE_DATE",
-      "INVOICE_NUMBER",
-      "BILLING_URL"
-    ];
-    var row = (label, value) => `
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid ${LINE};color:${MUTED};font-size:14px;">${label}</td>
-                <td align="right" style="padding:10px 0;border-bottom:1px solid ${LINE};color:${INK};font-size:14px;font-weight:600;">${value}</td>
-              </tr>`;
-    var details = (rows) => `
-          <tr>
-            <td style="padding:8px 32px 8px 32px;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${rows.join("")}
-              </table>
-            </td>
-          </tr>`;
-    var button = (label, url) => `
-          <tr>
-            <td style="padding:24px 32px 8px 32px;">
-              <table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="border-radius:10px;background:${ACCENT};">
-                    <a href="${url}" style="display:inline-block;padding:14px 26px;font-size:16px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">${label}</a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>`;
-    var para = (html, style = "") => `
-          <tr>
-            <td style="padding:0 32px 14px 32px;font-size:16px;line-height:1.55;color:${INK};${style}">${html}</td>
-          </tr>`;
-    var small = (html) => `
-          <tr>
-            <td style="padding:16px 32px 0 32px;font-size:13px;line-height:1.5;color:${MUTED};">${html}</td>
-          </tr>`;
-    function layout({ title, preheader, tag, heading, blocks }) {
-      return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <title>${title}</title>
-  </head>
-  <body style="margin:0;padding:0;background:#f3f4f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preheader}</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f8;">
-      <tr>
-        <td align="center" style="padding:32px 12px;">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${LINE};border-radius:16px;">
-          <tr>
-            <td style="padding:28px 32px 6px 32px;">
-              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">Relay</span>
-              <span style="font-size:13px;color:${MUTED};">&nbsp;\xB7&nbsp;{{{RESTAURANT_NAME}}}</span>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:18px 32px 0 32px;">
-              <span style="display:inline-block;padding:4px 10px;border-radius:999px;background:${tag.bg};color:${tag.fg};font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;">${tag.label}</span>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:14px 32px 14px 32px;font-size:24px;line-height:1.25;font-weight:800;color:${INK};">${heading}</td>
-          </tr>${blocks.join("")}
-          <tr>
-            <td style="padding:28px 32px 28px 32px;">
-              <p style="margin:0;font-size:13px;line-height:1.5;color:${MUTED};">{{{SUPPORT_LINE}}}</p>
-              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:${MUTED};">Sent by Relay to the owner of {{{RESTAURANT_NAME}}}.</p>
-            </td>
-          </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-`;
-    }
-    var TAGS = {
-      info: { label: "Welcome", bg: "#e8eefc", fg: "#1d3fa8" },
-      account: { label: "Account", bg: "#e8eefc", fg: "#1d3fa8" },
-      soon: { label: "Payment due soon", bg: "#fff3d6", fg: "#8a5a00" },
-      today: { label: "Payment due", bg: "#ffe6dc", fg: "#a8361a" },
-      overdue: { label: "Overdue", bg: "#fde2e2", fg: "#a11a1a" },
-      paid: { label: "Paid", bg: "#dff5e6", fg: "#17653a" },
-      news: { label: "From Relay", bg: "#e8eefc", fg: "#1d3fa8" },
-      reward: { label: "Referral reward", bg: "#dff5e6", fg: "#17653a" }
-    };
-    var billingRows = [
-      row("Plan", "{{{PLAN_NAME}}}"),
-      row("Invoice", "{{{INVOICE_NUMBER}}}"),
-      row("Due", "{{{DUE_DATE}}}"),
-      row("A month", "{{{AMOUNT}}}"),
-      row("A year at once", "{{{ANNUAL_AMOUNT}}}")
-    ];
-    var KINDS = {
-      welcome: {
-        label: "Welcome",
-        when: "Right after a restaurant signs up.",
-        subject: "Welcome to Relay, {{{RESTAURANT_NAME}}}",
-        variables: [
-          ...COMMON,
-          "RESTAURANT_CODE",
-          "USERNAME",
-          "PLAN_NAME",
-          "TRIAL_ENDS",
-          "START_LINE",
-          "SIGN_IN_URL"
-        ],
-        html: layout({
-          title: "Welcome to Relay",
-          preheader: "{{{START_LINE}}} Here is how to sign in.",
-          tag: TAGS.info,
-          heading: "{{{RESTAURANT_NAME}}} is ready on Relay",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para("{{{START_LINE}}} Add your menu and your team, and orders can start today."),
-            details([
-              row("Restaurant code", "{{{RESTAURANT_CODE}}}"),
-              row("Your username", "{{{USERNAME}}}"),
-              row("Plan", "{{{PLAN_NAME}}}"),
-              row("Trial ends", "{{{TRIAL_ENDS}}}")
-            ]),
-            button("Sign in to Relay", "{{{SIGN_IN_URL}}}"),
-            small(
-              "Forgot your password? Use \u201CForgot password\u201D on the sign-in page and we will email you a link."
-            )
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "{{{RESTAURANT_NAME}}} is set up on Relay. {{{START_LINE}}}",
-          "Restaurant code: {{{RESTAURANT_CODE}}}",
-          "Your username: {{{USERNAME}}}",
-          "Plan: {{{PLAN_NAME}}}",
-          "Trial ends: {{{TRIAL_ENDS}}}",
-          "Sign in: {{{SIGN_IN_URL}}}",
-          "",
-          'Forgot your password? Use "Forgot password" on the sign-in page and we will email you a link.',
-          "",
-          "{{{SUPPORT_LINE}}}"
-        ].join("\n")
-      },
-      password_reset: {
-        label: "Password reset",
-        when: "When the owner asks for a new password on the sign-in page.",
-        subject: "Reset your {{{RESTAURANT_NAME}}} password",
-        variables: [...COMMON, "RESET_URL", "EXPIRES_IN"],
-        html: layout({
-          title: "Reset your password",
-          preheader: "Choose a new owner password. The link works for {{{EXPIRES_IN}}}.",
-          tag: TAGS.account,
-          heading: "Reset your password",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para(
-              "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay. Open the link within {{{EXPIRES_IN}}} to choose a new one."
-            ),
-            button("Choose a new password", "{{{RESET_URL}}}"),
-            small("If it was not you, ignore this email: your password stays as it is."),
-            small(
-              'The button not working? Copy this link into your browser:<br /><span style="word-break:break-all;color:#1d3fa8;">{{{RESET_URL}}}</span>'
-            )
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay.",
-          "Open this link within {{{EXPIRES_IN}}} to choose a new one:",
-          "{{{RESET_URL}}}",
-          "",
-          "If it was not you, ignore this email: your password stays as it is."
-        ].join("\n")
-      },
-      billing_due_soon: {
-        label: "Payment due soon",
-        when: "7 days and again 3 days before the trial or paid period ends.",
-        subject: "{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}",
-        variables: [...COMMON, ...BILLING, "HEADLINE", "DAYS_LEFT"],
-        html: layout({
-          title: "Payment due soon",
-          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} by {{{DUE_DATE}}} to keep Relay open.",
-          tag: TAGS.soon,
-          heading: "{{{HEADLINE}}}",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para(
-              "To keep {{{RESTAURANT_NAME}}} running on Relay without a break, pay before <strong>{{{DUE_DATE}}}</strong>. You can pay a month, a few months, or a whole year at once and get two months free."
-            ),
-            details(billingRows),
-            button("Pay now", "{{{BILLING_URL}}}"),
-            small(
-              "Pay with MTN MoMo or Airtel Money in Admin \u2192 Billing, where you can also download this invoice."
-            )
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "{{{HEADLINE}}}. To keep {{{RESTAURANT_NAME}}} running on Relay, pay before {{{DUE_DATE}}}.",
-          "",
-          "Plan: {{{PLAN_NAME}}}",
-          "Invoice: {{{INVOICE_NUMBER}}}",
-          "A month: {{{AMOUNT}}}",
-          "A year at once: {{{ANNUAL_AMOUNT}}}",
-          "",
-          "Pay in Admin \u2192 Billing: {{{BILLING_URL}}}",
-          "",
-          "{{{SUPPORT_LINE}}}"
-        ].join("\n")
-      },
-      billing_due_today: {
-        label: "Payment due today",
-        when: "On the last day of the trial or paid period.",
-        subject: "{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}",
-        variables: [...COMMON, ...BILLING, "HEADLINE"],
-        html: layout({
-          title: "Payment due",
-          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} to keep Relay open.",
-          tag: TAGS.today,
-          heading: "{{{HEADLINE}}}",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para(
-              "Your payment for {{{RESTAURANT_NAME}}} is due on <strong>{{{DUE_DATE}}}</strong>. Pay now so your team can keep taking orders."
-            ),
-            details(billingRows),
-            button("Pay now", "{{{BILLING_URL}}}"),
-            small("Already paid? Thank you \u2014 you can ignore this email.")
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "{{{HEADLINE}}}. Your payment for {{{RESTAURANT_NAME}}} is due on {{{DUE_DATE}}}.",
-          "",
-          "Plan: {{{PLAN_NAME}}}",
-          "Invoice: {{{INVOICE_NUMBER}}}",
-          "A month: {{{AMOUNT}}}",
-          "A year at once: {{{ANNUAL_AMOUNT}}}",
-          "",
-          "Pay in Admin \u2192 Billing: {{{BILLING_URL}}}",
-          "",
-          "Already paid? Thank you, you can ignore this email.",
-          "{{{SUPPORT_LINE}}}"
-        ].join("\n")
-      },
-      billing_overdue: {
-        label: "Payment overdue",
-        when: "When the period has ended (grace days), and again the day before the app closes.",
-        subject: "{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}",
-        variables: [...COMMON, ...BILLING, "HEADLINE", "CLOSES_ON", "DAYS_TO_CLOSE"],
-        html: layout({
-          title: "Payment overdue",
-          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} before {{{CLOSES_ON}}}.",
-          tag: TAGS.overdue,
-          heading: "{{{HEADLINE}}}",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para(
-              "The payment for {{{RESTAURANT_NAME}}} was due on {{{DUE_DATE}}}. The app keeps working until <strong>{{{CLOSES_ON}}}</strong>; after that only you can sign in, to pay."
-            ),
-            details([...billingRows, row("App closes", "{{{CLOSES_ON}}}")]),
-            button("Pay now", "{{{BILLING_URL}}}"),
-            small("Already paid? Thank you \u2014 you can ignore this email.")
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "{{{HEADLINE}}}. The payment for {{{RESTAURANT_NAME}}} was due on {{{DUE_DATE}}}.",
-          "The app keeps working until {{{CLOSES_ON}}}; after that only you can sign in, to pay.",
-          "",
-          "Plan: {{{PLAN_NAME}}}",
-          "Invoice: {{{INVOICE_NUMBER}}}",
-          "A month: {{{AMOUNT}}}",
-          "A year at once: {{{ANNUAL_AMOUNT}}}",
-          "",
-          "Pay in Admin \u2192 Billing: {{{BILLING_URL}}}",
-          "",
-          "{{{SUPPORT_LINE}}}"
-        ].join("\n")
-      },
-      payment_received: {
-        label: "Payment received",
-        when: "When a subscription payment is received (in the app or recorded by platform staff).",
-        subject: "{{{RESTAURANT_NAME}}}: payment received, thank you",
-        variables: [
-          ...COMMON,
-          "PLAN_NAME",
-          "AMOUNT",
-          "PERIOD",
-          "PAID_UNTIL",
-          "INVOICE_NUMBER",
-          "REFERENCE",
-          "BILLING_URL"
-        ],
-        html: layout({
-          title: "Payment received",
-          preheader: "We received {{{AMOUNT}}}. Relay is paid until {{{PAID_UNTIL}}}.",
-          tag: TAGS.paid,
-          heading: "Payment received, thank you",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para(
-              "We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until <strong>{{{PAID_UNTIL}}}</strong>."
-            ),
-            details([
-              row("Invoice", "{{{INVOICE_NUMBER}}}"),
-              row("Plan", "{{{PLAN_NAME}}}"),
-              row("Paid for", "{{{PERIOD}}}"),
-              row("Amount", "{{{AMOUNT}}}"),
-              row("Reference", "{{{REFERENCE}}}"),
-              row("Paid until", "{{{PAID_UNTIL}}}")
-            ]),
-            button("View invoices", "{{{BILLING_URL}}}"),
-            small("Download the paid invoice as a PDF in Admin \u2192 Billing.")
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until {{{PAID_UNTIL}}}.",
-          "",
-          "Invoice: {{{INVOICE_NUMBER}}}",
-          "Plan: {{{PLAN_NAME}}}",
-          "Paid for: {{{PERIOD}}}",
-          "Amount: {{{AMOUNT}}}",
-          "Reference: {{{REFERENCE}}}",
-          "",
-          "Invoices: {{{BILLING_URL}}}",
-          "",
-          "{{{SUPPORT_LINE}}}"
-        ].join("\n")
-      },
-      announcement: {
-        label: "Message to owners",
-        when: "When platform staff email owners from the console (Email owners).",
-        subject: "{{{SUBJECT}}}",
-        variables: [...COMMON, "SUBJECT", "MESSAGE"],
-        html: layout({
-          title: "{{{SUBJECT}}}",
-          preheader: "{{{SUBJECT}}}",
-          tag: TAGS.news,
-          heading: "{{{SUBJECT}}}",
-          blocks: [para("Hello {{{OWNER_NAME}}},"), para("{{{MESSAGE}}}", "white-space:pre-line;")]
-        }),
-        text: ["Hello {{{OWNER_NAME}}},", "", "{{{MESSAGE}}}", "", "{{{SUPPORT_LINE}}}"].join("\n")
-      },
-      referral_credit: {
-        label: "Referral reward",
-        when: "When a restaurant that signed up with this restaurant\u2019s code makes its first payment.",
-        subject: "{{{RESTAURANT_NAME}}}: {{{MONTHS_TEXT}}} free, thank you for the referral",
-        variables: [...COMMON, "REFERRED_NAME", "MONTHS_TEXT", "PAID_UNTIL", "BILLING_URL"],
-        html: layout({
-          title: "Referral reward",
-          preheader: "{{{REFERRED_NAME}}} joined Relay with your code: {{{MONTHS_TEXT}}} free.",
-          tag: TAGS.reward,
-          heading: "You earned {{{MONTHS_TEXT}}} free",
-          blocks: [
-            para("Hello {{{OWNER_NAME}}},"),
-            para(
-              "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}."
-            ),
-            details([row("Now paid until", "{{{PAID_UNTIL}}}")]),
-            button("View billing", "{{{BILLING_URL}}}"),
-            small(
-              "Share your restaurant code with other restaurants: they save on their first payment and you get more free time."
-            )
-          ]
-        }),
-        text: [
-          "Hello {{{OWNER_NAME}}},",
-          "",
-          "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment.",
-          "We added {{{MONTHS_TEXT}}} to {{{RESTAURANT_NAME}}}. Now paid until {{{PAID_UNTIL}}}.",
-          "",
-          "Billing: {{{BILLING_URL}}}",
-          "",
-          "{{{SUPPORT_LINE}}}"
-        ].join("\n")
-      }
-    };
-    var SAMPLE = {
-      OWNER_NAME: "Sarah Achieng",
-      RESTAURANT_NAME: "Kampala Grill House",
-      SUPPORT_LINE: "Questions? Contact Relay support: 0700 123456.",
-      RESTAURANT_CODE: "kampala-grill-house",
-      USERNAME: "sarah",
-      PLAN_NAME: "Basic",
-      TRIAL_DAYS: "14",
-      TRIAL_ENDS: "15 October 2026",
-      START_LINE: "Your 14-day free trial has started.",
-      SIGN_IN_URL: "https://relay.example/r/kampala-grill-house",
-      RESET_URL: "https://relay.example/?reset=example",
-      EXPIRES_IN: "an hour",
-      HEADLINE: "Your free trial ends in 3 days",
-      DAYS_LEFT: "3",
-      AMOUNT: "UGX 100,000",
-      ANNUAL_AMOUNT: "UGX 1,000,000",
-      DUE_DATE: "15 October 2026",
-      INVOICE_NUMBER: "INV-KAMPALA-GRILL-HOUSE-20261015",
-      BILLING_URL: "https://relay.example/admin/site/billing",
-      CLOSES_ON: "22 October 2026",
-      DAYS_TO_CLOSE: "7",
-      PERIOD: "1 month",
-      PAID_UNTIL: "15 November 2026",
-      REFERENCE: "MTN 1234567890",
-      SUBJECT: "New: WhatsApp daily summaries",
-      MESSAGE: "Your end-of-day Z-report can now reach you on WhatsApp.\nTurn it on in Admin \u2192 WhatsApp.",
-      REFERRED_NAME: "Mama Rose Kitchen",
-      MONTHS_TEXT: "1 month"
-    };
-    var escapeHtml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    function fill(template, variables, escape2 = (value) => value) {
-      return template.replace(
-        /\{\{\{\s*([A-Z0-9_]+)\s*\}\}\}/g,
-        (_, name) => escape2(variables[name] ?? "")
-      );
-    }
-    function render(kind, variables) {
-      const spec = KINDS[kind];
-      if (!spec) throw new Error(`Unknown email kind ${kind}`);
-      const vars = Object.fromEntries(
-        spec.variables.map((name) => [name, String(variables[name] ?? "")])
-      );
-      return {
-        subject: fill(spec.subject, vars),
-        text: fill(spec.text, vars),
-        html: fill(spec.html, vars, escapeHtml),
-        variables: vars
-      };
-    }
-    var forBrevo = (template) => template.replace(/\{\{\{\s*([A-Z0-9_]+)\s*\}\}\}/g, (_, name) => `{{ params.${name} }}`);
-    var dateText = (date, timeZone = process.env.RELAY_EMAIL_TZ || "Africa/Kampala") => date ? new Date(date).toLocaleDateString("en-GB", {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-      timeZone
-    }) : "";
-    var moneyText = (amount, currency) => `${currency || ""} ${Math.round(Number(amount) || 0).toLocaleString("en-US")}`.trim();
-    module2.exports = { KINDS, SAMPLE, render, fill, forBrevo, dateText, moneyText };
-  }
-});
-
-// cloud/lib/email.js
-var require_email = __commonJS({
-  "cloud/lib/email.js"(exports2, module2) {
-    "use strict";
-    var MASTER = { useMasterKey: true };
-    var PROVIDERS = {
-      resend: "https://api.resend.com",
-      brevo: "https://api.brevo.com/v3"
-    };
-    async function loadEmail() {
-      const tenancy = require_tenant();
-      const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
-      return { row, email: { provider: "resend", fromName: "Relay", ...row?.get("email") || {} } };
-    }
-    var ready = (email) => !!(email.apiKey && email.from && PROVIDERS[email.provider]);
-    var validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(value || "").trim()) && String(value).trim().length <= 120;
-    async function sendWith(email, { to, subject, text, html, template }) {
-      const base = process.env.RELAY_EMAIL_URL || PROVIDERS[email.provider];
-      const name = String(email.fromName || "Relay").replace(/[<>"]/g, "");
-      const request = email.provider === "brevo" ? {
-        url: `${base}/smtp/email`,
-        headers: { "api-key": email.apiKey },
-        body: {
-          sender: { name, email: email.from },
-          to: [{ email: to }],
-          ...template ? { templateId: Number(template.id), params: template.variables } : { subject, textContent: text, ...html ? { htmlContent: html } : {} }
-        }
-      } : {
-        url: `${base}/emails`,
-        headers: { Authorization: `Bearer ${email.apiKey}` },
-        body: {
-          from: `${name} <${email.from}>`,
-          to: [to],
-          ...template ? { template: { id: template.id, variables: template.variables } } : { subject, text, ...html ? { html } : {} }
-        }
-      };
-      const response = await fetch(request.url, {
-        method: "POST",
-        headers: { ...request.headers, "Content-Type": "application/json" },
-        body: JSON.stringify(request.body),
-        signal: AbortSignal.timeout(15e3)
-      });
-      if (!response.ok) {
-        const json = await response.json().catch(() => ({}));
-        throw new Error(
-          json?.message || json?.error?.message || `Email service answered ${response.status}`
-        );
-      }
-    }
-    var validTemplate = (provider, id) => provider === "brevo" ? /^[0-9]{1,9}$/.test(id) : /^[A-Za-z0-9_-]{1,100}$/.test(id);
-    function messageOf(email, kind, to, variables) {
-      const built = require_emailTemplates().render(kind, variables);
-      const id = String(email.templates?.[kind] || "").trim();
-      return {
-        to,
-        subject: built.subject,
-        text: built.text,
-        html: built.html,
-        template: id && validTemplate(email.provider, id) ? { id, variables: built.variables } : null
-      };
-    }
-    var sendKind = (email, kind, to, variables) => sendWith(email, messageOf(email, kind, to, variables));
-    async function sendEmail(kind, to, variables) {
-      const { email } = await loadEmail();
-      if (!ready(email) || !validEmail(to)) return false;
-      await sendKind(email, kind, to, variables);
-      return true;
-    }
-    module2.exports = {
-      loadEmail,
-      sendWith,
-      sendKind,
-      sendEmail,
-      messageOf,
-      ready,
-      validEmail,
-      validTemplate,
-      PROVIDERS
-    };
-  }
-});
-
-// cloud/lib/offers.js
-var require_offers = __commonJS({
-  "cloud/lib/offers.js"(exports2, module2) {
-    "use strict";
-    function discountFor(offer, list, months, min = 500) {
-      if (!offer || !(list > 0)) return 0;
-      if (offer.minMonths && months < offer.minMonths) return 0;
-      const raw = offer.kind === "percent" ? Math.round(list * Number(offer.value) / 100) : Math.round(Number(offer.value));
-      return Math.max(0, Math.min(raw, list - min));
-    }
-    function describe(offer, currency) {
-      if (!offer) return "";
-      const off = offer.kind === "percent" ? `${offer.value}% off` : `${currency} ${Math.round(offer.value).toLocaleString("en-US")} off`;
-      const months = offer.minMonths > 1 ? ` when paying ${offer.minMonths === 12 ? "a year" : `${offer.minMonths} months or more`}` : "";
-      return `${off} your first payment${months}`;
-    }
-    var cleanCode = (value) => String(value || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
-    module2.exports = { discountFor, describe, cleanCode };
   }
 });
 
@@ -31671,6 +31110,570 @@ var require_iotec = __commonJS({
   }
 });
 
+// cloud/lib/emailTemplates.js
+var require_emailTemplates = __commonJS({
+  "cloud/lib/emailTemplates.js"(exports2, module2) {
+    "use strict";
+    var INK = "#0f1b3d";
+    var ACCENT = "#e8542f";
+    var MUTED = "#5b6478";
+    var LINE = "#e3e6ee";
+    var COMMON = ["OWNER_NAME", "RESTAURANT_NAME", "SUPPORT_LINE"];
+    var BILLING = [
+      "PLAN_NAME",
+      "AMOUNT",
+      "ANNUAL_AMOUNT",
+      "DUE_DATE",
+      "INVOICE_NUMBER",
+      "BILLING_URL"
+    ];
+    var row = (label, value) => `
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid ${LINE};color:${MUTED};font-size:14px;">${label}</td>
+                <td align="right" style="padding:10px 0;border-bottom:1px solid ${LINE};color:${INK};font-size:14px;font-weight:600;">${value}</td>
+              </tr>`;
+    var details = (rows) => `
+          <tr>
+            <td style="padding:8px 32px 8px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${rows.join("")}
+              </table>
+            </td>
+          </tr>`;
+    var button = (label, url) => `
+          <tr>
+            <td style="padding:24px 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="border-radius:10px;background:${ACCENT};">
+                    <a href="${url}" style="display:inline-block;padding:14px 26px;font-size:16px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">${label}</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>`;
+    var para = (html, style = "") => `
+          <tr>
+            <td style="padding:0 32px 14px 32px;font-size:16px;line-height:1.55;color:${INK};${style}">${html}</td>
+          </tr>`;
+    var small = (html) => `
+          <tr>
+            <td style="padding:16px 32px 0 32px;font-size:13px;line-height:1.5;color:${MUTED};">${html}</td>
+          </tr>`;
+    function layout({ title, preheader, tag, heading, blocks }) {
+      return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>${title}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3f4f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preheader}</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f8;">
+      <tr>
+        <td align="center" style="padding:32px 12px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${LINE};border-radius:16px;">
+          <tr>
+            <td style="padding:28px 32px 6px 32px;">
+              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">Relay</span>
+              <span style="font-size:13px;color:${MUTED};">&nbsp;\xB7&nbsp;{{{RESTAURANT_NAME}}}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 32px 0 32px;">
+              <span style="display:inline-block;padding:4px 10px;border-radius:999px;background:${tag.bg};color:${tag.fg};font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;">${tag.label}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 32px 14px 32px;font-size:24px;line-height:1.25;font-weight:800;color:${INK};">${heading}</td>
+          </tr>${blocks.join("")}
+          <tr>
+            <td style="padding:28px 32px 28px 32px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:${MUTED};">{{{SUPPORT_LINE}}}</p>
+              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:${MUTED};">Sent by Relay to the owner of {{{RESTAURANT_NAME}}}.</p>
+            </td>
+          </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+`;
+    }
+    var TAGS = {
+      info: { label: "Welcome", bg: "#e8eefc", fg: "#1d3fa8" },
+      account: { label: "Account", bg: "#e8eefc", fg: "#1d3fa8" },
+      soon: { label: "Payment due soon", bg: "#fff3d6", fg: "#8a5a00" },
+      today: { label: "Payment due", bg: "#ffe6dc", fg: "#a8361a" },
+      overdue: { label: "Overdue", bg: "#fde2e2", fg: "#a11a1a" },
+      paid: { label: "Paid", bg: "#dff5e6", fg: "#17653a" },
+      news: { label: "From Relay", bg: "#e8eefc", fg: "#1d3fa8" },
+      reward: { label: "Referral reward", bg: "#dff5e6", fg: "#17653a" }
+    };
+    var billingRows = [
+      row("Plan", "{{{PLAN_NAME}}}"),
+      row("Invoice", "{{{INVOICE_NUMBER}}}"),
+      row("Due", "{{{DUE_DATE}}}"),
+      row("A month", "{{{AMOUNT}}}"),
+      row("A year at once", "{{{ANNUAL_AMOUNT}}}")
+    ];
+    var KINDS = {
+      welcome: {
+        label: "Welcome",
+        when: "Right after a restaurant signs up.",
+        subject: "Welcome to Relay, {{{RESTAURANT_NAME}}}",
+        variables: [
+          ...COMMON,
+          "RESTAURANT_CODE",
+          "USERNAME",
+          "PLAN_NAME",
+          "TRIAL_ENDS",
+          "START_LINE",
+          "SIGN_IN_URL"
+        ],
+        html: layout({
+          title: "Welcome to Relay",
+          preheader: "{{{START_LINE}}} Here is how to sign in.",
+          tag: TAGS.info,
+          heading: "{{{RESTAURANT_NAME}}} is ready on Relay",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para("{{{START_LINE}}} Add your menu and your team, and orders can start today."),
+            details([
+              row("Restaurant code", "{{{RESTAURANT_CODE}}}"),
+              row("Your username", "{{{USERNAME}}}"),
+              row("Plan", "{{{PLAN_NAME}}}"),
+              row("Trial ends", "{{{TRIAL_ENDS}}}")
+            ]),
+            button("Sign in to Relay", "{{{SIGN_IN_URL}}}"),
+            small(
+              "Forgot your password? Use \u201CForgot password\u201D on the sign-in page and we will email you a link."
+            )
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "{{{RESTAURANT_NAME}}} is set up on Relay. {{{START_LINE}}}",
+          "Restaurant code: {{{RESTAURANT_CODE}}}",
+          "Your username: {{{USERNAME}}}",
+          "Plan: {{{PLAN_NAME}}}",
+          "Trial ends: {{{TRIAL_ENDS}}}",
+          "Sign in: {{{SIGN_IN_URL}}}",
+          "",
+          'Forgot your password? Use "Forgot password" on the sign-in page and we will email you a link.',
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
+      },
+      password_reset: {
+        label: "Password reset",
+        when: "When the owner asks for a new password on the sign-in page.",
+        subject: "Reset your {{{RESTAURANT_NAME}}} password",
+        variables: [...COMMON, "RESET_URL", "EXPIRES_IN"],
+        html: layout({
+          title: "Reset your password",
+          preheader: "Choose a new owner password. The link works for {{{EXPIRES_IN}}}.",
+          tag: TAGS.account,
+          heading: "Reset your password",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay. Open the link within {{{EXPIRES_IN}}} to choose a new one."
+            ),
+            button("Choose a new password", "{{{RESET_URL}}}"),
+            small("If it was not you, ignore this email: your password stays as it is."),
+            small(
+              'The button not working? Copy this link into your browser:<br /><span style="word-break:break-all;color:#1d3fa8;">{{{RESET_URL}}}</span>'
+            )
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay.",
+          "Open this link within {{{EXPIRES_IN}}} to choose a new one:",
+          "{{{RESET_URL}}}",
+          "",
+          "If it was not you, ignore this email: your password stays as it is."
+        ].join("\n")
+      },
+      billing_due_soon: {
+        label: "Payment due soon",
+        when: "7 days and again 3 days before the trial or paid period ends.",
+        subject: "{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}",
+        variables: [...COMMON, ...BILLING, "HEADLINE", "DAYS_LEFT"],
+        html: layout({
+          title: "Payment due soon",
+          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} by {{{DUE_DATE}}} to keep Relay open.",
+          tag: TAGS.soon,
+          heading: "{{{HEADLINE}}}",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "To keep {{{RESTAURANT_NAME}}} running on Relay without a break, pay before <strong>{{{DUE_DATE}}}</strong>. You can pay a month, a few months, or a whole year at once and get two months free."
+            ),
+            details(billingRows),
+            button("Pay now", "{{{BILLING_URL}}}"),
+            small(
+              "Pay with MTN MoMo or Airtel Money in Admin \u2192 Billing, where you can also download this invoice."
+            )
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "{{{HEADLINE}}}. To keep {{{RESTAURANT_NAME}}} running on Relay, pay before {{{DUE_DATE}}}.",
+          "",
+          "Plan: {{{PLAN_NAME}}}",
+          "Invoice: {{{INVOICE_NUMBER}}}",
+          "A month: {{{AMOUNT}}}",
+          "A year at once: {{{ANNUAL_AMOUNT}}}",
+          "",
+          "Pay in Admin \u2192 Billing: {{{BILLING_URL}}}",
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
+      },
+      billing_due_today: {
+        label: "Payment due today",
+        when: "On the last day of the trial or paid period.",
+        subject: "{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}",
+        variables: [...COMMON, ...BILLING, "HEADLINE"],
+        html: layout({
+          title: "Payment due",
+          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} to keep Relay open.",
+          tag: TAGS.today,
+          heading: "{{{HEADLINE}}}",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "Your payment for {{{RESTAURANT_NAME}}} is due on <strong>{{{DUE_DATE}}}</strong>. Pay now so your team can keep taking orders."
+            ),
+            details(billingRows),
+            button("Pay now", "{{{BILLING_URL}}}"),
+            small("Already paid? Thank you \u2014 you can ignore this email.")
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "{{{HEADLINE}}}. Your payment for {{{RESTAURANT_NAME}}} is due on {{{DUE_DATE}}}.",
+          "",
+          "Plan: {{{PLAN_NAME}}}",
+          "Invoice: {{{INVOICE_NUMBER}}}",
+          "A month: {{{AMOUNT}}}",
+          "A year at once: {{{ANNUAL_AMOUNT}}}",
+          "",
+          "Pay in Admin \u2192 Billing: {{{BILLING_URL}}}",
+          "",
+          "Already paid? Thank you, you can ignore this email.",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
+      },
+      billing_overdue: {
+        label: "Payment overdue",
+        when: "When the period has ended (grace days), and again the day before the app closes.",
+        subject: "{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}",
+        variables: [...COMMON, ...BILLING, "HEADLINE", "CLOSES_ON", "DAYS_TO_CLOSE"],
+        html: layout({
+          title: "Payment overdue",
+          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} before {{{CLOSES_ON}}}.",
+          tag: TAGS.overdue,
+          heading: "{{{HEADLINE}}}",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "The payment for {{{RESTAURANT_NAME}}} was due on {{{DUE_DATE}}}. The app keeps working until <strong>{{{CLOSES_ON}}}</strong>; after that only you can sign in, to pay."
+            ),
+            details([...billingRows, row("App closes", "{{{CLOSES_ON}}}")]),
+            button("Pay now", "{{{BILLING_URL}}}"),
+            small("Already paid? Thank you \u2014 you can ignore this email.")
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "{{{HEADLINE}}}. The payment for {{{RESTAURANT_NAME}}} was due on {{{DUE_DATE}}}.",
+          "The app keeps working until {{{CLOSES_ON}}}; after that only you can sign in, to pay.",
+          "",
+          "Plan: {{{PLAN_NAME}}}",
+          "Invoice: {{{INVOICE_NUMBER}}}",
+          "A month: {{{AMOUNT}}}",
+          "A year at once: {{{ANNUAL_AMOUNT}}}",
+          "",
+          "Pay in Admin \u2192 Billing: {{{BILLING_URL}}}",
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
+      },
+      payment_received: {
+        label: "Payment received",
+        when: "When a subscription payment is received (in the app or recorded by platform staff).",
+        subject: "{{{RESTAURANT_NAME}}}: payment received, thank you",
+        variables: [
+          ...COMMON,
+          "PLAN_NAME",
+          "AMOUNT",
+          "PERIOD",
+          "PAID_UNTIL",
+          "INVOICE_NUMBER",
+          "REFERENCE",
+          "BILLING_URL"
+        ],
+        html: layout({
+          title: "Payment received",
+          preheader: "We received {{{AMOUNT}}}. Relay is paid until {{{PAID_UNTIL}}}.",
+          tag: TAGS.paid,
+          heading: "Payment received, thank you",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until <strong>{{{PAID_UNTIL}}}</strong>."
+            ),
+            details([
+              row("Invoice", "{{{INVOICE_NUMBER}}}"),
+              row("Plan", "{{{PLAN_NAME}}}"),
+              row("Paid for", "{{{PERIOD}}}"),
+              row("Amount", "{{{AMOUNT}}}"),
+              row("Reference", "{{{REFERENCE}}}"),
+              row("Paid until", "{{{PAID_UNTIL}}}")
+            ]),
+            button("View invoices", "{{{BILLING_URL}}}"),
+            small("Download the paid invoice as a PDF in Admin \u2192 Billing.")
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until {{{PAID_UNTIL}}}.",
+          "",
+          "Invoice: {{{INVOICE_NUMBER}}}",
+          "Plan: {{{PLAN_NAME}}}",
+          "Paid for: {{{PERIOD}}}",
+          "Amount: {{{AMOUNT}}}",
+          "Reference: {{{REFERENCE}}}",
+          "",
+          "Invoices: {{{BILLING_URL}}}",
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
+      },
+      announcement: {
+        label: "Message to owners",
+        when: "When platform staff email owners from the console (Email owners).",
+        subject: "{{{SUBJECT}}}",
+        variables: [...COMMON, "SUBJECT", "MESSAGE"],
+        html: layout({
+          title: "{{{SUBJECT}}}",
+          preheader: "{{{SUBJECT}}}",
+          tag: TAGS.news,
+          heading: "{{{SUBJECT}}}",
+          blocks: [para("Hello {{{OWNER_NAME}}},"), para("{{{MESSAGE}}}", "white-space:pre-line;")]
+        }),
+        text: ["Hello {{{OWNER_NAME}}},", "", "{{{MESSAGE}}}", "", "{{{SUPPORT_LINE}}}"].join("\n")
+      },
+      referral_credit: {
+        label: "Referral reward",
+        when: "When a restaurant that signed up with this restaurant\u2019s code makes its first payment.",
+        subject: "{{{RESTAURANT_NAME}}}: {{{MONTHS_TEXT}}} free, thank you for the referral",
+        variables: [...COMMON, "REFERRED_NAME", "MONTHS_TEXT", "PAID_UNTIL", "BILLING_URL"],
+        html: layout({
+          title: "Referral reward",
+          preheader: "{{{REFERRED_NAME}}} joined Relay with your code: {{{MONTHS_TEXT}}} free.",
+          tag: TAGS.reward,
+          heading: "You earned {{{MONTHS_TEXT}}} free",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}."
+            ),
+            details([row("Now paid until", "{{{PAID_UNTIL}}}")]),
+            button("View billing", "{{{BILLING_URL}}}"),
+            small(
+              "Share your restaurant code with other restaurants: they save on their first payment and you get more free time."
+            )
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment.",
+          "We added {{{MONTHS_TEXT}}} to {{{RESTAURANT_NAME}}}. Now paid until {{{PAID_UNTIL}}}.",
+          "",
+          "Billing: {{{BILLING_URL}}}",
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
+      }
+    };
+    var SAMPLE = {
+      OWNER_NAME: "Sarah Achieng",
+      RESTAURANT_NAME: "Kampala Grill House",
+      SUPPORT_LINE: "Questions? Contact Relay support: 0700 123456.",
+      RESTAURANT_CODE: "kampala-grill-house",
+      USERNAME: "sarah",
+      PLAN_NAME: "Basic",
+      TRIAL_DAYS: "14",
+      TRIAL_ENDS: "15 October 2026",
+      START_LINE: "Your 14-day free trial has started.",
+      SIGN_IN_URL: "https://relay.example/r/kampala-grill-house",
+      RESET_URL: "https://relay.example/?reset=example",
+      EXPIRES_IN: "an hour",
+      HEADLINE: "Your free trial ends in 3 days",
+      DAYS_LEFT: "3",
+      AMOUNT: "UGX 100,000",
+      ANNUAL_AMOUNT: "UGX 1,000,000",
+      DUE_DATE: "15 October 2026",
+      INVOICE_NUMBER: "INV-KAMPALA-GRILL-HOUSE-20261015",
+      BILLING_URL: "https://relay.example/admin/site/billing",
+      CLOSES_ON: "22 October 2026",
+      DAYS_TO_CLOSE: "7",
+      PERIOD: "1 month",
+      PAID_UNTIL: "15 November 2026",
+      REFERENCE: "MTN 1234567890",
+      SUBJECT: "New: WhatsApp daily summaries",
+      MESSAGE: "Your end-of-day Z-report can now reach you on WhatsApp.\nTurn it on in Admin \u2192 WhatsApp.",
+      REFERRED_NAME: "Mama Rose Kitchen",
+      MONTHS_TEXT: "1 month"
+    };
+    var escapeHtml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    function fill(template, variables, escape2 = (value) => value) {
+      return template.replace(
+        /\{\{\{\s*([A-Z0-9_]+)\s*\}\}\}/g,
+        (_, name) => escape2(variables[name] ?? "")
+      );
+    }
+    function render(kind, variables) {
+      const spec = KINDS[kind];
+      if (!spec) throw new Error(`Unknown email kind ${kind}`);
+      const vars = Object.fromEntries(
+        spec.variables.map((name) => [name, String(variables[name] ?? "")])
+      );
+      return {
+        subject: fill(spec.subject, vars),
+        text: fill(spec.text, vars),
+        html: fill(spec.html, vars, escapeHtml),
+        variables: vars
+      };
+    }
+    var forBrevo = (template) => template.replace(/\{\{\{\s*([A-Z0-9_]+)\s*\}\}\}/g, (_, name) => `{{ params.${name} }}`);
+    var dateText = (date, timeZone = process.env.RELAY_EMAIL_TZ || "Africa/Kampala") => date ? new Date(date).toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      timeZone
+    }) : "";
+    var moneyText = (amount, currency) => `${currency || ""} ${Math.round(Number(amount) || 0).toLocaleString("en-US")}`.trim();
+    module2.exports = { KINDS, SAMPLE, render, fill, forBrevo, dateText, moneyText };
+  }
+});
+
+// cloud/lib/offers.js
+var require_offers = __commonJS({
+  "cloud/lib/offers.js"(exports2, module2) {
+    "use strict";
+    function discountFor(offer, list, months, min = 500) {
+      if (!offer || !(list > 0)) return 0;
+      if (offer.minMonths && months < offer.minMonths) return 0;
+      const raw = offer.kind === "percent" ? Math.round(list * Number(offer.value) / 100) : Math.round(Number(offer.value));
+      return Math.max(0, Math.min(raw, list - min));
+    }
+    function describe(offer, currency) {
+      if (!offer) return "";
+      const off = offer.kind === "percent" ? `${offer.value}% off` : `${currency} ${Math.round(offer.value).toLocaleString("en-US")} off`;
+      const months = offer.minMonths > 1 ? ` when paying ${offer.minMonths === 12 ? "a year" : `${offer.minMonths} months or more`}` : "";
+      return `${off} your first payment${months}`;
+    }
+    var cleanCode = (value) => String(value || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+    module2.exports = { discountFor, describe, cleanCode };
+  }
+});
+
+// cloud/lib/email.js
+var require_email = __commonJS({
+  "cloud/lib/email.js"(exports2, module2) {
+    "use strict";
+    var MASTER = { useMasterKey: true };
+    var PROVIDERS = {
+      resend: "https://api.resend.com",
+      brevo: "https://api.brevo.com/v3"
+    };
+    async function loadEmail() {
+      const tenancy = require_tenant();
+      const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
+      return { row, email: { provider: "resend", fromName: "Relay", ...row?.get("email") || {} } };
+    }
+    var ready = (email) => !!(email.apiKey && email.from && PROVIDERS[email.provider]);
+    var validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(value || "").trim()) && String(value).trim().length <= 120;
+    async function sendWith(email, { to, subject, text, html, template }) {
+      const base = process.env.RELAY_EMAIL_URL || PROVIDERS[email.provider];
+      const name = String(email.fromName || "Relay").replace(/[<>"]/g, "");
+      const request = email.provider === "brevo" ? {
+        url: `${base}/smtp/email`,
+        headers: { "api-key": email.apiKey },
+        body: {
+          sender: { name, email: email.from },
+          to: [{ email: to }],
+          ...template ? { templateId: Number(template.id), params: template.variables } : { subject, textContent: text, ...html ? { htmlContent: html } : {} }
+        }
+      } : {
+        url: `${base}/emails`,
+        headers: { Authorization: `Bearer ${email.apiKey}` },
+        body: {
+          from: `${name} <${email.from}>`,
+          to: [to],
+          ...template ? { template: { id: template.id, variables: template.variables } } : { subject, text, ...html ? { html } : {} }
+        }
+      };
+      const response = await fetch(request.url, {
+        method: "POST",
+        headers: { ...request.headers, "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+        signal: AbortSignal.timeout(15e3)
+      });
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({}));
+        throw new Error(
+          json?.message || json?.error?.message || `Email service answered ${response.status}`
+        );
+      }
+    }
+    var validTemplate = (provider, id) => provider === "brevo" ? /^[0-9]{1,9}$/.test(id) : /^[A-Za-z0-9_-]{1,100}$/.test(id);
+    function messageOf(email, kind, to, variables) {
+      const built = require_emailTemplates().render(kind, variables);
+      const id = String(email.templates?.[kind] || "").trim();
+      return {
+        to,
+        subject: built.subject,
+        text: built.text,
+        html: built.html,
+        template: id && validTemplate(email.provider, id) ? { id, variables: built.variables } : null
+      };
+    }
+    var sendKind = (email, kind, to, variables) => sendWith(email, messageOf(email, kind, to, variables));
+    async function sendEmail(kind, to, variables) {
+      const { email } = await loadEmail();
+      if (!ready(email) || !validEmail(to)) return false;
+      await sendKind(email, kind, to, variables);
+      return true;
+    }
+    module2.exports = {
+      loadEmail,
+      sendWith,
+      sendKind,
+      sendEmail,
+      messageOf,
+      ready,
+      validEmail,
+      validTemplate,
+      PROVIDERS
+    };
+  }
+});
+
 // cloud/platformEmail.js
 var require_platformEmail = __commonJS({
   "cloud/platformEmail.js"(exports2, module2) {
@@ -31913,6 +31916,310 @@ var require_platformEmail = __commonJS({
   }
 });
 
+// cloud/offers.js
+var require_offers2 = __commonJS({
+  "cloud/offers.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, invalid, audit, claimOnce, requireRole } = require_core();
+    var tenancy = require_tenant();
+    var { addMonths } = require_access();
+    var { discountFor, describe, cleanCode } = require_offers();
+    var { dateText } = require_emailTemplates();
+    var { log } = require_log();
+    var { platformSettings, requirePlatform, amountFor, codeFrom } = require_restaurants();
+    var MONTHS = [1, 3, 6, 12];
+    var MIN_AMOUNT = 500;
+    var codeView = (row) => ({
+      id: row.id,
+      code: row.get("code"),
+      kind: row.get("kind"),
+      value: row.get("value"),
+      minMonths: row.get("minMonths") || 1,
+      maxUses: row.get("maxUses") ?? null,
+      used: row.get("used") || 0,
+      expiresAt: row.get("expiresAt")?.toISOString() || null,
+      active: row.get("active") !== false,
+      note: row.get("note") || ""
+    });
+    function unusable(row, now = Date.now()) {
+      if (row.get("active") === false) return "This code is no longer valid";
+      const expires = row.get("expiresAt");
+      if (expires instanceof Date && expires.getTime() < now) return "This code has expired";
+      const max = row.get("maxUses");
+      if (typeof max === "number" && (row.get("used") || 0) >= max) return "This code has been used up";
+      return "";
+    }
+    async function resolveCode(raw, platform) {
+      const code = cleanCode(raw);
+      if (!code) throw invalid("Enter the code");
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("DiscountCode").equalTo("code", code).first(MASTER)
+      );
+      if (row) {
+        const why = unusable(row);
+        if (why) throw invalid(why);
+        return {
+          type: "code",
+          code,
+          kind: row.get("kind"),
+          value: row.get("value"),
+          minMonths: row.get("minMonths") || 1
+        };
+      }
+      const percent = Number(platform.referralPercent) || 0;
+      const referrer = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").equalTo("code", codeFrom(raw)).first(MASTER)
+      );
+      if (referrer && referrer.get("suspended") !== true && percent > 0)
+        return {
+          type: "referral",
+          code: referrer.get("code"),
+          kind: "percent",
+          value: percent,
+          minMonths: 1,
+          referrerId: referrer.id,
+          referrerName: referrer.get("name")
+        };
+      throw invalid("This code is not valid");
+    }
+    async function currentOffer(row) {
+      if (row.get("payFirst") !== true) return null;
+      const offer = row.get("offer");
+      if (!offer) return null;
+      if (offer.type === "code") {
+        const code = await tenancy.withoutTenant(
+          () => new Parse.Query("DiscountCode").equalTo("code", offer.code).first(MASTER)
+        );
+        if (!code || unusable(code)) return null;
+      }
+      return offer;
+    }
+    async function priceFor(row, platform, months, offer, plan) {
+      const list = amountFor(row, platform, months, plan);
+      const using = offer === void 0 ? await currentOffer(row) : offer;
+      const discount = discountFor(using, list, months, MIN_AMOUNT);
+      return { list, discount, amount: list - discount, code: discount ? using.code : "" };
+    }
+    async function pricesFor(row, platform) {
+      const offer = await currentOffer(row);
+      const prices = {};
+      const list = {};
+      for (const months of MONTHS) {
+        const price = await priceFor(row, platform, months, offer);
+        prices[months] = price.amount;
+        list[months] = price.list;
+      }
+      const planPrices = {};
+      for (const plan of (platform.plans || []).filter((x) => x.active)) {
+        planPrices[plan.key] = {};
+        for (const months of MONTHS)
+          planPrices[plan.key][months] = (await priceFor(row, platform, months, offer, plan)).amount;
+      }
+      return {
+        prices,
+        listPrices: list,
+        planPrices,
+        offer: offer ? {
+          code: offer.code,
+          type: offer.type,
+          label: describe(offer, platform.currency),
+          referrerName: offer.referrerName || ""
+        } : null
+      };
+    }
+    async function offerUsed(row, payment, offer) {
+      try {
+        if (offer.type === "code" && Number(payment.get("discount")) > 0) {
+          const code = await tenancy.withoutTenant(
+            () => new Parse.Query("DiscountCode").equalTo("code", offer.code).first(MASTER)
+          );
+          if (code) {
+            code.increment("used");
+            await tenancy.withoutTenant(() => code.save(null, MASTER));
+          }
+          return;
+        }
+        if (offer.type !== "referral") return;
+        if (!await tenancy.withoutTenant(() => claimOnce(`referral:${row.id}`))) return;
+        const { values: platform } = await platformSettings();
+        const months = Math.round(Number(platform.referralMonths) || 0);
+        if (months <= 0) return;
+        const referrer = await tenancy.withoutTenant(
+          () => new Parse.Query("Restaurant").get(offer.referrerId, MASTER).catch(() => null)
+        );
+        if (!referrer) return;
+        const base = new Date(
+          Math.max(
+            Date.now(),
+            referrer.get("trialEndsAt")?.getTime() || 0,
+            referrer.get("paidUntil")?.getTime() || 0
+          )
+        );
+        const until = addMonths(base, months);
+        referrer.set("paidUntil", until);
+        await tenancy.withoutTenant(() => referrer.save(null, MASTER));
+        tenancy.clearCache();
+        const monthsText = `${months} month${months === 1 ? "" : "s"}`;
+        row.set("referralCredit", { months, at: (/* @__PURE__ */ new Date()).toISOString(), until: until.toISOString() });
+        await tenancy.withoutTenant(() => row.save(null, MASTER));
+        await tenancy.runAs(
+          referrer.id,
+          async () => {
+            await require_notifications().notifyAdmins({
+              kind: "billing.referral",
+              tone: "success",
+              title: `${monthsText} free: ${row.get("name")} joined with your code`,
+              body: `Thank you for the referral. Relay is now paid until ${dateText(until)}.`,
+              link: "/admin/site/billing",
+              key: `referral:${row.id}`
+            });
+            await audit(null, "billing.referral_credit", referrer, null, {
+              referred: row.get("name"),
+              months,
+              until: until.toISOString()
+            });
+          },
+          referrer.get("code")
+        );
+        await require_platformEmail().emailOwner(
+          referrer,
+          "referral_credit",
+          { REFERRED_NAME: row.get("name"), MONTHS_TEXT: monthsText, PAID_UNTIL: dateText(until) },
+          platform
+        );
+        log("info", "billing.referral_credit", { restaurant: referrer.id, referred: row.id, months });
+      } catch (error) {
+        log("warn", "billing.offer_failed", { restaurant: row.id, message: String(error?.message) });
+      }
+    }
+    var recent = /* @__PURE__ */ new Map();
+    function allow(key) {
+      const now = Date.now();
+      const times = (recent.get(key) || []).filter((time) => now - time < 36e5);
+      if (times.length >= 30) return false;
+      times.push(now);
+      recent.set(key, times);
+      if (recent.size > 5e3) recent.clear();
+      return true;
+    }
+    Parse.Cloud.define("checkSignupCode", async (request) => {
+      if (!request.master && !allow(request.ip || "unknown"))
+        throw invalid("Too many tries. Try again in an hour");
+      const { values: platform } = await platformSettings();
+      const offer = await resolveCode(request.params?.code, platform);
+      const plans = (platform.plans || []).filter((plan2) => plan2.active);
+      const plan = plans.find((x) => x.key === request.params?.plan) || plans[0];
+      const prices = {};
+      for (const months of MONTHS) {
+        const list = months === 12 ? plan.annualPrice : plan.price * months;
+        const discount = discountFor(offer, list, months, MIN_AMOUNT);
+        prices[months] = { list, discount, amount: list - discount };
+      }
+      return {
+        code: offer.code,
+        type: offer.type,
+        label: describe(offer, platform.currency),
+        referrerName: offer.referrerName || "",
+        currency: platform.currency,
+        prices
+      };
+    });
+    Parse.Cloud.define("startTrialInstead", async (request) => {
+      const { user } = await requireRole(request, ["admin"]);
+      const tenant = tenancy.current();
+      const row = await tenancy.withoutTenant(() => new Parse.Query("Restaurant").get(tenant, MASTER));
+      if (row.get("payFirst") !== true || row.get("paidUntil"))
+        throw invalid("This restaurant is not waiting for its first payment");
+      const { values: platform } = await platformSettings();
+      const offer = row.get("offer") || null;
+      row.set({
+        payFirst: false,
+        trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 864e5)
+      });
+      row.unset("offer");
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      tenancy.clearCache();
+      await audit(user, "billing.trial_instead", row, { offer }, { trialDays: platform.trialDays });
+      return { trialEndsAt: row.get("trialEndsAt").toISOString() };
+    });
+    Parse.Cloud.define("platformListDiscountCodes", async (request) => {
+      await requirePlatform(request);
+      const query = new Parse.Query("DiscountCode");
+      query.descending("createdAt");
+      query.limit(500);
+      const rows = await tenancy.withoutTenant(() => query.find(MASTER));
+      const paid = await tenancy.withoutTenant(
+        () => new Parse.Query("SubscriptionPayment").equalTo("status", "paid").findAll({ ...MASTER, batchSize: 1e3 })
+      );
+      const signUps = paid.filter((payment) => payment.get("discountCode"));
+      const given = {};
+      for (const payment of signUps) {
+        const code = payment.get("discountCode");
+        given[code] = (given[code] || 0) + (Number(payment.get("discount")) || 0);
+      }
+      return { rows: rows.map((row) => ({ ...codeView(row), given: given[row.get("code")] || 0 })) };
+    });
+    Parse.Cloud.define("platformSaveDiscountCode", async (request) => {
+      const actor = await requirePlatform(request);
+      const p = request.params || {};
+      const code = cleanCode(p.code);
+      if (code.length < 3 || code.length > 30) throw invalid("Code: 3 to 30 letters or digits");
+      const kind = p.kind === "amount" ? "amount" : "percent";
+      const value = Number(p.value);
+      if (kind === "percent" && !(Number.isInteger(value) && value >= 1 && value <= 90))
+        throw invalid("Percent off: a whole number from 1 to 90");
+      if (kind === "amount" && !(Number.isFinite(value) && value >= 1 && value <= 1e9))
+        throw invalid("Amount off: a number above 0");
+      const minMonths = Number(p.minMonths || 1);
+      if (!MONTHS.includes(minMonths)) throw invalid("Minimum period: 1, 3, 6 or 12 months");
+      const maxUses = p.maxUses === null || p.maxUses === "" || p.maxUses === void 0 ? null : Number(p.maxUses);
+      if (maxUses !== null && !(Number.isInteger(maxUses) && maxUses >= 1))
+        throw invalid("Uses: a whole number from 1, or empty for no limit");
+      const expiresAt = p.expiresAt ? new Date(p.expiresAt) : null;
+      if (expiresAt && Number.isNaN(expiresAt.getTime())) throw invalid("Expiry: a date");
+      const clash = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").equalTo("code", codeFrom(code)).first(MASTER)
+      );
+      if (clash) throw invalid(`\u201C${code}\u201D is a restaurant\u2019s code. Choose another`);
+      const existing = await tenancy.withoutTenant(
+        () => new Parse.Query("DiscountCode").equalTo("code", code).first(MASTER)
+      );
+      let row;
+      if (p.id) {
+        row = await tenancy.withoutTenant(
+          () => new Parse.Query("DiscountCode").get(String(p.id), MASTER).catch(() => null)
+        );
+        if (!row) throw invalid("Code not found");
+        if (existing && existing.id !== row.id) throw invalid(`\u201C${code}\u201D already exists`);
+      } else {
+        if (existing) throw invalid(`\u201C${code}\u201D already exists`);
+        row = new Parse.Object("DiscountCode");
+        row.set("used", 0);
+        row.setACL(new Parse.ACL());
+      }
+      const before = row.id ? codeView(row) : null;
+      row.set({
+        code,
+        kind,
+        value: kind === "percent" ? value : Math.round(value),
+        minMonths,
+        active: p.active !== false,
+        note: String(p.note || "").trim().slice(0, 200)
+      });
+      if (maxUses === null) row.unset("maxUses");
+      else row.set("maxUses", maxUses);
+      if (expiresAt === null) row.unset("expiresAt");
+      else row.set("expiresAt", expiresAt);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.discount_code_saved", row, before, codeView(row))
+      );
+      return codeView(row);
+    });
+    module2.exports = { resolveCode, currentOffer, priceFor, pricesFor, offerUsed };
+  }
+});
+
 // cloud/billing.js
 var require_billing = __commonJS({
   "cloud/billing.js"(exports2, module2) {
@@ -32130,6 +32437,26 @@ var require_billing = __commonJS({
         }))
       };
     }
+    async function pendingDowngrade(row, platform) {
+      const next = row.get("nextPlan");
+      if (!next) return null;
+      const downgrade = require_downgrade();
+      const plan = require_plans().planFor(platform.plans || [], next);
+      const choices = await downgrade.downgradeChoices(plan);
+      let keep;
+      try {
+        keep = downgrade.checkKeep(choices, row.get("nextPlanKeep") || downgrade.defaultKeep(choices));
+      } catch {
+        keep = downgrade.defaultKeep(choices);
+      }
+      const branches = new Set(keep.branches);
+      const members = new Set(keep.members);
+      return {
+        keepBranches: choices.branches.filter((b) => branches.has(b.id)).map((b) => b.name),
+        closeBranches: choices.branches.filter((b) => !branches.has(b.id)).map((b) => b.name),
+        deactivate: Object.values(choices.roles).flatMap((role) => role.members).filter((m) => !members.has(m.id)).map((m) => m.name)
+      };
+    }
     function planState(row, platform, upgrades) {
       const current = planOfRow(row, platform);
       const renewal = renewalPlanOf(row, platform);
@@ -32174,7 +32501,7 @@ var require_billing = __commonJS({
         offer: priced.offer,
         // Plans: the one in force, the next period's, and what moving up now
         // costs while a paid period runs.
-        plan: planState(row, platform, upgrades),
+        plan: { ...planState(row, platform, upgrades), pending: await pendingDowngrade(row, platform) },
         referrals: await referralsOf(row, platform),
         invoices,
         // False until the ioTec keys are set in the Back4App app.
@@ -32191,7 +32518,6 @@ var require_billing = __commonJS({
     });
     Parse.Cloud.define("changePlan", async (request) => {
       const { user: actor } = await requireRole(request, ["admin"]);
-      const limits = require_limits();
       const { planOfRow: planOfRow2 } = require_restaurants();
       const { values: platform } = await platformSettings();
       const target = platform.plans.find((plan) => plan.active && plan.key === request.params?.plan);
@@ -32205,15 +32531,23 @@ var require_billing = __commonJS({
         if (!row.get("nextPlan")) throw invalid(`You are on ${target.name} already`);
         row.unset("nextPlan");
         row.unset("nextPlanFrom");
+        row.unset("nextPlanKeep");
       } else if (target.price > current.price) {
         throw invalid(`Moving up to ${target.name} is paid: use Upgrade`);
       } else {
         const access = accessOf(row, platform.graceDays);
         if (access.status !== "active" && access.status !== "trial")
           throw invalid(`Choose ${target.name} when you pay your next period`);
-        const problems = await limits.overLimits(target);
-        if (problems.length)
-          throw invalid(`${target.name} allows less than you have: ${problems.join(", ")}`);
+        const downgrade = require_downgrade();
+        const choices = await downgrade.downgradeChoices(target);
+        if (choices.fits) row.unset("nextPlanKeep");
+        else {
+          if (!request.params?.keep)
+            throw invalid(
+              `${target.name} allows less than you have: choose the branch and team that stay`
+            );
+          row.set("nextPlanKeep", downgrade.checkKeep(choices, request.params.keep));
+        }
         row.set({ nextPlan: target.key, nextPlanFrom: access.until });
       }
       await tenancy.withoutTenant(() => row.save(null, MASTER));
@@ -32608,6 +32942,7 @@ var require_billing = __commonJS({
       let checked = 0;
       let reminded = 0;
       await forEachRestaurant(async (row) => {
+        await require_downgrade().applyDueDowngrade(row.id);
         for (const payment of await pendingPayments()) {
           await refresh(payment);
           checked += 1;
@@ -32794,307 +33129,198 @@ var require_notifications = __commonJS({
   }
 });
 
-// cloud/offers.js
-var require_offers2 = __commonJS({
-  "cloud/offers.js"(exports2, module2) {
+// cloud/downgrade.js
+var require_downgrade = __commonJS({
+  "cloud/downgrade.js"(exports2, module2) {
     "use strict";
-    var { MASTER, invalid, audit, claimOnce, requireRole } = require_core();
+    var { MASTER, invalid, audit, claimOnce, endSessions, findAll } = require_core();
     var tenancy = require_tenant();
-    var { addMonths } = require_access();
-    var { discountFor, describe, cleanCode } = require_offers();
-    var { dateText } = require_emailTemplates();
     var { log } = require_log();
-    var { platformSettings, requirePlatform, amountFor, codeFrom } = require_restaurants();
-    var MONTHS = [1, 3, 6, 12];
-    var MIN_AMOUNT = 500;
-    var codeView = (row) => ({
-      id: row.id,
-      code: row.get("code"),
-      kind: row.get("kind"),
-      value: row.get("value"),
-      minMonths: row.get("minMonths") || 1,
-      maxUses: row.get("maxUses") ?? null,
-      used: row.get("used") || 0,
-      expiresAt: row.get("expiresAt")?.toISOString() || null,
-      active: row.get("active") !== false,
-      note: row.get("note") || ""
-    });
-    function unusable(row, now = Date.now()) {
-      if (row.get("active") === false) return "This code is no longer valid";
-      const expires = row.get("expiresAt");
-      if (expires instanceof Date && expires.getTime() < now) return "This code has expired";
-      const max = row.get("maxUses");
-      if (typeof max === "number" && (row.get("used") || 0) >= max) return "This code has been used up";
-      return "";
-    }
-    async function resolveCode(raw, platform) {
-      const code = cleanCode(raw);
-      if (!code) throw invalid("Enter the code");
-      const row = await tenancy.withoutTenant(
-        () => new Parse.Query("DiscountCode").equalTo("code", code).first(MASTER)
-      );
-      if (row) {
-        const why = unusable(row);
-        if (why) throw invalid(why);
-        return {
-          type: "code",
-          code,
-          kind: row.get("kind"),
-          value: row.get("value"),
-          minMonths: row.get("minMonths") || 1
-        };
-      }
-      const percent = Number(platform.referralPercent) || 0;
-      const referrer = await tenancy.withoutTenant(
-        () => new Parse.Query("Restaurant").equalTo("code", codeFrom(raw)).first(MASTER)
-      );
-      if (referrer && referrer.get("suspended") !== true && percent > 0)
-        return {
-          type: "referral",
-          code: referrer.get("code"),
-          kind: "percent",
-          value: percent,
-          minMonths: 1,
-          referrerId: referrer.id,
-          referrerName: referrer.get("name")
-        };
-      throw invalid("This code is not valid");
-    }
-    async function currentOffer(row) {
-      if (row.get("payFirst") !== true) return null;
-      const offer = row.get("offer");
-      if (!offer) return null;
-      if (offer.type === "code") {
-        const code = await tenancy.withoutTenant(
-          () => new Parse.Query("DiscountCode").equalTo("code", offer.code).first(MASTER)
-        );
-        if (!code || unusable(code)) return null;
-      }
-      return offer;
-    }
-    async function priceFor(row, platform, months, offer, plan) {
-      const list = amountFor(row, platform, months, plan);
-      const using = offer === void 0 ? await currentOffer(row) : offer;
-      const discount = discountFor(using, list, months, MIN_AMOUNT);
-      return { list, discount, amount: list - discount, code: discount ? using.code : "" };
-    }
-    async function pricesFor(row, platform) {
-      const offer = await currentOffer(row);
-      const prices = {};
-      const list = {};
-      for (const months of MONTHS) {
-        const price = await priceFor(row, platform, months, offer);
-        prices[months] = price.amount;
-        list[months] = price.list;
-      }
-      const planPrices = {};
-      for (const plan of (platform.plans || []).filter((x) => x.active)) {
-        planPrices[plan.key] = {};
-        for (const months of MONTHS)
-          planPrices[plan.key][months] = (await priceFor(row, platform, months, offer, plan)).amount;
-      }
-      return {
-        prices,
-        listPrices: list,
-        planPrices,
-        offer: offer ? {
-          code: offer.code,
-          type: offer.type,
-          label: describe(offer, platform.currency),
-          referrerName: offer.referrerName || ""
-        } : null
-      };
-    }
-    async function offerUsed(row, payment, offer) {
-      try {
-        if (offer.type === "code" && Number(payment.get("discount")) > 0) {
-          const code = await tenancy.withoutTenant(
-            () => new Parse.Query("DiscountCode").equalTo("code", offer.code).first(MASTER)
-          );
-          if (code) {
-            code.increment("used");
-            await tenancy.withoutTenant(() => code.save(null, MASTER));
-          }
-          return;
+    var LIMITED_ROLES = ["cashier", "rider", "finance"];
+    var ROLE_NAMES = { cashier: "cashiers", rider: "riders", finance: "finance staff" };
+    async function teamByRole() {
+      const out = {};
+      for (const role of LIMITED_ROLES) {
+        out[role] = [];
+        const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
+        if (!roleRow) continue;
+        for (const user of await findAll(roleRow.getUsers().query())) {
+          if (user.get("active") === false) continue;
+          out[role].push(user);
         }
-        if (offer.type !== "referral") return;
-        if (!await tenancy.withoutTenant(() => claimOnce(`referral:${row.id}`))) return;
-        const { values: platform } = await platformSettings();
-        const months = Math.round(Number(platform.referralMonths) || 0);
-        if (months <= 0) return;
-        const referrer = await tenancy.withoutTenant(
-          () => new Parse.Query("Restaurant").get(offer.referrerId, MASTER).catch(() => null)
-        );
-        if (!referrer) return;
-        const base = new Date(
-          Math.max(
-            Date.now(),
-            referrer.get("trialEndsAt")?.getTime() || 0,
-            referrer.get("paidUntil")?.getTime() || 0
-          )
-        );
-        const until = addMonths(base, months);
-        referrer.set("paidUntil", until);
-        await tenancy.withoutTenant(() => referrer.save(null, MASTER));
-        tenancy.clearCache();
-        const monthsText = `${months} month${months === 1 ? "" : "s"}`;
-        row.set("referralCredit", { months, at: (/* @__PURE__ */ new Date()).toISOString(), until: until.toISOString() });
-        await tenancy.withoutTenant(() => row.save(null, MASTER));
-        await tenancy.runAs(
-          referrer.id,
-          async () => {
-            await require_notifications().notifyAdmins({
-              kind: "billing.referral",
-              tone: "success",
-              title: `${monthsText} free: ${row.get("name")} joined with your code`,
-              body: `Thank you for the referral. Relay is now paid until ${dateText(until)}.`,
-              link: "/admin/site/billing",
-              key: `referral:${row.id}`
-            });
-            await audit(null, "billing.referral_credit", referrer, null, {
-              referred: row.get("name"),
-              months,
-              until: until.toISOString()
-            });
-          },
-          referrer.get("code")
-        );
-        await require_platformEmail().emailOwner(
-          referrer,
-          "referral_credit",
-          { REFERRED_NAME: row.get("name"), MONTHS_TEXT: monthsText, PAID_UNTIL: dateText(until) },
-          platform
-        );
-        log("info", "billing.referral_credit", { restaurant: referrer.id, referred: row.id, months });
-      } catch (error) {
-        log("warn", "billing.offer_failed", { restaurant: row.id, message: String(error?.message) });
       }
+      return out;
     }
-    var recent = /* @__PURE__ */ new Map();
-    function allow(key) {
-      const now = Date.now();
-      const times = (recent.get(key) || []).filter((time) => now - time < 36e5);
-      if (times.length >= 30) return false;
-      times.push(now);
-      recent.set(key, times);
-      if (recent.size > 5e3) recent.clear();
-      return true;
+    async function openBranches() {
+      return (await findAll(new Parse.Query("Branch"))).filter((row) => row.get("active") !== false).sort((a, b) => Number(b.get("main") === true) - Number(a.get("main") === true));
     }
-    Parse.Cloud.define("checkSignupCode", async (request) => {
-      if (!request.master && !allow(request.ip || "unknown"))
-        throw invalid("Too many tries. Try again in an hour");
-      const { values: platform } = await platformSettings();
-      const offer = await resolveCode(request.params?.code, platform);
-      const plans = (platform.plans || []).filter((plan2) => plan2.active);
-      const plan = plans.find((x) => x.key === request.params?.plan) || plans[0];
-      const prices = {};
-      for (const months of MONTHS) {
-        const list = months === 12 ? plan.annualPrice : plan.price * months;
-        const discount = discountFor(offer, list, months, MIN_AMOUNT);
-        prices[months] = { list, discount, amount: list - discount };
+    async function downgradeChoices(plan) {
+      const branches = await openBranches();
+      const team = await teamByRole();
+      const maxBranches = plan.limits.branches;
+      const branchesOver = typeof maxBranches === "number" && branches.length > maxBranches;
+      const roles = {};
+      let rolesOver = false;
+      for (const role of LIMITED_ROLES) {
+        const max = plan.limits[role];
+        const members = team[role];
+        const over = typeof max === "number" && members.length > max;
+        rolesOver ||= over;
+        roles[role] = {
+          max: typeof max === "number" ? max : null,
+          members: members.map((user) => ({
+            id: user.id,
+            name: user.get("name") || tenancy.displayUsername(user.getUsername()),
+            username: tenancy.displayUsername(user.getUsername()),
+            branchId: user.get("branch")?.id || ""
+          }))
+        };
       }
       return {
-        code: offer.code,
-        type: offer.type,
-        label: describe(offer, platform.currency),
-        referrerName: offer.referrerName || "",
-        currency: platform.currency,
-        prices
+        plan: plan.key,
+        planName: plan.name,
+        // Branches decide which members can stay, so they matter whenever there
+        // is more than one and members are limited, too.
+        fits: !branchesOver && !rolesOver,
+        maxBranches: typeof maxBranches === "number" ? maxBranches : null,
+        branches: branches.map((row) => ({
+          id: row.id,
+          name: row.get("name"),
+          main: row.get("main") === true
+        })),
+        roles
       };
-    });
-    Parse.Cloud.define("startTrialInstead", async (request) => {
-      const { user } = await requireRole(request, ["admin"]);
-      const tenant = tenancy.current();
-      const row = await tenancy.withoutTenant(() => new Parse.Query("Restaurant").get(tenant, MASTER));
-      if (row.get("payFirst") !== true || row.get("paidUntil"))
-        throw invalid("This restaurant is not waiting for its first payment");
-      const { values: platform } = await platformSettings();
-      const offer = row.get("offer") || null;
-      row.set({
-        payFirst: false,
-        trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 864e5)
-      });
-      row.unset("offer");
-      await tenancy.withoutTenant(() => row.save(null, MASTER));
-      tenancy.clearCache();
-      await audit(user, "billing.trial_instead", row, { offer }, { trialDays: platform.trialDays });
-      return { trialEndsAt: row.get("trialEndsAt").toISOString() };
-    });
-    Parse.Cloud.define("platformListDiscountCodes", async (request) => {
-      await requirePlatform(request);
-      const query = new Parse.Query("DiscountCode");
-      query.descending("createdAt");
-      query.limit(500);
-      const rows = await tenancy.withoutTenant(() => query.find(MASTER));
-      const paid = await tenancy.withoutTenant(
-        () => new Parse.Query("SubscriptionPayment").equalTo("status", "paid").findAll({ ...MASTER, batchSize: 1e3 })
+    }
+    function checkKeep(choices, keep) {
+      const branchIds = new Set(choices.branches.map((b) => b.id));
+      const keptBranches = [...new Set((keep?.branches || []).map(String))].filter(
+        (id) => branchIds.has(id)
       );
-      const signUps = paid.filter((payment) => payment.get("discountCode"));
-      const given = {};
-      for (const payment of signUps) {
-        const code = payment.get("discountCode");
-        given[code] = (given[code] || 0) + (Number(payment.get("discount")) || 0);
-      }
-      return { rows: rows.map((row) => ({ ...codeView(row), given: given[row.get("code")] || 0 })) };
-    });
-    Parse.Cloud.define("platformSaveDiscountCode", async (request) => {
-      const actor = await requirePlatform(request);
-      const p = request.params || {};
-      const code = cleanCode(p.code);
-      if (code.length < 3 || code.length > 30) throw invalid("Code: 3 to 30 letters or digits");
-      const kind = p.kind === "amount" ? "amount" : "percent";
-      const value = Number(p.value);
-      if (kind === "percent" && !(Number.isInteger(value) && value >= 1 && value <= 90))
-        throw invalid("Percent off: a whole number from 1 to 90");
-      if (kind === "amount" && !(Number.isFinite(value) && value >= 1 && value <= 1e9))
-        throw invalid("Amount off: a number above 0");
-      const minMonths = Number(p.minMonths || 1);
-      if (!MONTHS.includes(minMonths)) throw invalid("Minimum period: 1, 3, 6 or 12 months");
-      const maxUses = p.maxUses === null || p.maxUses === "" || p.maxUses === void 0 ? null : Number(p.maxUses);
-      if (maxUses !== null && !(Number.isInteger(maxUses) && maxUses >= 1))
-        throw invalid("Uses: a whole number from 1, or empty for no limit");
-      const expiresAt = p.expiresAt ? new Date(p.expiresAt) : null;
-      if (expiresAt && Number.isNaN(expiresAt.getTime())) throw invalid("Expiry: a date");
-      const clash = await tenancy.withoutTenant(
-        () => new Parse.Query("Restaurant").equalTo("code", codeFrom(code)).first(MASTER)
-      );
-      if (clash) throw invalid(`\u201C${code}\u201D is a restaurant\u2019s code. Choose another`);
-      const existing = await tenancy.withoutTenant(
-        () => new Parse.Query("DiscountCode").equalTo("code", code).first(MASTER)
-      );
-      let row;
-      if (p.id) {
-        row = await tenancy.withoutTenant(
-          () => new Parse.Query("DiscountCode").get(String(p.id), MASTER).catch(() => null)
+      if (choices.branches.length && !keptBranches.length)
+        throw invalid("Choose the branch to keep open");
+      if (choices.maxBranches !== null && keptBranches.length > choices.maxBranches)
+        throw invalid(
+          `${choices.planName} allows ${choices.maxBranches} branch${choices.maxBranches === 1 ? "" : "es"}`
         );
-        if (!row) throw invalid("Code not found");
-        if (existing && existing.id !== row.id) throw invalid(`\u201C${code}\u201D already exists`);
-      } else {
-        if (existing) throw invalid(`\u201C${code}\u201D already exists`);
-        row = new Parse.Object("DiscountCode");
-        row.set("used", 0);
-        row.setACL(new Parse.ACL());
+      const kept = new Set(keptBranches);
+      const wanted = new Set((keep?.members || []).map(String));
+      const members = [];
+      for (const role of LIMITED_ROLES) {
+        const { max, members: list } = choices.roles[role];
+        const eligible = list.filter((m) => !m.branchId || kept.has(m.branchId) || !branchIds.size);
+        const chosen = max === null ? eligible : eligible.filter((member) => wanted.has(member.id));
+        if (max !== null && chosen.length > max)
+          throw invalid(`${choices.planName} allows ${max} ${ROLE_NAMES[role]}: choose ${max}`);
+        members.push(...chosen.map((m) => m.id));
       }
-      const before = row.id ? codeView(row) : null;
-      row.set({
-        code,
-        kind,
-        value: kind === "percent" ? value : Math.round(value),
-        minMonths,
-        active: p.active !== false,
-        note: String(p.note || "").trim().slice(0, 200)
-      });
-      if (maxUses === null) row.unset("maxUses");
-      else row.set("maxUses", maxUses);
-      if (expiresAt === null) row.unset("expiresAt");
-      else row.set("expiresAt", expiresAt);
-      await tenancy.withoutTenant(() => row.save(null, MASTER));
-      await tenancy.withoutTenant(
-        () => audit(actor, "platform.discount_code_saved", row, before, codeView(row))
+      return { branches: keptBranches, members };
+    }
+    function defaultKeep(choices) {
+      const branches = choices.branches.slice(0, choices.maxBranches ?? choices.branches.length).map((b) => b.id);
+      const kept = new Set(branches);
+      const members = [];
+      for (const role of LIMITED_ROLES) {
+        const { max, members: list } = choices.roles[role];
+        const eligible = list.filter((m) => !m.branchId || kept.has(m.branchId) || !kept.size);
+        members.push(...(max === null ? eligible : eligible.slice(0, max)).map((m) => m.id));
+      }
+      return { branches, members };
+    }
+    async function applyDueDowngrade(restaurantId) {
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(restaurantId, MASTER).catch(() => null)
       );
-      return codeView(row);
+      const next = row?.get("nextPlan");
+      const from = row?.get("nextPlanFrom");
+      if (!next || !(from instanceof Date) || from.getTime() > Date.now()) return false;
+      if (!await tenancy.withoutTenant(() => claimOnce(`downgrade:${row.id}:${from.toISOString()}`)))
+        return false;
+      try {
+        const { values: platform } = await require_restaurants().platformSettings();
+        const plan = require_plans().planFor(platform.plans || [], next);
+        const result = await tenancy.runAs(
+          row.id,
+          async () => {
+            const choices = await downgradeChoices(plan);
+            let keep;
+            try {
+              keep = checkKeep(choices, row.get("nextPlanKeep") || defaultKeep(choices));
+            } catch {
+              keep = defaultKeep(choices);
+            }
+            const keptBranches = new Set(keep.branches);
+            const keptMembers = new Set(keep.members);
+            const closed = [];
+            const branches = await openBranches();
+            const mainKept = branches.some((b) => b.get("main") === true && keptBranches.has(b.id));
+            for (const branch of branches) {
+              if (!keptBranches.size || keptBranches.has(branch.id)) {
+                if (!mainKept && branch.id === keep.branches[0]) {
+                  branch.set("main", true);
+                  await branch.save(null, MASTER);
+                }
+                continue;
+              }
+              branch.set({ active: false, main: false });
+              await branch.save(null, MASTER);
+              closed.push(branch.get("name"));
+            }
+            const team = await teamByRole();
+            const deactivated = [];
+            for (const role of LIMITED_ROLES)
+              for (const user of team[role]) {
+                if (keptMembers.has(user.id)) continue;
+                user.set("active", false);
+                await user.save(null, MASTER);
+                await endSessions(user);
+                deactivated.push(user.get("name") || tenancy.displayUsername(user.getUsername()));
+              }
+            await audit(null, "subscription.downgraded", row, null, {
+              plan: plan.key,
+              closedBranches: closed,
+              deactivated
+            });
+            await require_notifications().notifyAdmins({
+              kind: "billing.plan_changed",
+              tone: "info",
+              title: `You are now on ${plan.name}`,
+              body: [
+                closed.length ? `Closed: ${closed.join(", ")}.` : "",
+                deactivated.length ? `Deactivated: ${deactivated.join(", ")}.` : "",
+                "Their orders and payments stay in your reports."
+              ].filter(Boolean).join(" "),
+              link: "/admin/site/billing",
+              key: `downgrade:${from.toISOString()}`
+            });
+            return { closed, deactivated };
+          },
+          row.get("code")
+        );
+        row.set("plan", next);
+        row.unset("nextPlan");
+        row.unset("nextPlanFrom");
+        row.unset("nextPlanKeep");
+        await tenancy.withoutTenant(() => row.save(null, MASTER));
+        tenancy.clearCache();
+        log("info", "billing.downgraded", { restaurant: row.id, plan: next, ...result });
+        return true;
+      } catch (error) {
+        log("error", "billing.downgrade_failed", {
+          restaurant: row.id,
+          message: String(error?.message)
+        });
+        return false;
+      }
+    }
+    Parse.Cloud.define("getDowngradeChoices", async (request) => {
+      const { requireRole } = require_core();
+      await requireRole(request, ["admin"]);
+      const { values: platform } = await require_restaurants().platformSettings();
+      const plan = platform.plans.find((x) => x.active && x.key === request.params?.plan);
+      if (!plan) throw invalid("Choose one of the plans on offer");
+      return downgradeChoices(plan);
     });
-    module2.exports = { resolveCode, currentOffer, priceFor, pricesFor, offerUsed };
+    module2.exports = { downgradeChoices, checkKeep, defaultKeep, applyDueDowngrade };
   }
 });
 
@@ -33671,7 +33897,9 @@ var require_security = __commonJS({
         referralCredit: "Object",
         // A smaller plan chosen for the next period, from the date it starts.
         nextPlan: S,
-        nextPlanFrom: D
+        nextPlanFrom: D,
+        // What stays when it starts: { branches: [ids], members: [ids] }.
+        nextPlanKeep: "Object"
       },
       SubscriptionPayment: {
         amount: N,
@@ -34848,6 +35076,8 @@ var require_restaurants = __commonJS({
       "startTrialInstead"
     ]);
     async function checkAccess(name, restaurant) {
+      if (restaurant.nextPlan && restaurant.nextPlanFrom && restaurant.nextPlanFrom <= /* @__PURE__ */ new Date())
+        void require_downgrade().applyDueDowngrade(restaurant.id);
       if (OPEN_WHEN_CLOSED.has(name)) return;
       const platform = await cachedPlatform();
       const access = accessOf({ get: (key) => restaurant[key] }, platform.graceDays);
@@ -35169,6 +35399,7 @@ var require_restaurants = __commonJS({
         row.set("plan", p.plan);
         row.unset("nextPlan");
         row.unset("nextPlanFrom");
+        row.unset("nextPlanKeep");
       }
       if ("priceOverride" in p) {
         if (p.priceOverride === null || p.priceOverride === "") row.unset("priceOverride");
@@ -39950,6 +40181,7 @@ require_platformEmail();
 require_platformBroadcast();
 require_platformRevenue();
 require_offers2();
+require_downgrade();
 require_people();
 require_admin();
 require_onboarding();

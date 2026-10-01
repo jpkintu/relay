@@ -260,6 +260,32 @@ async function referralsOf(row, platform) {
   };
 }
 
+// What a scheduled move to a smaller plan closes when it starts: the
+// branches and team members not kept (run inside the restaurant).
+async function pendingDowngrade(row, platform) {
+  const next = row.get('nextPlan');
+  if (!next) return null;
+  const downgrade = require('./downgrade');
+  const plan = require('./lib/plans').planFor(platform.plans || [], next);
+  const choices = await downgrade.downgradeChoices(plan);
+  let keep;
+  try {
+    keep = downgrade.checkKeep(choices, row.get('nextPlanKeep') || downgrade.defaultKeep(choices));
+  } catch {
+    keep = downgrade.defaultKeep(choices);
+  }
+  const branches = new Set(keep.branches);
+  const members = new Set(keep.members);
+  return {
+    keepBranches: choices.branches.filter((b) => branches.has(b.id)).map((b) => b.name),
+    closeBranches: choices.branches.filter((b) => !branches.has(b.id)).map((b) => b.name),
+    deactivate: Object.values(choices.roles)
+      .flatMap((role) => role.members)
+      .filter((m) => !members.has(m.id))
+      .map((m) => m.name),
+  };
+}
+
 function planState(row, platform, upgrades) {
   const current = planOfRow(row, platform);
   const renewal = renewalPlanOf(row, platform);
@@ -307,7 +333,7 @@ async function billingState() {
     offer: priced.offer,
     // Plans: the one in force, the next period's, and what moving up now
     // costs while a paid period runs.
-    plan: planState(row, platform, upgrades),
+    plan: { ...planState(row, platform, upgrades), pending: await pendingDowngrade(row, platform) },
     referrals: await referralsOf(row, platform),
     invoices,
     // False until the ioTec keys are set in the Back4App app.
@@ -333,7 +359,6 @@ Parse.Cloud.define('getBilling', async (request) => {
 // bigger plan (startSubscriptionPayment { plan }).
 Parse.Cloud.define('changePlan', async (request) => {
   const { user: actor } = await requireRole(request, ['admin']);
-  const limits = require('./lib/limits');
   const { planOfRow } = require('./restaurants');
   const { values: platform } = await platformSettings();
   const target = platform.plans.find((plan) => plan.active && plan.key === request.params?.plan);
@@ -347,15 +372,25 @@ Parse.Cloud.define('changePlan', async (request) => {
     if (!row.get('nextPlan')) throw invalid(`You are on ${target.name} already`);
     row.unset('nextPlan');
     row.unset('nextPlanFrom');
+    row.unset('nextPlanKeep');
   } else if (target.price > current.price) {
     throw invalid(`Moving up to ${target.name} is paid: use Upgrade`);
   } else {
     const access = accessOf(row, platform.graceDays);
     if (access.status !== 'active' && access.status !== 'trial')
       throw invalid(`Choose ${target.name} when you pay your next period`);
-    const problems = await limits.overLimits(target);
-    if (problems.length)
-      throw invalid(`${target.name} allows less than you have: ${problems.join(', ')}`);
+    // More than the smaller plan allows: the owner chooses what stays
+    // (downgrade.js); the rest closes when the paid period ends.
+    const downgrade = require('./downgrade');
+    const choices = await downgrade.downgradeChoices(target);
+    if (choices.fits) row.unset('nextPlanKeep');
+    else {
+      if (!request.params?.keep)
+        throw invalid(
+          `${target.name} allows less than you have: choose the branch and team that stay`,
+        );
+      row.set('nextPlanKeep', downgrade.checkKeep(choices, request.params.keep));
+    }
     row.set({ nextPlan: target.key, nextPlanFrom: access.until });
   }
   await tenancy.withoutTenant(() => row.save(null, MASTER));
@@ -838,6 +873,7 @@ Parse.Cloud.job('billing', async () => {
   let checked = 0;
   let reminded = 0;
   await forEachRestaurant(async (row) => {
+    await require('./downgrade').applyDueDowngrade(row.id);
     for (const payment of await pendingPayments()) {
       await refresh(payment);
       checked += 1;

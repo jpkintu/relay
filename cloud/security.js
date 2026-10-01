@@ -520,6 +520,8 @@ const SCHEMAS = {
     // A smaller plan chosen for the next period, from the date it starts.
     nextPlan: S,
     nextPlanFrom: D,
+    // What stays when it starts: { branches: [ids], members: [ids] }.
+    nextPlanKeep: 'Object',
   },
   SubscriptionPayment: {
     amount: N,

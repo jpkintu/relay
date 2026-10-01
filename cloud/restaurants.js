@@ -108,6 +108,10 @@ const OPEN_WHEN_CLOSED = new Set([
 // Called for every Cloud function run for a restaurant (errors.js). Access
 // is worked out from the dates each time (lib/access.js).
 async function checkAccess(name, restaurant) {
+  // A move to a smaller plan whose date has come: close what was not kept
+  // (once; in the background).
+  if (restaurant.nextPlan && restaurant.nextPlanFrom && restaurant.nextPlanFrom <= new Date())
+    void require('./downgrade').applyDueDowngrade(restaurant.id);
   if (OPEN_WHEN_CLOSED.has(name)) return;
   const platform = await cachedPlatform();
   const access = accessOf({ get: (key) => restaurant[key] }, platform.graceDays);
@@ -517,6 +521,7 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     // Platform staff change the plan at once; a scheduled move is dropped.
     row.unset('nextPlan');
     row.unset('nextPlanFrom');
+    row.unset('nextPlanKeep');
   }
   if ('priceOverride' in p) {
     if (p.priceOverride === null || p.priceOverride === '') row.unset('priceOverride');

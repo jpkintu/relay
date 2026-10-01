@@ -59,6 +59,7 @@ require('./platformEmail');
 require('./platformBroadcast');
 require('./platformRevenue');
 require('./offers');
+require('./downgrade');
 require('./people');
 require('./admin');
 require('./onboarding');

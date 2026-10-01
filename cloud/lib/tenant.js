@@ -164,6 +164,9 @@ async function lookUp(field, value) {
         trialEndsAt: row.get('trialEndsAt') || null,
         paidUntil: row.get('paidUntil') || null,
         payFirst: row.get('payFirst') === true,
+        // A move to a smaller plan, applied once its date comes (downgrade.js).
+        nextPlan: row.get('nextPlan') || '',
+        nextPlanFrom: row.get('nextPlanFrom') || null,
       }
     : null;
   cache.set(key, { restaurant, at: Date.now() });

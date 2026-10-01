@@ -230,23 +230,52 @@ export function PlanPicker({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [cycle, setCycle] = useState<Cycle>('month');
+  const [choosing, setChoosing] = useState<DowngradeChoices | null>(null);
   const state = billing?.plan;
   if (!offered || !state) return null;
   const money = (n: number) => formatMoney(n, offered.currency);
   const day = (value: string | null) => formatDate(value, config.timezone, { dateStyle: 'medium' });
   const currentPrice = offered.plans.find((p) => p.key === state.current)?.price ?? 0;
   const ends = billing?.restaurant.until || null;
-  const change = async (plan: OfferedPlan, confirm?: string) => {
+  const change = async (
+    plan: OfferedPlan,
+    confirm?: string,
+    keep?: { branches: string[]; members: string[] },
+  ) => {
     if (confirm && !window.confirm(confirm)) return;
     setBusy(true);
     setError('');
     try {
-      await Parse.Cloud.run('changePlan', { plan: plan.key });
+      await Parse.Cloud.run('changePlan', { plan: plan.key, ...(keep ? { keep } : {}) });
+      setChoosing(null);
       await refresh();
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not change the plan');
     } finally {
+      setBusy(false);
+    }
+  };
+  // Moving down: when the restaurant has more than the smaller plan allows,
+  // the owner first chooses the branch and team that stay.
+  const moveDown = async (plan: OfferedPlan) => {
+    setBusy(true);
+    setError('');
+    try {
+      const choices: DowngradeChoices = await Parse.Cloud.run('getDowngradeChoices', {
+        plan: plan.key,
+      });
+      setBusy(false);
+      if (choices.fits)
+        await change(
+          plan,
+          `Move to ${plan.name} when your ${
+            billing?.restaurant.status === 'trial' ? 'trial' : 'paid period'
+          } ends on ${day(ends)}? Until then you keep ${state?.currentName}.`,
+        );
+      else setChoosing(choices);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change the plan');
       setBusy(false);
     }
   };
@@ -281,17 +310,7 @@ export function PlanPicker({
         </button>
       );
     return (
-      <button
-        disabled={busy}
-        onClick={() =>
-          void change(
-            plan,
-            `Move to ${plan.name} when your ${
-              billing?.restaurant.status === 'trial' ? 'trial' : 'paid period'
-            } ends on ${day(ends)}? Until then you keep ${state.currentName}.`,
-          )
-        }
-      >
+      <button disabled={busy} onClick={() => void moveDown(plan)}>
         Switch on {day(ends)}
       </button>
     );
@@ -309,6 +328,32 @@ export function PlanPicker({
           action={actionFor(plan)}
         />
       ))}
+      {choosing && (
+        <DowngradeChooser
+          choices={choosing}
+          until={day(ends)}
+          busy={busy}
+          onCancel={() => setChoosing(null)}
+          onConfirm={(keep) => {
+            const plan = offered.plans.find((p) => p.key === choosing.plan);
+            if (plan) void change(plan, undefined, keep);
+          }}
+        />
+      )}
+      {state.pending && (
+        <div className="downgrade-pending">
+          <b>
+            On {day(state.renewalFrom)} you move to {state.renewalName}.
+          </b>{' '}
+          {state.pending.keepBranches.length > 0 &&
+            `Stays open: ${state.pending.keepBranches.join(', ')}. `}
+          {state.pending.closeBranches.length > 0 &&
+            `Closes: ${state.pending.closeBranches.join(', ')}. `}
+          {state.pending.deactivate.length > 0 &&
+            `Deactivated: ${state.pending.deactivate.join(', ')}. `}
+          Every order, payment and report from before stays.
+        </div>
+      )}
       {error && <p className="form-error">{error}</p>}
       <p className="muted small">
         {state.negotiated
@@ -317,6 +362,141 @@ export function PlanPicker({
             ? `You move to ${state.renewalName} on ${day(state.renewalFrom)}; until then you keep ${state.currentName}.`
             : 'Moving up while a paid period runs costs only the difference for the days left, and the plan changes once it is paid. Moving down starts when your paid period ends.'}
       </p>
+    </div>
+  );
+}
+
+// Moving down with more than the smaller plan allows: the branch(es) that
+// stay open, then per role who stays active. The rest closes when the paid
+// period ends; their orders and payments stay in the reports.
+function DowngradeChooser({
+  choices,
+  until,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  choices: DowngradeChoices;
+  until: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (keep: { branches: string[]; members: string[] }) => void;
+}) {
+  const max = choices.maxBranches ?? choices.branches.length;
+  const [branches, setBranches] = useState<string[]>(() =>
+    choices.branches.slice(0, max).map((b) => b.id),
+  );
+  const [members, setMembers] = useState<string[]>([]);
+  const kept = new Set(branches);
+  const eligible = (branchId: string) =>
+    !branchId || kept.has(branchId) || !choices.branches.length;
+  const ROLE_LABEL = { cashier: 'Cashiers', rider: 'Riders', finance: 'Finance staff' } as const;
+  const toggleBranch = (id: string) =>
+    setBranches((list) =>
+      max === 1
+        ? [id]
+        : list.includes(id)
+          ? list.filter((x) => x !== id)
+          : list.length < max
+            ? [...list, id]
+            : list,
+    );
+  const toggleMember = (id: string) =>
+    setMembers((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]));
+  const roles = (Object.keys(choices.roles) as (keyof DowngradeChoices['roles'])[]).map((role) => {
+    const info = choices.roles[role];
+    const pool = info.members.filter((m) => eligible(m.branchId));
+    const chosen = pool.filter((m) => members.includes(m.id));
+    return { role, info, pool, chosen };
+  });
+  const over = roles.some((r) => r.info.max !== null && r.chosen.length > r.info.max);
+  const closing = choices.branches.filter((b) => !kept.has(b.id));
+  return (
+    <div className="downgrade-chooser" role="dialog" aria-label={`Move to ${choices.planName}`}>
+      <h3>
+        Move to {choices.planName} on {until}: choose what stays
+      </h3>
+      <p className="muted">
+        Until {until} nothing changes. Then the branches and team members you do not keep are closed
+        and deactivated. Nothing is deleted: their orders, payments, shifts and handovers stay in
+        your orders, ledgers and reports, and you can reopen them after moving up again.
+      </p>
+      {choices.branches.length > 0 && (
+        <fieldset>
+          <legend>
+            Branch{max === 1 ? '' : 'es'} to keep open ({max === 1 ? 'one' : `up to ${max}`})
+          </legend>
+          {choices.branches.map((b) => (
+            <label key={b.id} className="setup-checkbox">
+              <input
+                type={max === 1 ? 'radio' : 'checkbox'}
+                name="keep-branch"
+                checked={kept.has(b.id)}
+                onChange={() => toggleBranch(b.id)}
+              />{' '}
+              {b.name}
+              {b.main ? ' (main)' : ''}
+            </label>
+          ))}
+          {closing.length > 0 && (
+            <small className="muted">Closes: {closing.map((b) => b.name).join(', ')}</small>
+          )}
+        </fieldset>
+      )}
+      {roles
+        .filter((r) => r.info.max !== null && r.pool.length > (r.info.max ?? 0))
+        .map((r) => (
+          <fieldset key={r.role}>
+            <legend>
+              {ROLE_LABEL[r.role]} to keep active: {r.chosen.length} of{' '}
+              {r.info.max === 0 ? 'none allowed' : r.info.max}
+            </legend>
+            {r.info.max === 0 ? (
+              <small className="muted">
+                {choices.planName} has no {r.role} role: all {r.pool.length} are deactivated.
+              </small>
+            ) : (
+              r.pool.map((m) => (
+                <label key={m.id} className="setup-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={members.includes(m.id)}
+                    onChange={() => toggleMember(m.id)}
+                  />{' '}
+                  {m.name} <small className="muted">@{m.username}</small>
+                </label>
+              ))
+            )}
+          </fieldset>
+        ))}
+      {roles.some((r) => r.info.members.some((m) => !eligible(m.branchId))) && (
+        <p className="muted small">
+          Team members of the branches that close are deactivated with them.
+        </p>
+      )}
+      <div className="billing-actions">
+        <button
+          className="primary-button"
+          disabled={busy || over || (choices.branches.length > 0 && !branches.length)}
+          onClick={() =>
+            onConfirm({
+              branches,
+              members: [
+                ...members.filter((id) => roles.some((r) => r.chosen.some((m) => m.id === id))),
+                // Roles within the limit: everyone in the kept branches stays.
+                ...roles
+                  .filter((r) => r.info.max === null || r.pool.length <= (r.info.max ?? 0))
+                  .flatMap((r) => r.pool.map((m) => m.id)),
+              ],
+            })
+          }
+        >
+          Move to {choices.planName} on {until}
+        </button>
+        <button type="button" className="secondary-button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -593,6 +773,22 @@ export type PlanState = {
   choosePlanWhenPaying: boolean;
   negotiated: boolean;
   upgrades: Record<string, Upgrade>;
+  // A scheduled smaller plan: what stays and what closes when it starts.
+  pending?: { keepBranches: string[]; closeBranches: string[]; deactivate: string[] } | null;
+};
+type DowngradeChoices = {
+  plan: string;
+  planName: string;
+  fits: boolean;
+  maxBranches: number | null;
+  branches: { id: string; name: string; main: boolean }[];
+  roles: Record<
+    'cashier' | 'rider' | 'finance',
+    {
+      max: number | null;
+      members: { id: string; name: string; username: string; branchId: string }[];
+    }
+  >;
 };
 export type Referrals = {
   code: string;
