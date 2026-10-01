@@ -51,6 +51,15 @@ const DEFAULT_CONFIG = {
   drawerOnHandover: true,
   drawerOnPayout: true,
   drawerOnShift: true,
+  // Online orders (online.js): the public menu link and QR code. Off until
+  // the owner switches it on; what is offered; paused by staff when busy.
+  onlineOrders: false,
+  onlineOpen: true,
+  onlinePickup: true,
+  onlineDelivery: true,
+  onlineCash: true,
+  onlineMobileMoney: true,
+  onlineNote: '',
   // Branding: theme colours (#rrggbb); '' keeps Relay's own.
   themeInk: '',
   themeAccent: '',

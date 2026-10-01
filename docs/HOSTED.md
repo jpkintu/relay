@@ -477,6 +477,20 @@ Setting it up (once):
 Each origin keeps its own sign-in: someone signed in at
 `relayeats.app` signs in once more at `aldea.relayeats.app`.
 
+## Online ordering
+
+Each restaurant's public menu (cloud/online.js, OnlineOrder.tsx) lives at
+its own address: `https://<code>.relayeats.app/order` once the restaurant
+domain is set, else `/order/<code>`. Customers order and pay there without
+signing in. The public functions (`getOnlineMenu`, `placeOnlineOrder`,
+`getOnlineOrder`, `cancelOnlineOrder`) take the restaurant from that address
+(`restaurant: '<code>'`). Without it they refuse with “Open the restaurant’s
+own link to order”. A restaurant that is suspended, or whose trial or
+subscription has lapsed, answers “This restaurant is not taking online
+orders right now”. The order throttles are counted per restaurant. Admin →
+Online orders shows the restaurant's own link and QR code, and prints A4 or
+A5 fliers and table cards carrying that QR code.
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,

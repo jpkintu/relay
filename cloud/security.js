@@ -183,6 +183,8 @@ const SCHEMAS = {
     amountToCollect: N,
     shortfallNote: S,
     clientId: S,
+    // Online orders (online.js): the customer's private tracking link.
+    onlineToken: S,
     acceptedAt: D,
     readyAt: D,
     cancelledReason: S,
@@ -366,6 +368,14 @@ const SCHEMAS = {
     loginImages: 'Array',
     themeInk: S,
     themeAccent: S,
+    // Online orders (online.js).
+    onlineOrders: B,
+    onlineOpen: B,
+    onlinePickup: B,
+    onlineDelivery: B,
+    onlineCash: B,
+    onlineMobileMoney: B,
+    onlineNote: S,
   },
   MenuItem: {
     title: S,

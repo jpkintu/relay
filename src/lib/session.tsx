@@ -38,6 +38,9 @@ export type AppConfig = {
   drawer?: { onSale: boolean; onHandover: boolean; onPayout: boolean; onShift: boolean } | null;
   // Pictures beside the sign-in form (Admin → Branding).
   loginImages?: LoginImage[];
+  // Online orders (Admin → Online orders): null when off; open = taking
+  // orders now (staff pause it).
+  online?: { open: boolean } | null;
 };
 
 export type LoginImage = { url: string; caption: string };

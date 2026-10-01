@@ -58,6 +58,8 @@ type Ticket = {
   status: string;
   stage: Stage;
   channel: string;
+  // The customer's number (online orders: to call them).
+  phone?: string;
   payment: string;
   createdAt: Date | null;
   issue: string;
@@ -85,6 +87,7 @@ const CHANNEL: Record<string, string> = {
   phone: 'Phone',
   whatsapp: 'WhatsApp',
   other: 'Other',
+  online: 'Online',
 };
 const PAYMENT: Record<string, string> = {
   cash: 'Cash',
@@ -138,6 +141,7 @@ async function loadLiveTickets(branchId?: string | null): Promise<Ticket[]> {
     status: order.get('status'),
     stage: stageOf(order.get('status')),
     channel: order.get('channel') || '',
+    phone: order.get('customerPhone') || '',
     payment: order.get('paymentMethod') || '',
     createdAt: order.createdAt || null,
     issue: order.get('disputeFlag') ? order.get('disputeNote') || 'Problem reported' : '',
@@ -415,6 +419,38 @@ export function CashierWorkspace() {
   );
 }
 
+// Online orders (online.js): staff pause them when the kitchen is full, and
+// open them again.
+function OnlineSwitch({ open }: { open: boolean }) {
+  const { refresh } = useSession();
+  const [busy, setBusy] = useState(false);
+  const toggle = async () => {
+    if (
+      open &&
+      !window.confirm('Pause online orders? Customers see that you are not taking orders.')
+    )
+      return;
+    setBusy(true);
+    try {
+      await Parse.Cloud.run('setOnlineOpen', { open: !open });
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      className={`online-switch ${open ? 'on' : 'paused'}`}
+      disabled={busy}
+      onClick={() => void toggle()}
+      title={open ? 'Pause online orders' : 'Take online orders again'}
+    >
+      <span className="online-dot" aria-hidden />
+      {open ? 'Online orders on' : 'Online orders paused'}
+    </button>
+  );
+}
+
 function KitchenBoard() {
   const { preview, config, user, profile } = useSession();
   const money = useMoney();
@@ -617,8 +653,11 @@ function KitchenBoard() {
         <div>
           <h1>Kitchen board</h1>
         </div>
-        <span>
-          <Clock3 /> Updates live
+        <span className="board-title-side">
+          {config.online && !preview && <OnlineSwitch open={config.online.open} />}
+          <span>
+            <Clock3 /> Updates live
+          </span>
         </span>
       </div>
       {isCashier && !preview && (
@@ -681,6 +720,11 @@ function KitchenBoard() {
                       )}
                     </div>
                     <h3>{ticket.customer}</h3>
+                    {ticket.channel === 'online' && ticket.phone && (
+                      <a className="ticket-phone" href={`tel:${ticket.phone.replace(/\s+/g, '')}`}>
+                        {ticket.phone}
+                      </a>
+                    )}
                     {ticket.lines.some((line) => line.split) && (
                       <p className="ticket-split-note">
                         Split order · {new Set(ticket.lines.map((line) => line.split)).size} splits
@@ -715,7 +759,8 @@ function KitchenBoard() {
                     {ticket.orderType === 'delivery' && (
                       <small className={ticket.riderId ? '' : 'ticket-norider'}>
                         {ticket.riderId ? ticket.rider : 'No rider yet'}
-                        {ticket.fromCounter && ' · counter order'}
+                        {ticket.fromCounter &&
+                          (ticket.channel === 'online' ? ' · online order' : ' · counter order')}
                       </small>
                     )}
                     {!preview && (

@@ -136,6 +136,14 @@ const OPEN_WHEN_CLOSED = new Set([
   'startTrialInstead',
 ]);
 
+// The customers' online menu (online.js).
+const ONLINE_PUBLIC = new Set([
+  'getOnlineMenu',
+  'placeOnlineOrder',
+  'getOnlineOrder',
+  'cancelOnlineOrder',
+]);
+
 // Called for every Cloud function run for a restaurant (errors.js). Access
 // is worked out from the dates each time (lib/access.js).
 async function checkAccess(name, restaurant) {
@@ -147,6 +155,9 @@ async function checkAccess(name, restaurant) {
   const platform = await cachedPlatform();
   const access = accessOf({ get: (key) => restaurant[key] }, platform.graceDays);
   if (access.ok) return;
+  // Customers on the online menu (online.js) are not told about billing.
+  if (ONLINE_PUBLIC.has(name))
+    throw forbidden('This restaurant is not taking online orders right now');
   const contact = platform.supportContact ? ` (${platform.supportContact})` : '';
   throw forbidden(
     access.status === 'suspended'

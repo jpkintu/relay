@@ -149,6 +149,24 @@ difference.
 
 ---
 
+## Customers: order online
+
+The restaurant's public menu at **/order** (on RelayEats Hosted, each
+restaurant's own address, e.g. `aldea.relayeats.app/order`). Customers scan a
+QR code on a flier or table card, or open a shared link, choose dishes and
+sides, and order for **pick-up or delivery without signing in**. They pay
+**cash on pick-up / delivery** or **mobile money** (a payment request to their
+phone with automatic collection, or the merchant code and the transaction ID),
+then follow the order live: received, being prepared, ready / on the way,
+done. They can cancel until the kitchen starts.
+
+Orders arrive on the kitchen board as Incoming, tagged **Online**, with the
+customer's number to call; deliveries are given a rider like call-in orders.
+Cashiers can pause online orders when the kitchen is full. The owner switches
+it on in **Admin → Online orders**, chooses pick-up / delivery and the ways to
+pay, copies or shares the link, downloads the QR code, and prints **A4 / A5
+fliers or table cards** with it.
+
 ## Owners
 
 The owner works from any computer or phone, for all branches at once or one

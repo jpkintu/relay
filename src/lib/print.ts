@@ -266,6 +266,12 @@ export async function printOrder(
 // Prints a ticket-sized page through the browser's print dialog (the till's
 // receipt printer). The cash drawer's "printer opens it" mode also uses it.
 export async function printHtml(title: string, width: number, body: string) {
+  await printDocument(title, styles(width), body);
+}
+
+// Prints any page (a flier, a table card) with its own styles, through the
+// browser's print dialog, from a hidden frame.
+export async function printDocument(title: string, css: string, body: string) {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.cssText =
@@ -274,7 +280,7 @@ export async function printHtml(title: string, width: number, body: string) {
   const doc = frame.contentDocument!;
   doc.open();
   doc.write(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${escape(title)}</title><style>${styles(width)}</style></head><body>${body}</body></html>`,
+    `<!doctype html><html><head><meta charset="utf-8"><title>${escape(title)}</title><style>${css}</style></head><body>${body}</body></html>`,
   );
   doc.close();
   // Let the logo load before printing (at most 3 s, so a slow link never
