@@ -5,6 +5,7 @@ import { PlatformWhatsApp } from './PlatformWhatsApp';
 import { PlatformEmail } from './PlatformEmail';
 import { PlatformBroadcast } from './PlatformBroadcast';
 import { PlatformRevenue } from './PlatformRevenue';
+import { PlatformAccounting } from './PlatformAccounting';
 import { PlatformDiscounts } from './PlatformDiscounts';
 import { PlatformPlans, type Plan } from './PlatformPlans';
 import { formatDate, formatMoney } from '../lib/format';
@@ -54,9 +55,10 @@ const STATUS: Record<RestaurantSummary['status'], string> = {
   expired: 'Expired',
   suspended: 'Suspended',
 };
-type Tab = 'dashboard' | 'restaurants' | 'plans' | 'messages' | 'settings';
+type Tab = 'dashboard' | 'accounting' | 'restaurants' | 'plans' | 'messages' | 'settings';
 const TABS: [Tab, string][] = [
   ['dashboard', 'Dashboard'],
+  ['accounting', 'Accounting'],
   ['restaurants', 'Restaurants'],
   ['plans', 'Plans & codes'],
   ['messages', 'Email & WhatsApp'],
@@ -159,6 +161,8 @@ export function PlatformConsole() {
             <PlatformRevenue timeZone={TIMEZONE} />
           </>
         )}
+
+        {tab === 'accounting' && <PlatformAccounting timeZone={TIMEZONE} />}
 
         {tab === 'restaurants' && (
           <>

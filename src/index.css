@@ -8726,3 +8726,33 @@ tr.split-row td {
   display: flex;
   gap: 12px;
 }
+
+/* Platform console → Accounting */
+.accounting .admin-metrics {
+  grid-template-columns: repeat(4, 1fr);
+  margin: 16px 0;
+}
+.accounting-month {
+  min-width: 180px;
+}
+.accounting .platform-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.accounting .platform-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.zoho-steps {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+@media (max-width: 900px) {
+  .accounting .admin-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

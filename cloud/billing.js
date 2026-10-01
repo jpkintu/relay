@@ -133,6 +133,8 @@ async function settle(payment, { reference = '', message = '' } = {}) {
     until: end.toISOString(),
   });
   void emailPaid(row, payment);
+  // Into Zoho Books when automatic sync is on (platformAccounting.js).
+  void require('./platformAccounting').autoSyncPayment(payment.id);
   return payment;
 }
 
@@ -880,7 +882,8 @@ Parse.Cloud.job('billing', async () => {
     }
     reminded += await remind(row, platform);
   });
-  return `${checked} payments checked, ${reminded} reminders sent`;
+  const posted = await require('./platformAccounting').autoPostMonths();
+  return `${checked} payments checked, ${reminded} reminders sent, ${posted} months posted to Zoho`;
 });
 
 module.exports = { billingDue, emailStage };

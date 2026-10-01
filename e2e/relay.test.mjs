@@ -56,6 +56,10 @@ process.env.RELAY_EMAIL_URL = `http://localhost:${MOMO_PORT}/email`;
 process.env.RELAY_BROADCAST_DELAY_MS = '0';
 // The email service stand-in (Resend and Brevo APIs): emails it accepted.
 const mailbox = [];
+// The Zoho Books stand-in: what it was sent.
+const zohoBooks = { contacts: [], invoices: [], payments: [], journals: [], tokens: 0 };
+process.env.RELAY_ZOHO_ACCOUNTS_URL = `http://localhost:${MOMO_PORT}/zoho/accounts`;
+process.env.RELAY_ZOHO_API_URL = `http://localhost:${MOMO_PORT}/zoho/books/v3`;
 // The WhatsApp Cloud API stand-in: messages it accepted.
 const whatsapp = { messages: [], refuse: '' };
 process.env.RELAY_EFRIS_DELAY_MS = '300';
@@ -353,6 +357,100 @@ function startMomoMock() {
       return answer(res, { basicInformation: record.basicInformation, summary: record.summary });
     }
     return refuse(res, '01', 'Interface coding error');
+  });
+  // Zoho: OAuth (the Self Client's grant code, then refresh tokens) and the
+  // Books API, checking the token and the organization on every call.
+  app.post('/zoho/accounts/oauth/v2/token', express.urlencoded({ extended: false }), (req, res) => {
+    const b = req.body;
+    if (b.client_id !== 'zoho-client' || b.client_secret !== 'zoho-secret')
+      return res.json({ error: 'invalid_client' });
+    if (b.grant_type === 'authorization_code') {
+      if (b.code !== 'grant-ok') return res.json({ error: 'invalid_code' });
+      zohoBooks.tokens += 1;
+      return res.json({
+        access_token: `zat-${zohoBooks.tokens}`,
+        refresh_token: 'zrt',
+        expires_in: 3600,
+      });
+    }
+    if (b.grant_type === 'refresh_token' && b.refresh_token === 'zrt') {
+      zohoBooks.tokens += 1;
+      return res.json({ access_token: `zat-${zohoBooks.tokens}`, expires_in: 3600 });
+    }
+    res.json({ error: 'invalid_grant' });
+  });
+  app.use('/zoho/books/v3', express.json(), (req, res, next) => {
+    if (!/^Zoho-oauthtoken zat-\d+$/.test(req.headers.authorization || ''))
+      return res.status(401).json({ code: 57, message: 'You are not authorized' });
+    if (req.query.organization_id !== '123456')
+      return res.status(400).json({ code: 6041, message: 'Organization does not exist' });
+    next();
+  });
+  app.get('/zoho/books/v3/organizations/:id', (req, res) =>
+    res.json({ code: 0, organization: { organization_id: req.params.id, name: 'Relay Ltd' } }),
+  );
+  app.get('/zoho/books/v3/chartofaccounts', (req, res) =>
+    res.json({
+      code: 0,
+      chartofaccounts: [
+        {
+          account_id: 'acc-def',
+          account_name: 'Unearned revenue',
+          account_type: 'other_current_liability',
+        },
+        { account_id: 'acc-rev', account_name: 'Subscription revenue', account_type: 'income' },
+        { account_id: 'acc-bank', account_name: 'ioTec wallet', account_type: 'bank' },
+      ],
+    }),
+  );
+  app.get('/zoho/books/v3/contacts', (req, res) =>
+    res.json({
+      code: 0,
+      contacts: zohoBooks.contacts.filter((c) => c.contact_name === req.query.contact_name),
+    }),
+  );
+  app.post('/zoho/books/v3/contacts', (req, res) => {
+    const contact = { ...req.body, contact_id: `c-${zohoBooks.contacts.length + 1}` };
+    zohoBooks.contacts.push(contact);
+    res.json({ code: 0, contact });
+  });
+  app.post('/zoho/books/v3/invoices', (req, res) => {
+    if (req.query.ignore_auto_number_generation !== 'true')
+      return res.json({ code: 4097, message: 'Invoice number is auto-generated' });
+    if (zohoBooks.invoices.some((i) => i.invoice_number === req.body.invoice_number))
+      return res.json({ code: 1001, message: 'Invoice number already exists' });
+    const invoice = {
+      ...req.body,
+      invoice_id: `i-${zohoBooks.invoices.length + 1}`,
+      status: 'draft',
+    };
+    zohoBooks.invoices.push(invoice);
+    res.json({ code: 0, invoice });
+  });
+  app.post('/zoho/books/v3/invoices/:id/status/sent', (req, res) => {
+    const invoice = zohoBooks.invoices.find((i) => i.invoice_id === req.params.id);
+    if (!invoice) return res.status(404).json({ code: 5, message: 'Invoice not found' });
+    invoice.status = 'sent';
+    res.json({ code: 0, message: 'Invoice status has been changed to Sent.' });
+  });
+  app.post('/zoho/books/v3/customerpayments', (req, res) => {
+    const applied = req.body.invoices?.[0];
+    const invoice = zohoBooks.invoices.find((i) => i.invoice_id === applied?.invoice_id);
+    if (!invoice || invoice.status !== 'sent')
+      return res.json({ code: 24016, message: 'Payments cannot be recorded for draft invoices' });
+    const payment = { ...req.body, payment_id: `p-${zohoBooks.payments.length + 1}` };
+    zohoBooks.payments.push(payment);
+    res.json({ code: 0, payment });
+  });
+  app.post('/zoho/books/v3/journals', (req, res) => {
+    const lines = req.body.line_items || [];
+    const sum = (side) =>
+      lines.filter((l) => l.debit_or_credit === side).reduce((n, l) => n + l.amount, 0);
+    if (sum('debit') !== sum('credit'))
+      return res.json({ code: 13002, message: 'Debits and credits do not match' });
+    const journal = { ...req.body, journal_id: `j-${zohoBooks.journals.length + 1}` };
+    zohoBooks.journals.push(journal);
+    res.json({ code: 0, journal });
   });
   app.post('/email/emails', express.json(), (req, res) => {
     if (req.headers.authorization !== 'Bearer email-key')
@@ -5874,6 +5972,13 @@ const ACCESS = {
     'platformListBroadcasts',
     'platformRevenue',
     'platformListDiscountCodes',
+    'platformGetAccounting',
+    'platformGetZoho',
+    'platformConnectZoho',
+    'platformSaveZoho',
+    'platformDisconnectZoho',
+    'platformSyncZoho',
+    'platformPostEarnings',
     'platformSaveDiscountCode',
     'platformGetWhatsApp',
     'platformSaveWhatsApp',
@@ -7972,5 +8077,168 @@ describe('sign-up codes: pay now with a discount or referral (Relay Hosted)', ()
     assert.equal(byName['Ref Cafe'].status, 'rewarded');
     assert.equal(byName['Ref Cafe'].months, 2);
     assert.equal(byName['Trial Cafe'].status, 'trial');
+  });
+});
+
+describe('platform accounting: earned vs received, and Zoho Books (Relay Hosted)', () => {
+  let ops;
+  const DAY = 86400000;
+  const kampalaMonth = (offsetMonths = 0) => {
+    const d = new Date(Date.now() + 3 * 3600000);
+    d.setUTCDate(15);
+    d.setUTCMonth(d.getUTCMonth() + offsetMonths);
+    return d.toISOString().slice(0, 7);
+  };
+  const month = kampalaMonth();
+  const previous = kampalaMonth(-1);
+  before(async () => {
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+  });
+
+  test('a month: money received, revenue earned and what is prepaid', async () => {
+    const owner = await login('owner', 'new-pass-9', 'mail-cafe');
+    await rejects(run('platformGetAccounting', { month }, owner), /platform role required/);
+    const data = await run('platformGetAccounting', { month }, ops);
+    assert.equal(data.month, month);
+    assert.equal(data.closed, false);
+    const paid = data.rows.filter((r) => r.paidInMonth);
+    assert.ok(paid.length >= 5);
+    const t = data.totals;
+    assert.equal(
+      t.received,
+      paid.reduce((n, r) => n + r.amount, 0),
+    );
+    // All the tests' payments are this month: nothing earned from earlier.
+    assert.equal(t.earnedFromEarlier, 0);
+    assert.equal(t.earnedFromThisMonth + t.deferredFromThisMonth, t.received);
+    assert.equal(t.prepaidAtEnd, t.deferredFromThisMonth);
+    for (const r of data.rows)
+      assert.equal(r.earnedBefore + r.earnedInMonth + r.deferredAfter, r.amount);
+    // A year paid now is mostly prepaid.
+    const year = paid.find((r) => r.months === 12);
+    assert.ok(year.deferredAfter > year.amount * 0.8);
+  });
+
+  test('Zoho Books: connect, choose the accounts, send the month, post earnings', async () => {
+    await rejects(run('platformSyncZoho', { month }, ops), /Connect Zoho Books first/);
+    const details = {
+      dc: 'com',
+      orgId: '123456',
+      clientId: 'zoho-client',
+      clientSecret: 'zoho-secret',
+    };
+    await rejects(
+      run('platformConnectZoho', { ...details, grantCode: 'old' }, ops),
+      /grant code is wrong/,
+    );
+    await rejects(
+      run('platformConnectZoho', { ...details, orgId: 'abc', grantCode: 'grant-ok' }, ops),
+      /Organization ID/,
+    );
+    const connected = await run('platformConnectZoho', { ...details, grantCode: 'grant-ok' }, ops);
+    assert.equal(connected.connected, true);
+    assert.equal(connected.ready, false);
+    assert.equal(connected.orgName, 'Relay Ltd');
+    assert.equal(JSON.stringify(connected).includes('zoho-secret'), false, 'the secret stays');
+    const view = await run('platformGetZoho', {}, ops);
+    assert.equal(view.chart.length, 3);
+    await rejects(run('platformSyncZoho', { month }, ops), /Choose the three Zoho accounts/);
+    await run(
+      'platformSaveZoho',
+      {
+        accounts: { deferred: 'acc-def', revenue: 'acc-rev', deposit: 'acc-bank' },
+        accountNames: {
+          deferred: 'Unearned revenue',
+          revenue: 'Subscription revenue',
+          deposit: 'ioTec wallet',
+        },
+        autoSync: false,
+        fromMonth: month,
+      },
+      ops,
+    );
+
+    const result = await run('platformSyncZoho', { month }, ops);
+    const data = await run('platformGetAccounting', { month }, ops);
+    const paid = data.rows.filter((r) => r.paidInMonth && r.amount > 0);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.synced, paid.length);
+    assert.equal(zohoBooks.invoices.length, paid.length);
+    assert.equal(zohoBooks.payments.length, paid.length);
+    for (const invoice of zohoBooks.invoices) {
+      assert.match(invoice.invoice_number, /^INV-/);
+      assert.equal(invoice.line_items[0].account_id, 'acc-def');
+      assert.equal(invoice.status, 'sent');
+    }
+    assert.ok(zohoBooks.payments.every((p) => p.account_id === 'acc-bank'));
+    assert.ok(data.rows.filter((r) => r.paidInMonth && r.amount > 0).every((r) => r.zohoPaymentId));
+    // One customer per restaurant, made once.
+    const names = zohoBooks.contacts.map((c) => c.contact_name);
+    assert.equal(new Set(names).size, names.length);
+    // Sending again sends nothing twice.
+    assert.equal((await run('platformSyncZoho', { month }, ops)).synced, 0);
+    // The current month is not over.
+    await rejects(run('platformPostEarnings', { month }, ops), /once it is over/);
+    await rejects(run('platformPostEarnings', { month: previous }, ops), /starts with/);
+
+    // Last month: a year paid then (put in place for the test).
+    const mail = (await run('platformListRestaurants', {}, ops)).rows.find(
+      (r) => r.code === 'mail-cafe',
+    );
+    const [y, m] = previous.split('-').map(Number);
+    const paidAt = new Date(Date.UTC(y, m - 1, 10, 9));
+    const year = new Parse.Object('SubscriptionPayment');
+    year.set({
+      tenant: Parse.Object.extend('Restaurant').createWithoutData(mail.id),
+      amount: 1200000,
+      currency: 'UGX',
+      months: 12,
+      kind: 'period',
+      method: 'manual',
+      status: 'paid',
+      paidAt,
+      periodStart: paidAt,
+      periodEnd: new Date(paidAt.getTime() + 365 * DAY),
+    });
+    await year.save(null, { useMasterKey: true });
+    await run('platformSaveZoho', { fromMonth: previous }, ops);
+    const before = await run('platformGetAccounting', { month: previous }, ops);
+    assert.equal(before.closed, true);
+    assert.ok(before.totals.earned > 0 && before.totals.earned < 1200000 / 12 + 1);
+    const posted = await run('platformPostEarnings', { month: previous }, ops);
+    assert.equal(posted.amount, before.totals.earned);
+    const journal = zohoBooks.journals.at(-1);
+    assert.equal(journal.reference_number, `RELAY-EARNED-${previous}`);
+    assert.deepEqual(
+      journal.line_items.map((l) => [l.account_id, l.debit_or_credit, l.amount]),
+      [
+        ['acc-def', 'debit', before.totals.earned],
+        ['acc-rev', 'credit', before.totals.earned],
+      ],
+    );
+    assert.ok(
+      zohoBooks.invoices.some((i) => i.reference_number === year.id),
+      'synced first',
+    );
+    await rejects(run('platformPostEarnings', { month: previous }, ops), /already posted/);
+    assert.equal(
+      (await run('platformGetAccounting', { month: previous }, ops)).posting.amount,
+      posted.amount,
+    );
+    // This month now also earns from last month's prepayment.
+    const now = await run('platformGetAccounting', { month }, ops);
+    assert.ok(now.totals.earnedFromEarlier > 0);
+
+    // Automatic: a payment received goes to Zoho by itself.
+    await run('platformSaveZoho', { autoSync: true }, ops);
+    const count = zohoBooks.payments.length;
+    await run('platformRecordPayment', { id: mail.id, months: 1, reference: 'Bank 42' }, ops);
+    for (let i = 0; i < 50 && zohoBooks.payments.length === count; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(zohoBooks.payments.length, count + 1);
+    assert.equal(zohoBooks.payments.at(-1).reference_number, 'Bank 42');
+    await run('platformSaveZoho', { autoSync: false }, ops);
+    const off = await run('platformDisconnectZoho', {}, ops);
+    assert.equal(off.connected, false);
   });
 });

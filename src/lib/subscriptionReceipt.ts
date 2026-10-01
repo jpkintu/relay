@@ -247,35 +247,60 @@ const paidWith = (payment: ReceiptPayment) =>
     : `Mobile money ${payment.payer}${payment.reference ? ` · ${payment.reference}` : ''}`;
 
 // The receipt for a paid subscription payment.
+const receiptDoc = (payment: ReceiptPayment, restaurant: BilledRestaurant): Doc => ({
+  kind: 'receipt',
+  number: invoiceNumberOf(restaurant.code, payment.id),
+  receiptNumber: receiptNumberOf(payment.id),
+  status: 'paid',
+  issuedAt: payment.paidAt,
+  dueAt: null,
+  paidAt: payment.paidAt,
+  months: payment.months,
+  payKind: payment.kind,
+  planName: payment.planName,
+  amount: payment.amount,
+  discount: payment.discount || 0,
+  discountCode: payment.discountCode || '',
+  currency: payment.currency,
+  periodStart: payment.periodStart,
+  periodEnd: payment.periodEnd,
+  paidWith: paidWith(payment),
+});
+
 export function printSubscriptionReceipt(
   payment: ReceiptPayment,
   restaurant: BilledRestaurant,
   timeZone: string,
 ) {
+  return open(render(receiptDoc(payment, restaurant), restaurant, timeZone));
+}
+
+// Platform console → Accounting: many paid invoices (with their payment
+// details) in one print window, one per page, to save as one PDF.
+export function printReceiptBatch(
+  items: { payment: ReceiptPayment; restaurant: BilledRestaurant }[],
+  timeZone: string,
+  title: string,
+) {
+  if (!items.length) return false;
+  const pages = items.map(({ payment, restaurant }) => {
+    const html = render(receiptDoc(payment, restaurant), restaurant, timeZone);
+    return html.slice(html.indexOf('<div class="page">'), html.lastIndexOf('<script>'));
+  });
+  const first = render(
+    receiptDoc(items[0].payment, items[0].restaurant),
+    items[0].restaurant,
+    timeZone,
+  );
+  const head = first
+    .slice(0, first.indexOf('<body>'))
+    .replace(/<title>[^<]*<\/title>/, `<title>${escape(title)}</title>`)
+    .replace(
+      '</style>',
+      '.page{page-break-after:always}.page:last-of-type{page-break-after:auto}</style>',
+    );
   return open(
-    render(
-      {
-        kind: 'receipt',
-        number: invoiceNumberOf(restaurant.code, payment.id),
-        receiptNumber: receiptNumberOf(payment.id),
-        status: 'paid',
-        issuedAt: payment.paidAt,
-        dueAt: null,
-        paidAt: payment.paidAt,
-        months: payment.months,
-        payKind: payment.kind,
-        planName: payment.planName,
-        amount: payment.amount,
-        discount: payment.discount || 0,
-        discountCode: payment.discountCode || '',
-        currency: payment.currency,
-        periodStart: payment.periodStart,
-        periodEnd: payment.periodEnd,
-        paidWith: paidWith(payment),
-      },
-      restaurant,
-      timeZone,
-    ),
+    `${head}<body>${pages.join('')}<script>window.onload=()=>window.print()</script></body></html>`,
   );
 }
 

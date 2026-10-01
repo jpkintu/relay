@@ -61,6 +61,7 @@ require('./platformBroadcast');
 require('./platformRevenue');
 require('./offers');
 require('./downgrade');
+require('./platformAccounting');
 require('./people');
 require('./admin');
 require('./onboarding');

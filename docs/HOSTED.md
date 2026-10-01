@@ -345,6 +345,46 @@ discounted prices (in the app, or recorded by Relay at the same price) and can
 The first payment records `listAmount`, `discount` and `discountCode`; its
 invoice and receipt show the discount line.
 
+## Accounting and Zoho Books
+
+Platform console → **Accounting** (`platformAccounting.js`, `lib/earnings.js`).
+Subscription money is received when paid and **earned day by day over the
+period it pays for** (periodStart to periodEnd): a year paid on 1 October earns
+31/365 in October; the rest is a prepayment (unearned revenue). For a chosen
+month (Kampala time) it shows money received, revenue earned (from that
+month's payments and from earlier prepayments), what this month's payments
+prepaid, and the prepayment balance at the month's end, with every invoice:
+amount, earned before, earned this month, prepaid after.
+
+- **Download CSV**: the invoices with those columns and the month's totals.
+- **Print the month's invoices**: one print window, an invoice per page, to
+  save as one PDF.
+
+**Zoho Books** (Zoho Books API v3):
+
+1. In api-console.zoho.com (the Zoho account of your books): Add client →
+   **Self Client**; copy the client ID and secret. Generate code with scope
+   `ZohoBooks.fullaccess.all` (10 minutes).
+2. Accounting → Zoho Books: data centre, organization ID (Zoho Books →
+   Settings → Organization profile), client ID, secret, the grant code →
+   **Connect** (the code is exchanged for a refresh token, kept on
+   PlatformSettings, master key only).
+3. Choose the three accounts: **Prepayments** (a liability, e.g. Unearned
+   revenue), **Subscription revenue** (income) and **where the money lands**
+   (the bank or mobile money wallet account), and the month to start with
+   (earlier payments stay out; enter opening balances in Zoho). Books should
+   use the same currency as Relay.
+
+Then for each paid payment Relay makes, once: the restaurant as a Zoho
+customer, an invoice (Relay's invoice number, the line booked to
+Prepayments) marked sent, and a customer payment against it into the deposit
+account (**Send invoices to Zoho Books**). For each month that is over,
+**Post earnings** makes one journal on its last day: debit Prepayments, credit
+Subscription revenue, for what was earned in the month (only from payments in
+Zoho). With **Automatically** on, each payment goes to Zoho when it is
+received and closed months are posted by the `billing` job. A failed send is
+shown on its row and retried with the next send.
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,

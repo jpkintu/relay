@@ -56,6 +56,7 @@ const PROTECTED_CLASSES = [
   'Plan',
   'PlatformBroadcast',
   'DiscountCode',
+  'AccountingPosting',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -73,6 +74,7 @@ const PRIVATE_CLASSES = [
   'Plan',
   'PlatformBroadcast',
   'DiscountCode',
+  'AccountingPosting',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -530,6 +532,8 @@ const SCHEMAS = {
     nextPlanFrom: D,
     // What stays when it starts: { branches: [ids], members: [ids] }.
     nextPlanKeep: 'Object',
+    // The restaurant as a customer in Zoho Books.
+    zohoContactId: S,
   },
   SubscriptionPayment: {
     amount: N,
@@ -555,6 +559,11 @@ const SCHEMAS = {
     // left), and the plan it is for.
     kind: S,
     plan: S,
+    // Zoho Books (platformAccounting.js): the invoice and payment made there.
+    zohoInvoiceId: S,
+    zohoPaymentId: S,
+    zohoSyncedAt: D,
+    zohoError: S,
   },
   // Relay Hosted plans (lib/plans.js).
   Plan: {
@@ -568,6 +577,15 @@ const SCHEMAS = {
     features: 'Object',
     active: B,
     sortOrder: N,
+  },
+  // A month's earnings journal in Zoho Books (platformAccounting.js).
+  AccountingPosting: {
+    month: S,
+    amount: N,
+    invoices: N,
+    zohoJournalId: S,
+    postedAt: D,
+    byName: S,
   },
   // Discount codes for a first payment at sign-up (offers.js).
   DiscountCode: {
@@ -607,6 +625,8 @@ const SCHEMAS = {
     whatsapp: 'Object',
     // The email service (lib/email.js), API key included.
     email: 'Object',
+    // Zoho Books connection (platformAccounting.js), tokens included.
+    zoho: 'Object',
   },
   Notification: {
     recipient: user,
