@@ -34,6 +34,16 @@ function publicConfig(values) {
       footer: values.receiptFooter || '',
       autoPrintKitchen: values.autoPrintKitchen === true,
     },
+    // The cash drawer (drawer.js); null while it is off.
+    drawer:
+      values.cashDrawer === true
+        ? {
+            onSale: values.drawerOnSale !== false,
+            onHandover: values.drawerOnHandover !== false,
+            onPayout: values.drawerOnPayout !== false,
+            onShift: values.drawerOnShift !== false,
+          }
+        : null,
     modules: {
       riderOrders: values.moduleRiderOrders !== false,
       callIn: values.moduleCallIn === true,

@@ -299,6 +299,9 @@ const SCHEMAS = {
     settledAt: D,
     settledBy: user,
     settlementNote: S,
+    // Cash drawer openings during the shift (drawer.js).
+    drawerOpens: N,
+    noSaleOpens: N,
   },
   AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
   Configuration: {
@@ -340,6 +343,11 @@ const SCHEMAS = {
     moduleRiderOrders: B,
     moduleCallIn: B,
     moduleCounter: B,
+    cashDrawer: B,
+    drawerOnSale: B,
+    drawerOnHandover: B,
+    drawerOnPayout: B,
+    drawerOnShift: B,
     receiptWidth: N,
     receiptHeader: S,
     receiptFooter: S,

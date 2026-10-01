@@ -6,6 +6,7 @@ import { inBranch } from '../lib/branch';
 import { formatDate } from '../lib/format';
 import { personLabel } from '../lib/people';
 import { usePin } from '../lib/pin';
+import { openDrawer } from '../lib/drawer';
 import { useLiveRefresh } from '../lib/live';
 
 type Handover = {
@@ -141,6 +142,8 @@ export function CashierHandovers({ preview }: { preview: boolean }) {
         result = await Parse.Cloud.run(action, params);
       }
       const r = result as Result;
+      if (action === 'confirmHandover' && profile?.config.drawer?.onHandover)
+        void openDrawer('handover', { ref: selected || undefined });
       setSelected(null);
       setNotice(
         action === 'disputeHandover'

@@ -44,6 +44,7 @@ require('./counter');
 require('./menu');
 require('./cash');
 require('./payouts');
+require('./drawer');
 require('./cashcheck');
 require('./shifts');
 require('./branches');

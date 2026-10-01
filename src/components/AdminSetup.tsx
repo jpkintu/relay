@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, ChevronRight, ImagePlus, MapPin } from 'lucide-reac
 import { shrinkImage } from '../lib/image';
 import { DEFAULT_THEME, themeProblems, type Theme } from '../lib/theme';
 import Parse from '../parse';
+import { DrawerOpenings } from './DrawerOpenings';
 import { MenuImport } from './MenuImport';
 import { useAdminRun } from '../lib/adminRun';
 import { useMoney, useSession, type LoginImage } from '../lib/session';
@@ -90,6 +91,11 @@ type Settings = {
   receiptHeader?: string;
   receiptFooter?: string;
   autoPrintKitchen?: boolean;
+  cashDrawer?: boolean;
+  drawerOnSale?: boolean;
+  drawerOnHandover?: boolean;
+  drawerOnPayout?: boolean;
+  drawerOnShift?: boolean;
 };
 const input = (
   label: string,
@@ -1278,6 +1284,41 @@ export function AdminSetup({
                 />{' '}
                 Print the kitchen ticket as soon as a counter order is placed
               </label>
+            </div>
+            <div className="full-row merchant-settings">
+              <p className="setup-field-label">Cash drawer</p>
+              <p className="muted">
+                A cash drawer plugged into the receipt printer can open by itself when cash comes in
+                or goes out. Each till connects its own printer under Cashier → Drawer. Opening it
+                without a sale asks for the cashier&apos;s PIN and a reason, and you are told.
+              </p>
+              <label className="setup-checkbox">
+                <input
+                  type="checkbox"
+                  checked={!!settings.cashDrawer}
+                  onChange={(e) => setSettings((p) => ({ ...p, cashDrawer: e.target.checked }))}
+                />{' '}
+                This restaurant has a cash drawer at the counter
+              </label>
+              {settings.cashDrawer &&
+                (
+                  [
+                    ['drawerOnSale', 'When a counter order or a bill is paid in cash'],
+                    ['drawerOnHandover', 'When a rider’s cash handover is counted in'],
+                    ['drawerOnPayout', 'When paying a rider or other money out of the till'],
+                    ['drawerOnShift', 'For the opening count at the start of a shift'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="setup-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={settings[key] !== false}
+                      onChange={(e) => setSettings((p) => ({ ...p, [key]: e.target.checked }))}
+                    />{' '}
+                    Open it {label.charAt(0).toLowerCase() + label.slice(1)}
+                  </label>
+                ))}
+              {settings.cashDrawer && <DrawerOpenings />}
             </div>
             <div className="full-row merchant-settings modules">
               <p className="setup-field-label">How this restaurant takes orders</p>

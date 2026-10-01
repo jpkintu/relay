@@ -179,6 +179,12 @@ var require_core = __commonJS({
       receiptFooter: "Thank you!",
       // Open the print dialog for the kitchen ticket when a counter order is placed.
       autoPrintKitchen: false,
+      // The cash drawer at the counter (drawer.js) and when it opens by itself.
+      cashDrawer: false,
+      drawerOnSale: true,
+      drawerOnHandover: true,
+      drawerOnPayout: true,
+      drawerOnShift: true,
       // Branding: theme colours (#rrggbb); '' keeps Relay's own.
       themeInk: "",
       themeAccent: "",
@@ -1272,7 +1278,10 @@ var require_security = __commonJS({
         varianceSettled: B,
         settledAt: D,
         settledBy: user,
-        settlementNote: S
+        settlementNote: S,
+        // Cash drawer openings during the shift (drawer.js).
+        drawerOpens: N,
+        noSaleOpens: N
       },
       AuditLog: { actor: user, action: S, entityType: S, entityId: S, beforeJson: S, afterJson: S },
       Configuration: {
@@ -1314,6 +1323,11 @@ var require_security = __commonJS({
         moduleRiderOrders: B,
         moduleCallIn: B,
         moduleCounter: B,
+        cashDrawer: B,
+        drawerOnSale: B,
+        drawerOnHandover: B,
+        drawerOnPayout: B,
+        drawerOnShift: B,
         receiptWidth: N,
         receiptHeader: S,
         receiptFooter: S,
@@ -33142,6 +33156,108 @@ var require_menu = __commonJS({
   }
 });
 
+// cloud/drawer.js
+var require_drawer = __commonJS({
+  "cloud/drawer.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      requireRole,
+      audit,
+      loadConfig,
+      verifyPin,
+      personName,
+      findAll
+    } = require_core();
+    var { notifyAdmins } = require_notifications();
+    var { resolveRange } = require_dates();
+    var REASONS = {
+      sale: "Cash sale",
+      payment: "Bill paid in cash",
+      handover: "Cash handover counted in",
+      payout: "Paid out of the till",
+      shift: "Opening count",
+      no_sale: "No sale"
+    };
+    async function openShiftOf(user) {
+      return new Parse.Query("Shift").equalTo("operator", user).equalTo("kind", "cashier").equalTo("status", "open").first(MASTER);
+    }
+    Parse.Cloud.define("logDrawerOpen", async (request) => {
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const p = request.params || {};
+      const reason = String(p.reason || "");
+      if (!REASONS[reason]) throw invalid("Unknown reason for opening the drawer");
+      const { values: config } = await loadConfig();
+      if (config.cashDrawer !== true) throw invalid("The cash drawer is switched off in Settings");
+      const note = String(p.note || "").trim().slice(0, 200);
+      if (reason === "no_sale") {
+        if (note.length < 3) throw invalid("Say why the drawer is opened");
+        await verifyPin(user, p.pin);
+      }
+      const shift = role === "cashier" ? await openShiftOf(user) : null;
+      if (reason === "no_sale" && role === "cashier" && !shift) throw invalid("Start your shift first");
+      if (shift) {
+        shift.increment("drawerOpens");
+        if (reason === "no_sale") shift.increment("noSaleOpens");
+        await shift.save(null, MASTER);
+      }
+      const ref = /^[A-Za-z0-9]{1,32}$/.test(String(p.ref || "")) ? String(p.ref) : "";
+      await audit(user, "till.drawer_opened", shift || user, null, {
+        reason,
+        label: REASONS[reason],
+        ref,
+        note
+      });
+      if (reason === "no_sale")
+        await notifyAdmins({
+          kind: "till.no_sale",
+          tone: "warning",
+          title: "Cash drawer opened without a sale",
+          body: `${personName(await user.fetch(MASTER))}: ${note}`,
+          link: "/admin/audit"
+        });
+      return {
+        opened: true,
+        drawerOpens: shift?.get("drawerOpens") || 0,
+        noSaleOpens: shift?.get("noSaleOpens") || 0
+      };
+    });
+    Parse.Cloud.define("getDrawerOpenings", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      const { values: config } = await loadConfig();
+      const range = resolveRange(request.params || {}, config.timezone);
+      if (range.error) throw invalid(range.error);
+      const { start, end } = range;
+      const query = new Parse.Query("AuditLog");
+      query.equalTo("action", "till.drawer_opened");
+      query.greaterThanOrEqualTo("createdAt", start);
+      query.lessThan("createdAt", end);
+      query.include("actor");
+      const rows = (await findAll(query)).sort((a, b) => b.createdAt - a.createdAt);
+      const people = {};
+      const items = rows.map((row) => {
+        const after = JSON.parse(row.get("afterJson") || "{}");
+        const actor = row.get("actor");
+        const name = actor ? personName(actor) : "";
+        people[name] ||= { name, opens: 0, noSale: 0 };
+        people[name].opens += 1;
+        if (after.reason === "no_sale") people[name].noSale += 1;
+        return {
+          at: row.createdAt.toISOString(),
+          by: name,
+          reason: after.reason,
+          label: after.label || REASONS[after.reason] || after.reason,
+          note: after.note || "",
+          ref: after.ref || ""
+        };
+      });
+      return { items, people: Object.values(people).sort((a, b) => b.opens - a.opens) };
+    });
+    module2.exports = { REASONS };
+  }
+});
+
 // cloud/shifts.js
 var require_shifts = __commonJS({
   "cloud/shifts.js"(exports2, module2) {
@@ -35069,7 +35185,12 @@ var require_admin = __commonJS({
         receiptWidth: Number(p.receiptWidth ?? current.receiptWidth) === 58 ? 58 : 80,
         receiptHeader: merchantField(p.receiptHeader ?? current.receiptHeader, 300),
         receiptFooter: merchantField(p.receiptFooter ?? current.receiptFooter, 200),
-        autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true
+        autoPrintKitchen: (p.autoPrintKitchen ?? current.autoPrintKitchen) === true,
+        cashDrawer: (p.cashDrawer ?? current.cashDrawer) === true,
+        drawerOnSale: (p.drawerOnSale ?? current.drawerOnSale) !== false,
+        drawerOnHandover: (p.drawerOnHandover ?? current.drawerOnHandover) !== false,
+        drawerOnPayout: (p.drawerOnPayout ?? current.drawerOnPayout) !== false,
+        drawerOnShift: (p.drawerOnShift ?? current.drawerOnShift) !== false
       });
       config.setACL(readAcl(null, ["admin"]));
       await config.save(null, MASTER);
@@ -36234,6 +36355,13 @@ var require_profile = __commonJS({
           footer: values.receiptFooter || "",
           autoPrintKitchen: values.autoPrintKitchen === true
         },
+        // The cash drawer (drawer.js); null while it is off.
+        drawer: values.cashDrawer === true ? {
+          onSale: values.drawerOnSale !== false,
+          onHandover: values.drawerOnHandover !== false,
+          onPayout: values.drawerOnPayout !== false,
+          onShift: values.drawerOnShift !== false
+        } : null,
         modules: {
           riderOrders: values.moduleRiderOrders !== false,
           callIn: values.moduleCallIn === true,
@@ -36318,6 +36446,7 @@ require_counter();
 require_menu();
 require_cash();
 require_payouts();
+require_drawer();
 require_cashcheck();
 require_shifts();
 require_branches();

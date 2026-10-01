@@ -4,6 +4,7 @@ import Parse from '../parse';
 import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { usePin } from '../lib/pin';
+import { openDrawer } from '../lib/drawer';
 import { Stat, useCloud } from './reports/common';
 
 type RiderPay = {
@@ -39,7 +40,8 @@ type Payout = {
 // expected till at the end of the shift.
 export function CashierPayouts() {
   const money = useMoney();
-  const { timezone } = useConfig();
+  const { timezone, drawer } = useConfig();
+  const drawerOnPayout = !!drawer?.onPayout;
   const { profile } = useSession();
   const withPin = usePin();
   const isCashier = profile?.role === 'cashier';
@@ -64,6 +66,7 @@ export function CashierPayouts() {
       'Count the cash out of the till and hand it to the rider, then enter your PIN.',
     );
     if (!done) return;
+    if (drawerOnPayout) void openDrawer('payout', { ref: row.riderId });
     setNotice(`Paid ${row.rider} ${money(row.owed)} from the till.`);
     reload();
   };
@@ -75,6 +78,7 @@ export function CashierPayouts() {
       Parse.Cloud.run('recordTillPayout', { amount: value, note: note.trim(), pin }),
     );
     if (!done) return;
+    if (drawerOnPayout) void openDrawer('payout');
     setNotice(`Recorded ${money(value)}: ${note.trim()}.`);
     setAmount('');
     setNote('');

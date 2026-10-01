@@ -45,6 +45,12 @@ const DEFAULT_CONFIG = {
   receiptFooter: 'Thank you!',
   // Open the print dialog for the kitchen ticket when a counter order is placed.
   autoPrintKitchen: false,
+  // The cash drawer at the counter (drawer.js) and when it opens by itself.
+  cashDrawer: false,
+  drawerOnSale: true,
+  drawerOnHandover: true,
+  drawerOnPayout: true,
+  drawerOnShift: true,
   // Branding: theme colours (#rrggbb); '' keeps Relay's own.
   themeInk: '',
   themeAccent: '',

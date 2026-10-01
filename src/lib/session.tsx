@@ -33,6 +33,8 @@ export type AppConfig = {
   modules?: { riderOrders: boolean; callIn: boolean; counter: boolean };
   // Printed receipts (Settings → Receipts).
   receipt?: { width: number; header: string; footer: string; autoPrintKitchen: boolean };
+  // The cash drawer (Settings → Cash drawer) and when it opens; null when off.
+  drawer?: { onSale: boolean; onHandover: boolean; onPayout: boolean; onShift: boolean } | null;
   // Pictures beside the sign-in form (Admin → Branding).
   loginImages?: LoginImage[];
 };
