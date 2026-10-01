@@ -8421,8 +8421,17 @@ tr.split-row td {
   white-space: normal;
   word-break: break-word;
 }
-.email-template-actions {
+.email-template-actions > div {
   white-space: nowrap;
+}
+.email-template-actions small {
+  display: block;
+  margin-top: 6px;
+  max-width: 32ch;
+  white-space: normal;
+}
+.email-test-to {
+  max-width: 360px;
 }
 .email-template-actions button + button {
   margin-left: 8px;

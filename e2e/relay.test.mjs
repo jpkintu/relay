@@ -6622,6 +6622,9 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
 
   test('a year at once costs the annual price; invoices list paid and due', async () => {
     const billing = await run('getBilling', {}, k.owner);
+    // The plan cards get each plan's price for a year too.
+    const offered = (await run('getPlans', {})).plans;
+    assert.ok(offered.every((plan) => plan.annualPrice === plan.price * 10));
     assert.equal(billing.prices[3], 150000);
     // No annual price set: ten months (two months free).
     assert.equal(billing.prices[12], 500000);
@@ -7357,6 +7360,18 @@ describe('owner email: password reset and emails from Relay (Relay Hosted)', () 
     assert.deepEqual(mailbox[0].template.id, 'relay-overdue');
     assert.equal(mailbox[0].template.variables.CLOSES_ON, '22 October 2026');
     assert.equal(mailbox[0].html, undefined, 'the template holds the body');
+    // A template ID typed in the console is tried before it is saved.
+    await run(
+      'platformTestEmail',
+      { to: 'ops@relay.example', kind: 'welcome', template: 'relay-welcome' },
+      ops,
+    );
+    assert.equal(mailbox[1].template.id, 'relay-welcome');
+    assert.equal((await run('platformGetEmail', {}, ops)).templates.welcome, '');
+    await rejects(
+      run('platformTestEmail', { to: 'ops@relay.example', kind: 'welcome', template: 'no!' }, ops),
+      /Resend template ID or alias/,
+    );
     // The next reminder goes through the template, with this restaurant's values.
     await remindAt(when(-2), 1);
     assert.equal(mine()[0].template.id, 'relay-overdue');

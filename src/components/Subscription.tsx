@@ -137,7 +137,9 @@ export function PlanCard({
   badge?: string;
   cycle?: Cycle;
 }) {
-  const saving = plan.price * 12 - plan.annualPrice;
+  // A year at once; 10 months when the server did not say (older servers).
+  const annual = typeof plan.annualPrice === 'number' ? plan.annualPrice : plan.price * 10;
+  const saving = plan.price * 12 - annual;
   const spec = planSpec(plan);
   const choice = onSelect
     ? {
@@ -164,7 +166,7 @@ export function PlanCard({
       </header>
       {cycle === 'year' ? (
         <p className="plan-price">
-          <strong>{formatMoney(plan.annualPrice, currency)}</strong>
+          <strong>{formatMoney(annual, currency)}</strong>
           <span>a year</span>
           {saving > 0 && <em className="plan-saving">Save {formatMoney(saving, currency)}</em>}
         </p>
@@ -174,8 +176,8 @@ export function PlanCard({
           <span>a month</span>
         </p>
       )}
-      {cycle === 'month' && plan.annualPrice > 0 && (
-        <p className="plan-annual">or {formatMoney(plan.annualPrice, currency)} paid yearly</p>
+      {cycle === 'month' && annual > 0 && (
+        <p className="plan-annual">or {formatMoney(annual, currency)} paid yearly</p>
       )}
       {plan.description && <p className="plan-description">{plan.description}</p>}
       <dl className="plan-limits">

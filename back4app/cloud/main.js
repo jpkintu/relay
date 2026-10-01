@@ -3416,10 +3416,19 @@ var require_platformEmail = __commonJS({
       if (!validEmail(to)) throw invalid("Enter the email address to send the test to");
       const { email } = await loadEmail();
       if (!ready(email)) throw invalid("Save the service, its API key and the sender address first");
+      let templates = email.templates || {};
+      if (kind && request.params?.template !== void 0) {
+        const id = String(request.params.template ?? "").trim();
+        if (id && !validTemplate(email.provider, id))
+          throw invalid(
+            email.provider === "brevo" ? "A Brevo template is its number" : "Use the Resend template ID or alias (letters, numbers, - and _)"
+          );
+        templates = { ...templates, [kind]: id };
+      }
       try {
         if (kind) {
-          await sendKind(email, kind, to, SAMPLE);
-          return { sent: 1, template: String(email.templates?.[kind] || "") };
+          await sendKind({ ...email, templates }, kind, to, SAMPLE);
+          return { sent: 1, template: String(templates[kind] || "") };
         }
         await sendWith(email, {
           to,
@@ -4023,11 +4032,12 @@ var require_restaurants = __commonJS({
       const { values: platform } = await platformSettings();
       return {
         currency: platform.currency,
-        plans: platform.plans.filter((plan) => plan.active).map(({ key, name, description, price, limits, features }) => ({
+        plans: platform.plans.filter((plan) => plan.active).map(({ key, name, description, price, annualPrice, limits, features }) => ({
           key,
           name,
           description,
           price,
+          annualPrice,
           limits,
           features
         }))

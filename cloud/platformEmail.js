@@ -121,8 +121,8 @@ Parse.Cloud.define('platformEmailTemplate', async (request) => {
   };
 });
 
-// { to, kind? }: a plain test, or one kind of email with example values
-// (through its template when one is set).
+// { to, kind?, template? }: a plain test, or one kind of email with example
+// values (through `template`, else its saved template, when one is set).
 Parse.Cloud.define('platformTestEmail', async (request) => {
   await requirePlatform(request);
   const to = cleanEmail(request.params?.to);
@@ -131,10 +131,22 @@ Parse.Cloud.define('platformTestEmail', async (request) => {
   if (!validEmail(to)) throw invalid('Enter the email address to send the test to');
   const { email } = await loadEmail();
   if (!ready(email)) throw invalid('Save the service, its API key and the sender address first');
+  // `template`: the ID typed in the console, tried before it is saved.
+  let templates = email.templates || {};
+  if (kind && request.params?.template !== undefined) {
+    const id = String(request.params.template ?? '').trim();
+    if (id && !validTemplate(email.provider, id))
+      throw invalid(
+        email.provider === 'brevo'
+          ? 'A Brevo template is its number'
+          : 'Use the Resend template ID or alias (letters, numbers, - and _)',
+      );
+    templates = { ...templates, [kind]: id };
+  }
   try {
     if (kind) {
-      await sendKind(email, kind, to, SAMPLE);
-      return { sent: 1, template: String(email.templates?.[kind] || '') };
+      await sendKind({ ...email, templates }, kind, to, SAMPLE);
+      return { sent: 1, template: String(templates[kind] || '') };
     }
     await sendWith(email, {
       to,

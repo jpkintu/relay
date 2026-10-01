@@ -322,9 +322,10 @@ in Platform console → Email → **Templates**:
    From can stay empty: Relay sends from the console's sender.
 3. Add each variable in the table above (type string; a fallback is
    optional, Relay always sends every one). Publish the template.
-4. Copy its ID or alias into the kind's box in the console, **Save
-   templates**, then **Send test** for that kind (example values) and check
-   the email that arrives.
+4. Copy its ID or alias into the kind's box in the console. Enter your
+   address in **Send tests to** and click **Send test** on that row: it sends
+   example values through the ID in the box (saved or not) and says on the
+   row whether the service took it. Then **Save templates**.
 
 Relay then sends `template: { id, variables }` instead of its own body;
 variable values are plain text, already formatted (`UGX 100,000`, `15 October 2026`).

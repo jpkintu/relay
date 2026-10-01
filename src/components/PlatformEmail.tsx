@@ -30,7 +30,17 @@ export function PlatformEmail() {
     appUrl: '',
     templates: {} as Record<string, string>,
   });
-  const [testTo, setTestTo] = useState('');
+  const [testTo, setTestTo] = useState(() => {
+    try {
+      return localStorage.getItem('relay:email-test-to') || '';
+    } catch {
+      return '';
+    }
+  });
+  // Each template row's last result (test sent, HTML copied, or what failed).
+  const [rows, setRows] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [sending, setSending] = useState('');
+  const [templatesNote, setTemplatesNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
@@ -76,18 +86,68 @@ export function PlatformEmail() {
   const setTemplate = (kind: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, templates: { ...f.templates, [kind]: e.target.value } }));
   // Copies the email's HTML for the service's template editor.
+  const note = (kind: string, ok: boolean, text: string) =>
+    setRows((all) => ({ ...all, [kind]: { ok, text } }));
   const copyHtml = async (kind: EmailKind) => {
-    setError('');
-    setDone('');
     try {
       const t: { html: string; brevoHtml: string } = await Parse.Cloud.run(
         'platformEmailTemplate',
         { kind: kind.key },
       );
       await navigator.clipboard.writeText(form.provider === 'brevo' ? t.brevoHtml : t.html);
-      setDone(`${kind.label}: HTML copied. Paste it into the template editor.`);
+      note(kind.key, true, 'HTML copied. Paste it into the template editor.');
     } catch (e) {
-      setError(message(e));
+      note(kind.key, false, `Could not copy: ${message(e)}`);
+    }
+  };
+  const validTo = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(testTo.trim());
+  // Sends one kind with example values, through the template ID typed in its
+  // row (saved or not).
+  const sendTest = async (kind: EmailKind) => {
+    if (!data?.ready) {
+      note(kind.key, false, 'Save the email service, API key and sender address above first.');
+      return;
+    }
+    if (!validTo) {
+      note(kind.key, false, 'Enter the address to send tests to, above the table.');
+      return;
+    }
+    try {
+      localStorage.setItem('relay:email-test-to', testTo.trim());
+    } catch {
+      // Remembering the address is only a convenience.
+    }
+    setSending(kind.key);
+    try {
+      const result: { template: string } = await Parse.Cloud.run('platformTestEmail', {
+        to: testTo.trim(),
+        kind: kind.key,
+        template: form.templates[kind.key] || '',
+      });
+      note(
+        kind.key,
+        true,
+        `Sent to ${testTo.trim()} ${
+          result.template ? `with template ${result.template}` : "with Relay's own design"
+        }. Check your inbox (and spam).`,
+      );
+    } catch (e) {
+      note(kind.key, false, message(e));
+    } finally {
+      setSending('');
+    }
+  };
+  const saveTemplates = async () => {
+    setBusy(true);
+    setTemplatesNote(null);
+    try {
+      await Parse.Cloud.run('platformSaveEmail', { templates: form.templates });
+      setTemplatesNote({ ok: true, text: 'Templates saved.' });
+      await load();
+    } catch (e) {
+      setTemplatesNote({ ok: false, text: message(e) });
+    } finally {
+      setBusy(false);
     }
   };
   const set =
@@ -191,8 +251,22 @@ export function PlatformEmail() {
             {PROVIDER_NAMES[form.provider] || form.provider} instead: copy its HTML, create a
             template there (paste the HTML, set the subject shown here, add each variable), publish
             it and enter its {form.provider === 'brevo' ? 'number' : 'ID or alias'} below. Leave it
-            empty to keep Relay&apos;s own. Save, then send each one to yourself to check it.
+            empty to keep Relay&apos;s own. Send each one to yourself to check it, then save.
           </p>
+          <label className="setup-field email-test-to">
+            Send tests to
+            <input
+              type="email"
+              value={testTo}
+              onChange={(e) => setTestTo(e.target.value)}
+              placeholder="you@yourdomain.com"
+            />
+            {!data.ready && (
+              <small className="form-error">
+                Save the email service, API key and sender address above before sending tests.
+              </small>
+            )}
+          </label>
           <div className="table-scroll">
             <table className="data-table">
               <thead>
@@ -223,28 +297,31 @@ export function PlatformEmail() {
                       />
                     </td>
                     <td className="email-template-actions">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => void copyHtml(kind)}
-                      >
-                        Copy HTML
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={busy || !data.ready || !testTo.trim()}
-                        title={testTo.trim() ? '' : 'Enter the test address above first'}
-                        onClick={() =>
-                          void act(
-                            'platformTestEmail',
-                            { to: testTo, kind: kind.key },
-                            `${kind.label} sent to ${testTo}.`,
-                          )
-                        }
-                      >
-                        Send test
-                      </button>
+                      <div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => void copyHtml(kind)}
+                        >
+                          Copy HTML
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={sending === kind.key}
+                          onClick={() => void sendTest(kind)}
+                        >
+                          {sending === kind.key ? 'Sending…' : 'Send test'}
+                        </button>
+                      </div>
+                      {rows[kind.key] && (
+                        <small
+                          role="status"
+                          className={rows[kind.key].ok ? 'form-success' : 'form-error'}
+                        >
+                          {rows[kind.key].text}
+                        </small>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -252,13 +329,14 @@ export function PlatformEmail() {
             </table>
           </div>
           <div className="platform-actions">
-            <button
-              className="primary-button"
-              disabled={busy}
-              onClick={() => void act('platformSaveEmail', form, 'Templates saved.')}
-            >
+            <button className="primary-button" disabled={busy} onClick={() => void saveTemplates()}>
               Save templates
             </button>
+            {templatesNote && (
+              <span className={templatesNote.ok ? 'form-success' : 'form-error'}>
+                {templatesNote.text}
+              </span>
+            )}
           </div>
         </div>
       )}

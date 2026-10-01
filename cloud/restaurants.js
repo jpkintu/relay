@@ -619,11 +619,12 @@ Parse.Cloud.define('getPlans', async () => {
     currency: platform.currency,
     plans: platform.plans
       .filter((plan) => plan.active)
-      .map(({ key, name, description, price, limits, features }) => ({
+      .map(({ key, name, description, price, annualPrice, limits, features }) => ({
         key,
         name,
         description,
         price,
+        annualPrice,
         limits,
         features,
       })),
