@@ -22,9 +22,15 @@ printers on the local network.
 
 ## In Relay
 
-Cashier → **Drawer** → How the drawer is connected: **Network printer (Relay
-print bridge)**. Enter the printer's address (printed on its self-test page,
-e.g. `192.168.1.50`), port `9100`, and press **Test**.
+Cashier → **Drawer** → **Printers found**: with the bridge running, Relay
+looks for network printers by itself (the bridge tries port 9100 on every
+address of this computer's local network; it sends nothing, so nothing
+prints). Press **Use this** next to the printer, then **Test**. A till that
+was never set up uses the first printer found by itself.
+
+If the printer is not found (another network, another port), choose
+**Network printer (Relay print bridge)** and enter its address (printed on its
+self-test page, e.g. `192.168.1.50`) and port (usually `9100`).
 
 Chrome may ask once to allow the page to reach a device on the local network:
 allow it.
