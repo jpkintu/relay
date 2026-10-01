@@ -407,6 +407,10 @@ export type Invoice = {
   periodStart: string | null;
   periodEnd: string | null;
   paymentId: string | null;
+  // Paid invoices: how it was paid (for the receipt).
+  method?: 'iotec' | 'manual';
+  payer?: string;
+  reference?: string;
 };
 export type Billing = {
   restaurant: RestaurantSummary;

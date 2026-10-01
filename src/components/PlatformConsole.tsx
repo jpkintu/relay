@@ -21,6 +21,7 @@ type Settings = {
   trialDays: number;
   graceDays: number;
   supportContact: string;
+  billingFrom: string;
 };
 type Row = RestaurantSummary & {
   ownerName: string;
@@ -742,12 +743,14 @@ function SettingsForm({
     trialDays: String(settings.trialDays),
     graceDays: String(settings.graceDays),
     supportContact: settings.supportContact || '',
+    billingFrom: settings.billingFrom || '',
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
-  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((f) => ({ ...f, [key]: e.target.value }));
+  const set =
+    (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setForm((f) => ({ ...f, [key]: e.target.value }));
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -759,6 +762,7 @@ function SettingsForm({
         trialDays: Number(form.trialDays),
         graceDays: Number(form.graceDays),
         supportContact: form.supportContact,
+        billingFrom: form.billingFrom,
       });
       setDone('Saved.');
       onSaved(saved);
@@ -793,6 +797,18 @@ function SettingsForm({
             onChange={set('supportContact')}
             placeholder="e.g. Relay support 0700 000000"
           />
+        </label>
+        <label className="setup-field platform-note">
+          Invoices and receipts are from
+          <textarea
+            rows={5}
+            value={form.billingFrom}
+            onChange={set('billingFrom')}
+            placeholder={
+              'Your business name\nStreet, building\nKampala, Uganda\nbilling@yourdomain.com\nTIN 1000000000'
+            }
+          />
+          <small>One per line; the first line is the name.</small>
         </label>
         {error && <p className="form-error">{error}</p>}
         {done && <p className="form-success">{done}</p>}

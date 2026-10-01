@@ -6,7 +6,17 @@ const crypto = require('crypto');
 const { MASTER, invalid, audit, endSessions, requireRole } = require('./lib/core');
 const tenancy = require('./lib/tenant');
 const { requirePlatform } = require('./restaurants');
-const { loadEmail, sendWith, sendEmail, ready, validEmail, PROVIDERS } = require('./lib/email');
+const {
+  loadEmail,
+  sendWith,
+  sendKind,
+  sendEmail,
+  ready,
+  validEmail,
+  validTemplate,
+  PROVIDERS,
+} = require('./lib/email');
+const { KINDS, SAMPLE } = require('./lib/emailTemplates');
 const { log, errorMessage } = require('./lib/log');
 
 const RESET_MS = 3600000;
@@ -24,6 +34,17 @@ const view = (email) => ({
   keySet: !!email.apiKey,
   ready: ready(email),
   providers: Object.keys(PROVIDERS),
+  // The template set for each kind of email ('' = Relay's own copy).
+  templates: Object.fromEntries(
+    Object.keys(KINDS).map((kind) => [kind, String(email.templates?.[kind] || '')]),
+  ),
+  kinds: Object.entries(KINDS).map(([key, spec]) => ({
+    key,
+    label: spec.label,
+    when: spec.when,
+    subject: spec.subject,
+    variables: spec.variables,
+  })),
 });
 
 // ---------------------------------------------------------------------------
@@ -34,7 +55,8 @@ Parse.Cloud.define('platformGetEmail', async (request) => {
   return view((await loadEmail()).email);
 });
 
-// { provider, apiKey (empty keeps it), from, fromName, appUrl }
+// { provider, apiKey (empty keeps it), from, fromName, appUrl, templates? }
+// `templates`: { kind: template ID or alias at the service, '' for Relay's own }.
 Parse.Cloud.define('platformSaveEmail', async (request) => {
   const actor = await requirePlatform(request);
   const p = request.params || {};
@@ -58,6 +80,22 @@ Parse.Cloud.define('platformSaveEmail', async (request) => {
       .slice(0, 60),
     appUrl,
   };
+  if (p.templates && typeof p.templates === 'object') {
+    const templates = {};
+    for (const [kind, value] of Object.entries(p.templates)) {
+      if (!KINDS[kind]) continue;
+      const id = String(value ?? '').trim();
+      if (!id) continue;
+      if (!validTemplate(provider, id))
+        throw invalid(
+          provider === 'brevo'
+            ? `${KINDS[kind].label}: a Brevo template is its number`
+            : `${KINDS[kind].label}: use the Resend template ID or alias (letters, numbers, - and _)`,
+        );
+      templates[kind] = id;
+    }
+    next.templates = templates;
+  }
   if (p.apiKey) next.apiKey = String(p.apiKey).trim().slice(0, 500);
   row.set('email', next);
   await tenancy.withoutTenant(() => row.save(null, MASTER));
@@ -67,13 +105,37 @@ Parse.Cloud.define('platformSaveEmail', async (request) => {
   return view(next);
 });
 
+// { kind } → the email's HTML ready to paste into a Resend template (and the
+// Brevo version), its subject and variables.
+Parse.Cloud.define('platformEmailTemplate', async (request) => {
+  await requirePlatform(request);
+  const spec = KINDS[String(request.params?.kind || '')];
+  if (!spec) throw invalid('Unknown kind of email');
+  const { forBrevo } = require('./lib/emailTemplates');
+  return {
+    subject: spec.subject,
+    variables: spec.variables,
+    html: spec.html,
+    brevoHtml: forBrevo(spec.html),
+    brevoSubject: forBrevo(spec.subject),
+  };
+});
+
+// { to, kind? }: a plain test, or one kind of email with example values
+// (through its template when one is set).
 Parse.Cloud.define('platformTestEmail', async (request) => {
   await requirePlatform(request);
   const to = cleanEmail(request.params?.to);
+  const kind = request.params?.kind ? String(request.params.kind) : '';
+  if (kind && !KINDS[kind]) throw invalid('Unknown kind of email');
   if (!validEmail(to)) throw invalid('Enter the email address to send the test to');
   const { email } = await loadEmail();
   if (!ready(email)) throw invalid('Save the service, its API key and the sender address first');
   try {
+    if (kind) {
+      await sendKind(email, kind, to, SAMPLE);
+      return { sent: 1, template: String(email.templates?.[kind] || '') };
+    }
     await sendWith(email, {
       to,
       subject: 'Relay test email',
@@ -142,18 +204,10 @@ Parse.Cloud.define('requestOwnerReset', async (request) => {
   await tenancy.withoutTenant(() => row.save(null, MASTER));
   const link = `${settings.appUrl}/?reset=${token}`;
   try {
-    await sendWith(settings, {
-      to: email,
-      subject: `Reset your ${row.get('name')} password`,
-      text: [
-        `Hello ${row.get('ownerName') || ''},`.trim(),
-        '',
-        `Someone asked to reset the owner password for ${row.get('name')} on Relay.`,
-        `Open this link within an hour to choose a new one:`,
-        link,
-        '',
-        'If it was not you, ignore this email: your password stays as it is.',
-      ].join('\n'),
+    await sendKind(settings, 'password_reset', email, {
+      ...ownerVariables(row),
+      RESET_URL: link,
+      EXPIRES_IN: 'an hour',
     });
   } catch (error) {
     log('warn', 'email.reset_failed', { restaurant: row.id, error: errorMessage(error) });
@@ -193,14 +247,31 @@ Parse.Cloud.define('completeOwnerReset', async (request) => {
   return { code: row.get('code'), username: tenancy.displayUsername(owner.getUsername()) };
 });
 
-// Welcome and billing emails: best effort, never in the way of the app.
-async function emailOwner(row, subject, text) {
+// What every email to an owner says about the restaurant.
+function ownerVariables(row, platform = {}) {
+  const support = platform.supportContact || '';
+  return {
+    OWNER_NAME: row.get('ownerName') || 'there',
+    RESTAURANT_NAME: row.get('name') || '',
+    SUPPORT_LINE: support ? `Questions? Contact Relay support: ${support}.` : '',
+  };
+}
+
+// Welcome, billing and payment emails: best effort, never in the way of the
+// app. `kind`: lib/emailTemplates.js; `variables` add to the owner's.
+async function emailOwner(row, kind, variables = {}, platform = {}) {
   try {
-    return await sendEmail({ to: row.get('ownerEmail'), subject, text });
+    const { appUrl = '' } = (await loadEmail()).email;
+    return await sendEmail(kind, row.get('ownerEmail'), {
+      ...ownerVariables(row, platform),
+      BILLING_URL: appUrl ? `${appUrl}/admin/site/billing` : '',
+      SIGN_IN_URL: appUrl ? `${appUrl}/r/${row.get('code')}` : '',
+      ...variables,
+    });
   } catch (error) {
-    log('warn', 'email.failed', { restaurant: row.id, subject, error: errorMessage(error) });
+    log('warn', 'email.owner_failed', { restaurant: row.id, kind, error: errorMessage(error) });
     return false;
   }
 }
 
-module.exports = { emailOwner, validEmail };
+module.exports = { emailOwner, ownerVariables, validEmail };

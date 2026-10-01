@@ -356,7 +356,13 @@ function startMomoMock() {
   app.post('/email/emails', express.json(), (req, res) => {
     if (req.headers.authorization !== 'Bearer email-key')
       return res.status(401).json({ message: 'API key is invalid' });
-    mailbox.push({ to: req.body.to[0], subject: req.body.subject, text: req.body.text });
+    mailbox.push({
+      to: req.body.to[0],
+      subject: req.body.subject,
+      text: req.body.text,
+      html: req.body.html,
+      template: req.body.template,
+    });
     res.json({ id: `email-${mailbox.length}` });
   });
   app.post('/email/smtp/email', express.json(), (req, res) => {
@@ -366,6 +372,10 @@ function startMomoMock() {
       to: req.body.to[0].email,
       subject: req.body.subject,
       text: req.body.textContent,
+      html: req.body.htmlContent,
+      template: req.body.templateId
+        ? { id: req.body.templateId, variables: req.body.params }
+        : undefined,
     });
     res.json({ messageId: `email-${mailbox.length}` });
   });
@@ -5809,6 +5819,7 @@ const ACCESS = {
     'platformGetEmail',
     'platformSaveEmail',
     'platformTestEmail',
+    'platformEmailTemplate',
     'platformGetWhatsApp',
     'platformSaveWhatsApp',
     'platformTestWhatsApp',
@@ -7273,5 +7284,93 @@ describe('owner email: password reset and emails from Relay (Relay Hosted)', () 
       ops,
     );
     assert.equal(updated.ownerEmail, 'mary@cafe.example');
+  });
+
+  test('billing emails: 7 and 3 days before, the last day, overdue, closing, paid', async () => {
+    const row = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.code === CODE3);
+    const owner = await login('owner', 'new-pass-9', CODE3);
+    const { graceDays } = (await run('getBilling', {}, owner)).restaurant;
+    assert.ok(graceDays >= 3, 'the test needs a few grace days');
+    const DAY = 86400000;
+    const when = (days) => new Date(Date.now() + days * DAY).toISOString();
+    const mine = () => mailbox.filter((m) => m.to === 'mary@cafe.example');
+    // Runs the billing job twice: a stage's email goes out once.
+    const remindAt = async (paidUntil, count) => {
+      await run('platformUpdateRestaurant', { id: row.id, trialEndsAt: when(-60), paidUntil }, ops);
+      for (const _ of [1, 2]) {
+        await Parse.Cloud.startJob('billing', {});
+        for (let i = 0; i < 50 && mine().length < count; i += 1)
+          await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(mine().length, count);
+      return mine().at(-1);
+    };
+    mailbox.length = 0;
+    let mail = await remindAt(when(20), 0);
+    mail = await remindAt(when(6), 1);
+    assert.equal(mail.subject, 'Mail Cafe: Your paid period ends in 6 days');
+    assert.match(mail.text, /A month: UGX [\d,]+/);
+    assert.match(mail.text, /INV-MAIL-CAFE-\d{8}/);
+    assert.match(mail.text, /https:\/\/relay\.example\/admin\/site\/billing/);
+    assert.match(mail.html, /<!doctype html>/);
+    assert.equal(mail.html.includes('{{{'), false, 'every variable is filled in');
+    mail = await remindAt(when(2.5), 2);
+    assert.match(mail.subject, /ends in 3 days/);
+    mail = await remindAt(when(0.5), 3);
+    assert.match(mail.subject, /Your paid period ends today/);
+    mail = await remindAt(when(-1), 4);
+    assert.match(mail.subject, /Payment overdue: Relay closes in \d+ days/);
+    assert.match(mail.text, /The app keeps working until/);
+    mail = await remindAt(when(-(graceDays - 0.5)), 5);
+    assert.match(mail.subject, /Relay closes tomorrow/);
+
+    // Platform staff point a kind at their own Resend template.
+    await rejects(
+      run('platformSaveEmail', { templates: { billing_overdue: 'not ok!' } }, ops),
+      /Payment overdue: use the Resend template ID or alias/,
+    );
+    await rejects(
+      run('platformSaveEmail', { provider: 'brevo', templates: { welcome: 'abc' } }, ops),
+      /Welcome: a Brevo template is its number/,
+    );
+    const saved = await run(
+      'platformSaveEmail',
+      { templates: { billing_overdue: 'relay-overdue', nonsense: 'x' } },
+      ops,
+    );
+    assert.equal(saved.templates.billing_overdue, 'relay-overdue');
+    assert.equal(saved.templates.welcome, '');
+    assert.equal(saved.templates.nonsense, undefined);
+    assert.ok(
+      saved.kinds.find((k) => k.key === 'payment_received').variables.includes('PAID_UNTIL'),
+    );
+    const copy = await run('platformEmailTemplate', { kind: 'billing_overdue' }, ops);
+    assert.match(copy.html, /\{\{\{CLOSES_ON\}\}\}/);
+    assert.match(copy.brevoHtml, /\{\{ params\.CLOSES_ON \}\}/);
+    await rejects(
+      run('platformEmailTemplate', { kind: 'billing_overdue' }, owner),
+      /platform role/,
+    );
+    mailbox.length = 0;
+    await run('platformTestEmail', { to: 'ops@relay.example', kind: 'billing_overdue' }, ops);
+    assert.deepEqual(mailbox[0].template.id, 'relay-overdue');
+    assert.equal(mailbox[0].template.variables.CLOSES_ON, '22 October 2026');
+    assert.equal(mailbox[0].html, undefined, 'the template holds the body');
+    // The next reminder goes through the template, with this restaurant's values.
+    await remindAt(when(-2), 1);
+    assert.equal(mine()[0].template.id, 'relay-overdue');
+    assert.equal(mine()[0].template.variables.RESTAURANT_NAME, 'Mail Cafe');
+    await run('platformSaveEmail', { templates: {} }, ops);
+
+    // A payment received sends the receipt.
+    mailbox.length = 0;
+    await run('platformRecordPayment', { id: row.id, months: 12, reference: 'Bank slip 77' }, ops);
+    for (let i = 0; i < 50 && !mine().length; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(mine()[0].subject, 'Mail Cafe: payment received, thank you');
+    assert.match(mine()[0].text, /Paid for: 1 year/);
+    assert.match(mine()[0].text, /Reference: Bank slip 77/);
+    assert.match(mine()[0].text, /Invoice: INV-MAIL-CAFE-/);
   });
 });

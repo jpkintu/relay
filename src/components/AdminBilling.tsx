@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Download } from 'lucide-react';
 import { useSession } from '../lib/session';
 import { formatDate, formatMoney } from '../lib/format';
-import { printSubscriptionInvoice } from '../lib/subscriptionReceipt';
+import { printSubscriptionInvoice, printSubscriptionReceipt } from '../lib/subscriptionReceipt';
 import { BillingPanel, OwnerEmail, PlanPicker, daysLeft, type Billing } from './Subscription';
 
 // Relay Hosted, Admin → Billing: the restaurant's subscription, paying for
@@ -166,12 +166,35 @@ export function AdminBilling() {
                     <td className="actions-cell">
                       <button
                         className="setup-secondary"
-                        onClick={() =>
-                          printSubscriptionInvoice(inv, r, config.timezone, r.supportContact)
-                        }
+                        onClick={() => printSubscriptionInvoice(inv, r, config.timezone)}
                       >
-                        <Download size={15} /> PDF
+                        <Download size={15} /> Invoice
                       </button>
+                      {inv.status === 'paid' && inv.paymentId && (
+                        <button
+                          className="setup-secondary"
+                          onClick={() =>
+                            printSubscriptionReceipt(
+                              {
+                                id: inv.paymentId as string,
+                                amount: inv.amount,
+                                currency: inv.currency,
+                                months: inv.months,
+                                method: inv.method || 'iotec',
+                                payer: inv.payer || '',
+                                reference: inv.reference || '',
+                                periodStart: inv.periodStart,
+                                periodEnd: inv.periodEnd,
+                                paidAt: inv.issuedAt,
+                              },
+                              r,
+                              config.timezone,
+                            )
+                          }
+                        >
+                          <Download size={15} /> Receipt
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -291,7 +291,57 @@ app's address for links; _Send a test_ checks it). It sends:
   whether the email matched. Riders and cashiers still get new PINs from the
   owner; platform staff can still reset an owner by hand.
 - **Welcome** after sign-up, with the restaurant code and username.
-- **Subscription reminders**, the same as the in-app ones, once each.
+- **Billing reminders**: 7 and 3 days before the trial or paid period ends
+  (`billing_due_soon`), on the last day (`billing_due_today`), once it has
+  ended (`billing_overdue`, during the grace days) and again the day before
+  the app closes. Each goes once per stage and end date. They are sent when the
+  `billing` job runs, or when the owner has the app open.
+- **Payment received** with the invoice number, the period and the paid-until
+  date, whenever a payment is settled (in the app or recorded by hand).
 
-Owners change their email under the subscription notice on Overview;
+### Email templates (Resend or Brevo)
+
+Every email has Relay's own designed HTML and text (`cloud/lib/emailTemplates.js`)
+and goes out as is unless platform staff point it at a template of their own
+in Platform console → Email → **Templates**:
+
+| Kind                | Sent                                    | Variables (besides OWNER_NAME, RESTAURANT_NAME, SUPPORT_LINE)                                               |
+| ------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `welcome`           | after sign-up                           | RESTAURANT_CODE, USERNAME, PLAN_NAME, TRIAL_DAYS, TRIAL_ENDS, SIGN_IN_URL                                   |
+| `password_reset`    | forgot password                         | RESET_URL, EXPIRES_IN                                                                                       |
+| `billing_due_soon`  | 7 and 3 days before the end             | HEADLINE, DAYS_LEFT, PLAN_NAME, AMOUNT, ANNUAL_AMOUNT, DUE_DATE, INVOICE_NUMBER, BILLING_URL                |
+| `billing_due_today` | the last day                            | HEADLINE, PLAN_NAME, AMOUNT, ANNUAL_AMOUNT, DUE_DATE, INVOICE_NUMBER, BILLING_URL                           |
+| `billing_overdue`   | after the end, and the day before close | HEADLINE, CLOSES_ON, DAYS_TO_CLOSE, PLAN_NAME, AMOUNT, ANNUAL_AMOUNT, DUE_DATE, INVOICE_NUMBER, BILLING_URL |
+| `payment_received`  | a payment is received                   | PLAN_NAME, AMOUNT, PERIOD, PAID_UNTIL, INVOICE_NUMBER, REFERENCE, BILLING_URL                               |
+
+**Setting one up in Resend** (Templates → Create template):
+
+1. Upload or paste the HTML: _Copy HTML_ in the console, or the file in
+   `docs/email-templates/resend/<kind>.html`.
+2. Subject: the one shown in the console (e.g. `{{{RESTAURANT_NAME}}}: {{{HEADLINE}}}`).
+   From can stay empty: Relay sends from the console's sender.
+3. Add each variable in the table above (type string; a fallback is
+   optional, Relay always sends every one). Publish the template.
+4. Copy its ID or alias into the kind's box in the console, **Save
+   templates**, then **Send test** for that kind (example values) and check
+   the email that arrives.
+
+Relay then sends `template: { id, variables }` instead of its own body;
+variable values are plain text, already formatted (`UGX 100,000`, `15 October 2026`).
+For **Brevo**, use `docs/email-templates/brevo/` (its `{{ params.NAME }}`
+syntax) and enter the template's number. An empty box goes back to Relay's
+own copy. `npm run email:templates` rewrites the docs files after changing
+the built-in emails (a unit test fails while they differ).
+
+### Invoices and receipts
+
+Admin → Billing lists the invoices; each opens as a printable page (save as
+PDF) laid out like a standard invoice: number and dates, **From** (Platform
+console → Platform settings → "Invoices and receipts are from": name,
+address, email, TIN, one per line) and **Bill to** (restaurant, owner, phone,
+email), the amount line with _Pay online_, the item, totals, and on a
+receipt the payment history. Paid invoices also have a **Receipt**; platform
+staff print receipts from the restaurant's payments.
+
+Owners change their email in Admin → Billing → Account;
 platform staff can change it in the restaurant's panel (and write to them).

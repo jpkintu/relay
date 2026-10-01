@@ -97,6 +97,9 @@ export type RestaurantSummary = {
   ownerEmail?: string;
   // A year paid at once (Admin → Billing).
   annualPrice?: number;
+  billingFrom?: string;
+  ownerName?: string;
+  billingPhone?: string;
   currency: string;
   graceDays: number;
   supportContact: string;

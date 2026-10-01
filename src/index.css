@@ -8397,3 +8397,36 @@ tr.split-row td {
 .billing-page .owner-email {
   margin: 0;
 }
+
+/* Platform console → Email → Templates */
+.email-templates {
+  margin-top: 28px;
+  display: grid;
+  gap: 12px;
+}
+.email-templates h3 {
+  margin: 0;
+}
+.email-templates .block {
+  display: block;
+  margin-top: 4px;
+  max-width: 34ch;
+}
+.email-templates input {
+  min-width: 14ch;
+  width: 100%;
+}
+.email-subject {
+  font-size: 12px;
+  white-space: normal;
+  word-break: break-word;
+}
+.email-template-actions {
+  white-space: nowrap;
+}
+.email-template-actions button + button {
+  margin-left: 8px;
+}
+.data .actions-cell button + button {
+  margin-left: 6px;
+}

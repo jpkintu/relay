@@ -27,6 +27,9 @@ const DEFAULT_PLATFORM = {
   graceDays: 7,
   // Shown to restaurants that need to renew or are suspended.
   supportContact: '',
+  // Who invoices and receipts are from: name, address, email, TIN (one per
+  // line; the first line is the name).
+  billingFrom: '',
 };
 
 // Platform-wide settings (the platform console changes them).
@@ -245,22 +248,18 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
   );
   log('info', 'restaurant.signed_up', { restaurant: restaurant.id, code });
   // Welcome email (best effort; nothing waits for it).
-  const { appUrl } = (await require('./lib/email').loadEmail()).email;
+  const { dateText } = require('./lib/emailTemplates');
   void require('./platformEmail').emailOwner(
     restaurant,
-    `Welcome to Relay, ${restaurantName}`,
-    [
-      `Hello ${ownerName},`,
-      '',
-      `${restaurantName} is set up on Relay with a ${platform.trialDays}-day free trial.`,
-      `Restaurant code: ${code}`,
-      `Your username: ${username}`,
-      appUrl ? `Sign in: ${appUrl}` : '',
-      '',
-      'Forgot your password? Use "Forgot password" on the sign-in page and we will email you a link.',
-    ]
-      .filter((line) => line !== null)
-      .join('\n'),
+    'welcome',
+    {
+      RESTAURANT_CODE: code,
+      USERNAME: username,
+      PLAN_NAME: planOfRow(restaurant, platform).name,
+      TRIAL_DAYS: String(platform.trialDays),
+      TRIAL_ENDS: dateText(restaurant.get('trialEndsAt')),
+    },
+    platform,
   );
   return { code, username: tenancy.fullUsername(username, code) };
 });
@@ -296,7 +295,10 @@ function summarise(row, platform) {
     currency: platform.currency,
     graceDays: Number(platform.graceDays) || 0,
     supportContact: platform.supportContact || '',
+    billingFrom: platform.billingFrom || '',
     ownerEmail: row.get('ownerEmail') || '',
+    ownerName: row.get('ownerName') || '',
+    billingPhone: row.get('billingPhone') || '',
   };
 }
 
@@ -591,6 +593,13 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
     supportContact: String(p.supportContact || '')
       .trim()
       .slice(0, 120),
+    billingFrom: String(p.billingFrom ?? before.billingFrom ?? '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 8)
+      .join('\n')
+      .slice(0, 600),
   });
   await tenancy.withoutTenant(() => row.save(null, MASTER));
   cachedSettings = null;

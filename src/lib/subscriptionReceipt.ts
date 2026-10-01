@@ -1,8 +1,11 @@
 import embiroLogo from '../assets/embiro-logo-small.webp';
 import { formatDate, formatMoney } from './format';
 
-// Relay Hosted: a receipt for a paid subscription payment, opened in a new
-// window to print or save as PDF (the browser's print dialog).
+// Relay Hosted: invoices and receipts for the subscription, opened in a new
+// window to print or save as PDF (the browser's print dialog). One layout
+// for both: title and Relay's mark, the numbers and dates, who it is from and
+// who it is billed to, the amount line, the item and totals, and on a receipt
+// the payment history.
 
 export type ReceiptPayment = {
   id: string;
@@ -17,58 +20,6 @@ export type ReceiptPayment = {
   paidAt: string | null;
 };
 
-const escape = (text: string) =>
-  text.replace(
-    /[&<>"']/g,
-    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c,
-  );
-
-export function printSubscriptionReceipt(
-  payment: ReceiptPayment,
-  restaurant: { name: string; code: string },
-  timeZone: string,
-) {
-  const day = (value: string | null) => formatDate(value, timeZone, { dateStyle: 'long' });
-  const rows: [string, string][] = [
-    ['Receipt no.', `RLY-${payment.id}`],
-    ['Paid on', day(payment.paidAt)],
-    ['Restaurant', `${restaurant.name} (${restaurant.code})`],
-    ['For', `Relay subscription, ${payment.months} month${payment.months === 1 ? '' : 's'}`],
-    ['Period', `${day(payment.periodStart)} to ${day(payment.periodEnd)}`],
-    [
-      'Paid by',
-      payment.method === 'manual' ? 'Payment received by Relay' : `Mobile money ${payment.payer}`,
-    ],
-    ['Reference', payment.reference || '—'],
-  ];
-  // Absolute addresses: the receipt opens in a new, blank window.
-  const relayLogo = new URL('/icons/favicon.svg', window.location.href).href;
-  const embiro = new URL(embiroLogo, window.location.href).href;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Relay receipt RLY-${escape(
-    payment.id,
-  )}</title><style>
-body{font:14px/1.5 system-ui,sans-serif;color:#0b1633;max-width:520px;margin:32px auto;padding:0 16px}
-h1{font-size:22px;margin:0 0 4px}p{margin:0 0 20px;color:#5f687c}
-table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #e5e9f1;vertical-align:top}
-td:first-child{color:#5f687c;width:40%}.total td{font-size:18px;font-weight:700;border-bottom:0;padding-top:16px}
-small{display:block;margin-top:24px;color:#5f687c}@media print{body{margin:0 auto}}
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}.brand img{width:40px;height:40px}
-.brand b{font-size:22px}.credit{display:flex;align-items:center;gap:6px;font-size:11px;color:#5f687c;margin:0 0 24px}
-.credit img{height:15px;width:auto}
-</style></head><body><div class="brand"><img src="${relayLogo}" alt=""><b>Relay</b></div>
-<p class="credit">Powered by <img src="${embiro}" alt="Embiro"></p><h1>Receipt</h1><p>Subscription payment</p><table>${rows
-    .map(([k, v]) => `<tr><td>${escape(k)}</td><td>${escape(v)}</td></tr>`)
-    .join('')}<tr class="total"><td>Amount paid</td><td>${escape(
-    formatMoney(payment.amount, payment.currency),
-  )}</td></tr></table><small>Thank you for using Relay.</small><script>window.onload=()=>window.print()</script></body></html>`;
-  const win = window.open('', '_blank');
-  if (!win) return false;
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  return true;
-}
-
 export type InvoiceDoc = {
   number: string;
   status: 'paid' | 'due' | 'overdue';
@@ -81,63 +32,243 @@ export type InvoiceDoc = {
   periodEnd: string | null;
 };
 
-// An invoice for one subscription period, paid or still to pay, opened in a
-// new window to print or save as PDF.
-export function printSubscriptionInvoice(
-  invoice: InvoiceDoc,
-  restaurant: { name: string; code: string; ownerEmail?: string },
-  timeZone: string,
-  supportContact = '',
-) {
+// What the documents know about the restaurant (its summary).
+export type BilledRestaurant = {
+  name: string;
+  code: string;
+  ownerName?: string;
+  ownerEmail?: string;
+  billingPhone?: string;
+  planName?: string;
+  billingFrom?: string;
+  supportContact?: string;
+};
+
+const escape = (text: string) =>
+  text.replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c,
+  );
+
+// The number of a paid payment's invoice and receipt.
+export const invoiceNumberOf = (code: string, paymentId: string) =>
+  `INV-${code.toUpperCase()}-${paymentId}`;
+export const receiptNumberOf = (paymentId: string) => `RLY-${paymentId}`;
+
+type Doc = {
+  kind: 'invoice' | 'receipt';
+  number: string;
+  receiptNumber?: string;
+  status: 'paid' | 'due' | 'overdue';
+  issuedAt: string | null;
+  dueAt: string | null;
+  paidAt: string | null;
+  months: number;
+  amount: number;
+  currency: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  paidWith?: string;
+};
+
+const STYLE = `
+@page{size:A4;margin:16mm}
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:#0b1633;font:14px/1.55 Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.page{max-width:780px;margin:0 auto;padding:40px 32px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}
+h1{font-size:34px;line-height:1.1;margin:0 0 22px;letter-spacing:-.02em}
+.mark{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px;letter-spacing:-.01em}
+.mark img{width:40px;height:40px}
+.meta{border-collapse:collapse;margin-bottom:28px}
+.meta td{padding:1px 0;vertical-align:top}.meta td:first-child{font-weight:600;padding-right:16px}
+.parties{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-bottom:32px}
+.parties h3{font-size:14px;margin:0 0 6px}.parties p{margin:0}
+.tag{display:inline-block;margin-left:6px;padding:0 8px;border-radius:999px;background:#eef1f7;color:#3a4560;font-weight:500;font-size:13px}
+h2{font-size:22px;line-height:1.25;margin:0 0 8px;letter-spacing:-.01em}
+.pay{display:inline-block;margin:0 0 4px;color:#3d5cf5;font-weight:600}
+.status{display:inline-block;margin-left:10px;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.06em;vertical-align:middle}
+.status.paid{background:#dff5e6;color:#17653a}.status.due{background:#fff3d6;color:#8a5a00}.status.overdue{background:#fde2e2;color:#a11a1a}
+.items{width:100%;border-collapse:collapse;margin-top:32px}
+.items th{font-size:12px;font-weight:500;color:#3a4560;text-align:left;padding:0 0 8px;border-bottom:1.5px solid #0b1633}
+.items td{padding:12px 0;vertical-align:top}
+.items .num{text-align:right;white-space:nowrap;padding-left:24px}
+.items .sub{color:#5b6478}
+.totals{width:50%;margin-left:50%;border-collapse:collapse;margin-top:12px}
+.totals td{padding:5px 0;border-top:1px solid #e3e6ee}.totals td:last-child{text-align:right}
+.totals tr.strong td{font-weight:700}
+h4{font-size:20px;margin:40px 0 0}
+.note{margin-top:36px;color:#5b6478;font-size:13px}
+.credit{display:flex;align-items:center;gap:6px;margin-top:28px;font-size:11px;color:#5b6478}
+.credit img{height:14px;width:auto}
+@media print{.page{padding:0}}
+@media (max-width:560px){.parties{grid-template-columns:1fr}.totals{width:100%;margin-left:0}}
+`;
+
+function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
   const day = (value: string | null) => formatDate(value, timeZone, { dateStyle: 'long' });
-  const what =
-    invoice.months === 12
-      ? 'Relay subscription, 1 year'
-      : `Relay subscription, ${invoice.months} month${invoice.months === 1 ? '' : 's'}`;
-  const rows: [string, string][] = [
-    ['Invoice no.', invoice.number],
-    ['Issued', day(invoice.issuedAt)],
-    ...(invoice.dueAt ? ([['Due', day(invoice.dueAt)]] as [string, string][]) : []),
-    ['Billed to', `${restaurant.name} (${restaurant.code})`],
-    ...(restaurant.ownerEmail ? ([['Email', restaurant.ownerEmail]] as [string, string][]) : []),
-    ['Description', what],
-    ['Period', `${day(invoice.periodStart)} to ${day(invoice.periodEnd)}`],
+  const money = (amount: number) => formatMoney(amount, doc.currency);
+  const paid = doc.status === 'paid';
+  const isReceipt = doc.kind === 'receipt';
+
+  const metaRows: [string, string][] = [
+    ['Invoice number', doc.number],
+    ...(isReceipt
+      ? ([
+          ['Receipt number', doc.receiptNumber || ''],
+          ['Date paid', day(doc.paidAt)],
+        ] as [string, string][])
+      : ([
+          ['Date of issue', day(doc.issuedAt)],
+          ['Date due', paid ? day(doc.paidAt || doc.issuedAt) : day(doc.dueAt)],
+        ] as [string, string][])),
   ];
-  const stamp =
-    invoice.status === 'paid'
-      ? '<div class="stamp paid">PAID</div>'
-      : `<div class="stamp due">${invoice.status === 'overdue' ? 'OVERDUE' : 'DUE'}</div>`;
-  const how =
-    invoice.status === 'paid'
-      ? 'Thank you for using Relay.'
-      : `Pay from the app: Admin → Billing → Pay, with MTN MoMo or Airtel Money.${
-          supportContact ? ` Questions: ${escape(supportContact)}.` : ''
-        }`;
+
+  // From: the platform's business details (console → Platform settings).
+  const fromLines = (restaurant.billingFrom || 'Relay').split('\n').filter(Boolean);
+  if (restaurant.supportContact && !fromLines.includes(restaurant.supportContact))
+    fromLines.push(restaurant.supportContact);
+  const [fromName, ...fromRest] = fromLines;
+  const billTo = [restaurant.ownerName, restaurant.billingPhone, restaurant.ownerEmail].filter(
+    Boolean,
+  ) as string[];
+
+  const year = doc.months === 12;
+  const plan = restaurant.planName ? `Relay ${restaurant.planName} plan` : 'Relay subscription';
+  const description = `${plan}${year ? ', paid yearly' : ''}`;
+  const qty = year ? '1' : String(doc.months);
+  const unit = year ? doc.amount : Math.round(doc.amount / Math.max(1, doc.months));
+  const period =
+    doc.periodStart && doc.periodEnd
+      ? `${formatDate(doc.periodStart, timeZone, { dateStyle: 'medium' })} – ${formatDate(
+          doc.periodEnd,
+          timeZone,
+          { dateStyle: 'medium' },
+        )}`
+      : '';
+  const unitLabel = year ? 'a year' : 'a month';
+
+  const statusLabel = paid ? 'PAID' : doc.status === 'overdue' ? 'OVERDUE' : 'DUE';
+  const headline = paid
+    ? `${money(doc.amount)} paid on ${day(doc.paidAt)}`
+    : `${money(doc.amount)} due ${day(doc.dueAt)}`;
+  const payUrl = new URL('/admin/site/billing', window.location.href).href;
+
   const relayLogo = new URL('/icons/favicon.svg', window.location.href).href;
   const embiro = new URL(embiroLogo, window.location.href).href;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Relay invoice ${escape(
-    invoice.number,
-  )}</title><style>
-body{font:14px/1.5 system-ui,sans-serif;color:#0b1633;max-width:560px;margin:32px auto;padding:0 16px}
-h1{font-size:22px;margin:0 0 4px}p{margin:0 0 20px;color:#5f687c}
-table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #e5e9f1;vertical-align:top}
-td:first-child{color:#5f687c;width:40%}.total td{font-size:18px;font-weight:700;border-bottom:0;padding-top:16px}
-small{display:block;margin-top:24px;color:#5f687c}@media print{body{margin:0 auto}}
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}.brand img{width:40px;height:40px}
-.brand b{font-size:22px}.credit{display:flex;align-items:center;gap:6px;font-size:11px;color:#5f687c;margin:0 0 24px}
-.credit img{height:15px;width:auto}.head{display:flex;justify-content:space-between;align-items:flex-start}
-.stamp{border:2px solid;border-radius:8px;padding:6px 12px;font-weight:800;letter-spacing:.1em}
-.stamp.paid{color:#1f7a4d}.stamp.due{color:#c2410c}
-</style></head><body><div class="brand"><img src="${relayLogo}" alt=""><b>Relay</b></div>
-<p class="credit">Powered by <img src="${embiro}" alt="Embiro"></p><div class="head"><div><h1>Invoice</h1><p>Subscription</p></div>${stamp}</div><table>${rows
+  const title = `${isReceipt ? 'Receipt' : 'Invoice'} ${isReceipt ? doc.receiptNumber : doc.number}`;
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(
+    title,
+  )}</title><style>${STYLE}</style></head><body><div class="page">
+<div class="top"><div><h1>${isReceipt ? 'Receipt' : 'Invoice'}</h1>
+<table class="meta">${metaRows
     .map(([k, v]) => `<tr><td>${escape(k)}</td><td>${escape(v)}</td></tr>`)
-    .join('')}<tr class="total"><td>${
-    invoice.status === 'paid' ? 'Amount paid' : 'Amount due'
-  }</td><td>${escape(formatMoney(invoice.amount, invoice.currency))}</td></tr></table><small>${how}</small><script>window.onload=()=>window.print()</script></body></html>`;
+    .join('')}</table></div>
+<div class="mark"><img src="${relayLogo}" alt="">Relay</div></div>
+<div class="parties">
+<div><h3>${escape(fromName)}</h3><p>${fromRest.map(escape).join('<br>')}</p></div>
+<div><h3>Bill to</h3><p><strong>${escape(restaurant.name)}</strong><span class="tag">@${escape(
+    restaurant.code,
+  )}</span><br>${billTo.map(escape).join('<br>')}</p></div>
+</div>
+<h2>${escape(headline)}${isReceipt ? '' : `<span class="status ${doc.status}">${statusLabel}</span>`}</h2>
+${paid ? '' : `<a class="pay" href="${escape(payUrl)}">Pay online</a>`}
+<table class="items"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
+<tbody><tr><td>${escape(description)}${period ? `<div class="sub">${escape(period)}</div>` : ''}</td>
+<td class="num">${qty}</td><td class="num">${escape(money(unit))}<div class="sub">${unitLabel}</div></td><td class="num">${escape(
+    money(doc.amount),
+  )}</td></tr></tbody></table>
+<table class="totals"><tr><td>Subtotal</td><td>${escape(money(doc.amount))}</td></tr>
+<tr><td>Total</td><td>${escape(money(doc.amount))}</td></tr>
+<tr class="strong"><td>${paid ? 'Amount paid' : 'Amount due'}</td><td>${escape(
+    `${money(doc.amount)}`,
+  )}</td></tr></table>
+${
+  isReceipt
+    ? `<h4>Payment history</h4><table class="items"><thead><tr><th>Payment method</th><th>Date</th><th class="num">Amount paid</th><th class="num">Receipt number</th></tr></thead>
+<tbody><tr><td>${escape(doc.paidWith || '')}</td><td>${escape(day(doc.paidAt))}</td><td class="num">${escape(
+        money(doc.amount),
+      )}</td><td class="num">${escape(doc.receiptNumber || '')}</td></tr></tbody></table>`
+    : ''
+}
+<p class="note">${
+    paid
+      ? 'Thank you for using Relay.'
+      : `Pay in the app: Admin → Billing → Pay, with MTN MoMo or Airtel Money.${
+          restaurant.supportContact ? ` Questions: ${escape(restaurant.supportContact)}.` : ''
+        }`
+  }</p>
+<p class="credit">Powered by <img src="${embiro}" alt="Embiro"></p>
+</div><script>window.onload=()=>window.print()</script></body></html>`;
+}
+
+function open(html: string) {
   const win = window.open('', '_blank');
   if (!win) return false;
   win.document.open();
   win.document.write(html);
   win.document.close();
   return true;
+}
+
+const paidWith = (payment: ReceiptPayment) =>
+  payment.method === 'manual'
+    ? `Received by Relay${payment.reference ? ` (${payment.reference})` : ''}`
+    : `Mobile money ${payment.payer}${payment.reference ? ` · ${payment.reference}` : ''}`;
+
+// The receipt for a paid subscription payment.
+export function printSubscriptionReceipt(
+  payment: ReceiptPayment,
+  restaurant: BilledRestaurant,
+  timeZone: string,
+) {
+  return open(
+    render(
+      {
+        kind: 'receipt',
+        number: invoiceNumberOf(restaurant.code, payment.id),
+        receiptNumber: receiptNumberOf(payment.id),
+        status: 'paid',
+        issuedAt: payment.paidAt,
+        dueAt: null,
+        paidAt: payment.paidAt,
+        months: payment.months,
+        amount: payment.amount,
+        currency: payment.currency,
+        periodStart: payment.periodStart,
+        periodEnd: payment.periodEnd,
+        paidWith: paidWith(payment),
+      },
+      restaurant,
+      timeZone,
+    ),
+  );
+}
+
+// An invoice for one subscription period, paid or still to pay.
+export function printSubscriptionInvoice(
+  invoice: InvoiceDoc,
+  restaurant: BilledRestaurant,
+  timeZone: string,
+) {
+  return open(
+    render(
+      {
+        kind: 'invoice',
+        number: invoice.number,
+        status: invoice.status,
+        issuedAt: invoice.issuedAt,
+        dueAt: invoice.dueAt,
+        paidAt: invoice.status === 'paid' ? invoice.issuedAt : null,
+        months: invoice.months,
+        amount: invoice.amount,
+        currency: invoice.currency,
+        periodStart: invoice.periodStart,
+        periodEnd: invoice.periodEnd,
+      },
+      restaurant,
+      timeZone,
+    ),
+  );
 }

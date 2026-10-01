@@ -12,7 +12,10 @@ type EmailSettings = {
   keySet: boolean;
   ready: boolean;
   providers: string[];
+  templates: Record<string, string>;
+  kinds: EmailKind[];
 };
+type EmailKind = { key: string; label: string; when: string; subject: string; variables: string[] };
 
 const PROVIDER_NAMES: Record<string, string> = { resend: 'Resend', brevo: 'Brevo' };
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -25,6 +28,7 @@ export function PlatformEmail() {
     from: '',
     fromName: 'Relay',
     appUrl: '',
+    templates: {} as Record<string, string>,
   });
   const [testTo, setTestTo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -41,6 +45,7 @@ export function PlatformEmail() {
         from: next.from,
         fromName: next.fromName,
         appUrl: next.appUrl || window.location.origin,
+        templates: next.templates || {},
       });
     } catch (e) {
       setError(message(e));
@@ -67,6 +72,23 @@ export function PlatformEmail() {
   const save = (event: FormEvent) => {
     event.preventDefault();
     void act('platformSaveEmail', form, 'Saved.');
+  };
+  const setTemplate = (kind: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, templates: { ...f.templates, [kind]: e.target.value } }));
+  // Copies the email's HTML for the service's template editor.
+  const copyHtml = async (kind: EmailKind) => {
+    setError('');
+    setDone('');
+    try {
+      const t: { html: string; brevoHtml: string } = await Parse.Cloud.run(
+        'platformEmailTemplate',
+        { kind: kind.key },
+      );
+      await navigator.clipboard.writeText(form.provider === 'brevo' ? t.brevoHtml : t.html);
+      setDone(`${kind.label}: HTML copied. Paste it into the template editor.`);
+    } catch (e) {
+      setError(message(e));
+    }
   };
   const set =
     (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -160,6 +182,85 @@ export function PlatformEmail() {
             </button>
           </div>
         </form>
+      )}
+      {data && (
+        <div className="email-templates">
+          <h3>Templates</h3>
+          <p className="muted">
+            Relay sends its own designed emails. To edit one in{' '}
+            {PROVIDER_NAMES[form.provider] || form.provider} instead: copy its HTML, create a
+            template there (paste the HTML, set the subject shown here, add each variable), publish
+            it and enter its {form.provider === 'brevo' ? 'number' : 'ID or alias'} below. Leave it
+            empty to keep Relay&apos;s own. Save, then send each one to yourself to check it.
+          </p>
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Subject and variables</th>
+                  <th>Template {form.provider === 'brevo' ? 'number' : 'ID or alias'}</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {data.kinds.map((kind) => (
+                  <tr key={kind.key}>
+                    <td>
+                      <strong>{kind.label}</strong>
+                      <small className="muted block">{kind.when}</small>
+                    </td>
+                    <td>
+                      <code className="email-subject">{kind.subject}</code>
+                      <small className="muted block">{kind.variables.join(', ')}</small>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${kind.label} template`}
+                        value={form.templates[kind.key] || ''}
+                        onChange={setTemplate(kind.key)}
+                        placeholder="Relay's own"
+                      />
+                    </td>
+                    <td className="email-template-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => void copyHtml(kind)}
+                      >
+                        Copy HTML
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy || !data.ready || !testTo.trim()}
+                        title={testTo.trim() ? '' : 'Enter the test address above first'}
+                        onClick={() =>
+                          void act(
+                            'platformTestEmail',
+                            { to: testTo, kind: kind.key },
+                            `${kind.label} sent to ${testTo}.`,
+                          )
+                        }
+                      >
+                        Send test
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="platform-actions">
+            <button
+              className="primary-button"
+              disabled={busy}
+              onClick={() => void act('platformSaveEmail', form, 'Templates saved.')}
+            >
+              Save templates
+            </button>
+          </div>
+        </div>
       )}
       {!data && error && <p className="ops-error">{error}</p>}
     </section>

@@ -14,9 +14,11 @@ const {
   requirePlatform,
   restaurantSummary,
   priceOf,
+  annualPriceOf,
   amountFor,
   forEachRestaurant,
 } = require('./restaurants');
+const { dateText, moneyText } = require('./lib/emailTemplates');
 
 const MONTHS = [1, 3, 6, 12];
 // ioTec's smallest collection.
@@ -83,6 +85,7 @@ async function settle(payment, { reference = '', message = '' } = {}) {
     amount: payment.get('amount'),
     until: end.toISOString(),
   });
+  void emailPaid(row, payment);
   return payment;
 }
 
@@ -128,12 +131,14 @@ async function history(limit = 20) {
 // Invoices: every paid payment, and the next period while it is coming up
 // (within INVOICE_DAYS of the end of the trial or paid period) or overdue.
 const INVOICE_DAYS = 14;
+const invoiceNumber = (row, suffix) => `INV-${row.get('code').toUpperCase()}-${suffix}`;
+const nextInvoiceNumber = (row, end) =>
+  invoiceNumber(row, end.toISOString().slice(0, 10).replace(/-/g, ''));
 function invoicesOf(row, platform, payments) {
-  const code = row.get('code');
   const paid = payments
     .filter((p) => p.get('status') === 'paid')
     .map((p) => ({
-      number: `INV-${code.toUpperCase()}-${p.id}`,
+      number: invoiceNumber(row, p.id),
       status: 'paid',
       issuedAt: (p.get('paidAt') || p.createdAt).toISOString(),
       dueAt: null,
@@ -143,6 +148,9 @@ function invoicesOf(row, platform, payments) {
       periodStart: p.get('periodStart')?.toISOString() || null,
       periodEnd: p.get('periodEnd')?.toISOString() || null,
       paymentId: p.id,
+      method: p.get('method') || 'iotec',
+      payer: p.get('payer') || '',
+      reference: p.get('reference') || '',
     }));
   const access = accessOf(row, platform.graceDays);
   const end = new Date(
@@ -153,7 +161,7 @@ function invoicesOf(row, platform, payments) {
     access.status !== 'suspended' && end.getTime() > 0 && daysLeft <= INVOICE_DAYS
       ? [
           {
-            number: `INV-${code.toUpperCase()}-${end.toISOString().slice(0, 10).replace(/-/g, '')}`,
+            number: nextInvoiceNumber(row, end),
             status: daysLeft < 0 ? 'overdue' : 'due',
             issuedAt: new Date(end.getTime() - INVOICE_DAYS * DAY).toISOString(),
             dueAt: end.toISOString(),
@@ -373,20 +381,108 @@ Parse.Cloud.define('platformListPayments', async (request) => {
 });
 
 // Reminds the owner before the trial or paid month ends, and when it has
-// ended (once per date; notifications carry a key).
+// ended: in the app (once per date; notifications carry a key) and by email
+// at each stage of emailStage (once per stage and date).
 async function remind(row, platform) {
   const sent = await notifyBilling(row, platform);
-  // The same reminder by email, once per reminder.
-  if (sent?.key && row.get('ownerEmail')) {
-    const once = await tenancy.withoutTenant(() => claimOnce(`email:${row.id}:${sent.key}`));
-    if (once)
-      await require('./platformEmail').emailOwner(
-        row,
-        `${row.get('name')}: ${sent.title}`,
-        [sent.title, '', sent.body, '', 'Relay'].join('\n'),
-      );
-  }
+  await emailReminder(row, platform);
   return sent?.count ?? 0;
+}
+
+// Which billing email is due now, if any:
+//   7 and 3 days before the end: billing_due_soon
+//   the last day:                billing_due_today
+//   after the end (grace days):  billing_overdue, and again on the last day
+function emailStage(row, platform, now = Date.now()) {
+  const access = accessOf(row, platform.graceDays, now);
+  if (!access.until) return null;
+  const left = Math.ceil((access.until.getTime() - now) / DAY);
+  const day = access.until.toISOString().slice(0, 10);
+  const trial = access.status === 'trial';
+  const plural = (n) => `${n} day${n === 1 ? '' : 's'}`;
+  if (access.status === 'trial' || access.status === 'active') {
+    const what = trial ? 'Your free trial ends' : 'Your paid period ends';
+    if (left <= 1)
+      return {
+        kind: 'billing_due_today',
+        key: `billing:today:${day}`,
+        due: access.until,
+        vars: { HEADLINE: `${what} today` },
+      };
+    if (left <= 7)
+      return {
+        kind: 'billing_due_soon',
+        key: `billing:soon${left <= 3 ? 3 : 7}:${day}`,
+        due: access.until,
+        vars: { HEADLINE: `${what} in ${plural(left)}`, DAYS_LEFT: String(left) },
+      };
+    return null;
+  }
+  if (access.status === 'past_due') {
+    const due = new Date(access.until.getTime() - Number(platform.graceDays || 0) * DAY);
+    return {
+      kind: 'billing_overdue',
+      key: `billing:${left <= 1 ? 'closing' : 'overdue'}:${day}`,
+      due,
+      vars: {
+        HEADLINE:
+          left <= 1 ? 'Relay closes tomorrow' : `Payment overdue: Relay closes in ${plural(left)}`,
+        CLOSES_ON: dateText(access.until),
+        DAYS_TO_CLOSE: String(left),
+      },
+    };
+  }
+  return null;
+}
+
+async function emailReminder(row, platform) {
+  if (!row.get('ownerEmail')) return;
+  const stage = emailStage(row, platform);
+  if (!stage) return;
+  const email = require('./lib/email');
+  if (!email.ready((await email.loadEmail()).email)) return;
+  const once = await tenancy.withoutTenant(() => claimOnce(`email:${row.id}:${stage.key}`));
+  if (!once) return;
+  const plan = require('./lib/plans').planFor(platform.plans || [], row.get('plan') || '');
+  await require('./platformEmail').emailOwner(
+    row,
+    stage.kind,
+    {
+      PLAN_NAME: plan.name,
+      AMOUNT: moneyText(priceOf(row, platform), platform.currency),
+      ANNUAL_AMOUNT: moneyText(annualPriceOf(row, platform), platform.currency),
+      DUE_DATE: dateText(stage.due),
+      INVOICE_NUMBER: nextInvoiceNumber(row, stage.due),
+      ...stage.vars,
+    },
+    platform,
+  );
+}
+
+// The receipt by email when a payment is received.
+async function emailPaid(row, payment) {
+  try {
+    if (!row.get('ownerEmail')) return;
+    const { values: platform } = await platformSettings();
+    const months = Number(payment.get('months')) || 1;
+    const plan = require('./lib/plans').planFor(platform.plans || [], row.get('plan') || '');
+    const reference = payment.get('reference') || '';
+    await require('./platformEmail').emailOwner(
+      row,
+      'payment_received',
+      {
+        PLAN_NAME: plan.name,
+        AMOUNT: moneyText(payment.get('amount'), payment.get('currency') || platform.currency),
+        PERIOD: months === 12 ? '1 year' : `${months} month${months === 1 ? '' : 's'}`,
+        PAID_UNTIL: dateText(payment.get('periodEnd')),
+        INVOICE_NUMBER: invoiceNumber(row, payment.id),
+        REFERENCE: reference || '—',
+      },
+      platform,
+    );
+  } catch (error) {
+    log('warn', 'email.paid_failed', { restaurant: row.id, message: String(error?.message) });
+  }
 }
 
 const tell = async (payload) => ({
@@ -411,8 +507,8 @@ async function notifyBilling(row, platform) {
         access.status === 'trial'
           ? `Your free trial ends in ${left} day${left === 1 ? '' : 's'}`
           : `Your paid month ends in ${left} day${left === 1 ? '' : 's'}`,
-      body: `Pay ${price} a month from Overview to keep the app open.`,
-      link: '/admin',
+      body: `Pay ${price} a month in Admin → Billing to keep the app open.`,
+      link: '/admin/site/billing',
       key: `billing:${access.status}:${day}`,
     });
   if (access.status === 'past_due')
@@ -420,8 +516,8 @@ async function notifyBilling(row, platform) {
       kind: 'billing.reminder',
       tone: 'alert',
       title: `The app closes in ${left} day${left === 1 ? '' : 's'}`,
-      body: `Your subscription has ended. Pay ${price} from Overview to keep the app open.`,
-      link: '/admin',
+      body: `Your subscription has ended. Pay ${price} in Admin → Billing to keep the app open.`,
+      link: '/admin/site/billing',
       key: `billing:past_due:${day}`,
     });
   return null;
@@ -460,4 +556,4 @@ Parse.Cloud.job('billing', async () => {
   return `${checked} payments checked, ${reminded} reminders sent`;
 });
 
-module.exports = { billingDue };
+module.exports = { billingDue, emailStage };
