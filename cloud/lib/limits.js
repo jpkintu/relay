@@ -19,7 +19,16 @@ const ALL = {
   whatsapp: true,
 };
 
-const planOf = (row) => row?.get('plan') || '';
+// The plan in force: a move to a smaller plan (nextPlan) takes effect when
+// the period paid on the bigger one ends (nextPlanFrom); billing.js.
+function planOf(row, now = Date.now()) {
+  const next = row?.get('nextPlan');
+  const from = row?.get('nextPlanFrom');
+  if (next && from instanceof Date && from.getTime() <= now) return next;
+  return row?.get('plan') || '';
+}
+// The plan the next paid period is on (the smaller one once scheduled).
+const renewalPlanOf = (row) => row?.get('nextPlan') || planOf(row);
 
 async function platformValues() {
   return (await require('../restaurants').platformSettings()).values;
@@ -95,4 +104,12 @@ async function overLimits(plan) {
   return problems;
 }
 
-module.exports = { planOf, currentPlan, checkBranchLimit, checkMemberLimit, features, overLimits };
+module.exports = {
+  planOf,
+  renewalPlanOf,
+  currentPlan,
+  checkBranchLimit,
+  checkMemberLimit,
+  features,
+  overLimits,
+};

@@ -15,6 +15,8 @@ const {
   restaurantSummary,
   priceOf,
   annualPriceOf,
+  renewalPlanOf,
+  planOfRow,
   forEachRestaurant,
 } = require('./restaurants');
 const { dateText, moneyText } = require('./lib/emailTemplates');
@@ -49,10 +51,29 @@ function toJSON(row) {
     periodStart: row.get('periodStart')?.toISOString() || null,
     periodEnd: row.get('periodEnd')?.toISOString() || null,
     paidAt: row.get('paidAt')?.toISOString() || null,
+    kind: row.get('kind') || 'period',
+    plan: row.get('plan') || '',
     listAmount: row.get('listAmount') ?? null,
     discount: row.get('discount') || 0,
     discountCode: row.get('discountCode') || '',
   };
+}
+
+// A period paid on `target`: a bigger plan (or any plan when nothing paid is
+// running) applies at once; a smaller one from the start of the new period,
+// so the period already paid for stays on the plan it was paid on.
+function applyPeriodPlan(row, target, start, plans) {
+  const current = require('./lib/limits').planOf(row);
+  if (target === current && !row.get('nextPlan')) return;
+  const prices = Object.fromEntries((plans || []).map((plan) => [plan.key, plan.price]));
+  const smaller = (prices[target] ?? 0) < (prices[current] ?? 0);
+  if (smaller && start.getTime() > Date.now()) {
+    row.set({ nextPlan: target, nextPlanFrom: start });
+  } else {
+    row.set('plan', target);
+    row.unset('nextPlan');
+    row.unset('nextPlanFrom');
+  }
 }
 
 // Marks a payment paid and moves the restaurant's paid-until date on by its
@@ -63,15 +84,29 @@ async function settle(payment, { reference = '', message = '' } = {}) {
   if (!(await tenancy.withoutTenant(() => claimOnce(`subscription-payment:${payment.id}`))))
     return payment.fetch(MASTER);
   const row = await restaurantRow(payment.get('tenant').id);
-  const base = new Date(
-    Math.max(
-      Date.now(),
-      row.get('trialEndsAt')?.getTime() || 0,
-      row.get('paidUntil')?.getTime() || 0,
-    ),
-  );
-  const end = addMonths(base, Number(payment.get('months')) || 1);
-  row.set('paidUntil', end);
+  const target = payment.get('plan') || '';
+  let base;
+  let end;
+  if (payment.get('kind') === 'upgrade') {
+    // An upgrade: the bigger plan from now to the end of the period already
+    // paid for; the paid-until date stays.
+    base = new Date();
+    end = row.get('paidUntil') || base;
+    row.set('plan', target);
+    row.unset('nextPlan');
+    row.unset('nextPlanFrom');
+  } else {
+    base = new Date(
+      Math.max(
+        Date.now(),
+        row.get('trialEndsAt')?.getTime() || 0,
+        row.get('paidUntil')?.getTime() || 0,
+      ),
+    );
+    end = addMonths(base, Number(payment.get('months')) || 1);
+    row.set('paidUntil', end);
+    if (target) applyPeriodPlan(row, target, base, (await platformSettings()).values.plans);
+  }
   // The first payment of a restaurant that chose to pay at sign-up: its code
   // is used now (offers.js).
   const offer = row.get('payFirst') === true ? row.get('offer') || null : null;
@@ -154,7 +189,12 @@ function invoicesOf(row, platform, payments) {
       status: 'paid',
       issuedAt: (p.get('paidAt') || p.createdAt).toISOString(),
       dueAt: null,
-      months: Number(p.get('months')) || 1,
+      months: p.get('kind') === 'upgrade' ? 0 : Number(p.get('months')) || 1,
+      kind: p.get('kind') || 'period',
+      // The plan paid for (older payments: none recorded).
+      planName: p.get('plan')
+        ? require('./lib/plans').planFor(platform.plans || [], p.get('plan')).name
+        : '',
       amount: Number(p.get('amount')) || 0,
       currency: p.get('currency') || platform.currency,
       periodStart: p.get('periodStart')?.toISOString() || null,
@@ -181,7 +221,7 @@ function invoicesOf(row, platform, payments) {
             issuedAt: new Date(end.getTime() - INVOICE_DAYS * DAY).toISOString(),
             dueAt: end.toISOString(),
             months: 1,
-            amount: priceOf(row, platform),
+            amount: priceOf(row, platform, renewalPlanOf(row, platform)),
             currency: platform.currency,
             periodStart: end.toISOString(),
             periodEnd: addMonths(end, 1).toISOString(),
@@ -190,6 +230,52 @@ function invoicesOf(row, platform, payments) {
         ]
       : [];
   return [...next, ...paid];
+}
+
+// Restaurants that signed up with this one's code, and what it earned.
+async function referralsOf(row, platform) {
+  const rows = await tenancy
+    .withoutTenant(() =>
+      new Parse.Query('Restaurant')
+        .equalTo('referredBy', row.id)
+        .descending('createdAt')
+        .limit(200)
+        .find(MASTER),
+    )
+    // The column only exists once a restaurant has signed up with a code.
+    .catch(() => []);
+  return {
+    code: row.get('code'),
+    percent: Number(platform.referralPercent) || 0,
+    months: Number(platform.referralMonths) || 0,
+    rows: rows.map((r) => ({
+      name: r.get('name'),
+      signedUpAt: r.createdAt?.toISOString() || null,
+      // rewarded: paid, free months added; waiting: has not paid yet;
+      // trial: chose the free trial instead (no reward).
+      status: r.get('referralCredit') ? 'rewarded' : r.get('payFirst') ? 'waiting' : 'trial',
+      months: r.get('referralCredit')?.months || 0,
+      rewardedAt: r.get('referralCredit')?.at || null,
+    })),
+  };
+}
+
+function planState(row, platform, upgrades) {
+  const current = planOfRow(row, platform);
+  const renewal = renewalPlanOf(row, platform);
+  const access = accessOf(row, platform.graceDays);
+  return {
+    current: current.key,
+    currentName: current.name,
+    renewal: renewal.key,
+    renewalName: renewal.name,
+    renewalFrom: row.get('nextPlan') ? row.get('nextPlanFrom')?.toISOString() || null : null,
+    // While a paid period runs the period plan is fixed (change it under
+    // Plans); otherwise the payment form offers every plan.
+    choosePlanWhenPaying: access.status !== 'active' && !negotiated(row),
+    negotiated: negotiated(row),
+    upgrades,
+  };
 }
 
 async function billingState() {
@@ -201,6 +287,11 @@ async function billingState() {
   // code on the first payment.
   const priced = await offers().pricesFor(row, platform);
   const invoices = invoicesOf(row, platform, payments);
+  const upgrades = {};
+  for (const plan of platform.plans.filter((x) => x.active)) {
+    const quote = await upgradeQuote(row, platform, plan);
+    if (quote) upgrades[plan.key] = quote;
+  }
   if (priced.offer && invoices[0] && invoices[0].status !== 'paid')
     Object.assign(invoices[0], {
       amount: priced.prices[1],
@@ -212,7 +303,12 @@ async function billingState() {
     restaurant: await restaurantSummary(),
     prices: priced.prices,
     listPrices: priced.listPrices,
+    planPrices: priced.planPrices,
     offer: priced.offer,
+    // Plans: the one in force, the next period's, and what moving up now
+    // costs while a paid period runs.
+    plan: planState(row, platform, upgrades),
+    referrals: await referralsOf(row, platform),
     invoices,
     // False until the ioTec keys are set in the Back4App app.
     payInApp: iotec.configured(),
@@ -230,49 +326,64 @@ Parse.Cloud.define('getBilling', async (request) => {
   return billingState();
 });
 
-// Owner: move to another plan { plan }. Upgrading is immediate; moving down
-// to Basic needs the restaurant within Basic's limits. The new price applies
-// from the next payment.
+// Owner: choose the plan of the next period { plan }. A smaller plan starts
+// when the period paid for ends (until then the restaurant keeps what it paid
+// for); choosing the current plan again cancels that. Moving up is paid:
+// startPlanUpgrade while a paid period runs, else a period payment on the
+// bigger plan (startSubscriptionPayment { plan }).
 Parse.Cloud.define('changePlan', async (request) => {
   const { user: actor } = await requireRole(request, ['admin']);
   const limits = require('./lib/limits');
+  const { planOfRow } = require('./restaurants');
   const { values: platform } = await platformSettings();
   const target = platform.plans.find((plan) => plan.active && plan.key === request.params?.plan);
   if (!target) throw invalid('Choose one of the plans on offer');
   const row = await restaurantRow();
-  const before = (await limits.currentPlan())?.key || '';
-  if (before === target.key) throw invalid(`You are on ${target.name} already`);
-  const problems = await limits.overLimits(target);
-  if (problems.length)
-    throw invalid(`${target.name} allows less than you have: ${problems.join(', ')}`);
-  row.set('plan', target.key);
+  if (negotiated(row))
+    throw invalid('Your price was agreed with Relay. Contact Relay to change plan');
+  const current = planOfRow(row, platform);
+  const before = { plan: current.key, nextPlan: row.get('nextPlan') || '' };
+  if (target.key === current.key) {
+    if (!row.get('nextPlan')) throw invalid(`You are on ${target.name} already`);
+    row.unset('nextPlan');
+    row.unset('nextPlanFrom');
+  } else if (target.price > current.price) {
+    throw invalid(`Moving up to ${target.name} is paid: use Upgrade`);
+  } else {
+    const access = accessOf(row, platform.graceDays);
+    if (access.status !== 'active' && access.status !== 'trial')
+      throw invalid(`Choose ${target.name} when you pay your next period`);
+    const problems = await limits.overLimits(target);
+    if (problems.length)
+      throw invalid(`${target.name} allows less than you have: ${problems.join(', ')}`);
+    row.set({ nextPlan: target.key, nextPlanFrom: access.until });
+  }
   await tenancy.withoutTenant(() => row.save(null, MASTER));
-  await audit(actor, 'subscription.plan_changed', row, { plan: before }, { plan: target.key });
+  await audit(actor, 'subscription.plan_changed', row, before, {
+    plan: current.key,
+    nextPlan: row.get('nextPlan') || '',
+  });
   return billingState();
 });
 
-// Owner: pay { months, phone } with mobile money. ioTec asks the phone to
-// approve; checkSubscriptionPayment follows it up.
-Parse.Cloud.define('startSubscriptionPayment', async (request) => {
-  const { user } = await requireRole(request, ['admin']);
-  const p = request.params || {};
-  const { values: platform } = await platformSettings();
-  if (!iotec.configured())
-    throw invalid(
-      `Paying in the app is not switched on yet. Contact Relay${
-        platform.supportContact ? ` (${platform.supportContact})` : ''
-      } to renew`,
-    );
-  const months = Number(p.months);
-  if (!MONTHS.includes(months)) throw invalid(`Choose ${MONTHS.join(', ')} months`);
-  const phone = String(p.phone || '').replace(/[^\d+]/g, '');
+const notConfigured = (platform) =>
+  invalid(
+    `Paying in the app is not switched on yet. Contact Relay${
+      platform.supportContact ? ` (${platform.supportContact})` : ''
+    } to pay`,
+  );
+const cleanPhone = (value) => {
+  const phone = String(value || '').replace(/[^\d+]/g, '');
   if (phone.replace(/\D/g, '').length < 9)
     throw invalid('Enter the mobile money number to pay from');
-  const row = await restaurantRow();
-  const priced = await offers().priceFor(row, platform, months);
-  const amount = priced.amount;
-  if (amount < MIN_AMOUNT) throw invalid('Nothing to pay at this price. Contact Relay');
+  return phone;
+};
+// A price agreed with Relay (priceOverride): plans change through Relay.
+const negotiated = (row) => typeof row.get('priceOverride') === 'number';
 
+// Sends the mobile money prompt for a new SubscriptionPayment (`fields`:
+// months, kind, plan, discount…). One waiting prompt at a time.
+async function collectPayment({ row, platform, user, phone, amount, fields, note }) {
   for (const waiting of await pendingPayments()) {
     await refresh(waiting);
     if (waiting.get('status') === 'pending')
@@ -280,18 +391,14 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
         `A payment is already waiting for approval on ${waiting.get('payer')}. Approve it there, or wait a few minutes`,
       );
   }
-
   const payment = new Parse.Object('SubscriptionPayment');
   payment.set({
     amount,
     currency: platform.currency,
-    months,
     method: 'iotec',
     status: 'pending',
     payer: phone,
-    ...(priced.discount
-      ? { listAmount: priced.list, discount: priced.discount, discountCode: priced.code }
-      : {}),
+    ...fields,
     externalId: `relay-${row.get('code')}-${Date.now().toString(36)}-${Math.random()
       .toString(36)
       .slice(2, 8)}`,
@@ -306,7 +413,7 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
       currency: platform.currency,
       payer: phone,
       payerName: row.get('ownerName') || row.get('name'),
-      note: `Relay for ${row.get('name')}: ${months} month${months === 1 ? '' : 's'}`.slice(0, 100),
+      note: `Relay for ${row.get('name')}: ${note}`.slice(0, 100),
     });
     payment.set({ providerId: result.id, message: result.message || 'Waiting for approval' });
     if (result.status === 'failed') payment.set('status', 'failed');
@@ -325,6 +432,141 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
   }
   await audit(user, 'billing.payment_started', payment, null, toJSON(payment));
   return toJSON(payment);
+}
+
+// The plan a period payment buys. While a paid period is running it is the
+// renewal plan (moving up goes through startPlanUpgrade, moving down through
+// changePlan); otherwise (trial, grace days, closed) any plan on offer.
+async function periodPlan(row, platform, key) {
+  const { renewalPlanOf, planOfRow } = require('./restaurants');
+  const renewal = renewalPlanOf(row, platform);
+  if (!key || key === renewal.key) return renewal;
+  const target = platform.plans.find((plan) => plan.active && plan.key === key);
+  if (!target) throw invalid('Choose one of the plans on offer');
+  if (negotiated(row))
+    throw invalid('Your price was agreed with Relay. Contact Relay to change plan');
+  const access = accessOf(row, platform.graceDays);
+  if (access.status === 'active')
+    throw invalid(
+      target.price > planOfRow(row, platform).price
+        ? `To move up to ${target.name} now, use Upgrade: you pay only the difference`
+        : `Choose ${target.name} under Plans: it starts when your paid period ends`,
+    );
+  const problems = await require('./lib/limits').overLimits(target);
+  if (problems.length)
+    throw invalid(`${target.name} allows less than you have: ${problems.join(', ')}`);
+  return target;
+}
+
+// Owner: pay a period { months, phone, plan? } with mobile money. ioTec asks
+// the phone to approve; checkSubscriptionPayment follows it up.
+Parse.Cloud.define('startSubscriptionPayment', async (request) => {
+  const { user } = await requireRole(request, ['admin']);
+  const p = request.params || {};
+  const { values: platform } = await platformSettings();
+  if (!iotec.configured()) throw notConfigured(platform);
+  const months = Number(p.months);
+  if (!MONTHS.includes(months)) throw invalid(`Choose ${MONTHS.join(', ')} months`);
+  const phone = cleanPhone(p.phone);
+  const row = await restaurantRow();
+  const plan = await periodPlan(row, platform, p.plan ? String(p.plan) : '');
+  const priced = await offers().priceFor(row, platform, months, undefined, plan);
+  const amount = priced.amount;
+  if (amount < MIN_AMOUNT) throw invalid('Nothing to pay at this price. Contact Relay');
+  return collectPayment({
+    row,
+    platform,
+    user,
+    phone,
+    amount,
+    fields: {
+      months,
+      kind: 'period',
+      plan: plan.key,
+      ...(priced.discount
+        ? { listAmount: priced.list, discount: priced.discount, discountCode: priced.code }
+        : {}),
+    },
+    note: `${plan.name}, ${months === 12 ? '1 year' : `${months} month${months === 1 ? '' : 's'}`}`,
+  });
+});
+
+// Moving up while a paid period runs: the bigger plan for the days left, less
+// what those days cost on the current plan (at the yearly rate when the
+// running period was paid as a year). The days stay; only the difference is
+// paid. Null when there is nothing to upgrade this way.
+const MONTH_DAYS = 365 / 12;
+async function upgradeQuote(row, platform, target) {
+  const { planOfRow } = require('./restaurants');
+  if (accessOf(row, platform.graceDays).status !== 'active' || negotiated(row)) return null;
+  const current = planOfRow(row, platform);
+  if (!target || !target.active || !(target.price > current.price)) return null;
+  const now = Date.now();
+  const until = row.get('paidUntil');
+  const days = Math.max(0, (until.getTime() - now) / DAY);
+  // The period running now: was it paid as a year?
+  const paid = await tenancy.withoutTenant(() =>
+    new Parse.Query('SubscriptionPayment')
+      .equalTo('tenant', row)
+      .equalTo('status', 'paid')
+      .greaterThan('periodEnd', new Date(now))
+      .find(MASTER),
+  );
+  const running = paid.find(
+    (payment) => payment.get('kind') !== 'upgrade' && payment.get('periodStart')?.getTime() <= now,
+  );
+  const yearly = Number(running?.get('months')) === 12;
+  const rate = (plan) => (yearly ? plan.annualPrice / 12 : plan.price);
+  const amount = Math.ceil(((rate(target) - rate(current)) * days) / MONTH_DAYS / 100) * 100;
+  return {
+    plan: target.key,
+    planName: target.name,
+    amount: Math.max(0, amount),
+    days: Math.ceil(days),
+    until: until.toISOString(),
+    yearly,
+  };
+}
+
+// Owner: move up now { plan, phone }: pays the difference for the days left;
+// the plan changes once the payment succeeds.
+Parse.Cloud.define('startPlanUpgrade', async (request) => {
+  const { user } = await requireRole(request, ['admin']);
+  const p = request.params || {};
+  const { values: platform } = await platformSettings();
+  const row = await restaurantRow();
+  const target = platform.plans.find((plan) => plan.active && plan.key === p.plan);
+  if (!target) throw invalid('Choose one of the plans on offer');
+  if (negotiated(row))
+    throw invalid('Your price was agreed with Relay. Contact Relay to change plan');
+  const quote = await upgradeQuote(row, platform, target);
+  if (!quote)
+    throw invalid(
+      accessOf(row, platform.graceDays).status === 'active'
+        ? `${target.name} is not bigger than your plan`
+        : `Pay a period on ${target.name} to move to it`,
+    );
+  // A few days left: too little to collect; the plan changes now.
+  if (quote.amount < MIN_AMOUNT) {
+    const before = require('./lib/limits').planOf(row);
+    row.set('plan', target.key);
+    row.unset('nextPlan');
+    row.unset('nextPlanFrom');
+    await tenancy.withoutTenant(() => row.save(null, MASTER));
+    await audit(user, 'subscription.plan_changed', row, { plan: before }, { plan: target.key });
+    return { upgraded: true, ...quote };
+  }
+  if (!iotec.configured()) throw notConfigured(platform);
+  const phone = cleanPhone(p.phone);
+  return collectPayment({
+    row,
+    platform,
+    user,
+    phone,
+    amount: quote.amount,
+    fields: { months: 0, kind: 'upgrade', plan: target.key },
+    note: `upgrade to ${target.name}`,
+  });
 });
 
 // Owner: how a payment is going. { id } → { payment, restaurant }
@@ -481,13 +723,16 @@ async function emailReminder(row, platform) {
   if (!email.ready((await email.loadEmail()).email)) return;
   const once = await tenancy.withoutTenant(() => claimOnce(`email:${row.id}:${stage.key}`));
   if (!once) return;
-  const plan = require('./lib/plans').planFor(platform.plans || [], row.get('plan') || '');
+  const plan = require('./lib/plans').planFor(
+    platform.plans || [],
+    require('./lib/limits').planOf(row),
+  );
   await require('./platformEmail').emailOwner(
     row,
     stage.kind,
     {
       PLAN_NAME: plan.name,
-      AMOUNT: moneyText(priceOf(row, platform), platform.currency),
+      AMOUNT: moneyText(priceOf(row, platform, renewalPlanOf(row, platform)), platform.currency),
       ANNUAL_AMOUNT: moneyText(annualPriceOf(row, platform), platform.currency),
       DUE_DATE: dateText(stage.due),
       INVOICE_NUMBER: nextInvoiceNumber(row, stage.due),
@@ -503,7 +748,11 @@ async function emailPaid(row, payment) {
     if (!row.get('ownerEmail')) return;
     const { values: platform } = await platformSettings();
     const months = Number(payment.get('months')) || 1;
-    const plan = require('./lib/plans').planFor(platform.plans || [], row.get('plan') || '');
+    const plan = require('./lib/plans').planFor(
+      platform.plans || [],
+      payment.get('plan') || require('./lib/limits').planOf(row),
+    );
+    const upgrade = payment.get('kind') === 'upgrade';
     const reference = payment.get('reference') || '';
     await require('./platformEmail').emailOwner(
       row,
@@ -511,7 +760,11 @@ async function emailPaid(row, payment) {
       {
         PLAN_NAME: plan.name,
         AMOUNT: moneyText(payment.get('amount'), payment.get('currency') || platform.currency),
-        PERIOD: months === 12 ? '1 year' : `${months} month${months === 1 ? '' : 's'}`,
+        PERIOD: upgrade
+          ? `Upgrade to ${plan.name} for the days left`
+          : months === 12
+            ? '1 year'
+            : `${months} month${months === 1 ? '' : 's'}`,
         PAID_UNTIL: dateText(payment.get('periodEnd')),
         INVOICE_NUMBER: invoiceNumber(row, payment.id),
         REFERENCE: reference || '—',
@@ -535,7 +788,7 @@ async function notifyBilling(row, platform) {
   const until = access.until;
   if (!until) return 0;
   const left = Math.ceil((until.getTime() - Date.now()) / DAY);
-  const price = `${platform.currency} ${priceOf(row, platform).toLocaleString('en-US')}`;
+  const price = `${platform.currency} ${priceOf(row, platform, renewalPlanOf(row, platform)).toLocaleString('en-US')}`;
   const day = until.toISOString().slice(0, 10);
   if ((access.status === 'trial' || access.status === 'active') && left <= REMIND_DAYS)
     return tell({

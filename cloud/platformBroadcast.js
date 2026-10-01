@@ -37,7 +37,7 @@ async function recipients(audience) {
   query.notEqualTo('suspended', true);
   const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
   const chosen = rows.filter((row) => {
-    if (audience.plan && (row.get('plan') || '') !== audience.plan) return false;
+    if (audience.plan && require('./lib/limits').planOf(row) !== audience.plan) return false;
     if (audience.status === 'all') return true;
     return accessOf(row, platform.graceDays).status === audience.status;
   });

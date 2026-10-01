@@ -12,6 +12,9 @@ export type ReceiptPayment = {
   amount: number;
   currency: string;
   months: number;
+  // An upgrade (months 0) and the plan paid for, when known.
+  kind?: 'period' | 'upgrade';
+  planName?: string;
   method: 'iotec' | 'manual';
   payer: string;
   reference: string;
@@ -30,6 +33,9 @@ export type InvoiceDoc = {
   issuedAt: string;
   dueAt: string | null;
   months: number;
+  // An upgrade (months 0) and the plan paid for, when known.
+  kind?: 'period' | 'upgrade';
+  planName?: string;
   amount: number;
   currency: string;
   periodStart: string | null;
@@ -71,6 +77,9 @@ type Doc = {
   dueAt: string | null;
   paidAt: string | null;
   months: number;
+  // An upgrade (months 0) and the plan paid for, when known.
+  payKind?: 'period' | 'upgrade';
+  planName?: string;
   amount: number;
   currency: string;
   periodStart: string | null;
@@ -142,14 +151,18 @@ function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
     Boolean,
   ) as string[];
 
+  const upgrade = doc.payKind === 'upgrade';
   const year = doc.months === 12;
-  const plan = restaurant.planName ? `Relay ${restaurant.planName} plan` : 'Relay subscription';
-  const description = `${plan}${year ? ', paid yearly' : ''}`;
-  const qty = year ? '1' : String(doc.months);
+  const planName = doc.planName || restaurant.planName;
+  const plan = planName ? `Relay ${planName} plan` : 'Relay subscription';
+  const description = upgrade
+    ? `Upgrade to ${plan}, for the days left`
+    : `${plan}${year ? ', paid yearly' : ''}`;
+  const qty = year || upgrade ? '1' : String(doc.months);
   // The item at its full price; a sign-up code comes off in the totals.
   const discount = doc.discount || 0;
   const full = doc.amount + discount;
-  const unit = year ? full : Math.round(full / Math.max(1, doc.months));
+  const unit = year || upgrade ? full : Math.round(full / Math.max(1, doc.months));
   const period =
     doc.periodStart && doc.periodEnd
       ? `${formatDate(doc.periodStart, timeZone, { dateStyle: 'medium' })} – ${formatDate(
@@ -158,7 +171,7 @@ function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
           { dateStyle: 'medium' },
         )}`
       : '';
-  const unitLabel = year ? 'a year' : 'a month';
+  const unitLabel = upgrade ? 'the difference' : year ? 'a year' : 'a month';
 
   const statusLabel = paid ? 'PAID' : doc.status === 'overdue' ? 'OVERDUE' : 'DUE';
   const headline = paid
@@ -250,6 +263,8 @@ export function printSubscriptionReceipt(
         dueAt: null,
         paidAt: payment.paidAt,
         months: payment.months,
+        payKind: payment.kind,
+        planName: payment.planName,
         amount: payment.amount,
         discount: payment.discount || 0,
         discountCode: payment.discountCode || '',
@@ -280,6 +295,8 @@ export function printSubscriptionInvoice(
         dueAt: invoice.dueAt,
         paidAt: invoice.status === 'paid' ? invoice.issuedAt : null,
         months: invoice.months,
+        payKind: invoice.kind,
+        planName: invoice.planName,
         amount: invoice.amount,
         discount: invoice.discount || 0,
         discountCode: invoice.discountCode || '',

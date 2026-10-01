@@ -514,6 +514,12 @@ const SCHEMAS = {
     // (offers.js). Cleared by the first payment.
     payFirst: B,
     offer: 'Object',
+    // Who referred this restaurant (its id), and the free months they got.
+    referredBy: S,
+    referralCredit: 'Object',
+    // A smaller plan chosen for the next period, from the date it starts.
+    nextPlan: S,
+    nextPlanFrom: D,
   },
   SubscriptionPayment: {
     amount: N,
@@ -535,6 +541,10 @@ const SCHEMAS = {
     listAmount: N,
     discount: N,
     discountCode: S,
+    // period (extends the paid date) | upgrade (the difference for the days
+    // left), and the plan it is for.
+    kind: S,
+    plan: S,
   },
   // Relay Hosted plans (lib/plans.js).
   Plan: {

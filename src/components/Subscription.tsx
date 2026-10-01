@@ -208,14 +208,94 @@ export function PlanCard({
 // The owner: the plans on offer and a switch between them. Moving to a
 // smaller plan needs the restaurant within its limits (the server says what
 // is over).
-export function PlanPicker() {
-  const { profile, refresh } = useSession();
-  const r = profile?.restaurant;
+// The plans, with what each one's button does now:
+// - a bigger plan while a paid period runs: Upgrade, paying the difference for
+//   the days left (the plan changes when that payment succeeds);
+// - a bigger or any plan with nothing paid running (trial, grace, closed):
+//   pay a period on it;
+// - a smaller plan: switch when the paid period (or trial) ends.
+export function PlanPicker({
+  billing,
+  onUpgrade,
+  onPayOn,
+  onChanged,
+}: {
+  billing: Billing | null;
+  onUpgrade: (plan: string) => void;
+  onPayOn: (plan: string) => void;
+  onChanged: () => void;
+}) {
+  const { config, refresh } = useSession();
   const offered = useOfferedPlans();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [cycle, setCycle] = useState<Cycle>('month');
-  if (!r || !offered) return null;
+  const state = billing?.plan;
+  if (!offered || !state) return null;
+  const money = (n: number) => formatMoney(n, offered.currency);
+  const day = (value: string | null) => formatDate(value, config.timezone, { dateStyle: 'medium' });
+  const currentPrice = offered.plans.find((p) => p.key === state.current)?.price ?? 0;
+  const ends = billing?.restaurant.until || null;
+  const change = async (plan: OfferedPlan, confirm?: string) => {
+    if (confirm && !window.confirm(confirm)) return;
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('changePlan', { plan: plan.key });
+      await refresh();
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change the plan');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const actionFor = (plan: OfferedPlan) => {
+    if (state.negotiated) return null;
+    if (plan.key === state.current)
+      return state.renewal !== state.current ? (
+        <button disabled={busy} onClick={() => void change(plan)}>
+          Keep {plan.name}
+        </button>
+      ) : null;
+    if (plan.price > currentPrice) {
+      const quote = state.upgrades[plan.key];
+      if (quote)
+        return (
+          <button disabled={busy} onClick={() => onUpgrade(plan.key)}>
+            Upgrade now · pay {money(quote.amount)}
+          </button>
+        );
+      return (
+        <button disabled={busy} onClick={() => onPayOn(plan.key)}>
+          Pay for {plan.name}
+        </button>
+      );
+    }
+    if (plan.key === state.renewal)
+      return <p className="plan-note">Starts {day(state.renewalFrom)}</p>;
+    if (state.choosePlanWhenPaying && billing?.restaurant.status !== 'trial')
+      return (
+        <button disabled={busy} onClick={() => onPayOn(plan.key)}>
+          Pay for {plan.name}
+        </button>
+      );
+    return (
+      <button
+        disabled={busy}
+        onClick={() =>
+          void change(
+            plan,
+            `Move to ${plan.name} when your ${
+              billing?.restaurant.status === 'trial' ? 'trial' : 'paid period'
+            } ends on ${day(ends)}? Until then you keep ${state.currentName}.`,
+          )
+        }
+      >
+        Switch on {day(ends)}
+      </button>
+    );
+  };
   return (
     <div className="plan-picker">
       <CycleToggle cycle={cycle} onChange={setCycle} />
@@ -225,32 +305,17 @@ export function PlanPicker() {
           plan={plan}
           currency={offered.currency}
           cycle={cycle}
-          current={plan.key === r.plan}
-          action={
-            <button
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                setError('');
-                try {
-                  await Parse.Cloud.run('changePlan', { plan: plan.key });
-                  await refresh();
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : 'Could not change the plan');
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Switch to {plan.name}
-            </button>
-          }
+          current={plan.key === state.current}
+          action={actionFor(plan)}
         />
       ))}
       {error && <p className="form-error">{error}</p>}
       <p className="muted small">
-        A negotiated price stays as agreed. The new plan&apos;s price applies from your next
-        payment.
+        {state.negotiated
+          ? 'Your price was agreed with Relay: contact Relay to change plan.'
+          : state.renewal !== state.current
+            ? `You move to ${state.renewalName} on ${day(state.renewalFrom)}; until then you keep ${state.currentName}.`
+            : 'Moving up while a paid period runs costs only the difference for the days left, and the plan changes once it is paid. Moving down starts when your paid period ends.'}
       </p>
     </div>
   );
@@ -469,6 +534,8 @@ type Payment = {
   periodStart: string | null;
   periodEnd: string | null;
   paidAt: string | null;
+  kind?: 'period' | 'upgrade';
+  plan?: string;
 };
 export type Invoice = {
   number: string;
@@ -481,6 +548,8 @@ export type Invoice = {
   periodStart: string | null;
   periodEnd: string | null;
   paymentId: string | null;
+  kind?: 'period' | 'upgrade';
+  planName?: string;
   // A first payment with a sign-up code: the price before it.
   listAmount?: number | null;
   discount?: number;
@@ -502,6 +571,40 @@ export type Billing = {
   billingPhone: string;
   months: number[];
   payments: Payment[];
+  // Each plan's period prices, for paying on another plan.
+  planPrices?: Record<string, Record<number, number>>;
+  plan?: PlanState;
+  referrals?: Referrals;
+};
+export type Upgrade = {
+  plan: string;
+  planName: string;
+  amount: number;
+  days: number;
+  until: string;
+  yearly: boolean;
+};
+export type PlanState = {
+  current: string;
+  currentName: string;
+  renewal: string;
+  renewalName: string;
+  renewalFrom: string | null;
+  choosePlanWhenPaying: boolean;
+  negotiated: boolean;
+  upgrades: Record<string, Upgrade>;
+};
+export type Referrals = {
+  code: string;
+  percent: number;
+  months: number;
+  rows: {
+    name: string;
+    signedUpAt: string | null;
+    status: 'rewarded' | 'waiting' | 'trial';
+    months: number;
+    rewardedAt: string | null;
+  }[];
 };
 
 const POLL_MS = 4000;
@@ -513,16 +616,29 @@ export function BillingPanel({
   onClose,
   initialMonths = 1,
   onLoaded,
+  choosePlan,
+  upgradeTo,
+  onUpgradeClose,
+  reloadKey = 0,
 }: {
   onClose?: () => void;
   initialMonths?: number;
   onLoaded?: (billing: Billing) => void;
+  // A plan picked under Plans to pay a period on (no paid period running).
+  choosePlan?: string;
+  // Moving up now: pay the difference for the days left.
+  upgradeTo?: string | null;
+  onUpgradeClose?: () => void;
+  // Changes when the plans change elsewhere, to load again.
+  reloadKey?: number;
 }) {
   const { refresh, config } = useSession();
   const [data, setData] = useState<Billing | null>(null);
   const [months, setMonths] = useState(initialMonths);
   useEffect(() => setMonths(initialMonths), [initialMonths]);
   const [phone, setPhone] = useState('');
+  const [planKey, setPlanKey] = useState('');
+  const offered = useOfferedPlans();
   const [current, setCurrent] = useState<Payment | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -544,7 +660,10 @@ export function BillingPanel({
   useEffect(() => {
     void load();
     return () => window.clearTimeout(timer.current);
-  }, [load]);
+  }, [load, reloadKey]);
+  useEffect(() => {
+    if (choosePlan) setPlanKey(choosePlan);
+  }, [choosePlan]);
 
   // Follows a waiting payment until the phone answers.
   useEffect(() => {
@@ -569,7 +688,32 @@ export function BillingPanel({
     setBusy(true);
     setError('');
     try {
-      setCurrent(await Parse.Cloud.run('startSubscriptionPayment', { months, phone }));
+      setCurrent(
+        await Parse.Cloud.run('startSubscriptionPayment', {
+          months,
+          phone,
+          ...(data?.plan?.choosePlanWhenPaying && planKey ? { plan: planKey } : {}),
+        }),
+      );
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const upgrade = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!upgradeTo) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await Parse.Cloud.run('startPlanUpgrade', { plan: upgradeTo, phone });
+      if (result.upgraded) {
+        await load();
+        await refresh();
+        onUpgradeClose?.();
+      } else setCurrent(result);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -580,8 +724,15 @@ export function BillingPanel({
   if (!data) return <p className="muted">{error || 'Loading…'}</p>;
   const r = data.restaurant;
   const money = (n: number) => formatMoney(n, r.currency);
+  const choosing = !!data.plan?.choosePlanWhenPaying;
+  const chosen = (choosing && planKey) || data.plan?.renewal || '';
   // What the server will charge (12 months: the annual price).
-  const priceOf = (m: number) => data.prices?.[m] ?? r.monthlyPrice * m;
+  const priceOf = (m: number) =>
+    (choosing && planKey ? data.planPrices?.[planKey]?.[m] : undefined) ??
+    data.prices?.[m] ??
+    r.monthlyPrice * m;
+  const quote = upgradeTo ? data.plan?.upgrades?.[upgradeTo] : undefined;
+  const planName = (key: string) => offered?.plans.find((plan) => plan.key === key)?.name || key;
   const day = (value: string | null) => formatDate(value, config.timezone, { dateStyle: 'medium' });
   const contact = r.supportContact ? ` (${r.supportContact})` : '';
   return (
@@ -593,7 +744,9 @@ export function BillingPanel({
         </div>
       ) : current?.status === 'paid' ? (
         <p className="form-success">
-          Paid, thank you. Relay is open until {day(current.periodEnd)}.
+          {current.kind === 'upgrade'
+            ? `Paid, thank you. You are now on ${data.plan?.currentName || 'the new plan'}.`
+            : `Paid, thank you. Relay is open until ${day(current.periodEnd)}.`}
         </p>
       ) : current?.status === 'failed' ? (
         <p className="form-error">
@@ -614,16 +767,74 @@ export function BillingPanel({
           Paying in the app is not switched on yet. Contact Relay{contact} to pay.
         </p>
       ) : (
-        current?.status !== 'pending' && (
+        current?.status !== 'pending' &&
+        (quote ? (
+          <form className="billing-form billing-upgrade" onSubmit={(e) => void upgrade(e)}>
+            <p className="billing-upgrade-note">
+              <b>Move up to {quote.planName} now.</b> You keep the {quote.days} day
+              {quote.days === 1 ? '' : 's'} already paid for (until {day(quote.until)}) and pay only
+              the difference
+              {quote.yearly ? ' at the yearly rate' : ''}: <b>{money(quote.amount)}</b>.{' '}
+              {data.plan?.currentName} stays until the payment goes through.
+            </p>
+            <label className="setup-field">
+              Mobile money number
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete="tel"
+                placeholder="07…"
+              />
+            </label>
+            {error && <p className="form-error">{error}</p>}
+            <div className="billing-actions">
+              <button className="primary-button" disabled={busy}>
+                {busy
+                  ? 'Sending…'
+                  : quote.amount >= 500
+                    ? `Pay ${money(quote.amount)} and upgrade`
+                    : `Upgrade to ${quote.planName}`}
+              </button>
+              <button type="button" className="secondary-button" onClick={onUpgradeClose}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
           <form className="billing-form" onSubmit={(e) => void pay(e)}>
+            {choosing ? (
+              <label className="setup-field">
+                Plan
+                <select value={chosen} onChange={(e) => setPlanKey(e.target.value)}>
+                  {Object.keys(data.planPrices || {}).map((key) => (
+                    <option key={key} value={key}>
+                      {key === data.plan?.current
+                        ? `${data.plan?.currentName} (your plan)`
+                        : planName(key)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              data.plan && (
+                <p className="muted small billing-plan-line">
+                  On {data.plan.renewalName}
+                  {data.plan.renewalFrom
+                    ? ` from ${day(data.plan.renewalFrom)} (until then ${data.plan.currentName})`
+                    : ''}
+                  . Change the plan under Plans.
+                </p>
+              )
+            )}
             <label className="setup-field">
               Pay for
               <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
                 {data.months.map((m) => (
                   <option key={m} value={m}>
                     {m === 12 ? '1 year' : `${m} month${m === 1 ? '' : 's'}`} · {money(priceOf(m))}
-                    {r.monthlyPrice * m > priceOf(m)
-                      ? ` (save ${money(r.monthlyPrice * m - priceOf(m))})`
+                    {priceOf(1) * m > priceOf(m)
+                      ? ` (save ${money(priceOf(1) * m - priceOf(m))})`
                       : ''}
                   </option>
                 ))}
@@ -657,7 +868,7 @@ export function BillingPanel({
               </small>
             )}
           </form>
-        )
+        ))
       )}
       {data.payments.length > 0 && (
         <details className="billing-history">

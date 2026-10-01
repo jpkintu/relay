@@ -6,14 +6,15 @@
 const { MASTER } = require('./lib/core');
 const tenancy = require('./lib/tenant');
 const { accessOf } = require('./lib/access');
+const { planOf } = require('./lib/limits');
 const { requirePlatform, platformSettings, priceOf } = require('./restaurants');
 
 const DAY = 86400000;
 const TIME_ZONE = process.env.RELAY_EMAIL_TZ || 'Africa/Kampala';
-const monthKey = (date) =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit' })
-    .format(date)
-    .slice(0, 7);
+// 'YYYY-MM' in Kampala time. Built from date parts, never from formatted
+// text, whose order depends on the server's locale data (Back4App's differs).
+const monthKey = (date) => require('./lib/dates').isoDay(date, TIME_ZONE).slice(0, 7);
+const validDate = (value) => value instanceof Date && !Number.isNaN(value.getTime());
 // The last `count` months, oldest first, as YYYY-MM.
 function lastMonths(count, now = new Date()) {
   const [year, month] = monthKey(now).split('-').map(Number);
@@ -45,7 +46,8 @@ Parse.Cloud.define('platformRevenue', async (request) => {
     const amount = Number(payment.get('amount')) || 0;
     allTime += amount;
     everPaid.add(payment.get('tenant')?.id);
-    const key = monthKey(payment.get('paidAt') || payment.createdAt);
+    const when = validDate(payment.get('paidAt')) ? payment.get('paidAt') : payment.createdAt;
+    const key = validDate(when) ? monthKey(when) : '';
     if (byMonth[key]) {
       byMonth[key].amount += amount;
       byMonth[key].payments += 1;
@@ -67,27 +69,31 @@ Parse.Cloud.define('platformRevenue', async (request) => {
       id: row.id,
       name: row.get('name'),
       code: row.get('code'),
-      plan: planName[row.get('plan')] || row.get('plan') || '',
+      plan: planName[planOf(row)] || planOf(row),
       amount: price,
     };
     const paying = access.status === 'active' || access.status === 'past_due';
     if (paying) {
       mrr += price;
-      const key = row.get('plan') || '';
+      const key = planOf(row);
       plans[key] = plans[key] || { name: base.plan, restaurants: 0, mrr: 0 };
       plans[key].restaurants += 1;
       plans[key].mrr += price;
     }
     const trialEnd = row.get('trialEndsAt')?.getTime() || 0;
     if (everPaid.has(row.id) || (trialEnd && trialEnd < now)) trialEnded += 1;
-    const until = access.until?.getTime() || 0;
-    if ((access.status === 'trial' || access.status === 'active') && until - now <= 30 * DAY)
+    const until = validDate(access.until) ? access.until.getTime() : 0;
+    if (
+      until &&
+      (access.status === 'trial' || access.status === 'active') &&
+      until - now <= 30 * DAY
+    )
       upcoming.push({
         ...base,
         kind: access.status === 'trial' ? 'trial_ends' : 'renewal',
         dueAt: new Date(until).toISOString(),
       });
-    if (access.status === 'past_due')
+    if (until && access.status === 'past_due')
       overdue.push({
         ...base,
         dueAt: new Date(until - Number(platform.graceDays || 0) * DAY).toISOString(),

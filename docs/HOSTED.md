@@ -274,6 +274,42 @@ with a negotiated monthly price pays 10 of those months for a year.
 3. Platform console → Platform settings: your price, currency (UGX), trial and
    grace days and the support contact.
 
+## Changing plan
+
+The plan in force and the plan of the next paid period can differ
+(`Restaurant.nextPlan` from `nextPlanFrom`; `lib/limits.js` `planOf` /
+`renewalPlanOf`):
+
+- **Moving up while a paid period runs** (`startPlanUpgrade { plan, phone }`):
+  the owner pays only the difference for the days left, at the yearly rate
+  when the running period was paid as a year:
+  (new rate − current rate) × days left ÷ (365 / 12), rounded up to 100. The
+  paid-until date stays. The plan (and its limits and parts of the app)
+  changes once that payment succeeds; until then the current plan stays. Under
+  UGX 500 (a few days left) the plan changes at once without a payment.
+- **Moving up from the trial, or with no paid period running** (grace days,
+  closed): pay a period on the bigger plan (`startSubscriptionPayment {
+months, phone, plan }`); the plan changes when it is paid.
+- **Moving down** (`changePlan { plan }`): only from the next period. The
+  current plan stays until the paid period (or trial) ends; the next period
+  is priced on the smaller plan. Choosing the current plan again cancels it.
+  The restaurant must fit the smaller plan's limits.
+- A price agreed with Relay (`priceOverride`) changes plan through Relay only;
+  platform staff changing the plan in the console apply it at once.
+
+Each payment records `kind` (period | upgrade) and `plan`; upgrade invoices
+and receipts read "Upgrade to … for the days left".
+
+## Referrals in Billing
+
+Admin → Billing → **Refer a restaurant** shows the restaurant's code, a
+**Refer** button (the phone's share sheet, or WhatsApp) and **Copy link**
+(`/?ref=code` opens the sign-up page on Pay now with the code applied), the
+terms (the referral discount and reward from Platform settings, only when
+paying now, once per restaurant, none if they switch to the trial), and the
+restaurants that used the code: rewarded (with the months and date), not paid
+yet, or chose the trial (`Restaurant.referredBy`, `referralCredit`).
+
 ## Codes: pay now with a discount or referral
 
 Sign-up offers two starts: the **free trial** (no code) or **Pay now**. Only

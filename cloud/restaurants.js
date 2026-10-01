@@ -61,22 +61,29 @@ async function cachedPlatform() {
 // What a restaurant pays each month: its own (negotiated) price when you set
 // one, else its plan's price.
 const planOfRow = (row, platform) =>
-  require('./lib/plans').planFor(platform.plans || [], row.get('plan') || '');
-const priceOf = (row, platform) => {
+  require('./lib/plans').planFor(platform.plans || [], require('./lib/limits').planOf(row));
+// The plan the next paid period is on (a scheduled smaller plan, else the
+// current one).
+const renewalPlanOf = (row, platform) =>
+  require('./lib/plans').planFor(platform.plans || [], require('./lib/limits').renewalPlanOf(row));
+const priceOf = (row, platform, plan = planOfRow(row, platform)) => {
   const own = row.get('priceOverride');
   if (typeof own === 'number' && own >= 0) return own;
-  return planOfRow(row, platform).price;
+  return plan.price;
 };
 // A year paid at once: a negotiated monthly price gets the same two months
 // free; otherwise the plan's annual price.
-const annualPriceOf = (row, platform) => {
+const annualPriceOf = (row, platform, plan = planOfRow(row, platform)) => {
   const own = row.get('priceOverride');
   if (typeof own === 'number' && own >= 0) return require('./lib/plans').annualOf(own, null);
-  return planOfRow(row, platform).annualPrice;
+  return plan.annualPrice;
 };
-// What `months` cost: 12 months is the annual price, others the monthly one.
-const amountFor = (row, platform, months) =>
-  Number(months) === 12 ? annualPriceOf(row, platform) : priceOf(row, platform) * Number(months);
+// What `months` of a period cost on `plan` (default: the plan the next period
+// is on): 12 months is the annual price, others the monthly one.
+const amountFor = (row, platform, months, plan = renewalPlanOf(row, platform)) =>
+  Number(months) === 12
+    ? annualPriceOf(row, platform, plan)
+    : priceOf(row, platform, plan) * Number(months);
 
 // Functions an expired or suspended restaurant can still use: sign-in
 // details, the profile (which says why the app is closed), changing one's
@@ -222,6 +229,7 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     trialEndsAt: payNow ? new Date() : new Date(Date.now() + Number(platform.trialDays) * 86400000),
     payFirst: payNow,
     ...(offer ? { offer } : {}),
+    ...(offer?.type === 'referral' ? { referredBy: offer.referrerId } : {}),
     ownerName,
     ownerEmail,
     billingPhone: phone,
@@ -506,6 +514,9 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     const { values: platform } = await platformSettings();
     if (!platform.plans.some((x) => x.key === p.plan)) throw invalid('Unknown plan');
     row.set('plan', p.plan);
+    // Platform staff change the plan at once; a scheduled move is dropped.
+    row.unset('nextPlan');
+    row.unset('nextPlanFrom');
   }
   if ('priceOverride' in p) {
     if (p.priceOverride === null || p.priceOverride === '') row.unset('priceOverride');
@@ -683,12 +694,14 @@ Parse.Cloud.define('platformListPlans', async (request) => {
   await requirePlatform(request);
   const { values: platform } = await platformSettings();
   const restaurants = await tenancy.withoutTenant(() =>
-    new Parse.Query('Restaurant').select('plan').findAll({ ...MASTER, batchSize: 500 }),
+    new Parse.Query('Restaurant')
+      .select('plan', 'nextPlan', 'nextPlanFrom')
+      .findAll({ ...MASTER, batchSize: 500 }),
   );
   const planFor = require('./lib/plans').planFor;
   const counts = {};
   for (const row of restaurants) {
-    const key = planFor(platform.plans, row.get('plan') || '').key;
+    const key = planFor(platform.plans, require('./lib/limits').planOf(row)).key;
     counts[key] = (counts[key] || 0) + 1;
   }
   const { FEATURES, LIMITS } = require('./lib/plans');
@@ -811,6 +824,8 @@ module.exports = {
   priceOf,
   annualPriceOf,
   amountFor,
+  planOfRow,
+  renewalPlanOf,
   checkAccess,
   isPlatform,
   accessOf,

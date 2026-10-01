@@ -54,6 +54,14 @@ const STATUS: Record<RestaurantSummary['status'], string> = {
   expired: 'Expired',
   suspended: 'Suspended',
 };
+type Tab = 'dashboard' | 'restaurants' | 'plans' | 'messages' | 'settings';
+const TABS: [Tab, string][] = [
+  ['dashboard', 'Dashboard'],
+  ['restaurants', 'Restaurants'],
+  ['plans', 'Plans & codes'],
+  ['messages', 'Email & WhatsApp'],
+  ['settings', 'Settings & errors'],
+];
 const TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const day = (value: string | null) => formatDate(value, TIMEZONE, { dateStyle: 'medium' });
 // <input type="date"> works in local days; the server stores the end of that day.
@@ -73,6 +81,15 @@ export function PlatformConsole() {
   const [changes, setChanges] = useState<Change[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  // Console sections, remembered in the address (#restaurants…).
+  const [tab, setTab] = useState<Tab>(() => {
+    const hash = window.location.hash.slice(1) as Tab;
+    return TABS.some(([key]) => key === hash) ? hash : 'dashboard';
+  });
+  const openTab = (key: Tab) => {
+    setTab(key);
+    window.history.replaceState(null, '', `#${key}`);
+  };
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -124,171 +141,206 @@ export function PlatformConsole() {
       </header>
       <main className="platform-main">
         {error && <p className="form-error">{error}</p>}
-        <PlatformRevenue timeZone={TIMEZONE} />
+        <nav className="platform-tabs" aria-label="Console sections">
+          {TABS.map(([key, label]) => (
+            <button
+              key={key}
+              className={tab === key ? 'active' : ''}
+              aria-current={tab === key ? 'page' : undefined}
+              onClick={() => openTab(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
 
-        <section className="admin-panel">
-          <div className="panel-title">
-            <h2>Restaurants</h2>
-          </div>
-          <input
-            className="platform-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by name, code, owner or phone"
-            aria-label="Search restaurants"
-          />
-          {!rows ? (
-            <p className="section-loading">Loading…</p>
-          ) : shown.length === 0 ? (
-            <p className="muted">No restaurants{query ? ' match' : ' yet'}.</p>
-          ) : (
-            <div className="table-scroll">
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Restaurant</th>
-                    <th>Owner</th>
-                    <th>Status</th>
-                    <th>Until</th>
-                    <th className="num">Price</th>
-                    <th className="num">Staff</th>
-                    <th className="num">Orders (30 days)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shown.map((r) => (
-                    <tr
-                      key={r.id}
-                      className={`clickable${r.id === selected ? ' selected' : ''}`}
-                      tabIndex={0}
-                      title="Open the restaurant"
-                      onClick={() => setSelected(r.id)}
-                      onKeyDown={(e) => e.key === 'Enter' && setSelected(r.id)}
-                    >
-                      <td>
-                        <b>{r.name}</b>
-                        <small className="cell-sub">{r.code}</small>
-                      </td>
-                      <td>
-                        {r.ownerName}
-                        <small className="cell-sub">
-                          {[r.billingPhone, r.ownerEmail].filter(Boolean).join(' · ')}
-                        </small>
-                      </td>
-                      <td>
-                        <span className={`status-pill status-${r.status}`}>{STATUS[r.status]}</span>
-                      </td>
-                      <td>
-                        {day(r.until)}
-                        {r.usable && r.until && (
-                          <small className="cell-sub">{daysLeft(r.until)} days left</small>
-                        )}
-                      </td>
-                      <td className="num">
-                        {formatMoney(r.monthlyPrice, r.currency)}
-                        <small className="cell-sub">
-                          {r.planName || r.plan}
-                          {r.priceOverride !== null && ' · own price'}
-                        </small>
-                      </td>
-                      <td className="num">{r.staff}</td>
-                      <td className="num">{r.orders30}</td>
-                    </tr>
+        {tab === 'dashboard' && (
+          <>
+            <PlatformRevenue timeZone={TIMEZONE} />
+          </>
+        )}
+
+        {tab === 'restaurants' && (
+          <>
+            <section className="admin-panel">
+              <div className="panel-title">
+                <h2>Restaurants</h2>
+              </div>
+              <input
+                className="platform-search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search by name, code, owner or phone"
+                aria-label="Search restaurants"
+              />
+              {!rows ? (
+                <p className="section-loading">Loading…</p>
+              ) : shown.length === 0 ? (
+                <p className="muted">No restaurants{query ? ' match' : ' yet'}.</p>
+              ) : (
+                <div className="table-scroll">
+                  <table className="data">
+                    <thead>
+                      <tr>
+                        <th>Restaurant</th>
+                        <th>Owner</th>
+                        <th>Status</th>
+                        <th>Until</th>
+                        <th className="num">Price</th>
+                        <th className="num">Staff</th>
+                        <th className="num">Orders (30 days)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shown.map((r) => (
+                        <tr
+                          key={r.id}
+                          className={`clickable${r.id === selected ? ' selected' : ''}`}
+                          tabIndex={0}
+                          title="Open the restaurant"
+                          onClick={() => setSelected(r.id)}
+                          onKeyDown={(e) => e.key === 'Enter' && setSelected(r.id)}
+                        >
+                          <td>
+                            <b>{r.name}</b>
+                            <small className="cell-sub">{r.code}</small>
+                          </td>
+                          <td>
+                            {r.ownerName}
+                            <small className="cell-sub">
+                              {[r.billingPhone, r.ownerEmail].filter(Boolean).join(' · ')}
+                            </small>
+                          </td>
+                          <td>
+                            <span className={`status-pill status-${r.status}`}>
+                              {STATUS[r.status]}
+                            </span>
+                          </td>
+                          <td>
+                            {day(r.until)}
+                            {r.usable && r.until && (
+                              <small className="cell-sub">{daysLeft(r.until)} days left</small>
+                            )}
+                          </td>
+                          <td className="num">
+                            {formatMoney(r.monthlyPrice, r.currency)}
+                            <small className="cell-sub">
+                              {r.planName || r.plan}
+                              {r.priceOverride !== null && ' · own price'}
+                            </small>
+                          </td>
+                          <td className="num">{r.staff}</td>
+                          <td className="num">{r.orders30}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            {current && settings && (
+              <RestaurantEditor
+                key={current.id}
+                row={current}
+                settings={settings}
+                onSaved={(next) => {
+                  setRows((all) => (all || []).map((r) => (r.id === next.id ? next : r)));
+                  void load();
+                }}
+                onClose={() => setSelected(null)}
+              />
+            )}
+          </>
+        )}
+
+        {tab === 'plans' && (
+          <>
+            <PlatformPlans onChanged={() => void load()} />
+
+            {settings && (
+              <PlatformDiscounts
+                currency={settings.currency}
+                timeZone={TIMEZONE}
+                referralPercent={settings.referralPercent}
+                referralMonths={settings.referralMonths}
+              />
+            )}
+          </>
+        )}
+
+        {tab === 'messages' && (
+          <>
+            <PlatformEmail />
+
+            {settings && <PlatformBroadcast plans={settings.plans} timeZone={TIMEZONE} />}
+
+            <PlatformWhatsApp />
+          </>
+        )}
+
+        {tab === 'settings' && (
+          <>
+            {settings && (
+              <SettingsForm
+                settings={settings}
+                onSaved={(next) => {
+                  setSettings(next);
+                  void load();
+                }}
+              />
+            )}
+
+            <ApplySecurity onDone={() => void load()} />
+
+            <section className="admin-panel">
+              <div className="panel-title">
+                <h2>Errors</h2>
+              </div>
+              <AdminErrors platform />
+            </section>
+
+            <section className="admin-panel">
+              <div className="panel-title">
+                <h2>Recent changes</h2>
+              </div>
+              {changes.length === 0 ? (
+                <p className="muted">Nothing changed yet.</p>
+              ) : (
+                <ul className="platform-changes">
+                  {changes.slice(0, 30).map((c) => (
+                    <li key={`${c.at}-${c.entityId}`}>
+                      <span>{formatDate(c.at, TIMEZONE)}</span>
+                      <span>
+                        <b>{c.by}</b>{' '}
+                        {c.action === 'platform.errors_resolved'
+                          ? `marked ${String(c.after.count ?? '')} error(s) fixed in ${String(c.after.restaurants ?? '')} place(s)`
+                          : c.action === 'platform.settings_saved'
+                            ? 'changed the platform settings'
+                            : c.action === 'platform.security_applied'
+                              ? `applied the security rules for all restaurants (${String(c.after.restaurants ?? '')})`
+                              : c.action === 'platform.payment_recorded'
+                                ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
+                                    Number(c.after.amount) || 0,
+                                    currency,
+                                  )} for ${String(c.after.months)} month(s)${
+                                    c.after.reference ? ` (${String(c.after.reference)})` : ''
+                                  }`
+                                : c.action === 'platform.broadcast_sent'
+                                  ? `emailed ${String(c.after.total ?? '')} owners: “${String(c.after.subject ?? '')}”`
+                                  : `changed ${names.get(c.entityId) || 'a restaurant'}`}
+                        {c.action === 'platform.restaurant_updated' ||
+                        c.action === 'platform.settings_saved'
+                          ? describe(c)
+                          : ''}
+                      </span>
+                    </li>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        {current && settings && (
-          <RestaurantEditor
-            key={current.id}
-            row={current}
-            settings={settings}
-            onSaved={(next) => {
-              setRows((all) => (all || []).map((r) => (r.id === next.id ? next : r)));
-              void load();
-            }}
-            onClose={() => setSelected(null)}
-          />
+                </ul>
+              )}
+            </section>
+          </>
         )}
-
-        <PlatformPlans onChanged={() => void load()} />
-
-        {settings && (
-          <PlatformDiscounts
-            currency={settings.currency}
-            timeZone={TIMEZONE}
-            referralPercent={settings.referralPercent}
-            referralMonths={settings.referralMonths}
-          />
-        )}
-
-        {settings && (
-          <SettingsForm
-            settings={settings}
-            onSaved={(next) => {
-              setSettings(next);
-              void load();
-            }}
-          />
-        )}
-
-        <PlatformEmail />
-
-        {settings && <PlatformBroadcast plans={settings.plans} timeZone={TIMEZONE} />}
-
-        <PlatformWhatsApp />
-
-        <ApplySecurity onDone={() => void load()} />
-
-        <section className="admin-panel">
-          <div className="panel-title">
-            <h2>Errors</h2>
-          </div>
-          <AdminErrors platform />
-        </section>
-
-        <section className="admin-panel">
-          <div className="panel-title">
-            <h2>Recent changes</h2>
-          </div>
-          {changes.length === 0 ? (
-            <p className="muted">Nothing changed yet.</p>
-          ) : (
-            <ul className="platform-changes">
-              {changes.slice(0, 30).map((c) => (
-                <li key={`${c.at}-${c.entityId}`}>
-                  <span>{formatDate(c.at, TIMEZONE)}</span>
-                  <span>
-                    <b>{c.by}</b>{' '}
-                    {c.action === 'platform.errors_resolved'
-                      ? `marked ${String(c.after.count ?? '')} error(s) fixed in ${String(c.after.restaurants ?? '')} place(s)`
-                      : c.action === 'platform.settings_saved'
-                        ? 'changed the platform settings'
-                        : c.action === 'platform.security_applied'
-                          ? `applied the security rules for all restaurants (${String(c.after.restaurants ?? '')})`
-                          : c.action === 'platform.payment_recorded'
-                            ? `recorded a payment from ${names.get(c.entityId) || 'a restaurant'}: ${formatMoney(
-                                Number(c.after.amount) || 0,
-                                currency,
-                              )} for ${String(c.after.months)} month(s)${
-                                c.after.reference ? ` (${String(c.after.reference)})` : ''
-                              }`
-                            : c.action === 'platform.broadcast_sent'
-                              ? `emailed ${String(c.after.total ?? '')} owners: “${String(c.after.subject ?? '')}”`
-                              : `changed ${names.get(c.entityId) || 'a restaurant'}`}
-                    {c.action === 'platform.restaurant_updated' ||
-                    c.action === 'platform.settings_saved'
-                      ? describe(c)
-                      : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
       </main>
     </div>
   );

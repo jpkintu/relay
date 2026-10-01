@@ -95,8 +95,9 @@ async function currentOffer(row) {
 }
 
 // What `months` cost a restaurant now: { list, discount, amount, code }.
-async function priceFor(row, platform, months, offer) {
-  const list = amountFor(row, platform, months);
+// `plan`: the plan the period is on (default: the renewal plan).
+async function priceFor(row, platform, months, offer, plan) {
+  const list = amountFor(row, platform, months, plan);
   const using = offer === undefined ? await currentOffer(row) : offer;
   const discount = discountFor(using, list, months, MIN_AMOUNT);
   return { list, discount, amount: list - discount, code: discount ? using.code : '' };
@@ -112,9 +113,17 @@ async function pricesFor(row, platform) {
     prices[months] = price.amount;
     list[months] = price.list;
   }
+  // Each plan's periods (paying on another plan when no paid period runs).
+  const planPrices = {};
+  for (const plan of (platform.plans || []).filter((x) => x.active)) {
+    planPrices[plan.key] = {};
+    for (const months of MONTHS)
+      planPrices[plan.key][months] = (await priceFor(row, platform, months, offer, plan)).amount;
+  }
   return {
     prices,
     listPrices: list,
+    planPrices,
     offer: offer
       ? {
           code: offer.code,
@@ -161,6 +170,8 @@ async function offerUsed(row, payment, offer) {
     await tenancy.withoutTenant(() => referrer.save(null, MASTER));
     tenancy.clearCache();
     const monthsText = `${months} month${months === 1 ? '' : 's'}`;
+    row.set('referralCredit', { months, at: new Date().toISOString(), until: until.toISOString() });
+    await tenancy.withoutTenant(() => row.save(null, MASTER));
     await tenancy.runAs(
       referrer.id,
       async () => {

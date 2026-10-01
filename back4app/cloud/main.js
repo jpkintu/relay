@@ -827,6 +827,97 @@ var require_plans = __commonJS({
   }
 });
 
+// cloud/lib/limits.js
+var require_limits = __commonJS({
+  "cloud/lib/limits.js"(exports2, module2) {
+    "use strict";
+    var { loadPlans, planFor } = require_plans();
+    var MASTER = { useMasterKey: true };
+    var ALL = {
+      branches: true,
+      finance: true,
+      accounting: true,
+      reports: true,
+      efris: true,
+      whatsapp: true
+    };
+    function planOf(row, now = Date.now()) {
+      const next = row?.get("nextPlan");
+      const from = row?.get("nextPlanFrom");
+      if (next && from instanceof Date && from.getTime() <= now) return next;
+      return row?.get("plan") || "";
+    }
+    var renewalPlanOf = (row) => row?.get("nextPlan") || planOf(row);
+    async function platformValues() {
+      return (await require_restaurants().platformSettings()).values;
+    }
+    async function currentPlan() {
+      const tenancy = require_tenant();
+      const tenant = tenancy.current();
+      if (!tenant) return null;
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(tenant, MASTER).catch(() => null)
+      );
+      if (!row) return null;
+      return planFor(await loadPlans(await platformValues()), planOf(row));
+    }
+    var refuse = (message) => new Parse.Error(
+      Parse.Error.OPERATION_FORBIDDEN,
+      `${message} Move to a bigger plan in Subscription \u2192 Plans to add more.`
+    );
+    var plural = (n, word) => `${n} ${word}${n === 1 ? "" : word.endsWith("h") ? "es" : "s"}`;
+    async function checkBranchLimit(count) {
+      const plan = await currentPlan();
+      const max = plan?.limits.branches;
+      if (typeof max === "number" && count > max)
+        throw refuse(`The ${plan.name} plan has ${plural(max, "branch")}.`);
+    }
+    async function activeMembers(role) {
+      const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
+      if (!roleRow) return 0;
+      const users = roleRow.getUsers().query();
+      users.notEqualTo("active", false);
+      return users.count(MASTER);
+    }
+    async function checkMemberLimit(role) {
+      const plan = await currentPlan();
+      const max = plan?.limits[role];
+      if (typeof max !== "number") return;
+      if (max === 0) throw refuse(`The ${plan.name} plan has no ${role} role.`);
+      if (await activeMembers(role) >= max)
+        throw refuse(`The ${plan.name} plan allows ${plural(max, role)}.`);
+    }
+    async function features() {
+      const plan = await currentPlan();
+      return plan ? { ...ALL, ...plan.features } : { ...ALL };
+    }
+    async function overLimits(plan) {
+      const problems = [];
+      const max = plan.limits.branches;
+      if (typeof max === "number") {
+        const branches = await new Parse.Query("Branch").notEqualTo("active", false).count(MASTER);
+        if (branches > max) problems.push(`${branches} open branches (${max} allowed)`);
+      }
+      for (const role of ["cashier", "rider", "finance"]) {
+        const limit = plan.limits[role];
+        if (typeof limit !== "number") continue;
+        const count = await activeMembers(role);
+        if (count > limit) problems.push(`${count} active ${role}s (${limit} allowed)`);
+      }
+      return problems;
+    }
+    module2.exports = {
+      planOf,
+      renewalPlanOf,
+      currentPlan,
+      checkBranchLimit,
+      checkMemberLimit,
+      features,
+      overLimits
+    };
+  }
+});
+
 // cloud/lib/emailTemplates.js
 var require_emailTemplates = __commonJS({
   "cloud/lib/emailTemplates.js"(exports2, module2) {
@@ -27829,83 +27920,6 @@ var require_efrisApi = __commonJS({
   }
 });
 
-// cloud/lib/limits.js
-var require_limits = __commonJS({
-  "cloud/lib/limits.js"(exports2, module2) {
-    "use strict";
-    var { loadPlans, planFor } = require_plans();
-    var MASTER = { useMasterKey: true };
-    var ALL = {
-      branches: true,
-      finance: true,
-      accounting: true,
-      reports: true,
-      efris: true,
-      whatsapp: true
-    };
-    var planOf = (row) => row?.get("plan") || "";
-    async function platformValues() {
-      return (await require_restaurants().platformSettings()).values;
-    }
-    async function currentPlan() {
-      const tenancy = require_tenant();
-      const tenant = tenancy.current();
-      if (!tenant) return null;
-      const row = await tenancy.withoutTenant(
-        () => new Parse.Query("Restaurant").get(tenant, MASTER).catch(() => null)
-      );
-      if (!row) return null;
-      return planFor(await loadPlans(await platformValues()), planOf(row));
-    }
-    var refuse = (message) => new Parse.Error(
-      Parse.Error.OPERATION_FORBIDDEN,
-      `${message} Move to a bigger plan in Subscription \u2192 Plans to add more.`
-    );
-    var plural = (n, word) => `${n} ${word}${n === 1 ? "" : word.endsWith("h") ? "es" : "s"}`;
-    async function checkBranchLimit(count) {
-      const plan = await currentPlan();
-      const max = plan?.limits.branches;
-      if (typeof max === "number" && count > max)
-        throw refuse(`The ${plan.name} plan has ${plural(max, "branch")}.`);
-    }
-    async function activeMembers(role) {
-      const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
-      if (!roleRow) return 0;
-      const users = roleRow.getUsers().query();
-      users.notEqualTo("active", false);
-      return users.count(MASTER);
-    }
-    async function checkMemberLimit(role) {
-      const plan = await currentPlan();
-      const max = plan?.limits[role];
-      if (typeof max !== "number") return;
-      if (max === 0) throw refuse(`The ${plan.name} plan has no ${role} role.`);
-      if (await activeMembers(role) >= max)
-        throw refuse(`The ${plan.name} plan allows ${plural(max, role)}.`);
-    }
-    async function features() {
-      const plan = await currentPlan();
-      return plan ? { ...ALL, ...plan.features } : { ...ALL };
-    }
-    async function overLimits(plan) {
-      const problems = [];
-      const max = plan.limits.branches;
-      if (typeof max === "number") {
-        const branches = await new Parse.Query("Branch").notEqualTo("active", false).count(MASTER);
-        if (branches > max) problems.push(`${branches} open branches (${max} allowed)`);
-      }
-      for (const role of ["cashier", "rider", "finance"]) {
-        const limit = plan.limits[role];
-        if (typeof limit !== "number") continue;
-        const count = await activeMembers(role);
-        if (count > limit) problems.push(`${count} active ${role}s (${limit} allowed)`);
-      }
-      return problems;
-    }
-    module2.exports = { planOf, currentPlan, checkBranchLimit, checkMemberLimit, features, overLimits };
-  }
-});
-
 // cloud/lib/throttle.js
 var require_throttle = __commonJS({
   "cloud/lib/throttle.js"(exports2, module2) {
@@ -31916,6 +31930,8 @@ var require_billing = __commonJS({
       restaurantSummary,
       priceOf,
       annualPriceOf,
+      renewalPlanOf,
+      planOfRow,
       forEachRestaurant
     } = require_restaurants();
     var { dateText, moneyText } = require_emailTemplates();
@@ -31943,24 +31959,51 @@ var require_billing = __commonJS({
         periodStart: row.get("periodStart")?.toISOString() || null,
         periodEnd: row.get("periodEnd")?.toISOString() || null,
         paidAt: row.get("paidAt")?.toISOString() || null,
+        kind: row.get("kind") || "period",
+        plan: row.get("plan") || "",
         listAmount: row.get("listAmount") ?? null,
         discount: row.get("discount") || 0,
         discountCode: row.get("discountCode") || ""
       };
     }
+    function applyPeriodPlan(row, target, start, plans) {
+      const current = require_limits().planOf(row);
+      if (target === current && !row.get("nextPlan")) return;
+      const prices = Object.fromEntries((plans || []).map((plan) => [plan.key, plan.price]));
+      const smaller = (prices[target] ?? 0) < (prices[current] ?? 0);
+      if (smaller && start.getTime() > Date.now()) {
+        row.set({ nextPlan: target, nextPlanFrom: start });
+      } else {
+        row.set("plan", target);
+        row.unset("nextPlan");
+        row.unset("nextPlanFrom");
+      }
+    }
     async function settle(payment, { reference = "", message = "" } = {}) {
       if (!await tenancy.withoutTenant(() => claimOnce(`subscription-payment:${payment.id}`)))
         return payment.fetch(MASTER);
       const row = await restaurantRow(payment.get("tenant").id);
-      const base = new Date(
-        Math.max(
-          Date.now(),
-          row.get("trialEndsAt")?.getTime() || 0,
-          row.get("paidUntil")?.getTime() || 0
-        )
-      );
-      const end = addMonths(base, Number(payment.get("months")) || 1);
-      row.set("paidUntil", end);
+      const target = payment.get("plan") || "";
+      let base;
+      let end;
+      if (payment.get("kind") === "upgrade") {
+        base = /* @__PURE__ */ new Date();
+        end = row.get("paidUntil") || base;
+        row.set("plan", target);
+        row.unset("nextPlan");
+        row.unset("nextPlanFrom");
+      } else {
+        base = new Date(
+          Math.max(
+            Date.now(),
+            row.get("trialEndsAt")?.getTime() || 0,
+            row.get("paidUntil")?.getTime() || 0
+          )
+        );
+        end = addMonths(base, Number(payment.get("months")) || 1);
+        row.set("paidUntil", end);
+        if (target) applyPeriodPlan(row, target, base, (await platformSettings()).values.plans);
+      }
       const offer = row.get("payFirst") === true ? row.get("offer") || null : null;
       if (row.get("payFirst") === true) {
         row.set("payFirst", false);
@@ -32031,7 +32074,10 @@ var require_billing = __commonJS({
         status: "paid",
         issuedAt: (p.get("paidAt") || p.createdAt).toISOString(),
         dueAt: null,
-        months: Number(p.get("months")) || 1,
+        months: p.get("kind") === "upgrade" ? 0 : Number(p.get("months")) || 1,
+        kind: p.get("kind") || "period",
+        // The plan paid for (older payments: none recorded).
+        planName: p.get("plan") ? require_plans().planFor(platform.plans || [], p.get("plan")).name : "",
         amount: Number(p.get("amount")) || 0,
         currency: p.get("currency") || platform.currency,
         periodStart: p.get("periodStart")?.toISOString() || null,
@@ -32056,7 +32102,7 @@ var require_billing = __commonJS({
           issuedAt: new Date(end.getTime() - INVOICE_DAYS * DAY).toISOString(),
           dueAt: end.toISOString(),
           months: 1,
-          amount: priceOf(row, platform),
+          amount: priceOf(row, platform, renewalPlanOf(row, platform)),
           currency: platform.currency,
           periodStart: end.toISOString(),
           periodEnd: addMonths(end, 1).toISOString(),
@@ -32065,6 +32111,42 @@ var require_billing = __commonJS({
       ] : [];
       return [...next, ...paid];
     }
+    async function referralsOf(row, platform) {
+      const rows = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").equalTo("referredBy", row.id).descending("createdAt").limit(200).find(MASTER)
+      ).catch(() => []);
+      return {
+        code: row.get("code"),
+        percent: Number(platform.referralPercent) || 0,
+        months: Number(platform.referralMonths) || 0,
+        rows: rows.map((r) => ({
+          name: r.get("name"),
+          signedUpAt: r.createdAt?.toISOString() || null,
+          // rewarded: paid, free months added; waiting: has not paid yet;
+          // trial: chose the free trial instead (no reward).
+          status: r.get("referralCredit") ? "rewarded" : r.get("payFirst") ? "waiting" : "trial",
+          months: r.get("referralCredit")?.months || 0,
+          rewardedAt: r.get("referralCredit")?.at || null
+        }))
+      };
+    }
+    function planState(row, platform, upgrades) {
+      const current = planOfRow(row, platform);
+      const renewal = renewalPlanOf(row, platform);
+      const access = accessOf(row, platform.graceDays);
+      return {
+        current: current.key,
+        currentName: current.name,
+        renewal: renewal.key,
+        renewalName: renewal.name,
+        renewalFrom: row.get("nextPlan") ? row.get("nextPlanFrom")?.toISOString() || null : null,
+        // While a paid period runs the period plan is fixed (change it under
+        // Plans); otherwise the payment form offers every plan.
+        choosePlanWhenPaying: access.status !== "active" && !negotiated(row),
+        negotiated: negotiated(row),
+        upgrades
+      };
+    }
     async function billingState() {
       for (const payment of await pendingPayments()) await refresh(payment);
       const row = await restaurantRow();
@@ -32072,6 +32154,11 @@ var require_billing = __commonJS({
       const payments = await history(100);
       const priced = await offers().pricesFor(row, platform);
       const invoices = invoicesOf(row, platform, payments);
+      const upgrades = {};
+      for (const plan of platform.plans.filter((x) => x.active)) {
+        const quote = await upgradeQuote(row, platform, plan);
+        if (quote) upgrades[plan.key] = quote;
+      }
       if (priced.offer && invoices[0] && invoices[0].status !== "paid")
         Object.assign(invoices[0], {
           amount: priced.prices[1],
@@ -32083,7 +32170,12 @@ var require_billing = __commonJS({
         restaurant: await restaurantSummary(),
         prices: priced.prices,
         listPrices: priced.listPrices,
+        planPrices: priced.planPrices,
         offer: priced.offer,
+        // Plans: the one in force, the next period's, and what moving up now
+        // costs while a paid period runs.
+        plan: planState(row, platform, upgrades),
+        referrals: await referralsOf(row, platform),
         invoices,
         // False until the ioTec keys are set in the Back4App app.
         payInApp: iotec.configured(),
@@ -32100,37 +32192,48 @@ var require_billing = __commonJS({
     Parse.Cloud.define("changePlan", async (request) => {
       const { user: actor } = await requireRole(request, ["admin"]);
       const limits = require_limits();
+      const { planOfRow: planOfRow2 } = require_restaurants();
       const { values: platform } = await platformSettings();
       const target = platform.plans.find((plan) => plan.active && plan.key === request.params?.plan);
       if (!target) throw invalid("Choose one of the plans on offer");
       const row = await restaurantRow();
-      const before = (await limits.currentPlan())?.key || "";
-      if (before === target.key) throw invalid(`You are on ${target.name} already`);
-      const problems = await limits.overLimits(target);
-      if (problems.length)
-        throw invalid(`${target.name} allows less than you have: ${problems.join(", ")}`);
-      row.set("plan", target.key);
+      if (negotiated(row))
+        throw invalid("Your price was agreed with Relay. Contact Relay to change plan");
+      const current = planOfRow2(row, platform);
+      const before = { plan: current.key, nextPlan: row.get("nextPlan") || "" };
+      if (target.key === current.key) {
+        if (!row.get("nextPlan")) throw invalid(`You are on ${target.name} already`);
+        row.unset("nextPlan");
+        row.unset("nextPlanFrom");
+      } else if (target.price > current.price) {
+        throw invalid(`Moving up to ${target.name} is paid: use Upgrade`);
+      } else {
+        const access = accessOf(row, platform.graceDays);
+        if (access.status !== "active" && access.status !== "trial")
+          throw invalid(`Choose ${target.name} when you pay your next period`);
+        const problems = await limits.overLimits(target);
+        if (problems.length)
+          throw invalid(`${target.name} allows less than you have: ${problems.join(", ")}`);
+        row.set({ nextPlan: target.key, nextPlanFrom: access.until });
+      }
       await tenancy.withoutTenant(() => row.save(null, MASTER));
-      await audit(actor, "subscription.plan_changed", row, { plan: before }, { plan: target.key });
+      await audit(actor, "subscription.plan_changed", row, before, {
+        plan: current.key,
+        nextPlan: row.get("nextPlan") || ""
+      });
       return billingState();
     });
-    Parse.Cloud.define("startSubscriptionPayment", async (request) => {
-      const { user } = await requireRole(request, ["admin"]);
-      const p = request.params || {};
-      const { values: platform } = await platformSettings();
-      if (!iotec.configured())
-        throw invalid(
-          `Paying in the app is not switched on yet. Contact Relay${platform.supportContact ? ` (${platform.supportContact})` : ""} to renew`
-        );
-      const months = Number(p.months);
-      if (!MONTHS.includes(months)) throw invalid(`Choose ${MONTHS.join(", ")} months`);
-      const phone = String(p.phone || "").replace(/[^\d+]/g, "");
+    var notConfigured = (platform) => invalid(
+      `Paying in the app is not switched on yet. Contact Relay${platform.supportContact ? ` (${platform.supportContact})` : ""} to pay`
+    );
+    var cleanPhone = (value) => {
+      const phone = String(value || "").replace(/[^\d+]/g, "");
       if (phone.replace(/\D/g, "").length < 9)
         throw invalid("Enter the mobile money number to pay from");
-      const row = await restaurantRow();
-      const priced = await offers().priceFor(row, platform, months);
-      const amount = priced.amount;
-      if (amount < MIN_AMOUNT) throw invalid("Nothing to pay at this price. Contact Relay");
+      return phone;
+    };
+    var negotiated = (row) => typeof row.get("priceOverride") === "number";
+    async function collectPayment({ row, platform, user, phone, amount, fields, note }) {
       for (const waiting of await pendingPayments()) {
         await refresh(waiting);
         if (waiting.get("status") === "pending")
@@ -32142,11 +32245,10 @@ var require_billing = __commonJS({
       payment.set({
         amount,
         currency: platform.currency,
-        months,
         method: "iotec",
         status: "pending",
         payer: phone,
-        ...priced.discount ? { listAmount: priced.list, discount: priced.discount, discountCode: priced.code } : {},
+        ...fields,
         externalId: `relay-${row.get("code")}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         recordedBy: user
       });
@@ -32159,7 +32261,7 @@ var require_billing = __commonJS({
           currency: platform.currency,
           payer: phone,
           payerName: row.get("ownerName") || row.get("name"),
-          note: `Relay for ${row.get("name")}: ${months} month${months === 1 ? "" : "s"}`.slice(0, 100)
+          note: `Relay for ${row.get("name")}: ${note}`.slice(0, 100)
         });
         payment.set({ providerId: result.id, message: result.message || "Waiting for approval" });
         if (result.status === "failed") payment.set("status", "failed");
@@ -32178,6 +32280,114 @@ var require_billing = __commonJS({
       }
       await audit(user, "billing.payment_started", payment, null, toJSON(payment));
       return toJSON(payment);
+    }
+    async function periodPlan(row, platform, key) {
+      const { renewalPlanOf: renewalPlanOf2, planOfRow: planOfRow2 } = require_restaurants();
+      const renewal = renewalPlanOf2(row, platform);
+      if (!key || key === renewal.key) return renewal;
+      const target = platform.plans.find((plan) => plan.active && plan.key === key);
+      if (!target) throw invalid("Choose one of the plans on offer");
+      if (negotiated(row))
+        throw invalid("Your price was agreed with Relay. Contact Relay to change plan");
+      const access = accessOf(row, platform.graceDays);
+      if (access.status === "active")
+        throw invalid(
+          target.price > planOfRow2(row, platform).price ? `To move up to ${target.name} now, use Upgrade: you pay only the difference` : `Choose ${target.name} under Plans: it starts when your paid period ends`
+        );
+      const problems = await require_limits().overLimits(target);
+      if (problems.length)
+        throw invalid(`${target.name} allows less than you have: ${problems.join(", ")}`);
+      return target;
+    }
+    Parse.Cloud.define("startSubscriptionPayment", async (request) => {
+      const { user } = await requireRole(request, ["admin"]);
+      const p = request.params || {};
+      const { values: platform } = await platformSettings();
+      if (!iotec.configured()) throw notConfigured(platform);
+      const months = Number(p.months);
+      if (!MONTHS.includes(months)) throw invalid(`Choose ${MONTHS.join(", ")} months`);
+      const phone = cleanPhone(p.phone);
+      const row = await restaurantRow();
+      const plan = await periodPlan(row, platform, p.plan ? String(p.plan) : "");
+      const priced = await offers().priceFor(row, platform, months, void 0, plan);
+      const amount = priced.amount;
+      if (amount < MIN_AMOUNT) throw invalid("Nothing to pay at this price. Contact Relay");
+      return collectPayment({
+        row,
+        platform,
+        user,
+        phone,
+        amount,
+        fields: {
+          months,
+          kind: "period",
+          plan: plan.key,
+          ...priced.discount ? { listAmount: priced.list, discount: priced.discount, discountCode: priced.code } : {}
+        },
+        note: `${plan.name}, ${months === 12 ? "1 year" : `${months} month${months === 1 ? "" : "s"}`}`
+      });
+    });
+    var MONTH_DAYS = 365 / 12;
+    async function upgradeQuote(row, platform, target) {
+      const { planOfRow: planOfRow2 } = require_restaurants();
+      if (accessOf(row, platform.graceDays).status !== "active" || negotiated(row)) return null;
+      const current = planOfRow2(row, platform);
+      if (!target || !target.active || !(target.price > current.price)) return null;
+      const now = Date.now();
+      const until = row.get("paidUntil");
+      const days = Math.max(0, (until.getTime() - now) / DAY);
+      const paid = await tenancy.withoutTenant(
+        () => new Parse.Query("SubscriptionPayment").equalTo("tenant", row).equalTo("status", "paid").greaterThan("periodEnd", new Date(now)).find(MASTER)
+      );
+      const running = paid.find(
+        (payment) => payment.get("kind") !== "upgrade" && payment.get("periodStart")?.getTime() <= now
+      );
+      const yearly = Number(running?.get("months")) === 12;
+      const rate = (plan) => yearly ? plan.annualPrice / 12 : plan.price;
+      const amount = Math.ceil((rate(target) - rate(current)) * days / MONTH_DAYS / 100) * 100;
+      return {
+        plan: target.key,
+        planName: target.name,
+        amount: Math.max(0, amount),
+        days: Math.ceil(days),
+        until: until.toISOString(),
+        yearly
+      };
+    }
+    Parse.Cloud.define("startPlanUpgrade", async (request) => {
+      const { user } = await requireRole(request, ["admin"]);
+      const p = request.params || {};
+      const { values: platform } = await platformSettings();
+      const row = await restaurantRow();
+      const target = platform.plans.find((plan) => plan.active && plan.key === p.plan);
+      if (!target) throw invalid("Choose one of the plans on offer");
+      if (negotiated(row))
+        throw invalid("Your price was agreed with Relay. Contact Relay to change plan");
+      const quote = await upgradeQuote(row, platform, target);
+      if (!quote)
+        throw invalid(
+          accessOf(row, platform.graceDays).status === "active" ? `${target.name} is not bigger than your plan` : `Pay a period on ${target.name} to move to it`
+        );
+      if (quote.amount < MIN_AMOUNT) {
+        const before = require_limits().planOf(row);
+        row.set("plan", target.key);
+        row.unset("nextPlan");
+        row.unset("nextPlanFrom");
+        await tenancy.withoutTenant(() => row.save(null, MASTER));
+        await audit(user, "subscription.plan_changed", row, { plan: before }, { plan: target.key });
+        return { upgraded: true, ...quote };
+      }
+      if (!iotec.configured()) throw notConfigured(platform);
+      const phone = cleanPhone(p.phone);
+      return collectPayment({
+        row,
+        platform,
+        user,
+        phone,
+        amount: quote.amount,
+        fields: { months: 0, kind: "upgrade", plan: target.key },
+        note: `upgrade to ${target.name}`
+      });
     });
     Parse.Cloud.define("checkSubscriptionPayment", async (request) => {
       await requireRole(request, ["admin"]);
@@ -32302,13 +32512,16 @@ var require_billing = __commonJS({
       if (!email.ready((await email.loadEmail()).email)) return;
       const once = await tenancy.withoutTenant(() => claimOnce(`email:${row.id}:${stage.key}`));
       if (!once) return;
-      const plan = require_plans().planFor(platform.plans || [], row.get("plan") || "");
+      const plan = require_plans().planFor(
+        platform.plans || [],
+        require_limits().planOf(row)
+      );
       await require_platformEmail().emailOwner(
         row,
         stage.kind,
         {
           PLAN_NAME: plan.name,
-          AMOUNT: moneyText(priceOf(row, platform), platform.currency),
+          AMOUNT: moneyText(priceOf(row, platform, renewalPlanOf(row, platform)), platform.currency),
           ANNUAL_AMOUNT: moneyText(annualPriceOf(row, platform), platform.currency),
           DUE_DATE: dateText(stage.due),
           INVOICE_NUMBER: nextInvoiceNumber(row, stage.due),
@@ -32322,7 +32535,11 @@ var require_billing = __commonJS({
         if (!row.get("ownerEmail")) return;
         const { values: platform } = await platformSettings();
         const months = Number(payment.get("months")) || 1;
-        const plan = require_plans().planFor(platform.plans || [], row.get("plan") || "");
+        const plan = require_plans().planFor(
+          platform.plans || [],
+          payment.get("plan") || require_limits().planOf(row)
+        );
+        const upgrade = payment.get("kind") === "upgrade";
         const reference = payment.get("reference") || "";
         await require_platformEmail().emailOwner(
           row,
@@ -32330,7 +32547,7 @@ var require_billing = __commonJS({
           {
             PLAN_NAME: plan.name,
             AMOUNT: moneyText(payment.get("amount"), payment.get("currency") || platform.currency),
-            PERIOD: months === 12 ? "1 year" : `${months} month${months === 1 ? "" : "s"}`,
+            PERIOD: upgrade ? `Upgrade to ${plan.name} for the days left` : months === 12 ? "1 year" : `${months} month${months === 1 ? "" : "s"}`,
             PAID_UNTIL: dateText(payment.get("periodEnd")),
             INVOICE_NUMBER: invoiceNumber(row, payment.id),
             REFERENCE: reference || "\u2014"
@@ -32352,7 +32569,7 @@ var require_billing = __commonJS({
       const until = access.until;
       if (!until) return 0;
       const left = Math.ceil((until.getTime() - Date.now()) / DAY);
-      const price = `${platform.currency} ${priceOf(row, platform).toLocaleString("en-US")}`;
+      const price = `${platform.currency} ${priceOf(row, platform, renewalPlanOf(row, platform)).toLocaleString("en-US")}`;
       const day = until.toISOString().slice(0, 10);
       if ((access.status === "trial" || access.status === "active") && left <= REMIND_DAYS)
         return tell({
@@ -32655,8 +32872,8 @@ var require_offers2 = __commonJS({
       }
       return offer;
     }
-    async function priceFor(row, platform, months, offer) {
-      const list = amountFor(row, platform, months);
+    async function priceFor(row, platform, months, offer, plan) {
+      const list = amountFor(row, platform, months, plan);
       const using = offer === void 0 ? await currentOffer(row) : offer;
       const discount = discountFor(using, list, months, MIN_AMOUNT);
       return { list, discount, amount: list - discount, code: discount ? using.code : "" };
@@ -32670,9 +32887,16 @@ var require_offers2 = __commonJS({
         prices[months] = price.amount;
         list[months] = price.list;
       }
+      const planPrices = {};
+      for (const plan of (platform.plans || []).filter((x) => x.active)) {
+        planPrices[plan.key] = {};
+        for (const months of MONTHS)
+          planPrices[plan.key][months] = (await priceFor(row, platform, months, offer, plan)).amount;
+      }
       return {
         prices,
         listPrices: list,
+        planPrices,
         offer: offer ? {
           code: offer.code,
           type: offer.type,
@@ -32714,6 +32938,8 @@ var require_offers2 = __commonJS({
         await tenancy.withoutTenant(() => referrer.save(null, MASTER));
         tenancy.clearCache();
         const monthsText = `${months} month${months === 1 ? "" : "s"}`;
+        row.set("referralCredit", { months, at: (/* @__PURE__ */ new Date()).toISOString(), until: until.toISOString() });
+        await tenancy.withoutTenant(() => row.save(null, MASTER));
         await tenancy.runAs(
           referrer.id,
           async () => {
@@ -33439,7 +33665,13 @@ var require_security = __commonJS({
         // Chose to pay at sign-up instead of a free trial; the code it gave
         // (offers.js). Cleared by the first payment.
         payFirst: B,
-        offer: "Object"
+        offer: "Object",
+        // Who referred this restaurant (its id), and the free months they got.
+        referredBy: S,
+        referralCredit: "Object",
+        // A smaller plan chosen for the next period, from the date it starts.
+        nextPlan: S,
+        nextPlanFrom: D
       },
       SubscriptionPayment: {
         amount: N,
@@ -33460,7 +33692,11 @@ var require_security = __commonJS({
         // A first payment with a code (offers.js): the price before it.
         listAmount: N,
         discount: N,
-        discountCode: S
+        discountCode: S,
+        // period (extends the paid date) | upgrade (the difference for the days
+        // left), and the plan it is for.
+        kind: S,
+        plan: S
       },
       // Relay Hosted plans (lib/plans.js).
       Plan: {
@@ -34582,18 +34818,19 @@ var require_restaurants = __commonJS({
       cachedSettings = { values, at: Date.now() };
       return values;
     }
-    var planOfRow = (row, platform) => require_plans().planFor(platform.plans || [], row.get("plan") || "");
-    var priceOf = (row, platform) => {
+    var planOfRow = (row, platform) => require_plans().planFor(platform.plans || [], require_limits().planOf(row));
+    var renewalPlanOf = (row, platform) => require_plans().planFor(platform.plans || [], require_limits().renewalPlanOf(row));
+    var priceOf = (row, platform, plan = planOfRow(row, platform)) => {
       const own = row.get("priceOverride");
       if (typeof own === "number" && own >= 0) return own;
-      return planOfRow(row, platform).price;
+      return plan.price;
     };
-    var annualPriceOf = (row, platform) => {
+    var annualPriceOf = (row, platform, plan = planOfRow(row, platform)) => {
       const own = row.get("priceOverride");
       if (typeof own === "number" && own >= 0) return require_plans().annualOf(own, null);
-      return planOfRow(row, platform).annualPrice;
+      return plan.annualPrice;
     };
-    var amountFor = (row, platform, months) => Number(months) === 12 ? annualPriceOf(row, platform) : priceOf(row, platform) * Number(months);
+    var amountFor = (row, platform, months, plan = renewalPlanOf(row, platform)) => Number(months) === 12 ? annualPriceOf(row, platform, plan) : priceOf(row, platform, plan) * Number(months);
     var OPEN_WHEN_CLOSED = /* @__PURE__ */ new Set([
       "getAppInfo",
       "getMyProfile",
@@ -34689,6 +34926,7 @@ var require_restaurants = __commonJS({
         trialEndsAt: payNow ? /* @__PURE__ */ new Date() : new Date(Date.now() + Number(platform.trialDays) * 864e5),
         payFirst: payNow,
         ...offer ? { offer } : {},
+        ...offer?.type === "referral" ? { referredBy: offer.referrerId } : {},
         ownerName,
         ownerEmail,
         billingPhone: phone,
@@ -34929,6 +35167,8 @@ var require_restaurants = __commonJS({
         const { values: platform2 } = await platformSettings();
         if (!platform2.plans.some((x) => x.key === p.plan)) throw invalid("Unknown plan");
         row.set("plan", p.plan);
+        row.unset("nextPlan");
+        row.unset("nextPlanFrom");
       }
       if ("priceOverride" in p) {
         if (p.priceOverride === null || p.priceOverride === "") row.unset("priceOverride");
@@ -35065,12 +35305,12 @@ var require_restaurants = __commonJS({
       await requirePlatform(request);
       const { values: platform } = await platformSettings();
       const restaurants = await tenancy.withoutTenant(
-        () => new Parse.Query("Restaurant").select("plan").findAll({ ...MASTER, batchSize: 500 })
+        () => new Parse.Query("Restaurant").select("plan", "nextPlan", "nextPlanFrom").findAll({ ...MASTER, batchSize: 500 })
       );
       const planFor = require_plans().planFor;
       const counts = {};
       for (const row of restaurants) {
-        const key = planFor(platform.plans, row.get("plan") || "").key;
+        const key = planFor(platform.plans, require_limits().planOf(row)).key;
         counts[key] = (counts[key] || 0) + 1;
       }
       const { FEATURES, LIMITS } = require_plans();
@@ -35172,6 +35412,8 @@ var require_restaurants = __commonJS({
       priceOf,
       annualPriceOf,
       amountFor,
+      planOfRow,
+      renewalPlanOf,
       checkAccess,
       isPlatform,
       accessOf,
@@ -37953,7 +38195,7 @@ var require_platformBroadcast = __commonJS({
       query.notEqualTo("suspended", true);
       const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
       const chosen = rows.filter((row) => {
-        if (audience.plan && (row.get("plan") || "") !== audience.plan) return false;
+        if (audience.plan && require_limits().planOf(row) !== audience.plan) return false;
         if (audience.status === "all") return true;
         return accessOf(row, platform.graceDays).status === audience.status;
       });
@@ -38081,10 +38323,12 @@ var require_platformRevenue = __commonJS({
     var { MASTER } = require_core();
     var tenancy = require_tenant();
     var { accessOf } = require_access();
+    var { planOf } = require_limits();
     var { requirePlatform, platformSettings, priceOf } = require_restaurants();
     var DAY = 864e5;
     var TIME_ZONE = process.env.RELAY_EMAIL_TZ || "Africa/Kampala";
-    var monthKey = (date) => new Intl.DateTimeFormat("en-CA", { timeZone: TIME_ZONE, year: "numeric", month: "2-digit" }).format(date).slice(0, 7);
+    var monthKey = (date) => require_dates().isoDay(date, TIME_ZONE).slice(0, 7);
+    var validDate = (value) => value instanceof Date && !Number.isNaN(value.getTime());
     function lastMonths(count, now = /* @__PURE__ */ new Date()) {
       const [year, month] = monthKey(now).split("-").map(Number);
       return Array.from({ length: count }, (_, i) => {
@@ -38110,7 +38354,8 @@ var require_platformRevenue = __commonJS({
         const amount = Number(payment.get("amount")) || 0;
         allTime += amount;
         everPaid.add(payment.get("tenant")?.id);
-        const key = monthKey(payment.get("paidAt") || payment.createdAt);
+        const when = validDate(payment.get("paidAt")) ? payment.get("paidAt") : payment.createdAt;
+        const key = validDate(when) ? monthKey(when) : "";
         if (byMonth[key]) {
           byMonth[key].amount += amount;
           byMonth[key].payments += 1;
@@ -38131,27 +38376,27 @@ var require_platformRevenue = __commonJS({
           id: row.id,
           name: row.get("name"),
           code: row.get("code"),
-          plan: planName[row.get("plan")] || row.get("plan") || "",
+          plan: planName[planOf(row)] || planOf(row),
           amount: price
         };
         const paying = access.status === "active" || access.status === "past_due";
         if (paying) {
           mrr += price;
-          const key = row.get("plan") || "";
+          const key = planOf(row);
           plans[key] = plans[key] || { name: base.plan, restaurants: 0, mrr: 0 };
           plans[key].restaurants += 1;
           plans[key].mrr += price;
         }
         const trialEnd = row.get("trialEndsAt")?.getTime() || 0;
         if (everPaid.has(row.id) || trialEnd && trialEnd < now) trialEnded += 1;
-        const until = access.until?.getTime() || 0;
-        if ((access.status === "trial" || access.status === "active") && until - now <= 30 * DAY)
+        const until = validDate(access.until) ? access.until.getTime() : 0;
+        if (until && (access.status === "trial" || access.status === "active") && until - now <= 30 * DAY)
           upcoming.push({
             ...base,
             kind: access.status === "trial" ? "trial_ends" : "renewal",
             dueAt: new Date(until).toISOString()
           });
-        if (access.status === "past_due")
+        if (until && access.status === "past_due")
           overdue.push({
             ...base,
             dueAt: new Date(until - Number(platform.graceDays || 0) * DAY).toISOString(),

@@ -41,7 +41,11 @@ export function AuthScreen() {
     chooseRestaurant,
     error: sessionError,
   } = useSession();
-  const [signingUp, setSigningUp] = useState(false);
+  // A referral link (/?ref=code) opens the sign-up page with the code.
+  const [referral] = useState(
+    () => new URLSearchParams(window.location.search).get('ref')?.trim() || '',
+  );
+  const [signingUp, setSigningUp] = useState(!!referral);
   // Relay Hosted: the owner's forgotten password (a link is emailed to them).
   const [forgot, setForgot] = useState(false);
   const [resetToken, setResetToken] = useState(() =>
@@ -78,8 +82,9 @@ export function AuthScreen() {
     }
   };
   return (
-    <main className="auth-shell">
-      <AuthSide />
+    // Sign-up takes the whole screen: the form, the plans and how to start.
+    <main className={`auth-shell${signingUp && !platform ? ' auth-full' : ''}`}>
+      {!(signingUp && !platform) && <AuthSide />}
       <section className="auth-panel">
         <div className={`login-card${signingUp && !platform ? ' signup-card' : ''}`}>
           {/* Phones: with a logo, only the restaurant's logo and name show. */}
@@ -111,6 +116,7 @@ export function AuthScreen() {
           ) : signingUp ? (
             <SignUp
               trialDays={appInfo.trialDays || 0}
+              initialCode={referral}
               onCancel={() => setSigningUp(false)}
               onDone={async (code, fullUsername, pin) => {
                 rememberRestaurant(code);
@@ -312,10 +318,12 @@ type CodeCheck = {
 };
 function SignUp({
   trialDays,
+  initialCode = '',
   onCancel,
   onDone,
 }: {
   trialDays: number;
+  initialCode?: string;
   onCancel: () => void;
   onDone: (code: string, username: string, pin: string) => Promise<void>;
 }) {
@@ -330,8 +338,10 @@ function SignUp({
     plan: '',
   });
   const offered = useOfferedPlans();
-  const [start, setStart] = useState<'trial' | 'pay'>(trialDays > 0 ? 'trial' : 'pay');
-  const [offerCode, setOfferCode] = useState('');
+  const [start, setStart] = useState<'trial' | 'pay'>(
+    trialDays > 0 && !initialCode ? 'trial' : 'pay',
+  );
+  const [offerCode, setOfferCode] = useState(initialCode);
   const [offerCheck, setOfferCheck] = useState<CodeCheck | null>(null);
   const [offerError, setOfferError] = useState('');
   const [codeEdited, setCodeEdited] = useState(false);
@@ -366,9 +376,10 @@ function SignUp({
       setOfferError(e instanceof Error ? e.message : 'This code is not valid');
     }
   };
-  // The applied code's prices follow the chosen plan.
+  // The applied code's prices follow the chosen plan (and a referral link's
+  // code is applied once the plans are in).
   useEffect(() => {
-    if (offerCheck && plan) void applyCode();
+    if ((offerCheck || (initialCode && !offerError)) && plan) void applyCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
 

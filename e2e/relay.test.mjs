@@ -5918,6 +5918,7 @@ const ACCESS = {
     'startSubscriptionPayment',
     'checkSubscriptionPayment',
     'startTrialInstead',
+    'startPlanUpgrade',
     'adminGetEfrisSettings',
     'adminSaveEfrisSettings',
     'adminTestEfris',
@@ -6549,7 +6550,7 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
     assert.equal(sent.currency, 'UGX');
     assert.equal(sent.walletId, 'wallet-1');
     assert.equal(sent.category, 'MobileMoney');
-    assert.match(sent.payerNote, /Relay for Kato Grill: 3 months/);
+    assert.match(sent.payerNote, /Relay for Kato Grill: .*3 months/);
     assert.match(sent.externalId, /^relay-kato-grill-/);
     // One prompt at a time.
     await rejects(pay({ months: 1, phone: '0772555111' }), /already waiting for approval/);
@@ -7018,14 +7019,34 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
     );
   });
 
-  test('upgrading to Enterprise lifts the limits and costs the Enterprise price', async () => {
-    const billing = await run('changePlan', { plan: 'enterprise' }, owner);
-    assert.equal(billing.restaurant.plan, 'enterprise');
-    const { plans } = await run('getPlans', {});
-    assert.equal(
-      billing.restaurant.monthlyPrice,
-      plans.find((plan) => plan.key === 'enterprise').price,
+  test('moving up from the trial is paid first; the plan changes once paid', async () => {
+    await rejects(
+      run('changePlan', { plan: 'enterprise' }, owner),
+      /Moving up to Enterprise is paid/,
     );
+    const { plans } = await run('getPlans', {});
+    const enterprise = plans.find((plan) => plan.key === 'enterprise');
+    const billing = await run('getBilling', {}, owner);
+    assert.equal(billing.plan.current, 'basic');
+    assert.equal(billing.plan.choosePlanWhenPaying, true);
+    assert.deepEqual(billing.plan.upgrades, {});
+    assert.equal(billing.planPrices.enterprise[1], enterprise.price);
+    assert.equal(billing.planPrices.enterprise[12], enterprise.annualPrice);
+    const started = await run(
+      'startSubscriptionPayment',
+      { months: 1, phone: '0772555111', plan: 'enterprise' },
+      owner,
+    );
+    assert.equal(started.amount, enterprise.price);
+    assert.equal(started.plan, 'enterprise');
+    // Basic until the payment goes through.
+    assert.equal((await run('getMyProfile', {}, owner)).restaurant.plan, 'basic');
+    await rejects(member('cash3', 'cashier'), /allows 2 cashiers/);
+    await run('checkSubscriptionPayment', { id: started.id }, owner);
+    const done = await run('checkSubscriptionPayment', { id: started.id }, owner);
+    assert.equal(done.payment.status, 'paid');
+    assert.equal(done.restaurant.plan, 'enterprise');
+    assert.equal(done.restaurant.monthlyPrice, enterprise.price);
     assert.equal((await run('getMyProfile', {}, owner)).features.accounting, true);
     await member('cash3', 'cashier');
     await member('fin1', 'finance');
@@ -7034,6 +7055,95 @@ describe('plans: Basic and Enterprise (Relay Hosted)', () => {
     // Back to Basic only once it fits again.
     await rejects(run('changePlan', { plan: 'basic' }, owner), /Basic allows less than you have/);
     await rejects(run('changePlan', { plan: 'gold' }, owner), /plans on offer/);
+  });
+
+  test('while paid: moving up pays the difference; moving down waits for the period end', async () => {
+    const DAY = 86400000;
+    const ops = await Parse.User.logIn('ops', 'ops-pass-123');
+    // (Master key: the tests have used this address's sign-ups for the hour.)
+    await Parse.Cloud.run(
+      'signUpRestaurant',
+      {
+        restaurantName: 'Step Cafe',
+        ownerName: 'Sam',
+        username: 'owner',
+        pin: PINS.owner,
+        phone: '0701 444555',
+        email: 'sam@example.com',
+      },
+      { useMasterKey: true },
+    );
+    const step = await login('owner', PINS.owner, 'step-cafe');
+    const row = (await run('platformListRestaurants', {}, ops)).rows.find(
+      (r) => r.code === 'step-cafe',
+    );
+    // Paid a month after a trial that has ended: a paid period runs.
+    await run(
+      'platformUpdateRestaurant',
+      { id: row.id, trialEndsAt: new Date(Date.now() - DAY).toISOString() },
+      ops,
+    );
+    await run('platformRecordPayment', { id: row.id, months: 1, reference: 'Cash' }, ops);
+    const { plans } = await run('getPlans', {});
+    const basic = plans.find((plan) => plan.key === 'basic');
+    const enterprise = plans.find((plan) => plan.key === 'enterprise');
+    const before = await run('getBilling', {}, step);
+    assert.equal(before.restaurant.status, 'active');
+    assert.equal(before.plan.choosePlanWhenPaying, false);
+    const quote = before.plan.upgrades.enterprise;
+    const days = (new Date(before.restaurant.paidUntil) - Date.now()) / DAY;
+    const expected = ((enterprise.price - basic.price) * days) / (365 / 12);
+    assert.ok(
+      quote.amount >= expected && quote.amount <= expected + 100,
+      `${quote.amount} for ${days} days`,
+    );
+    assert.equal(before.plan.upgrades.basic, undefined);
+    await rejects(
+      run('startSubscriptionPayment', { months: 1, phone: '0772555111', plan: 'enterprise' }, step),
+      /use Upgrade/,
+    );
+    const started = await run(
+      'startPlanUpgrade',
+      { plan: 'enterprise', phone: '0772555111' },
+      step,
+    );
+    assert.equal(started.amount, quote.amount);
+    assert.equal(started.kind, 'upgrade');
+    assert.equal((await run('getMyProfile', {}, step)).restaurant.plan, 'basic');
+    await run('checkSubscriptionPayment', { id: started.id }, step);
+    const done = await run('checkSubscriptionPayment', { id: started.id }, step);
+    assert.equal(done.payment.status, 'paid');
+    assert.equal(done.restaurant.plan, 'enterprise');
+    // The days paid for stay; nothing is added.
+    assert.equal(done.restaurant.paidUntil, before.restaurant.paidUntil);
+    const after = await run('getBilling', {}, step);
+    const invoice = after.invoices.find((inv) => inv.paymentId === started.id);
+    assert.equal(invoice.kind, 'upgrade');
+    assert.equal(invoice.planName, 'Enterprise');
+    assert.equal(invoice.months, 0);
+    assert.deepEqual(after.plan.upgrades, {});
+
+    // Moving down: Enterprise stays until the paid period ends.
+    const down = await run('changePlan', { plan: 'basic' }, step);
+    assert.equal(down.plan.current, 'enterprise');
+    assert.equal(down.plan.renewal, 'basic');
+    assert.equal(down.plan.renewalFrom, before.restaurant.paidUntil);
+    assert.equal(down.restaurant.plan, 'enterprise');
+    assert.equal(down.prices[1], basic.price);
+    assert.equal((await run('getMyProfile', {}, step)).features.accounting, true);
+    // Paying the next period pays Basic; Enterprise still runs until then.
+    const next = await run('startSubscriptionPayment', { months: 1, phone: '0772555111' }, step);
+    assert.equal(next.amount, basic.price);
+    assert.equal(next.plan, 'basic');
+    await run('checkSubscriptionPayment', { id: next.id }, step);
+    const renewed = await run('checkSubscriptionPayment', { id: next.id }, step);
+    assert.equal(renewed.payment.status, 'paid');
+    assert.equal(renewed.restaurant.plan, 'enterprise');
+    // Changing their mind: keep Enterprise.
+    const kept = await run('changePlan', { plan: 'enterprise' }, step);
+    assert.equal(kept.plan.renewal, 'enterprise');
+    assert.equal(kept.plan.renewalFrom, null);
+    await rejects(run('changePlan', { plan: 'enterprise' }, step), /on Enterprise already/);
   });
 
   test('platform staff create a plan with its own limits and parts of the app', async () => {
@@ -7703,5 +7813,15 @@ describe('sign-up codes: pay now with a discount or referral (Relay Hosted)', ()
     assert.equal(restaurant.payFirst, false);
     assert.equal((await run('getBilling', {}, owner)).offer, null);
     await rejects(run('startTrialInstead', {}, owner), /not waiting for its first payment/);
+    // The referrer sees who used its code.
+    const referrer = await login('owner', 'new-pass-9', 'mail-cafe');
+    const { referrals } = await run('getBilling', {}, referrer);
+    assert.equal(referrals.code, 'mail-cafe');
+    assert.equal(referrals.percent, 15);
+    assert.equal(referrals.months, 2);
+    const byName = Object.fromEntries(referrals.rows.map((row) => [row.name, row]));
+    assert.equal(byName['Ref Cafe'].status, 'rewarded');
+    assert.equal(byName['Ref Cafe'].months, 2);
+    assert.equal(byName['Trial Cafe'].status, 'trial');
   });
 });
