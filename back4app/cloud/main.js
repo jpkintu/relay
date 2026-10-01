@@ -32604,7 +32604,8 @@ var require_offers2 = __commonJS({
     });
     function unusable(row, now = Date.now()) {
       if (row.get("active") === false) return "This code is no longer valid";
-      if (row.get("expiresAt") && row.get("expiresAt").getTime() < now) return "This code has expired";
+      const expires = row.get("expiresAt");
+      if (expires instanceof Date && expires.getTime() < now) return "This code has expired";
       const max = row.get("maxUses");
       if (typeof max === "number" && (row.get("used") || 0) >= max) return "This code has been used up";
       return "";
@@ -32854,11 +32855,13 @@ var require_offers2 = __commonJS({
         kind,
         value: kind === "percent" ? value : Math.round(value),
         minMonths,
-        maxUses,
-        expiresAt,
         active: p.active !== false,
         note: String(p.note || "").trim().slice(0, 200)
       });
+      if (maxUses === null) row.unset("maxUses");
+      else row.set("maxUses", maxUses);
+      if (expiresAt === null) row.unset("expiresAt");
+      else row.set("expiresAt", expiresAt);
       await tenancy.withoutTenant(() => row.save(null, MASTER));
       await tenancy.withoutTenant(
         () => audit(actor, "platform.discount_code_saved", row, before, codeView(row))
