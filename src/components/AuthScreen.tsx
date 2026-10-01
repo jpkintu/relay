@@ -15,13 +15,21 @@ import { useImageReady } from '../lib/imageReady';
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
 // then the lowercase form.
+// Parse Server's lockout (S5) answers like a wrong PIN, with its own message.
+const LOCKED = /locked due to multiple failed login attempts/i;
+
 async function logIn(typed: string, password: string): Promise<Parse.User> {
   const username = typed.trim();
   try {
     return await Parse.User.logIn(username, password);
   } catch (e) {
     const lower = username.toLowerCase();
-    if (lower !== username && e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND)
+    if (
+      lower !== username &&
+      e instanceof Parse.Error &&
+      e.code === Parse.Error.OBJECT_NOT_FOUND &&
+      !LOCKED.test(e.message)
+    )
       return Parse.User.logIn(lower, password);
     throw e;
   }
@@ -58,11 +66,13 @@ export function AuthScreen() {
       } else setUser(await logIn(username, password));
     } catch (e) {
       setError(
-        e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND
-          ? 'Wrong username or PIN.'
-          : e instanceof Error
-            ? e.message
-            : 'Check your credentials, then try again.',
+        e instanceof Error && LOCKED.test(e.message)
+          ? 'Too many wrong PINs: this account is locked for 15 minutes. Your manager can unlock it sooner (Team → the person → Unlock sign-in).'
+          : e instanceof Parse.Error && e.code === Parse.Error.OBJECT_NOT_FOUND
+            ? 'Wrong username or PIN.'
+            : e instanceof Error
+              ? e.message
+              : 'Check your credentials, then try again.',
       );
     } finally {
       setBusy(false);

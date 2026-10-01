@@ -312,6 +312,18 @@ var require_core = __commonJS({
       const own = rider?.get("maxFloat");
       return typeof own === "number" && own >= 0 ? { ...config, maxRiderFloat: own } : config;
     }
+    async function clearSignInLock(user) {
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+      fresh.set("pinFailures", 0);
+      fresh.unset("pinLockedUntil");
+      await fresh.save(null, MASTER);
+      const unlock = {
+        _account_lockout_expires_at: { __op: "Delete" },
+        _failed_login_count: { __op: "Delete" }
+      };
+      const database = Parse.Server?.database;
+      if (database) await database.update("_User", { objectId: user.id }, unlock);
+    }
     async function endSessions(user, keepToken) {
       const query = new Parse.Query(Parse.Session);
       query.equalTo("user", user);
@@ -423,7 +435,11 @@ var require_core = __commonJS({
       if (!value) throw invalid("Enter your PIN to continue");
       try {
         await Parse.User.verifyPassword(fresh.get("username"), value);
-      } catch {
+      } catch (error) {
+        if (/locked due to multiple failed login attempts/i.test(String(error?.message)))
+          throw invalid(
+            `Too many wrong PINs. Try again in ${PIN_LOCK_MINUTES} min, or ask the owner to unlock you`
+          );
         const failures = Number(fresh.get("pinFailures") || 0) + 1;
         const locked = failures >= PIN_ATTEMPTS;
         fresh.set("pinFailures", locked ? 0 : failures);
@@ -469,6 +485,7 @@ var require_core = __commonJS({
     var isBrokenCode = (code) => typeof code === "string" && /object|undefined|NaN/.test(code);
     module2.exports = {
       MASTER,
+      clearSignInLock,
       findAll,
       DEFAULT_CONFIG,
       forbidden,
@@ -525,6 +542,49 @@ var require_log = __commonJS({
       return UNEXPECTED_PARSE_CODES.includes(error.code);
     }
     module2.exports = { log, errorMessage, isUnexpected };
+  }
+});
+
+// cloud/lib/sessions.js
+var require_sessions = __commonJS({
+  "cloud/lib/sessions.js"(exports2, module2) {
+    "use strict";
+    var DAY = 864e5;
+    function sessionDays(role) {
+      const staff = Number(process.env.RELAY_SESSION_DAYS || 30);
+      const owner = Number(process.env.RELAY_ADMIN_SESSION_DAYS || 14);
+      return role === "admin" || role === "finance" ? Math.min(owner, staff) : staff;
+    }
+    var expired = (createdAt, role, now = Date.now()) => now - new Date(createdAt).getTime() > sessionDays(role) * DAY;
+    var cache = /* @__PURE__ */ new Map();
+    var CACHE_MS = 5 * 6e4;
+    async function checkSession(request) {
+      const user = request.user;
+      const token = user?.getSessionToken?.();
+      if (!token || request.master) return;
+      let entry = cache.get(token);
+      if (!entry || Date.now() - entry.at > CACHE_MS) {
+        const { MASTER, getRoleName } = require_core();
+        const session = await new Parse.Query(Parse.Session).equalTo("sessionToken", token).first(MASTER);
+        if (!session) return;
+        entry = {
+          createdAt: session.createdAt,
+          role: await getRoleName(user),
+          session,
+          at: Date.now()
+        };
+        cache.set(token, entry);
+        if (cache.size > 5e3) cache.clear();
+      }
+      if (!expired(entry.createdAt, entry.role)) return;
+      cache.delete(token);
+      if (entry.session) await entry.session.destroy({ useMasterKey: true }).catch(() => void 0);
+      throw new Parse.Error(
+        Parse.Error.INVALID_SESSION_TOKEN,
+        "Your sign-in has expired. Sign in again."
+      );
+    }
+    module2.exports = { sessionDays, expired, checkSession, DAY };
   }
 });
 
@@ -662,6 +722,7 @@ var require_errors = __commonJS({
       name,
       async (request) => {
         const started = Date.now();
+        await require_sessions().checkSession(request);
         try {
           return await handler(request);
         } catch (error) {
@@ -1708,6 +1769,19 @@ var require_security = __commonJS({
       const updated = await applySecurity();
       await audit(actor, "security.applied", { className: "Security", id: "all" }, null, updated);
       return updated;
+    });
+    Parse.Cloud.define("adminSecurityStatus", async (request) => {
+      await requireAdminUnlock(request);
+      const server = Parse.Server || {};
+      const lockout = server.accountLockout;
+      const { sessionDays } = require_sessions();
+      return {
+        known: !!Parse.Server,
+        lockout: lockout?.threshold ? { threshold: Number(lockout.threshold), minutes: Number(lockout.duration) } : null,
+        serverSessionDays: server.sessionLength ? Math.round(Number(server.sessionLength) / 86400) : null,
+        staffDays: sessionDays("rider"),
+        ownerDays: sessionDays("admin")
+      };
     });
     module2.exports = { applySecurity };
   }
@@ -34263,7 +34337,8 @@ var require_people = __commonJS({
       riderFloat,
       verifyPin,
       withRiderLimit,
-      endSessions
+      endSessions,
+      clearSignInLock
     } = require_core();
     var { orderRiderPay } = require_money();
     var { riderOutstanding } = require_shifts();
@@ -34316,9 +34391,18 @@ var require_people = __commonJS({
       user.set({ password: pin, pinFailures: 0 });
       user.unset("pinLockedUntil");
       await user.save(null, MASTER);
+      await clearSignInLock(user);
       const signedOut = await endSessions(user);
       await audit(actor, "team.pin_reset", user, null, { signedOut });
       return { ok: true, signedOut };
+    });
+    Parse.Cloud.define("adminUnlockSignIn", async (request) => {
+      const actor = await adminOnly(request);
+      const user = await new Parse.Query(Parse.User).get(String(request.params.id || ""), MASTER).catch(() => null);
+      if (!user) throw invalid("Team member not found");
+      await clearSignInLock(user);
+      await audit(actor, "team.signin_unlocked", user, null, {});
+      return { ok: true };
     });
     var openOrderJSON = (order) => ({
       id: order.id,
@@ -34629,6 +34713,7 @@ var require_admin = __commonJS({
       }
       user.setACL(userAcl(user, "admin"));
       await user.save(null, MASTER);
+      await require_core().clearSignInLock(user);
       await makeOwner(user, user);
       return { username, created, role: "admin" };
     }
