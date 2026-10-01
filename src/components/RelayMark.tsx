@@ -7,7 +7,7 @@ export function RelayMark({ className = '' }: { className?: string }) {
       className={`relay-mark ${className}`.trim()}
       viewBox="0 0 64 64"
       role="img"
-      aria-label="Relay"
+      aria-label="RelayEats"
       xmlns="http://www.w3.org/2000/svg"
     >
       <rect width="64" height="64" rx="14" fill="#f14c1d" />

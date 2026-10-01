@@ -195,7 +195,7 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
           const file = e.target.files?.[0] || null;
           if (file && /\.(crt|cer|der)$/i.test(file.name)) {
             setKeyError(
-              'That file is the certificate: upload it on the EFRIS portal. Relay needs the private key; if you made the key pair here, it is already saved.',
+              'That file is the certificate: upload it on the EFRIS portal. RelayEats needs the private key; if you made the key pair here, it is already saved.',
             );
             e.target.value = '';
             setKeyFile(null);
@@ -231,8 +231,8 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
             {view.counts.failed > 0 && (
               <>
                 {' '}
-                · <b>{view.counts.failed} waiting to be sent again</b> (Relay retries on its own;
-                open the order to see why or send it now)
+                · <b>{view.counts.failed} waiting to be sent again</b> (RelayEats retries on its
+                own; open the order to see why or send it now)
               </>
             )}
           </p>
@@ -273,7 +273,7 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
         </div>
         <p className="muted small">
           On the EFRIS portal (efris.ura.go.ug): register a system-to-system device to get its
-          device number. For the key pair, either let Relay make one below (then upload the
+          device number. For the key pair, either let RelayEats make one below (then upload the
           certificate it gives you on the portal), or choose your own private key (a .pfx / .p12
           keystore or a .pem file) whose certificate is already on the portal. The private key stays
           on the server and is never shown again. Use the test environment first.
@@ -305,7 +305,7 @@ function EfrisForm({ view, onSaved }: { view: Settings; onSaved: () => void }) {
           </label>
           {view.certificate ? (
             <details className="setup-field efris-own-key">
-              <summary>Private key: made by Relay (saved). Use your own key instead…</summary>
+              <summary>Private key: made by RelayEats (saved). Use your own key instead…</summary>
               {keyInput}
             </details>
           ) : (
@@ -536,8 +536,8 @@ function KeyMaker({
       {cert ? (
         <>
           <p className="muted small">
-            Key made by Relay. Upload its certificate on the EFRIS portal (the certificate / public
-            key upload). Valid until{' '}
+            Key made by RelayEats. Upload its certificate on the EFRIS portal (the certificate /
+            public key upload). Valid until{' '}
             {formatDate(cert.validUntil, timezone, { dateStyle: 'medium' })}.
           </p>
           <div className="data-actions">
@@ -577,8 +577,8 @@ function KeyMaker({
         <>
           <p className="muted small">
             {view.keyLoaded
-              ? 'Your own key is saved. You can have Relay make one instead; you then upload its certificate on the EFRIS portal.'
-              : 'No key pair yet? Relay can make one: the private key stays here, and you upload the certificate it gives you on the EFRIS portal. Enter your TIN first.'}
+              ? 'Your own key is saved. You can have RelayEats make one instead; you then upload its certificate on the EFRIS portal.'
+              : 'No key pair yet? RelayEats can make one: the private key stays here, and you upload the certificate it gives you on the EFRIS portal. Enter your TIN first.'}
           </p>
           <div className="data-actions">
             <button

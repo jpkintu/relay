@@ -173,7 +173,7 @@ async function sendToSubscriptions(subs, payloadFor) {
           device,
           ok: false,
           problem: DEAD.includes(status)
-            ? `${problem}. This device's registration was out of date and has been removed; opening Relay on it registers it again.`
+            ? `${problem}. This device's registration was out of date and has been removed; opening RelayEats on it registers it again.`
             : problem,
         };
       }

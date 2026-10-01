@@ -25,8 +25,8 @@ export function PrivacyPage() {
       <article>
         <h1>Privacy and terms</h1>
         <p className="lead">
-          {name} uses Relay to take and deliver orders and to account for the money. This page says
-          what information that involves, why, who can see it and how long it is kept.
+          {name} uses RelayEats to take and deliver orders and to account for the money. This page
+          says what information that involves, why, who can see it and how long it is kept.
         </p>
 
         <h2>Customers</h2>
@@ -51,13 +51,13 @@ export function PrivacyPage() {
 
         <h2>People who work here</h2>
         <p>
-          Riders, cashiers and the owner have their own account. Relay records your name, phone
+          Riders, cashiers and the owner have their own account. RelayEats records your name, phone
           number, username, shifts, the orders you take, deliver or handle, the cash you collect and
           hand over, and changes you make. This record exists to keep the money accountable and to
-          settle disagreements fairly; the owner can see it. Relay does not track where you are.
+          settle disagreements fairly; the owner can see it. RelayEats does not track where you are.
         </p>
 
-        <h2>Using Relay at work</h2>
+        <h2>Using RelayEats at work</h2>
         <ul>
           <li>
             Your account and PIN are yours alone. Do not share them or sign in as someone else.
@@ -78,9 +78,9 @@ export function PrivacyPage() {
 
         <h2>Where the information is kept</h2>
         <p>
-          Relay stores its records with Back4App, a hosting service, on servers that may be outside
-          your country. Connections are encrypted. Notifications on your phone go through your
-          phone’s own notification service (Google or Apple).
+          RelayEats stores its records with Back4App, a hosting service, on servers that may be
+          outside your country. Connections are encrypted. Notifications on your phone go through
+          your phone’s own notification service (Google or Apple).
         </p>
 
         <h2>Questions and requests</h2>
@@ -96,7 +96,7 @@ export function PrivacyPage() {
           is handled. You may also complain to your country’s data protection authority (in Uganda,
           the Personal Data Protection Office).
         </p>
-        <p className="muted small">Relay is software by Embiro Concepts, used by {name}.</p>
+        <p className="muted small">RelayEats is software by Embiro Concepts, used by {name}.</p>
       </article>
     </main>
   );

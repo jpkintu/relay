@@ -293,8 +293,8 @@ function PrivacySettings({ settings, onSaved }: { settings: Row; onSaved: () => 
         <a href="/privacy" target="_blank" rel="noreferrer">
           privacy notice
         </a>{' '}
-        (linked from the sign-in screen) tells customers and staff what Relay keeps and who to ask
-        about it.
+        (linked from the sign-in screen) tells customers and staff what RelayEats keeps and who to
+        ask about it.
       </p>
       <form
         className="setup-form"
@@ -515,12 +515,12 @@ function RestoreBackup({ onRestored }: { onRestored: () => void }) {
     try {
       const data = JSON.parse(await file.text());
       if (data?.app !== 'Relay' || !data.classes || typeof data.classes !== 'object')
-        throw new Error('This is not a Relay backup file.');
+        throw new Error('This is not a RelayEats backup file.');
       setBackup({ exportedAt: String(data.exportedAt || ''), classes: data.classes });
     } catch (e) {
       setFileError(
         e instanceof SyntaxError
-          ? 'This file is not a Relay backup (.json).'
+          ? 'This file is not a RelayEats backup (.json).'
           : String((e as Error).message),
       );
     }

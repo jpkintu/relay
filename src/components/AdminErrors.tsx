@@ -78,9 +78,9 @@ export function AdminErrors({ onChanged }: { onChanged?: () => void }) {
   return (
     <div className={loading ? 'report busy' : 'report'}>
       <p className="section-intro">
-        Problems Relay ran into on anyone&apos;s phone or computer, and on the server. Mistakes
+        Problems RelayEats ran into on anyone&apos;s phone or computer, and on the server. Mistakes
         people are told about on screen (a wrong PIN, a missing field) are not listed. Send this
-        list to whoever maintains Relay; mark an entry fixed once the fix is deployed.
+        list to whoever maintains RelayEats; mark an entry fixed once the fix is deployed.
       </p>
       <div className="filter-bar">
         <div className="filter-toggle" role="group" aria-label="Show errors">
@@ -124,7 +124,9 @@ export function AdminErrors({ onChanged }: { onChanged?: () => void }) {
       </div>
       {data && !rows.length && (
         <p className="empty-orders">
-          {state === 'open' ? 'No errors. Relay is running cleanly.' : 'Nothing marked fixed yet.'}
+          {state === 'open'
+            ? 'No errors. RelayEats is running cleanly.'
+            : 'Nothing marked fixed yet.'}
         </p>
       )}
     </div>

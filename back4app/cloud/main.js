@@ -9286,7 +9286,7 @@ var require_push = __commonJS({
             return {
               device,
               ok: false,
-              problem: DEAD.includes(status) ? `${problem}. This device's registration was out of date and has been removed; opening Relay on it registers it again.` : problem
+              problem: DEAD.includes(status) ? `${problem}. This device's registration was out of date and has been removed; opening RelayEats on it registers it again.` : problem
             };
           }
         })
@@ -27744,7 +27744,7 @@ var require_efrisApi = __commonJS({
         this.code = String(code || "");
       }
     };
-    var CERTIFICATE_NOT_KEY = "That file is a certificate (the public key): upload it on the EFRIS portal. Relay needs the private key instead; if you made the key pair in Relay, it is already saved and nothing needs uploading here.";
+    var CERTIFICATE_NOT_KEY = "That file is a certificate (the public key): upload it on the EFRIS portal. RelayEats needs the private key instead; if you made the key pair in RelayEats, it is already saved and nothing needs uploading here.";
     function isCertificate(bytes, text) {
       if (/-----BEGIN (TRUSTED )?CERTIFICATE-----/.test(text)) return true;
       if (text.includes("-----BEGIN")) return false;
@@ -27797,7 +27797,7 @@ var require_efrisApi = __commonJS({
       cert.validity.notBefore = from;
       cert.validity.notAfter = until;
       const subject = [
-        { name: "commonName", value: String(tin || "Relay") },
+        { name: "commonName", value: String(tin || "RelayEats") },
         ...name ? [{ name: "organizationName", value: String(name).slice(0, 64) }] : [],
         { name: "countryName", value: "UG" }
       ];
@@ -27909,7 +27909,7 @@ var require_efrisApi = __commonJS({
       try {
         return JSON.parse(body);
       } catch {
-        throw new EfrisError("EFRIS sent an answer Relay could not read");
+        throw new EfrisError("EFRIS sent an answer RelayEats could not read");
       }
     }
     async function post(settings, body) {
@@ -28053,7 +28053,7 @@ var require_efrisApi = __commonJS({
           antifakeCode: "",
           deviceNo: settings.deviceNo,
           issuedDate: ugandaTime(issuedAt),
-          operator: String(operator || "Relay").slice(0, 150),
+          operator: String(operator || "RelayEats").slice(0, 150),
           currency: "UGX",
           oriInvoiceId: "",
           invoiceType: "1",
@@ -28370,7 +28370,7 @@ var require_efris = __commonJS({
       const replaced = !!settings.privateKey;
       Object.assign(settings, {
         privateKey: made.privateKey,
-        keyName: `Made by Relay on ${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`,
+        keyName: `Made by RelayEats on ${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`,
         certificate: made.certificate,
         certificateDer: made.certificateDer,
         certificateValidUntil: made.validUntil,

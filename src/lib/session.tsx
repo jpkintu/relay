@@ -112,11 +112,12 @@ function rememberBrand({ restaurantName, restaurantLogo }: AppInfo) {
 
 // The name to show for the app: the restaurant's, unless it is still the
 // placeholder the server starts with.
-export const restaurantTitle = (name?: string) => (name && name !== 'Restaurant' ? name : 'Relay');
+export const restaurantTitle = (name?: string) =>
+  name && name !== 'Restaurant' ? name : 'RelayEats';
 
 // Only used until the server answers; real values come from Configuration.
 const FALLBACK_INFO: AppInfo = {
-  restaurantName: 'Relay',
+  restaurantName: 'RelayEats',
   ...rememberedBrand(),
   currencySymbol: '',
   currencyCode: '',

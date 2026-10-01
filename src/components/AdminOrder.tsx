@@ -658,7 +658,7 @@ function EfrisPanel({
         <>
           <p className="muted small">
             {view.status === 'failed'
-              ? `Not issued yet: ${view.error || 'EFRIS could not be reached'}. Relay tries again on its own.`
+              ? `Not issued yet: ${view.error || 'EFRIS could not be reached'}. RelayEats tries again on its own.`
               : 'Being sent to EFRIS.'}
           </p>
           <button className="setup-secondary" disabled={busy} onClick={() => void send()}>
