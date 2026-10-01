@@ -2638,6 +2638,53 @@ describe('cash integrity: PINs, one cashier per order, safe handovers, payouts',
     assert.ok(payouts.some((p) => p.kind === 'rider' && p.rider.includes('Pia')));
   });
 
+  test('the cash drawer: openings are recorded; without a sale they need the PIN and a reason', async () => {
+    await rejects(run('logDrawerOpen', { reason: 'sale' }, s.dina), /switched off/);
+    const settings = (await run('adminListSetup', {}, s.owner)).settings;
+    await run(
+      'adminSaveSettings',
+      { ...settings, cashDrawer: true, drawerOnShift: false },
+      s.owner,
+    );
+    const { config } = await run('getMyProfile', {}, s.dina);
+    assert.deepEqual(config.drawer, {
+      onSale: true,
+      onHandover: true,
+      onPayout: true,
+      onShift: false,
+    });
+    await rejects(run('logDrawerOpen', { reason: 'party' }, s.dina), /Unknown reason/);
+    await rejects(run('logDrawerOpen', { reason: 'sale' }, s.pia), /cashier|admin/);
+    const sale = await run('logDrawerOpen', { reason: 'sale', ref: 'abc123' }, s.dina);
+    assert.equal(sale.opened, true);
+    await rejects(
+      run('logDrawerOpen', { reason: 'no_sale', note: 'x', pin: '2244' }, s.dina),
+      /Say why/,
+    );
+    await rejects(
+      run('logDrawerOpen', { reason: 'no_sale', note: 'Change for float', pin: '0000' }, s.dina),
+      /Wrong PIN/,
+    );
+    const noSale = await run(
+      'logDrawerOpen',
+      { reason: 'no_sale', note: 'Change for float', pin: '2244' },
+      s.dina,
+    );
+    assert.equal(noSale.drawerOpens, sale.drawerOpens + 1);
+    assert.equal(noSale.noSaleOpens, 1);
+    const told = (await run('getNotifications', {}, s.owner)).items.find(
+      (n) => n.kind === 'till.no_sale',
+    );
+    assert.match(told.body, /Change for float/);
+    const report = await run('getDrawerOpenings', {}, s.owner);
+    assert.ok(report.items.some((i) => i.reason === 'no_sale' && i.note === 'Change for float'));
+    assert.ok(report.items.some((i) => i.reason === 'sale' && i.ref === 'abc123'));
+    const dina = report.people.find((p) => p.noSale === 1);
+    assert.ok(dina.opens >= 2);
+    await rejects(run('getDrawerOpenings', {}, s.dina), /admin|finance/);
+    await run('adminSaveSettings', { ...settings, cashDrawer: false }, s.owner);
+  });
+
   test('the owner can write off a shortage, reopen a count, or take cash in person', async () => {
     const make = async () => {
       const { id } = await deliveredOrder();
@@ -5866,6 +5913,7 @@ const ACCESS = {
   everyRole: ['getBranches'],
   cashier: ['recordTillPayout'],
   staff: [
+    'logDrawerOpen',
     'confirmHandover',
     'disputeHandover',
     'createCounterOrder',
@@ -5884,6 +5932,7 @@ const ACCESS = {
   ],
   staffOrFinance: ['getTillPayouts', 'getReportOptions', 'getPaymentsLedger', 'issueEfrisReceipt'],
   reports: [
+    'getDrawerOpenings',
     'getProfitAndLoss',
     'getBalanceSheet',
     'getCashFlow',

@@ -4,6 +4,7 @@ import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { usePin } from '../lib/pin';
+import { openDrawer } from '../lib/drawer';
 
 type Shift = {
   id: string;
@@ -41,7 +42,7 @@ export function ShiftPanel({
   onChanged?: () => void;
 }) {
   const money = useMoney();
-  const { timezone } = useConfig();
+  const { timezone, drawer } = useConfig();
   const withPin = usePin();
   const [shift, setShift] = useState<Shift | null>(null),
     [opening, setOpening] = useState(''),
@@ -71,6 +72,8 @@ export function ShiftPanel({
         kind,
         openingFloat: kind === 'cashier' ? Number(opening) : 0,
       });
+      // The opening count: the drawer opens to count into it.
+      if (kind === 'cashier' && drawer?.onShift) void openDrawer('shift');
       await load();
       setNotice('Shift started.');
       setOpening('');

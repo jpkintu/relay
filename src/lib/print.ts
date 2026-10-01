@@ -259,6 +259,13 @@ export async function printOrder(
     kind === 'kitchen'
       ? kitchenTicket(receipt, timezone)
       : customerReceipt(receipt, timezone, currencySymbol, qr);
+  await printHtml(receipt.code, receipt.width, body);
+  return receipt;
+}
+
+// Prints a ticket-sized page through the browser's print dialog (the till's
+// receipt printer). The cash drawer's "printer opens it" mode also uses it.
+export async function printHtml(title: string, width: number, body: string) {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.cssText =
@@ -267,9 +274,7 @@ export async function printOrder(
   const doc = frame.contentDocument!;
   doc.open();
   doc.write(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${escape(receipt.code)}</title><style>${styles(
-      receipt.width,
-    )}</style></head><body>${body}</body></html>`,
+    `<!doctype html><html><head><meta charset="utf-8"><title>${escape(title)}</title><style>${styles(width)}</style></head><body>${body}</body></html>`,
   );
   doc.close();
   // Let the logo load before printing (at most 3 s, so a slow link never
@@ -292,7 +297,6 @@ export async function printOrder(
   frame.contentWindow!.print();
   // Printing is synchronous in most browsers; remove the frame afterwards.
   window.setTimeout(() => frame.remove(), 60000);
-  return receipt;
 }
 
 // For screens: print an order, with an error message if it fails.
