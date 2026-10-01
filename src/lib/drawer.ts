@@ -392,7 +392,7 @@ async function sendBridge(device: DrawerDevice, pin: 2 | 5) {
       pin,
     }),
   }).catch(() => {
-    throw new Error('The Relay print bridge is not running on this computer');
+    throw new Error('The RelayEats print bridge is not running on this computer');
   });
   if (!response.ok) {
     const json = await response.json().catch(() => ({}));

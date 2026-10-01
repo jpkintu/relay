@@ -148,8 +148,8 @@ export function AuthScreen() {
             {error && <p className="form-error">{error}</p>}
             {serverError && (
               <p className="form-error">
-                Can't reach the Relay server functions ({serverError}). Sign-in may still work, but
-                ask your administrator to check the Cloud Code deployment.
+                Can't reach the RelayEats server functions ({serverError}). Sign-in may still work,
+                but ask your administrator to check the Cloud Code deployment.
               </p>
             )}
             <button className="primary-button" disabled={busy}>

@@ -30,8 +30,12 @@ const FIELDS: Record<Provider, [string, string, string][]> = {
       'Collection subscription key (Primary key)',
       'From your MTN MoMo developer profile → Subscriptions → Collections',
     ],
-    ['apiUser', 'API user', 'A UUID. Live: from the MTN partner portal. Test: Relay can create it'],
-    ['apiKey', 'API key', 'Live: from the MTN partner portal. Test: Relay can create it'],
+    [
+      'apiUser',
+      'API user',
+      'A UUID. Live: from the MTN partner portal. Test: RelayEats can create it',
+    ],
+    ['apiKey', 'API key', 'Live: from the MTN partner portal. Test: RelayEats can create it'],
   ],
   airtel: [
     ['clientId', 'Client ID', 'Airtel developer portal → your app → Keys'],
@@ -100,9 +104,9 @@ function ServerAddress() {
         <h2>Server address</h2>
       </div>
       <p className="muted small">
-        The public IP address Relay’s server uses when it calls MTN and Airtel. Airtel asks for it
-        under <b>Server IP Allowed List</b>. Your host may change it; if it does, it is flagged here
-        and you get a notification from the nightly check, so you can update Airtel.
+        The public IP address RelayEats’s server uses when it calls MTN and Airtel. Airtel asks for
+        it under <b>Server IP Allowed List</b>. Your host may change it; if it does, it is flagged
+        here and you get a notification from the nightly check, so you can update Airtel.
       </p>
       {error && <p className="ops-error">{error}</p>}
       {data && !data.ip && (

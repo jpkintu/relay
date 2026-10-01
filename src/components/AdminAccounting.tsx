@@ -307,7 +307,7 @@ function BalanceSheet() {
           }}
         >
           <span>
-            Enter the cash and bank the restaurant had when it started using Relay, so the cash
+            Enter the cash and bank the restaurant had when it started using RelayEats, so the cash
             figure is right.
           </span>
           <input

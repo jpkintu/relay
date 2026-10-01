@@ -69,7 +69,7 @@ export function AdminWhatsApp() {
     <div className="data-page">
       {data.managed ? (
         <p className="section-intro">
-          Every night, when the Z-report is saved, Relay sends its summary (orders, sales, how
+          Every night, when the Z-report is saved, RelayEats sends its summary (orders, sales, how
           customers paid, cash still with riders, till differences) to the numbers below on WhatsApp
           {data.sender ? (
             <>
@@ -83,9 +83,9 @@ export function AdminWhatsApp() {
       ) : (
         <>
           <p className="section-intro">
-            Every night, when the Z-report is saved, Relay can send its summary (orders, sales, how
-            customers paid, cash still with riders, till differences) to your WhatsApp. It uses the
-            WhatsApp Business Cloud API from Meta, with your own WhatsApp Business number.
+            Every night, when the Z-report is saved, RelayEats can send its summary (orders, sales,
+            how customers paid, cash still with riders, till differences) to your WhatsApp. It uses
+            the WhatsApp Business Cloud API from Meta, with your own WhatsApp Business number.
           </p>
           <details className="admin-panel whatsapp-help">
             <summary>Where to find the phone number ID and access token</summary>

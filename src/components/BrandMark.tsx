@@ -29,7 +29,7 @@ export function BrandMark({
     <div className={['brand-mark', onDark ? '' : 'dark', className].filter(Boolean).join(' ')}>
       <div className="brand-row">
         <RelayMark />
-        <span className="brand-name">Relay</span>
+        <span className="brand-name">RelayEats</span>
       </div>
       <span className="brand-credit">
         Powered by <img src={embiroLogo} alt="Embiro" width={52} height={17} />

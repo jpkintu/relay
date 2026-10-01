@@ -1,19 +1,19 @@
-# Relay
+# RelayEats
 
 **From kitchen to doorstep. Cash accounted.**
 
-Relay runs a restaurant's deliveries, counter, kitchen and books on one live
+RelayEats runs a restaurant's deliveries, counter, kitchen and books on one live
 system. Riders take orders at the customer's door on their phone. Cashiers run
 the kitchen board, check payments and count the riders' cash. The owner sees
 every order, payment and shilling across all branches, and the finance team
 keeps the books.
 
-Relay comes in two editions:
+RelayEats comes in two editions:
 
 | Edition                | Branch   | What it is                                                                                                                               |
 | ---------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | **Restaurant edition** | `main`   | One restaurant on its own Back4App app, with its own name, colours and payment accounts.                                                 |
-| **Relay Hosted**       | `hosted` | Many restaurants on one platform. Owners sign up online with a free trial, choose a plan and pay a monthly subscription by mobile money. |
+| **RelayEats Hosted**   | `hosted` | Many restaurants on one platform. Owners sign up online with a free trial, choose a plan and pay a monthly subscription by mobile money. |
 
 Built with React + Vite (`src/`) and Parse Cloud Code (`cloud/`), deployed on
 Back4App. The screenshots below come from a demo restaurant, Mama Rose
@@ -24,7 +24,7 @@ Kitchen, with two branches (Kololo and Ntinda).
 [Kitchen and counter](#kitchen-and-counter) ·
 [Owners](#owners) ·
 [Finance](#finance) ·
-[Relay Hosted](#relay-hosted) ·
+[RelayEats Hosted](#relayeats-hosted) ·
 [Who can do what](#who-can-do-what) ·
 [Development](#development)
 
@@ -32,7 +32,7 @@ Kitchen, with two branches (Kololo and Ntinda).
 
 ## Riders
 
-Riders use Relay on their phone's browser. Nothing needs installing, but it can
+Riders use RelayEats on their phone's browser. Nothing needs installing, but it can
 be added to the home screen to open like an app.
 
 <table>
@@ -79,7 +79,7 @@ be added to the home screen to open like an app.
 - **Cash** lists the cash orders you have delivered but not handed over. Tick
   them, hand the cash to the cashier and confirm with your PIN. The cashier
   counts it and confirms.
-- **Cash limit:** near the limit Relay warns you. At the limit you hand over
+- **Cash limit:** near the limit RelayEats warns you. At the limit you hand over
   before taking new orders.
 - **Report a problem** on any order (a spilled bag, a missing item). The owner
   sees it at once.
@@ -144,7 +144,7 @@ handling it.
 
 **Shifts and the till.** A cashier opens a shift by counting the till float,
 pays out from the till with a reason (**Payouts**), and closes the shift by
-counting the till again. Relay works out what should be there and records any
+counting the till again. RelayEats works out what should be there and records any
 difference.
 
 ---
@@ -192,7 +192,7 @@ latest orders. The **Branch** picker switches everything to one branch.
     <td width="50%"><img src="docs/screenshots/owner-access-rules.jpg" alt="Who can do what"></td>
   </tr>
   <tr>
-    <td valign="top"><b>WhatsApp daily summary.</b> Every night the Z-report is sent to up to 10 numbers through the WhatsApp Business Cloud API. The page explains where to find the phone number ID, a permanent token and the template in Meta. On Relay Hosted the platform's number sends it and owners only enter the numbers.</td>
+    <td valign="top"><b>WhatsApp daily summary.</b> Every night the Z-report is sent to up to 10 numbers through the WhatsApp Business Cloud API. The page explains where to find the phone number ID, a permanent token and the template in Meta. On RelayEats Hosted the platform's number sends it and owners only enter the numbers.</td>
     <td valign="top"><b>Access rules.</b> Who can do what, by role. The server checks the role on every action, whatever the app shows.</td>
   </tr>
 </table>
@@ -233,7 +233,7 @@ so finance can follow up anything not yet issued.
 
 ---
 
-## Relay Hosted
+## RelayEats Hosted
 
 The `hosted` branch runs many restaurants on one platform. Each restaurant's
 data is kept apart, and everything above works the same way.
@@ -254,7 +254,7 @@ finance role, no accounting or reports analytics) and Enterprise
 (UGX 200,000: unlimited branches and team, everything included). Platform
 staff can change them and create new ones.
 
-**Platform console** (`/platform`, for Relay's own staff)
+**Platform console** (`/platform`, for RelayEats's own staff)
 
 <table>
   <tr>
@@ -289,7 +289,7 @@ restaurants and recent changes. See [`docs/HOSTED.md`](docs/HOSTED.md).
 | Cashier        | Username + PIN      | Kitchen board, New order, Cash handovers, Payments, Payouts, Stock                                               |
 | Finance        | Username + PIN      | Overview, Reports, Orders (view only), Payments ledger, Commissions, Accounting, Purchases & expenses, Customers |
 | Owner          | Username + password | Everything above, plus Problems, Team, Branches, Menu, Admin (behind the password again) and the kitchen board   |
-| Platform staff | Username + password | The platform console (Relay Hosted only)                                                                         |
+| Platform staff | Username + password | The platform console (RelayEats Hosted only)                                                                     |
 
 ## Development
 

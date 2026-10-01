@@ -211,7 +211,7 @@ export function MenuImport({
                 checked={removeStarter}
                 onChange={(e) => setOption({ removeStarter: e.target.checked })}
               />
-              Remove the {starterDishes} example dishes Relay started with
+              Remove the {starterDishes} example dishes RelayEats started with
             </label>
           )}
           <button
