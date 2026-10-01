@@ -8663,6 +8663,8 @@ tr.split-row td {
 .downgrade-pending {
   background: var(--warn-soft, #fff7e0);
   line-height: 1.5;
+}
+
 /* Cash drawer */
 .drawer-open {
   display: flex;
