@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Parse from '../parse';
 import { useSession } from '../lib/session';
 import { usePin } from '../lib/pin';
@@ -6,12 +6,20 @@ import {
   DEFAULT_BRIDGE,
   chooseSerialPrinter,
   chooseUsbPrinter,
+  deviceFor,
+  findDevices,
+  hasSavedDevice,
+  isCurrent,
   kickDrawer,
   loadDevice,
+  pickAuto,
   saveDevice,
   supports,
+  watchDevices,
   type DrawerDevice,
   type DrawerMode,
+  type Found,
+  type FoundDevice,
 } from '../lib/drawer';
 
 // Cashier → Drawer: how this till reaches its cash drawer, a test, and
@@ -64,11 +72,45 @@ export function CashierDrawer() {
     setDone('');
     setError('');
   };
-  const choose = async (mode: 'usb' | 'serial') => {
+
+  // Printers this device can reach, kept up to date as they are plugged in
+  // or out. A till never set up uses the first receipt printer found.
+  const [found, setFound] = useState<Found | null>(null);
+  const [searching, setSearching] = useState(false);
+  const search = useCallback(async (scan: boolean) => {
+    setSearching(true);
+    try {
+      const result = await findDevices({ bridgeUrl: loadDevice().bridgeUrl, scan });
+      setFound(result);
+      const auto = pickAuto(result.devices);
+      if (auto && !hasSavedDevice()) {
+        const next = deviceFor(loadDevice(), auto);
+        setDevice(next);
+        saveDevice(next);
+        setDone(`Found ${auto.label} and set it up. Press Test.`);
+      }
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    void search(true);
+    return watchDevices(() => void search(false));
+  }, [enabled, search]);
+  const use = (d: FoundDevice) => {
+    update(deviceFor(device, d));
+    setDone(`Using ${d.label}. Press Test.`);
+  };
+
+  const choose = async (mode: 'usb' | 'serial', all = false) => {
     setError('');
     try {
-      update(mode === 'usb' ? await chooseUsbPrinter(device) : await chooseSerialPrinter(device));
+      update(
+        mode === 'usb' ? await chooseUsbPrinter(device, all) : await chooseSerialPrinter(device),
+      );
       setDone('Printer chosen. Press Test.');
+      void search(false);
     } catch (e) {
       // Closing the browser's list is not an error worth showing.
       if (e instanceof Error && !/No device selected|No port selected|cancel/i.test(e.message))
@@ -163,6 +205,84 @@ export function CashierDrawer() {
             </p>
           </div>
         </div>
+        <div className="drawer-found">
+          <div className="drawer-found-head">
+            <b>Printers found</b>
+            <button
+              className="setup-secondary"
+              disabled={searching}
+              onClick={() => void search(true)}
+            >
+              {searching ? 'Looking…' : 'Look again'}
+            </button>
+          </div>
+          {found && found.devices.length > 0 ? (
+            <ul>
+              {found.devices.map((d) => {
+                const current = isCurrent(device, d);
+                return (
+                  <li key={d.key} className={current ? 'current' : ''}>
+                    <span>
+                      <b>{d.label}</b>
+                      <small className="muted">
+                        {d.mode === 'usb'
+                          ? d.printer
+                            ? 'USB printer'
+                            : 'USB device (may not be a printer)'
+                          : d.mode === 'serial'
+                            ? 'Serial printer'
+                            : 'Network printer, through the print bridge'}
+                      </small>
+                    </span>
+                    {current ? (
+                      <em>In use</em>
+                    ) : (
+                      <button className="setup-secondary" onClick={() => use(d)}>
+                        Use this
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="muted small">
+              {!found || searching
+                ? 'Looking for printers…'
+                : 'No printer found yet. Plug the printer in and switch it on, then add it below.'}
+            </p>
+          )}
+          <p className="muted small">
+            {found?.bridge.running
+              ? `Print bridge ${found.bridge.version || ''} running on this computer${
+                  found.bridge.scanned ? ': it looked for network printers.' : '.'
+                }`
+              : 'No print bridge on this computer: network printers cannot be found (see tools/print-bridge).'}
+            {found?.bridge.error ? ` ${found.bridge.error}` : ''}
+          </p>
+          <div className="platform-actions">
+            {supports.usb() && (
+              <button className="setup-secondary" onClick={() => void choose('usb')}>
+                Add a USB printer
+              </button>
+            )}
+            {supports.serial() && (
+              <button className="setup-secondary" onClick={() => void choose('serial')}>
+                Add a serial printer
+              </button>
+            )}
+            {supports.usb() && (
+              <button className="link-button" onClick={() => void choose('usb', true)}>
+                Not listed? Show every USB device
+              </button>
+            )}
+          </div>
+          <small className="muted">
+            The browser asks once before Relay may use a USB or serial printer; after that it is
+            found by itself whenever it is plugged in.
+          </small>
+        </div>
+
         <div className="drawer-modes" role="radiogroup" aria-label="How the drawer is connected">
           {MODES.map((m) => {
             const unavailable = m.check && !m.check();
