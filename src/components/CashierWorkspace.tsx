@@ -276,15 +276,16 @@ export function CashierWorkspace() {
             <Banknote />
             Payouts
           </button>
-          {/* Always shown: the page explains how to switch the drawer on. */}
-          <button
-            className={tab === 'drawer' ? 'active' : ''}
-            onClick={() => navigate('/cashier/drawer')}
-            title="Drawer"
-          >
-            <Archive />
-            Drawer
-          </button>
+          {config.drawer && (
+            <button
+              className={tab === 'drawer' ? 'active' : ''}
+              onClick={() => navigate('/cashier/drawer')}
+              title="Drawer"
+            >
+              <Archive />
+              Drawer
+            </button>
+          )}
           <button
             className={tab === 'stock' ? 'active' : ''}
             onClick={() => navigate('/cashier/stock')}
