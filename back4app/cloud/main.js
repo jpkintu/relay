@@ -31216,7 +31216,8 @@ var require_emailTemplates = __commonJS({
       overdue: { label: "Overdue", bg: "#fde2e2", fg: "#a11a1a" },
       paid: { label: "Paid", bg: "#dff5e6", fg: "#17653a" },
       news: { label: "From Relay", bg: "#e8eefc", fg: "#1d3fa8" },
-      reward: { label: "Referral reward", bg: "#dff5e6", fg: "#17653a" }
+      reward: { label: "Referral reward", bg: "#dff5e6", fg: "#17653a" },
+      deletion: { label: "Account to be deleted", bg: "#fde2e2", fg: "#a11a1a" }
     };
     var billingRows = [
       row("Plan", "{{{PLAN_NAME}}}"),
@@ -31513,6 +31514,48 @@ var require_emailTemplates = __commonJS({
           "",
           "{{{SUPPORT_LINE}}}"
         ].join("\n")
+      },
+      account_deletion: {
+        label: "Account to be deleted",
+        when: "A few days (Delete warning, platform settings) before the data of a restaurant that stopped paying is deleted.",
+        subject: "{{{RESTAURANT_NAME}}}: your Relay account will be deleted on {{{DELETE_ON}}}",
+        variables: [...COMMON, "PLAN_NAME", "AMOUNT", "CLOSED_ON", "DELETE_ON", "BILLING_URL"],
+        html: layout({
+          title: "Account to be deleted",
+          preheader: "Renew by {{{DELETE_ON}}} to keep your menu, orders, staff and reports. After that they are deleted.",
+          tag: TAGS.deletion,
+          heading: "Your Relay account will be deleted on {{{DELETE_ON}}}",
+          blocks: [
+            para("Hello {{{OWNER_NAME}}},"),
+            para(
+              "Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed. If it is not renewed by <strong>{{{DELETE_ON}}}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports."
+            ),
+            details([
+              row("Plan", "{{{PLAN_NAME}}}"),
+              row("A month", "{{{AMOUNT}}}"),
+              row("Closed since", "{{{CLOSED_ON}}}"),
+              row("Deleted on", "{{{DELETE_ON}}}")
+            ]),
+            button("Renew to keep it", "{{{BILLING_URL}}}"),
+            small(
+              "Sign in as the owner and pay in Admin \u2192 Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact Relay support before that date."
+            )
+          ]
+        }),
+        text: [
+          "Hello {{{OWNER_NAME}}},",
+          "",
+          "Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed.",
+          "If it is not renewed by {{{DELETE_ON}}}, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.",
+          "",
+          "Plan: {{{PLAN_NAME}}}",
+          "A month: {{{AMOUNT}}}",
+          "",
+          "Renew in Admin \u2192 Billing to keep it: {{{BILLING_URL}}}",
+          "Your invoices and receipts for past payments are kept either way.",
+          "",
+          "{{{SUPPORT_LINE}}}"
+        ].join("\n")
       }
     };
     var SAMPLE = {
@@ -31543,7 +31586,9 @@ var require_emailTemplates = __commonJS({
       SUBJECT: "New: WhatsApp daily summaries",
       MESSAGE: "Your end-of-day Z-report can now reach you on WhatsApp.\nTurn it on in Admin \u2192 WhatsApp.",
       REFERRED_NAME: "Mama Rose Kitchen",
-      MONTHS_TEXT: "1 month"
+      MONTHS_TEXT: "1 month",
+      CLOSED_ON: "1 September 2026",
+      DELETE_ON: "4 October 2026"
     };
     var escapeHtml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     function fill(template, variables, escape2 = (value) => value) {
@@ -32816,6 +32861,299 @@ var require_platformAccounting = __commonJS({
   }
 });
 
+// cloud/lib/retention.js
+var require_retention = __commonJS({
+  "cloud/lib/retention.js"(exports2, module2) {
+    "use strict";
+    var { accessOf } = require_access();
+    var DAY = 864e5;
+    var DEFAULTS = { deleteAfterDays: 30, deleteWarnDays: 3 };
+    var settingsOf = (platform = {}) => ({
+      deleteAfterDays: Number(platform.deleteAfterDays ?? DEFAULTS.deleteAfterDays),
+      deleteWarnDays: Number(platform.deleteWarnDays ?? DEFAULTS.deleteWarnDays),
+      graceDays: Number(platform.graceDays || 0)
+    });
+    function closedAt(row, graceDays, now = Date.now()) {
+      if (row.get("suspended") === true || row.get("deleted") === true) return null;
+      const access = accessOf(row, graceDays, now);
+      if (access.ok) return null;
+      if (access.payFirst || !access.until) return row.createdAt || null;
+      return new Date(access.until.getTime() + graceDays * DAY);
+    }
+    function deletionOf(row, platform, now = Date.now()) {
+      const s = settingsOf(platform);
+      if (!(s.deleteAfterDays > 0) || row.get("neverDelete") === true) return null;
+      const closed = closedAt(row, s.graceDays, now);
+      if (!closed) return null;
+      const planned = closed.getTime() + s.deleteAfterDays * DAY;
+      const warnedAt = row.get("deletionWarnedAt");
+      const warned = warnedAt && warnedAt.getTime() >= closed.getTime() ? warnedAt : null;
+      const notice = s.deleteWarnDays * DAY;
+      const deleteAt = warned ? Math.max(planned, warned.getTime() + notice) : planned;
+      return {
+        closedAt: closed,
+        warnAt: new Date(planned - notice),
+        deleteAt: new Date(deleteAt),
+        warned
+      };
+    }
+    function deletionStep(row, platform, now = Date.now()) {
+      const state = deletionOf(row, platform, now);
+      if (!state) return null;
+      if (!state.warned) return now >= state.warnAt.getTime() ? "warn" : null;
+      return now >= state.deleteAt.getTime() ? "delete" : null;
+    }
+    module2.exports = { DEFAULTS, deletionOf, deletionStep, closedAt };
+  }
+});
+
+// cloud/purge.js
+var require_purge = __commonJS({
+  "cloud/purge.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, audit, forbidden, invalid } = require_core();
+    var tenancy = require_tenant();
+    var { log } = require_log();
+    var { deletionOf, deletionStep } = require_retention();
+    var errorMessage = (error) => String(error?.message || error);
+    var tenantPointer = (id) => ({ __type: "Pointer", className: "Restaurant", objectId: id });
+    function filesOf(object) {
+      const files = [];
+      for (const value of Object.values(object.attributes || {}))
+        if (value instanceof Parse.File && value.url()) files.push(value);
+      return files;
+    }
+    async function destroyFiles(files) {
+      let destroyed = 0;
+      for (const file of files) {
+        try {
+          await file.destroy(MASTER);
+          destroyed += 1;
+        } catch (error) {
+          log("warn", "purge.file_failed", { message: errorMessage(error) });
+        }
+      }
+      return destroyed;
+    }
+    async function destroyAllOf(makeQuery, files) {
+      let count = 0;
+      for (; ; ) {
+        const query = makeQuery();
+        query.limit(500);
+        const rows = await tenancy.withoutTenant(() => query.find(MASTER));
+        if (!rows.length) return count;
+        for (const row of rows) files.push(...filesOf(row));
+        await tenancy.withoutTenant(() => Parse.Object.destroyAll(rows, MASTER));
+        count += rows.length;
+      }
+    }
+    var ORDER = [
+      "OrderItem",
+      "Order",
+      "DemoOrder",
+      "CashHandover",
+      "TillPayout",
+      "Shift",
+      "ZReport",
+      "Purchase",
+      "Expense",
+      "Supplier",
+      "Customer",
+      "Accompaniment",
+      "MenuItem",
+      "MenuCategory",
+      "Branch",
+      "Notification",
+      "PushSubscription",
+      "Counter",
+      "ErrorLog",
+      "AdminUnlock",
+      "Secret",
+      "Configuration",
+      "AuditLog"
+    ];
+    async function eraseRestaurant(row, { keepPayments }) {
+      const id = row.id;
+      const counts = {};
+      const files = [];
+      const scoped = (className) => () => {
+        const query = new Parse.Query(className);
+        query.equalTo("tenant", tenantPointer(id));
+        return query;
+      };
+      const classes = [...ORDER, ...[...tenancy.SCOPED].filter((c) => !ORDER.includes(c))].filter(
+        (c) => c !== "_User" && c !== "SubscriptionPayment"
+      );
+      for (const className of classes) {
+        const n = await destroyAllOf(scoped(className), files);
+        if (n) counts[className] = n;
+      }
+      const staff = () => new Parse.Query(Parse.User).equalTo("tenant", tenantPointer(id));
+      const sessions = await destroyAllOf(
+        () => new Parse.Query(Parse.Session).matchesQuery("user", staff()),
+        files
+      );
+      if (sessions) counts.sessions = sessions;
+      const users = await destroyAllOf(staff, files);
+      if (users) counts.users = users;
+      const roles = await destroyAllOf(() => {
+        const query = new Parse.Query(Parse.Role);
+        query.containedIn(
+          "name",
+          tenancy.BASE_ROLES.map((base) => tenancy.roleName(base, id))
+        );
+        return query;
+      }, files);
+      if (roles) counts.roles = roles;
+      const markers = await destroyAllOf(() => {
+        const query = new Parse.Query("Counter");
+        query.doesNotExist("tenant");
+        query.startsWith("key", `email:${id}:`);
+        return query;
+      }, files);
+      if (markers) counts.markers = markers;
+      if (!keepPayments) {
+        const payments = await destroyAllOf(scoped("SubscriptionPayment"), files);
+        if (payments) counts.SubscriptionPayment = payments;
+      }
+      counts.files = await destroyFiles(files);
+      return counts;
+    }
+    var closedCode = (id) => `deleted-${id.toLowerCase()}-${Date.now().toString(36)}`.slice(0, 30);
+    async function deleteRestaurant(row, { keepPayments, actor = null, reason }) {
+      const before = {
+        name: row.get("name"),
+        code: row.get("code"),
+        ownerName: row.get("ownerName") || "",
+        ownerEmail: row.get("ownerEmail") || "",
+        plan: row.get("plan") || "",
+        paidUntil: row.get("paidUntil") || null
+      };
+      row.set("suspended", true);
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      tenancy.clearCache();
+      const counts = await eraseRestaurant(row, { keepPayments });
+      if (keepPayments) {
+        row.set({
+          deleted: true,
+          deletedAt: /* @__PURE__ */ new Date(),
+          deletedCode: before.code,
+          code: closedCode(row.id),
+          ownerEmail: "",
+          billingPhone: "",
+          note: ""
+        });
+        for (const field of [
+          "resetTokenHash",
+          "resetTokenExpires",
+          "offer",
+          "referralCredit",
+          "nextPlan",
+          "nextPlanFrom",
+          "nextPlanKeep",
+          "deletionWarnedAt"
+        ])
+          row.unset(field);
+        await tenancy.withoutTenant(() => row.save(null, MASTER));
+      } else {
+        await tenancy.withoutTenant(() => row.destroy(MASTER));
+      }
+      tenancy.clearCache();
+      await tenancy.withoutTenant(
+        () => audit(actor, "platform.restaurant_deleted", row, before, { reason, keepPayments, counts })
+      );
+      log("info", "platform.restaurant_deleted", { restaurant: row.id, reason, keepPayments, counts });
+      return counts;
+    }
+    async function warn(row, platform) {
+      const state = deletionOf(row, platform);
+      const deleteOn = new Date(
+        Math.max(
+          state.deleteAt.getTime(),
+          Date.now() + Number(platform.deleteWarnDays ?? 3) * 864e5
+        )
+      );
+      row.set("deletionWarnedAt", /* @__PURE__ */ new Date());
+      await tenancy.withoutTenant(() => row.save(null, MASTER));
+      if (!row.get("ownerEmail")) return false;
+      const { dateText, moneyText } = require_emailTemplates();
+      const restaurants = require_restaurants();
+      const plan = restaurants.renewalPlanOf(row, platform);
+      return require_platformEmail().emailOwner(
+        row,
+        "account_deletion",
+        {
+          PLAN_NAME: plan.name,
+          AMOUNT: moneyText(restaurants.priceOf(row, platform, plan), platform.currency),
+          CLOSED_ON: dateText(state.closedAt),
+          DELETE_ON: dateText(deleteOn)
+        },
+        platform
+      );
+    }
+    var running = false;
+    async function retentionSweep() {
+      if (running) return { warned: 0, deleted: 0 };
+      running = true;
+      try {
+        const { values: platform } = await require_restaurants().platformSettings();
+        const query = new Parse.Query("Restaurant");
+        query.notEqualTo("deleted", true);
+        query.notEqualTo("suspended", true);
+        const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
+        let warned = 0;
+        let deleted = 0;
+        for (const row of rows) {
+          try {
+            const step = deletionStep(row, platform);
+            if (step === "warn") {
+              await warn(row, platform);
+              warned += 1;
+            } else if (step === "delete") {
+              await deleteRestaurant(row, { keepPayments: true, reason: "inactive" });
+              deleted += 1;
+            }
+          } catch (error) {
+            log("error", "purge.restaurant_failed", {
+              restaurant: row.id,
+              message: errorMessage(error)
+            });
+          }
+        }
+        return { warned, deleted };
+      } finally {
+        running = false;
+      }
+    }
+    function retentionDue() {
+      const ms = Number(process.env.RELAY_RETENTION_CHECK_MS ?? 36e5);
+      if (!tenancy.withoutTenant(() => require_throttle().due("retention", ms))) return;
+      void tenancy.withoutTenant(() => retentionSweep()).catch((error) => log("warn", "purge.sweep_failed", { message: errorMessage(error) }));
+    }
+    Parse.Cloud.define("platformDeleteRestaurant", async (request) => {
+      const actor = await require_restaurants().requirePlatform(request);
+      const p = request.params || {};
+      const row = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(String(p.id || ""), MASTER).catch(() => null)
+      );
+      if (!row) throw invalid("Restaurant not found");
+      const everything = p.everything === true;
+      if (row.get("deleted") === true && !everything)
+        throw invalid("This restaurant\u2019s data is already deleted");
+      const code = row.get("deleted") ? row.get("deletedCode") : row.get("code");
+      if (String(p.confirm || "").trim().toLowerCase() !== String(code).toLowerCase())
+        throw forbidden(`Type the restaurant code (${code}) to confirm`);
+      const counts = await deleteRestaurant(row, {
+        keepPayments: !everything,
+        actor,
+        reason: everything ? "test" : "platform"
+      });
+      return { counts, everything };
+    });
+    module2.exports = { deleteRestaurant, eraseRestaurant, retentionSweep, retentionDue };
+  }
+});
+
 // cloud/billing.js
 var require_billing = __commonJS({
   "cloud/billing.js"(exports2, module2) {
@@ -33525,7 +33863,9 @@ var require_billing = __commonJS({
     var billingCheckMs = () => Number(process.env.RELAY_BILLING_CHECK_MS ?? 3e5);
     function billingDue() {
       const tenant = tenancy.current();
-      if (!tenant || !due("billing", billingCheckMs())) return;
+      if (!tenant) return;
+      require_purge().retentionDue();
+      if (!due("billing", billingCheckMs())) return;
       void (async () => {
         for (const payment of await pendingPayments()) await refresh(payment);
         const { values: platform } = await platformSettings();
@@ -33547,7 +33887,8 @@ var require_billing = __commonJS({
         reminded += await remind(row, platform);
       });
       const posted = await require_platformAccounting().autoPostMonths();
-      return `${checked} payments checked, ${reminded} reminders sent, ${posted} months posted to Zoho`;
+      const { warned, deleted } = await require_purge().retentionSweep();
+      return `${checked} payments checked, ${reminded} reminders sent, ${posted} months posted to Zoho, ${warned} restaurants warned of deletion, ${deleted} deleted`;
     });
     module2.exports = { billingDue, emailStage };
   }
@@ -34509,7 +34850,14 @@ var require_security = __commonJS({
         // What stays when it starts: { branches: [ids], members: [ids] }.
         nextPlanKeep: "Object",
         // The restaurant as a customer in Zoho Books.
-        zohoContactId: S
+        zohoContactId: S,
+        // Deleting (purge.js): never automatically; warned of deletion; data
+        // deleted (payments kept) and the code it had.
+        neverDelete: B,
+        deletionWarnedAt: D,
+        deleted: B,
+        deletedAt: D,
+        deletedCode: S
       },
       SubscriptionPayment: {
         amount: N,
@@ -34597,6 +34945,8 @@ var require_security = __commonJS({
         billingFrom: S,
         referralPercent: N,
         referralMonths: N,
+        deleteAfterDays: N,
+        deleteWarnDays: N,
         // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
         whatsapp: "Object",
         // The email service (lib/email.js), API key included.
@@ -35658,7 +36008,12 @@ var require_restaurants = __commonJS({
       // Referral codes (offers.js): what the new restaurant saves on its first
       // payment, and the free months the restaurant that referred it gets.
       referralPercent: 10,
-      referralMonths: 1
+      referralMonths: 1,
+      // Restaurants that stopped paying (lib/retention.js): their data is
+      // deleted this many days after the app closes (0: never), the owner warned
+      // by email this many days before.
+      deleteAfterDays: 30,
+      deleteWarnDays: 3
     };
     async function platformSettings() {
       const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
@@ -35977,6 +36332,7 @@ var require_restaurants = __commonJS({
       orders.equalTo("tenant", pointerTo(row));
       orders.greaterThanOrEqualTo("createdAt", since);
       const [staffCount, orders30] = await Promise.all([staff.count(MASTER), orders.count(MASTER)]);
+      const deletion = require_retention().deletionOf(row, platform);
       return {
         ...summarise(row, platform),
         ownerName: row.get("ownerName") || "",
@@ -35987,11 +36343,23 @@ var require_restaurants = __commonJS({
         note: row.get("note") || "",
         createdAt: row.createdAt.toISOString(),
         staff: staffCount,
-        orders30
+        orders30,
+        // Deleting (purge.js): data already deleted (payments kept), never
+        // deleted automatically, or when it will be.
+        deleted: row.get("deleted") === true,
+        deletedAt: row.get("deletedAt")?.toISOString() || null,
+        deletedCode: row.get("deletedCode") || "",
+        neverDelete: row.get("neverDelete") === true,
+        deletion: deletion ? {
+          closedAt: deletion.closedAt.toISOString(),
+          warnedAt: deletion.warned?.toISOString() || null,
+          deleteAt: deletion.deleteAt.toISOString()
+        } : null
       };
     }
     Parse.Cloud.define("platformListRestaurants", async (request) => {
       await requirePlatform(request);
+      require_purge().retentionDue();
       const { values: platform } = await platformSettings();
       const query = new Parse.Query("Restaurant");
       const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
@@ -36021,7 +36389,8 @@ var require_restaurants = __commonJS({
         "paidUntil",
         "suspended",
         "note",
-        "ownerEmail"
+        "ownerEmail",
+        "neverDelete"
       ];
       const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
       if ("plan" in p) {
@@ -36048,6 +36417,7 @@ var require_restaurants = __commonJS({
         else row.unset("paidUntil");
       }
       if ("suspended" in p) row.set("suspended", p.suspended === true);
+      if ("neverDelete" in p) row.set("neverDelete", p.neverDelete === true);
       if ("ownerEmail" in p) {
         const email = String(p.ownerEmail || "").trim().toLowerCase();
         if (email && !require_email().validEmail(email))
@@ -36139,6 +36509,20 @@ var require_restaurants = __commonJS({
           0,
           12,
           "Referral reward: 0 to 12 months"
+        ),
+        deleteAfterDays: referralSetting(
+          p.deleteAfterDays,
+          before.deleteAfterDays,
+          0,
+          3650,
+          "Delete after: 0 (never) to 3650 days"
+        ),
+        deleteWarnDays: referralSetting(
+          p.deleteWarnDays,
+          before.deleteWarnDays,
+          1,
+          30,
+          "Warn before deleting: 1 to 30 days"
         ),
         billingFrom: String(p.billingFrom ?? before.billingFrom ?? "").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 8).join("\n").slice(0, 600)
       });
@@ -39306,7 +39690,8 @@ var require_platformRevenue = __commonJS({
       const now = Date.now();
       const [restaurants, payments] = await tenancy.withoutTenant(
         () => Promise.all([
-          new Parse.Query("Restaurant").findAll({ ...MASTER, batchSize: 500 }),
+          // Restaurants whose data was deleted are not counted (their payments are).
+          new Parse.Query("Restaurant").notEqualTo("deleted", true).findAll({ ...MASTER, batchSize: 500 }),
           new Parse.Query("SubscriptionPayment").equalTo("status", "paid").findAll({ ...MASTER, batchSize: 1e3 })
         ])
       );
@@ -40936,3 +41321,4 @@ require_reports2();
 require_owner();
 require_overrides();
 require_profile();
+require_purge();

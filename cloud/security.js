@@ -534,6 +534,13 @@ const SCHEMAS = {
     nextPlanKeep: 'Object',
     // The restaurant as a customer in Zoho Books.
     zohoContactId: S,
+    // Deleting (purge.js): never automatically; warned of deletion; data
+    // deleted (payments kept) and the code it had.
+    neverDelete: B,
+    deletionWarnedAt: D,
+    deleted: B,
+    deletedAt: D,
+    deletedCode: S,
   },
   SubscriptionPayment: {
     amount: N,
@@ -621,6 +628,8 @@ const SCHEMAS = {
     billingFrom: S,
     referralPercent: N,
     referralMonths: N,
+    deleteAfterDays: N,
+    deleteWarnDays: N,
     // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
     whatsapp: 'Object',
     // The email service (lib/email.js), API key included.

@@ -28,6 +28,10 @@ type Settings = {
   billingFrom: string;
   referralPercent: number;
   referralMonths: number;
+  // Restaurants that stopped paying: data deleted this many days after the
+  // app closes (0: never), the owner warned this many days before.
+  deleteAfterDays: number;
+  deleteWarnDays: number;
 };
 type Row = RestaurantSummary & {
   ownerName: string;
@@ -38,6 +42,13 @@ type Row = RestaurantSummary & {
   createdAt: string;
   staff: number;
   orders30: number;
+  // Data deleted (subscription payments kept), never deleted automatically,
+  // or when it will be.
+  deleted: boolean;
+  deletedAt: string | null;
+  deletedCode: string;
+  neverDelete: boolean;
+  deletion: { closedAt: string; warnedAt: string | null; deleteAt: string } | null;
 };
 type Change = {
   at: string;
@@ -217,8 +228,14 @@ export function PlatformConsole() {
                           </td>
                           <td>
                             <span className={`status-pill status-${r.status}`}>
-                              {STATUS[r.status]}
+                              {r.deleted ? 'Data deleted' : STATUS[r.status]}
                             </span>
+                            {r.deletion && (
+                              <small className="cell-sub danger-text">
+                                Deleted on {day(r.deletion.deleteAt)}
+                                {r.deletion.warnedAt ? ' · owner warned' : ''}
+                              </small>
+                            )}
                           </td>
                           <td>
                             {day(r.until)}
@@ -253,6 +270,10 @@ export function PlatformConsole() {
                   void load();
                 }}
                 onClose={() => setSelected(null)}
+                onDeleted={() => {
+                  setSelected(null);
+                  void load();
+                }}
               />
             )}
           </>
@@ -370,11 +391,13 @@ function RestaurantEditor({
   settings,
   onSaved,
   onClose,
+  onDeleted,
 }: {
   row: Row;
   settings: Settings;
   onSaved: (row: Row) => void;
   onClose: () => void;
+  onDeleted: () => void;
 }) {
   const [price, setPrice] = useState(row.priceOverride === null ? '' : String(row.priceOverride));
   const [plan, setPlan] = useState(row.plan || '');
@@ -451,103 +474,214 @@ function RestaurantEditor({
           Close
         </button>
       </div>
-      <form className="platform-form" onSubmit={submit}>
-        <label className="setup-field">
-          Plan
-          <select value={plan} onChange={(e) => setPlan(e.target.value)}>
-            {settings.plans.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.name} ({formatMoney(p.price, settings.currency)})
-                {p.active ? '' : ' · not offered'}
-              </option>
-            ))}
-          </select>
-          <small>Limits and parts of the app come with the plan (Plans below).</small>
-        </label>
-        <label className="setup-field">
-          Monthly price ({row.currency})
-          <input
-            inputMode="numeric"
-            value={price}
-            onChange={(e) => setPrice(e.target.value.replace(/[^\d]/g, ''))}
-            placeholder={`Plan price: ${formatMoney(
-              settings.plans.find((p) => p.key === plan)?.price ?? 0,
-              settings.currency,
-            )}`}
-          />
-          <small>Leave empty for the plan's price. A negotiated price, higher or lower.</small>
-        </label>
-        <label className="setup-field">
-          Trial ends
-          <input type="date" value={trialEndsAt} onChange={(e) => setTrialEndsAt(e.target.value)} />
-        </label>
-        <label className="setup-field">
-          Paid until
-          <input type="date" value={paidUntil} onChange={(e) => setPaidUntil(e.target.value)} />
-          <small>To correct it. Payments below move it on by themselves.</small>
-        </label>
-        <label className="setup-field">
-          Owner email
-          <input
-            type="email"
-            value={ownerEmail}
-            onChange={(e) => setOwnerEmail(e.target.value)}
-            placeholder="owner@example.com"
-          />
-          <small>
-            Password reset links and Relay&apos;s emails go here.
-            {row.ownerEmail && (
-              <>
-                {' '}
-                <a href={`mailto:${row.ownerEmail}`}>Write to them</a>
-              </>
-            )}
-          </small>
-        </label>
-        <label className="setup-field platform-note">
-          Note (only you see it)
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} />
-        </label>
-        {error && <p className="form-error">{error}</p>}
-        {done && <p className="form-success">{done}</p>}
-        <div className="platform-actions">
-          <button className="primary-button" disabled={busy}>
-            {busy ? 'Saving…' : 'Save changes'}
-          </button>
-          <button
-            type="button"
-            className={row.suspended ? 'secondary-button' : 'danger-button'}
-            disabled={busy}
-            onClick={() => {
-              if (
-                row.suspended ||
-                window.confirm(
-                  `Suspend ${row.name}? Nobody there can sign in until you lift it. Nothing is deleted.`,
+      {row.deleted ? (
+        <p className="muted">
+          Its data was deleted on {day(row.deletedAt)} (code {row.deletedCode}). Only its
+          subscription payments are kept, for the accounts.
+        </p>
+      ) : (
+        <form className="platform-form" onSubmit={submit}>
+          <label className="setup-field">
+            Plan
+            <select value={plan} onChange={(e) => setPlan(e.target.value)}>
+              {settings.plans.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.name} ({formatMoney(p.price, settings.currency)})
+                  {p.active ? '' : ' · not offered'}
+                </option>
+              ))}
+            </select>
+            <small>Limits and parts of the app come with the plan (Plans below).</small>
+          </label>
+          <label className="setup-field">
+            Monthly price ({row.currency})
+            <input
+              inputMode="numeric"
+              value={price}
+              onChange={(e) => setPrice(e.target.value.replace(/[^\d]/g, ''))}
+              placeholder={`Plan price: ${formatMoney(
+                settings.plans.find((p) => p.key === plan)?.price ?? 0,
+                settings.currency,
+              )}`}
+            />
+            <small>Leave empty for the plan's price. A negotiated price, higher or lower.</small>
+          </label>
+          <label className="setup-field">
+            Trial ends
+            <input
+              type="date"
+              value={trialEndsAt}
+              onChange={(e) => setTrialEndsAt(e.target.value)}
+            />
+          </label>
+          <label className="setup-field">
+            Paid until
+            <input type="date" value={paidUntil} onChange={(e) => setPaidUntil(e.target.value)} />
+            <small>To correct it. Payments below move it on by themselves.</small>
+          </label>
+          <label className="setup-field">
+            Owner email
+            <input
+              type="email"
+              value={ownerEmail}
+              onChange={(e) => setOwnerEmail(e.target.value)}
+              placeholder="owner@example.com"
+            />
+            <small>
+              Password reset links and Relay&apos;s emails go here.
+              {row.ownerEmail && (
+                <>
+                  {' '}
+                  <a href={`mailto:${row.ownerEmail}`}>Write to them</a>
+                </>
+              )}
+            </small>
+          </label>
+          <label className="setup-field platform-note">
+            Note (only you see it)
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} />
+          </label>
+          {error && <p className="form-error">{error}</p>}
+          {done && <p className="form-success">{done}</p>}
+          <div className="platform-actions">
+            <button className="primary-button" disabled={busy}>
+              {busy ? 'Saving…' : 'Save changes'}
+            </button>
+            <button
+              type="button"
+              className={row.suspended ? 'secondary-button' : 'danger-button'}
+              disabled={busy}
+              onClick={() => {
+                if (
+                  row.suspended ||
+                  window.confirm(
+                    `Suspend ${row.name}? Nobody there can sign in until you lift it. Nothing is deleted.`,
+                  )
                 )
-              )
-                void save({ suspended: !row.suspended });
-            }}
-          >
-            {row.suspended ? 'Lift the suspension' : 'Suspend'}
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            onClick={() => void resetOwner()}
-          >
-            Reset owner password
-          </button>
-        </div>
-        {reset && (
-          <p className="platform-reset" role="status">
-            New password for <b>{reset.username}</b>: <code>{reset.password}</code>. Tell the owner;
-            it is shown only now. They can change it under their profile after signing in.
-          </p>
-        )}
-      </form>
+                  void save({ suspended: !row.suspended });
+              }}
+            >
+              {row.suspended ? 'Lift the suspension' : 'Suspend'}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => void resetOwner()}
+            >
+              Reset owner password
+            </button>
+          </div>
+          {reset && (
+            <p className="platform-reset" role="status">
+              New password for <b>{reset.username}</b>: <code>{reset.password}</code>. Tell the
+              owner; it is shown only now. They can change it under their profile after signing in.
+            </p>
+          )}
+          <label className="setup-checkbox platform-note">
+            <input
+              type="checkbox"
+              checked={row.neverDelete}
+              disabled={busy}
+              onChange={(e) => void save({ neverDelete: e.target.checked })}
+            />{' '}
+            Never delete automatically
+            <small className="muted">
+              {row.neverDelete
+                ? ' Kept however long it goes unpaid.'
+                : row.deletion
+                  ? ` Unpaid since ${day(row.deletion.closedAt)}: its data is deleted on ${day(
+                      row.deletion.deleteAt,
+                    )} unless it pays${row.deletion.warnedAt ? ` (owner warned ${day(row.deletion.warnedAt)})` : ''}.`
+                  : settings.deleteAfterDays > 0
+                    ? ` Otherwise deleted ${settings.deleteAfterDays} days after the app closes for lack of payment.`
+                    : ' Automatic deletion is off (Settings).'}
+            </small>
+          </label>
+        </form>
+      )}
       <Payments row={row} onRecorded={onSaved} />
+      <DeleteRestaurant row={row} onDeleted={onDeleted} />
     </section>
+  );
+}
+
+// Deleting a restaurant: a test one completely, a real one keeping its
+// subscription payments. The code must be typed to confirm.
+function DeleteRestaurant({ row, onDeleted }: { row: Row; onDeleted: () => void }) {
+  const code = row.deleted ? row.deletedCode : row.code;
+  const [everything, setEverything] = useState(row.deleted);
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const run = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('platformDeleteRestaurant', { id: row.id, confirm, everything });
+      onDeleted();
+    } catch (e) {
+      setError(message(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="platform-delete">
+      <h3>{row.deleted ? 'Remove completely' : 'Delete this restaurant'}</h3>
+      {!row.deleted && (
+        <div className="platform-delete-choice" role="radiogroup" aria-label="What to delete">
+          <label className={`drawer-mode${everything ? ' chosen' : ''}`}>
+            <input type="radio" checked={everything} onChange={() => setEverything(true)} />
+            <span>
+              <b>Everything (a test restaurant)</b>
+              <small>
+                Every record, staff account, image, order and transaction, its subscription payments
+                and the restaurant itself. Nothing is left.
+              </small>
+            </span>
+          </label>
+          <label className={`drawer-mode${!everything ? ' chosen' : ''}`}>
+            <input type="radio" checked={!everything} onChange={() => setEverything(false)} />
+            <span>
+              <b>Its data, keeping its subscription payments</b>
+              <small>
+                For a real restaurant that left: everything goes except the payments it made to
+                Relay (and the invoices from them), which stay in Accounting under its name.
+              </small>
+            </span>
+          </label>
+        </div>
+      )}
+      {row.deleted && (
+        <p className="muted">
+          Also deletes its subscription payments and the restaurant itself: they leave Accounting
+          and the revenue figures.
+        </p>
+      )}
+      <label className="setup-field">
+        <span>
+          Type <b>{code}</b> to confirm
+        </span>
+        <input
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </label>
+      {error && <p className="form-error">{error}</p>}
+      <div className="platform-actions">
+        <button
+          type="button"
+          className="danger-button"
+          disabled={busy || confirm.trim().toLowerCase() !== code.toLowerCase()}
+          onClick={() => void run()}
+        >
+          {busy ? 'Deleting…' : 'Delete for good'}
+        </button>
+        <small className="muted">This cannot be undone.</small>
+      </div>
+    </div>
   );
 }
 
@@ -790,6 +924,8 @@ function SettingsForm({
     billingFrom: settings.billingFrom || '',
     referralPercent: String(settings.referralPercent ?? 10),
     referralMonths: String(settings.referralMonths ?? 1),
+    deleteAfterDays: String(settings.deleteAfterDays ?? 30),
+    deleteWarnDays: String(settings.deleteWarnDays ?? 3),
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -811,6 +947,8 @@ function SettingsForm({
         billingFrom: form.billingFrom,
         referralPercent: Number(form.referralPercent),
         referralMonths: Number(form.referralMonths),
+        deleteAfterDays: Number(form.deleteAfterDays),
+        deleteWarnDays: Number(form.deleteWarnDays),
       });
       setDone('Saved.');
       onSaved(saved);
@@ -859,6 +997,23 @@ function SettingsForm({
           Referral reward (free months)
           <input inputMode="numeric" value={form.referralMonths} onChange={set('referralMonths')} />
           <small>For the restaurant whose code was used, once the new one has paid.</small>
+        </label>
+        <label className="setup-field">
+          Delete unpaid restaurants after (days)
+          <input
+            inputMode="numeric"
+            value={form.deleteAfterDays}
+            onChange={set('deleteAfterDays')}
+          />
+          <small>
+            Counted from when the app closes for lack of payment. Their data is deleted; their
+            subscription payments are kept. 0: never.
+          </small>
+        </label>
+        <label className="setup-field">
+          Warn the owner (days before)
+          <input inputMode="numeric" value={form.deleteWarnDays} onChange={set('deleteWarnDays')} />
+          <small>By email (Account to be deleted). Never deleted sooner after the warning.</small>
         </label>
         <label className="setup-field platform-note">
           Invoices and receipts are from

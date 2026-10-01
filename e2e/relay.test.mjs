@@ -26,6 +26,8 @@ process.env.RELAY_Z_CHECK_MS = '-1';
 process.env.RELAY_UPKEEP_CHECK_MS = '-1';
 // And the subscription follow-ups on the owner's activity (Relay Hosted).
 process.env.RELAY_BILLING_CHECK_MS = '-1';
+// Deleting unpaid restaurants in the background: only where a test asks.
+process.env.RELAY_RETENTION_CHECK_MS = '-1';
 
 const PORT = 1338;
 const APP_ID = 'relay-e2e';
@@ -5987,6 +5989,7 @@ const ACCESS = {
     'platformRecordPayment',
     'platformListPayments',
     'platformResetOwner',
+    'platformDeleteRestaurant',
     'platformApplySecurity',
     'platformListErrors',
     'platformResolveErrors',
@@ -8240,5 +8243,181 @@ describe('platform accounting: earned vs received, and Zoho Books (Relay Hosted)
     await run('platformSaveZoho', { autoSync: false }, ops);
     const off = await run('platformDisconnectZoho', {}, ops);
     assert.equal(off.connected, false);
+  });
+});
+
+describe('deleting restaurants (Relay Hosted)', () => {
+  let ops;
+  const M = { useMasterKey: true };
+  const DAY = 86400000;
+  const when = (days) => new Date(Date.now() + days * DAY).toISOString();
+  const pointer = (id) => ({ __type: 'Pointer', className: 'Restaurant', objectId: id });
+  const signUp = async (code, email) => {
+    await Parse.Cloud.run(
+      'signUpRestaurant',
+      {
+        restaurantName: code.replace(/-/g, ' '),
+        ownerName: 'Test Owner',
+        username: 'owner',
+        pin: PINS.owner,
+        phone: '0701 333444',
+        email,
+      },
+      M,
+    );
+    return (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.code === code);
+  };
+  // Every record left that belongs to the restaurant.
+  const leftOf = async (id) => {
+    const counts = {};
+    for (const className of ['_User', 'Configuration', 'MenuCategory', 'Customer', 'AuditLog']) {
+      const query = new Parse.Query(className);
+      query.equalTo('tenant', pointer(id));
+      const n = await query.count(M);
+      if (n) counts[className] = n;
+    }
+    const roles = await new Parse.Query(Parse.Role)
+      .containedIn(
+        'name',
+        ['admin', 'finance', 'cashier', 'rider'].map((r) => `${r}__${id}`),
+      )
+      .count(M);
+    if (roles) counts.roles = roles;
+    return counts;
+  };
+  const payments = (id) =>
+    new Parse.Query('SubscriptionPayment').equalTo('tenant', pointer(id)).count(M);
+  before(async () => {
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+  });
+
+  test('a test restaurant is deleted completely, payments and all', async () => {
+    const row = await signUp('del-test-cafe', 'test@del.example');
+    const owner = await login('owner', PINS.owner, row.code);
+    await new Parse.Object('MenuCategory', { tenant: pointer(row.id), title: 'Mains' }).save(
+      null,
+      M,
+    );
+    await new Parse.Object('Customer', { tenant: pointer(row.id), name: 'A customer' }).save(
+      null,
+      M,
+    );
+    await run('platformRecordPayment', { id: row.id, months: 1, reference: 'Cash' }, ops);
+    assert.ok((await leftOf(row.id))._User >= 1);
+    assert.equal(await payments(row.id), 1);
+
+    await rejects(
+      run('platformDeleteRestaurant', { id: row.id, confirm: row.code, everything: true }, owner),
+      /platform role required/,
+    );
+    await rejects(
+      run('platformDeleteRestaurant', { id: row.id, confirm: 'nope', everything: true }, ops),
+      /Type the restaurant code \(del-test-cafe\)/,
+    );
+    const { counts } = await run(
+      'platformDeleteRestaurant',
+      { id: row.id, confirm: 'DEL-TEST-CAFE', everything: true },
+      ops,
+    );
+    assert.ok(counts.users >= 1 && counts.roles >= 1);
+    assert.equal(counts.SubscriptionPayment, 1);
+    assert.deepEqual(await leftOf(row.id), {});
+    assert.equal(await payments(row.id), 0);
+    const listed = (await run('platformListRestaurants', {}, ops)).rows;
+    assert.equal(
+      listed.some((r) => r.id === row.id),
+      false,
+    );
+    await rejects(login('owner', PINS.owner, row.code), /Invalid username\/password/);
+    // Its code is free again.
+    assert.equal((await run('checkRestaurantCode', { code: row.code })).free, true);
+    // The console's history says who did it.
+    const audit = await run('platformGetAudit', {}, ops);
+    const entry = audit.rows.find(
+      (r) => r.action === 'platform.restaurant_deleted' && r.entityId === row.id,
+    );
+    assert.equal(entry.after.reason, 'test');
+  });
+
+  test('an unpaid restaurant is warned by email, then deleted keeping its payments', async () => {
+    const row = await signUp('del-lapsed-cafe', 'lapsed@del.example');
+    await run('platformRecordPayment', { id: row.id, months: 1, reference: 'Cash' }, ops);
+    const settings = (await run('platformListRestaurants', {}, ops)).settings;
+    await run('platformSaveSettings', { ...settings, deleteAfterDays: 30, deleteWarnDays: 3 }, ops);
+    // Paid until 60 days ago: closed for more than 30 days.
+    await run(
+      'platformUpdateRestaurant',
+      { id: row.id, trialEndsAt: when(-90), paidUntil: when(-60) },
+      ops,
+    );
+    const mine = () => mailbox.filter((m) => m.to === 'lapsed@del.example');
+    mailbox.length = 0;
+    await Parse.Cloud.startJob('billing', {});
+    for (let i = 0; i < 50 && !mine().length; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(mine().length, 1);
+    const mail = mine()[0];
+    assert.match(
+      mail.subject,
+      /^del lapsed cafe: your Relay account will be deleted on \d+ \w+ \d{4}$/,
+    );
+    assert.match(mail.text, /deleted for good/);
+    assert.match(mail.text, /https:\/\/relay\.example\/admin\/site\/billing/);
+    assert.equal(mail.html.includes('{{{'), false);
+    let listed = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.id === row.id);
+    assert.ok(listed.deletion.warnedAt);
+    // The full notice from the warning: deleted 3 days later at the soonest.
+    assert.ok(new Date(listed.deletion.deleteAt) - Date.now() > 2.9 * DAY);
+
+    // Run again: no second email, nothing deleted yet.
+    await Parse.Cloud.startJob('billing', {});
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.equal(mine().length, 1);
+    assert.ok((await leftOf(row.id))._User >= 1);
+
+    // Kept by the platform: never deleted.
+    await run('platformUpdateRestaurant', { id: row.id, neverDelete: true }, ops);
+    listed = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.id === row.id);
+    assert.equal(listed.deletion, null);
+    await run('platformUpdateRestaurant', { id: row.id, neverDelete: false }, ops);
+
+    // Four days after the warning.
+    const restaurant = await new Parse.Query('Restaurant').get(row.id, M);
+    restaurant.set('deletionWarnedAt', new Date(Date.now() - 4 * DAY));
+    await restaurant.save(null, M);
+    await Parse.Cloud.startJob('billing', {});
+    for (let i = 0; i < 100; i += 1) {
+      const left = await leftOf(row.id);
+      if (!left._User) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.deepEqual(await leftOf(row.id), {});
+    assert.equal(await payments(row.id), 1, 'the subscription payment is kept');
+    listed = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.id === row.id);
+    assert.equal(listed.deleted, true);
+    assert.equal(listed.deletedCode, 'del-lapsed-cafe');
+    assert.notEqual(listed.code, 'del-lapsed-cafe');
+    assert.equal(listed.ownerEmail, '');
+    assert.equal(listed.deletion, null);
+    assert.equal((await run('checkRestaurantCode', { code: 'del-lapsed-cafe' })).free, true);
+    await rejects(login('owner', PINS.owner, 'del-lapsed-cafe'), /Invalid username\/password/);
+
+    // Removed completely afterwards: the payment goes too.
+    await rejects(
+      run('platformDeleteRestaurant', { id: row.id, confirm: 'del-lapsed-cafe' }, ops),
+      /already deleted/,
+    );
+    await run(
+      'platformDeleteRestaurant',
+      { id: row.id, confirm: 'del-lapsed-cafe', everything: true },
+      ops,
+    );
+    assert.equal(await payments(row.id), 0);
+    await run('platformSaveSettings', { ...settings, deleteAfterDays: 0 }, ops);
+  });
+
+  test('a paying restaurant is never on its way to deletion', async () => {
+    const rows = (await run('platformListRestaurants', {}, ops)).rows;
+    for (const r of rows.filter((x) => x.usable)) assert.equal(r.deletion, null, r.code);
   });
 });

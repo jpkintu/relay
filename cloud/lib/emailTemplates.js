@@ -112,6 +112,7 @@ const TAGS = {
   paid: { label: 'Paid', bg: '#dff5e6', fg: '#17653a' },
   news: { label: 'From Relay', bg: '#e8eefc', fg: '#1d3fa8' },
   reward: { label: 'Referral reward', bg: '#dff5e6', fg: '#17653a' },
+  deletion: { label: 'Account to be deleted', bg: '#fde2e2', fg: '#a11a1a' },
 };
 
 const billingRows = [
@@ -419,6 +420,50 @@ const KINDS = {
       '{{{SUPPORT_LINE}}}',
     ].join('\n'),
   },
+
+  account_deletion: {
+    label: 'Account to be deleted',
+    when: 'A few days (Delete warning, platform settings) before the data of a restaurant that stopped paying is deleted.',
+    subject: '{{{RESTAURANT_NAME}}}: your Relay account will be deleted on {{{DELETE_ON}}}',
+    variables: [...COMMON, 'PLAN_NAME', 'AMOUNT', 'CLOSED_ON', 'DELETE_ON', 'BILLING_URL'],
+    html: layout({
+      title: 'Account to be deleted',
+      preheader:
+        'Renew by {{{DELETE_ON}}} to keep your menu, orders, staff and reports. After that they are deleted.',
+      tag: TAGS.deletion,
+      heading: 'Your Relay account will be deleted on {{{DELETE_ON}}}',
+      blocks: [
+        para('Hello {{{OWNER_NAME}}},'),
+        para(
+          'Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed. If it is not renewed by <strong>{{{DELETE_ON}}}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.',
+        ),
+        details([
+          row('Plan', '{{{PLAN_NAME}}}'),
+          row('A month', '{{{AMOUNT}}}'),
+          row('Closed since', '{{{CLOSED_ON}}}'),
+          row('Deleted on', '{{{DELETE_ON}}}'),
+        ]),
+        button('Renew to keep it', '{{{BILLING_URL}}}'),
+        small(
+          'Sign in as the owner and pay in Admin → Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact Relay support before that date.',
+        ),
+      ],
+    }),
+    text: [
+      'Hello {{{OWNER_NAME}}},',
+      '',
+      'Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed.',
+      'If it is not renewed by {{{DELETE_ON}}}, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.',
+      '',
+      'Plan: {{{PLAN_NAME}}}',
+      'A month: {{{AMOUNT}}}',
+      '',
+      'Renew in Admin → Billing to keep it: {{{BILLING_URL}}}',
+      'Your invoices and receipts for past payments are kept either way.',
+      '',
+      '{{{SUPPORT_LINE}}}',
+    ].join('\n'),
+  },
 };
 
 // Example values (the console's test send, and the docs).
@@ -452,6 +497,8 @@ const SAMPLE = {
     'Your end-of-day Z-report can now reach you on WhatsApp.\nTurn it on in Admin → WhatsApp.',
   REFERRED_NAME: 'Mama Rose Kitchen',
   MONTHS_TEXT: '1 month',
+  CLOSED_ON: '1 September 2026',
+  DELETE_ON: '4 October 2026',
 };
 
 const escapeHtml = (value) =>

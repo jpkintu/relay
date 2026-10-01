@@ -858,7 +858,11 @@ async function notifyBilling(row, platform) {
 const billingCheckMs = () => Number(process.env.RELAY_BILLING_CHECK_MS ?? 300000);
 function billingDue() {
   const tenant = tenancy.current();
-  if (!tenant || !due('billing', billingCheckMs())) return;
+  if (!tenant) return;
+  // Restaurants that stopped paying never open the app: any owner's visit
+  // checks them all, at most hourly (purge.js).
+  require('./purge').retentionDue();
+  if (!due('billing', billingCheckMs())) return;
   void (async () => {
     for (const payment of await pendingPayments()) await refresh(payment);
     const { values: platform } = await platformSettings();
@@ -883,7 +887,8 @@ Parse.Cloud.job('billing', async () => {
     reminded += await remind(row, platform);
   });
   const posted = await require('./platformAccounting').autoPostMonths();
-  return `${checked} payments checked, ${reminded} reminders sent, ${posted} months posted to Zoho`;
+  const { warned, deleted } = await require('./purge').retentionSweep();
+  return `${checked} payments checked, ${reminded} reminders sent, ${posted} months posted to Zoho, ${warned} restaurants warned of deletion, ${deleted} deleted`;
 });
 
 module.exports = { billingDue, emailStage };

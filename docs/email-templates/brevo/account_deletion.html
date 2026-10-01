@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Account to be deleted</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3f4f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Renew by {{ params.DELETE_ON }} to keep your menu, orders, staff and reports. After that they are deleted.</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f8;">
+      <tr>
+        <td align="center" style="padding:32px 12px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e3e6ee;border-radius:16px;">
+          <tr>
+            <td style="padding:28px 32px 6px 32px;">
+              <span style="font-size:18px;font-weight:800;color:#0f1b3d;letter-spacing:-0.2px;">Relay</span>
+              <span style="font-size:13px;color:#5b6478;">&nbsp;·&nbsp;{{ params.RESTAURANT_NAME }}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 32px 0 32px;">
+              <span style="display:inline-block;padding:4px 10px;border-radius:999px;background:#fde2e2;color:#a11a1a;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;">Account to be deleted</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 32px 14px 32px;font-size:24px;line-height:1.25;font-weight:800;color:#0f1b3d;">Your Relay account will be deleted on {{ params.DELETE_ON }}</td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 14px 32px;font-size:16px;line-height:1.55;color:#0f1b3d;">Hello {{ params.OWNER_NAME }},</td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 14px 32px;font-size:16px;line-height:1.55;color:#0f1b3d;">Relay for {{ params.RESTAURANT_NAME }} has been closed since {{ params.CLOSED_ON }} because the subscription was not renewed. If it is not renewed by <strong>{{ params.DELETE_ON }}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 8px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#5b6478;font-size:14px;">Plan</td>
+                <td align="right" style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#0f1b3d;font-size:14px;font-weight:600;">{{ params.PLAN_NAME }}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#5b6478;font-size:14px;">A month</td>
+                <td align="right" style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#0f1b3d;font-size:14px;font-weight:600;">{{ params.AMOUNT }}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#5b6478;font-size:14px;">Closed since</td>
+                <td align="right" style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#0f1b3d;font-size:14px;font-weight:600;">{{ params.CLOSED_ON }}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#5b6478;font-size:14px;">Deleted on</td>
+                <td align="right" style="padding:10px 0;border-bottom:1px solid #e3e6ee;color:#0f1b3d;font-size:14px;font-weight:600;">{{ params.DELETE_ON }}</td>
+              </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="border-radius:10px;background:#e8542f;">
+                    <a href="{{ params.BILLING_URL }}" style="display:inline-block;padding:14px 26px;font-size:16px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">Renew to keep it</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 32px 0 32px;font-size:13px;line-height:1.5;color:#5b6478;">Sign in as the owner and pay in Admin → Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact Relay support before that date.</td>
+          </tr>
+          <tr>
+            <td style="padding:28px 32px 28px 32px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#5b6478;">{{ params.SUPPORT_LINE }}</p>
+              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:#5b6478;">Sent by Relay to the owner of {{ params.RESTAURANT_NAME }}.</p>
+            </td>
+          </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

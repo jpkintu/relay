@@ -34,6 +34,11 @@ const DEFAULT_PLATFORM = {
   // payment, and the free months the restaurant that referred it gets.
   referralPercent: 10,
   referralMonths: 1,
+  // Restaurants that stopped paying (lib/retention.js): their data is
+  // deleted this many days after the app closes (0: never), the owner warned
+  // by email this many days before.
+  deleteAfterDays: 30,
+  deleteWarnDays: 3,
 };
 
 // Platform-wide settings (the platform console changes them).
@@ -457,6 +462,7 @@ async function restaurantRow(row, platform) {
   orders.equalTo('tenant', pointerTo(row));
   orders.greaterThanOrEqualTo('createdAt', since);
   const [staffCount, orders30] = await Promise.all([staff.count(MASTER), orders.count(MASTER)]);
+  const deletion = require('./lib/retention').deletionOf(row, platform);
   return {
     ...summarise(row, platform),
     ownerName: row.get('ownerName') || '',
@@ -468,12 +474,26 @@ async function restaurantRow(row, platform) {
     createdAt: row.createdAt.toISOString(),
     staff: staffCount,
     orders30,
+    // Deleting (purge.js): data already deleted (payments kept), never
+    // deleted automatically, or when it will be.
+    deleted: row.get('deleted') === true,
+    deletedAt: row.get('deletedAt')?.toISOString() || null,
+    deletedCode: row.get('deletedCode') || '',
+    neverDelete: row.get('neverDelete') === true,
+    deletion: deletion
+      ? {
+          closedAt: deletion.closedAt.toISOString(),
+          warnedAt: deletion.warned?.toISOString() || null,
+          deleteAt: deletion.deleteAt.toISOString(),
+        }
+      : null,
   };
 }
 
 // Platform: every restaurant with its subscription and size. → { settings, rows }
 Parse.Cloud.define('platformListRestaurants', async (request) => {
   await requirePlatform(request);
+  require('./purge').retentionDue();
   const { values: platform } = await platformSettings();
   const query = new Parse.Query('Restaurant');
   const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
@@ -510,6 +530,7 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     'suspended',
     'note',
     'ownerEmail',
+    'neverDelete',
   ];
   const before = Object.fromEntries(fields.map((field) => [field, row.get(field) ?? null]));
   // The platform may put a restaurant on any plan (over the limits too: what
@@ -539,6 +560,7 @@ Parse.Cloud.define('platformUpdateRestaurant', async (request) => {
     else row.unset('paidUntil');
   }
   if ('suspended' in p) row.set('suspended', p.suspended === true);
+  if ('neverDelete' in p) row.set('neverDelete', p.neverDelete === true);
   if ('ownerEmail' in p) {
     const email = String(p.ownerEmail || '')
       .trim()
@@ -655,6 +677,20 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
       0,
       12,
       'Referral reward: 0 to 12 months',
+    ),
+    deleteAfterDays: referralSetting(
+      p.deleteAfterDays,
+      before.deleteAfterDays,
+      0,
+      3650,
+      'Delete after: 0 (never) to 3650 days',
+    ),
+    deleteWarnDays: referralSetting(
+      p.deleteWarnDays,
+      before.deleteWarnDays,
+      1,
+      30,
+      'Warn before deleting: 1 to 30 days',
     ),
     billingFrom: String(p.billingFrom ?? before.billingFrom ?? '')
       .split('\n')

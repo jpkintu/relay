@@ -30,7 +30,10 @@ Parse.Cloud.define('platformRevenue', async (request) => {
   const now = Date.now();
   const [restaurants, payments] = await tenancy.withoutTenant(() =>
     Promise.all([
-      new Parse.Query('Restaurant').findAll({ ...MASTER, batchSize: 500 }),
+      // Restaurants whose data was deleted are not counted (their payments are).
+      new Parse.Query('Restaurant')
+        .notEqualTo('deleted', true)
+        .findAll({ ...MASTER, batchSize: 500 }),
       new Parse.Query('SubscriptionPayment')
         .equalTo('status', 'paid')
         .findAll({ ...MASTER, batchSize: 1000 }),

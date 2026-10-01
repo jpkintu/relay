@@ -8848,3 +8848,28 @@ tr.split-row td {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Platform console: deleting a restaurant. */
+.platform-delete {
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px solid #f0b4b4;
+  border-radius: 12px;
+  background: color-mix(in srgb, #fde2e2 35%, transparent);
+  display: grid;
+  gap: 12px;
+}
+.platform-delete h3 {
+  margin: 0;
+  color: #a11a1a;
+}
+.platform-delete-choice {
+  display: grid;
+  gap: 8px;
+}
+.platform-delete .setup-field {
+  max-width: 360px;
+}
+.danger-text {
+  color: #a11a1a;
+}

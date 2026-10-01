@@ -74,3 +74,4 @@ require('./reports');
 require('./owner');
 require('./overrides');
 require('./profile');
+require('./purge');

@@ -385,6 +385,41 @@ Zoho). With **Automatically** on, each payment goes to Zoho when it is
 received and closed months are posted by the `billing` job. A failed send is
 shown on its row and retried with the next send.
 
+## Deleting restaurants
+
+Platform console → Restaurants → open one → **Delete this restaurant**
+(`platformDeleteRestaurant`, cloud/purge.js). Type the restaurant code to confirm.
+
+- **Everything (a test restaurant)**: every record, order, transaction, cash
+  record, report, image, staff account (with its sessions), the restaurant's
+  roles, its subscription payments and the restaurant itself. Nothing is left;
+  its code is free again.
+- **Its data, keeping its subscription payments**: the same, except the
+  payments it made to Relay. The restaurant stays as a closed shell
+  (`deleted`, `deletedAt`, `deletedCode`; name, plan and Zoho contact kept;
+  contact details cleared; a new code nobody can sign in with) so Accounting,
+  the revenue figures and Zoho still name it. Shown as "Data deleted"; it can
+  be removed completely later with Everything.
+
+The console's history (`platform.restaurant_deleted`) keeps who deleted what
+and the counts.
+
+**Unpaid restaurants** are deleted automatically (keeping their payments):
+`deleteAfterDays` (default 30; 0 = never) after the app closes for lack of
+payment (end of the trial or paid period plus the grace days; a pay-now
+sign-up that never paid: from sign-up). The owner is emailed
+**Account to be deleted** (`account_deletion`) `deleteWarnDays` (default 3)
+before, and it is never deleted sooner than that after the warning. Paying,
+or the platform extending its dates, stops it; a warning from an earlier time
+it closed does not count. Suspended restaurants and those marked **Never
+delete automatically** are left alone. Both numbers are in Settings & errors →
+Platform settings; the restaurants list shows "Deleted on …" for those on
+their way. The rules are in `cloud/lib/retention.js`.
+
+It runs without a job: at most hourly on the back of any owner using the app
+(`RELAY_RETENTION_CHECK_MS`), whenever platform staff open the console, and in
+the `billing` job when one is scheduled.
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,
