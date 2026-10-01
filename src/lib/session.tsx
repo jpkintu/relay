@@ -277,6 +277,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setError('');
       } else if (e instanceof Parse.Error && e.code === Parse.Error.INVALID_SESSION_TOKEN) {
         await logout();
+        // A sign-in past its days (S7) says so; a plain bad token does not.
+        if (/expired/i.test(e.message)) setError(e.message);
       } else if (e instanceof Parse.Error && e.message === 'Account is inactive') {
         await logout();
         setError('This account has been deactivated. Ask your administrator.');

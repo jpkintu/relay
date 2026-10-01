@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { SignInProtection, type SecurityStatus } from './AccessRules';
 import { LogOut, RefreshCw } from 'lucide-react';
 import Parse from '../parse';
 import { PlatformWhatsApp } from './PlatformWhatsApp';
@@ -14,6 +15,8 @@ import { AdminErrors } from './AdminErrors';
 import { BrandMark } from './BrandMark';
 import { daysLeft } from './Subscription';
 import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
+
+const loadSecurity = (): Promise<SecurityStatus> => Parse.Cloud.run('platformSecurityStatus');
 
 // Relay Hosted: the platform console for Relay's own staff. Every restaurant's
 // subscription and size, never its orders or customers (docs/HOSTED.md).
@@ -325,6 +328,8 @@ export function PlatformConsole() {
             )}
 
             <ApplySecurity onDone={() => void load()} />
+
+            <SignInProtection load={loadSecurity} forPlatform />
 
             <section className="admin-panel">
               <div className="panel-title">

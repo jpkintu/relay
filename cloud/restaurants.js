@@ -619,6 +619,7 @@ Parse.Cloud.define('platformResetOwner', async (request) => {
       owner.set({ password, active: true });
       await owner.save(null, MASTER);
       await endSessions(owner);
+      await require('./lib/core').clearSignInLock(owner);
       return { owner, password };
     },
     row.get('code'),

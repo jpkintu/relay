@@ -8873,3 +8873,24 @@ tr.split-row td {
 .danger-text {
   color: #a11a1a;
 }
+
+/* Admin → Access & security: sign-in protection. */
+.security-status {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.security-status li {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.security-status li.ok {
+  background: color-mix(in srgb, #dff5e6 45%, transparent);
+}
+.security-status li.bad {
+  background: color-mix(in srgb, #fde2e2 55%, transparent);
+  border-color: #f0b4b4;
+}

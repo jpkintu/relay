@@ -425,6 +425,28 @@ export function AdminMember({ id }: { id: string }) {
             </div>
             <div className="member-action">
               <div>
+                <b>Sign-in</b>
+                <small>
+                  Five wrong PINs at sign-in lock the account for 15 minutes. Unlock it now if they
+                  are locked out; their PIN stays the same.
+                </small>
+              </div>
+              <button
+                className="setup-secondary"
+                disabled={busy}
+                onClick={() =>
+                  void act(
+                    'adminUnlockSignIn',
+                    { id: m.id },
+                    `${m.name.split(' ')[0]} can sign in again.`,
+                  )
+                }
+              >
+                Unlock sign-in
+              </button>
+            </div>
+            <div className="member-action">
+              <div>
                 <b>{m.active ? 'Deactivate' : 'Activate'}</b>
                 <small>
                   {m.active
