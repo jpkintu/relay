@@ -274,6 +274,29 @@ with a negotiated monthly price pays 10 of those months for a year.
 3. Platform console → Platform settings: your price, currency (UGX), trial and
    grace days and the support contact.
 
+## Codes: pay now with a discount or referral
+
+Sign-up offers two starts: the **free trial** (no code) or **Pay now**. Only
+Pay now takes a code, and the code only counts on the first payment:
+
+- **Discount codes** (Platform console → Codes): percent (1–90) or an amount
+  off, optionally only when paying 3, 6 or 12 months, with a use limit and an
+  expiry date. The list shows uses and how much each code has given.
+- **Referral codes**: any restaurant's own code. The new restaurant gets the
+  referral discount (Platform settings → Referral discount, default 10%); once
+  it has paid, the restaurant whose code it used gets free months (Referral
+  reward, default 1) added to its paid-until date, a notification and the
+  `referral_credit` email. 0% turns referrals off.
+
+`checkSignupCode { code, plan }` (public, 30 tries an hour per address) shows
+what the code takes off on the sign-up page; `signUpRestaurant` takes
+`start: 'pay'` and `offerCode`. A Pay-now restaurant (`Restaurant.payFirst`) is
+closed until the first payment: the owner signs in to "Pay to start" with the
+discounted prices (in the app, or recorded by Relay at the same price) and can
+**start the free trial instead** (`startTrialInstead`), which drops the code.
+The first payment records `listAmount`, `discount` and `discountCode`; its
+invoice and receipt show the discount line.
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,
@@ -325,12 +348,14 @@ in Platform console → Email → **Templates**:
 
 | Kind                | Sent                                    | Variables (besides OWNER_NAME, RESTAURANT_NAME, SUPPORT_LINE)                                               |
 | ------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `welcome`           | after sign-up                           | RESTAURANT_CODE, USERNAME, PLAN_NAME, TRIAL_DAYS, TRIAL_ENDS, SIGN_IN_URL                                   |
+| `welcome`           | after sign-up                           | RESTAURANT_CODE, USERNAME, PLAN_NAME, TRIAL_ENDS, START_LINE, SIGN_IN_URL                                   |
 | `password_reset`    | forgot password                         | RESET_URL, EXPIRES_IN                                                                                       |
 | `billing_due_soon`  | 7 and 3 days before the end             | HEADLINE, DAYS_LEFT, PLAN_NAME, AMOUNT, ANNUAL_AMOUNT, DUE_DATE, INVOICE_NUMBER, BILLING_URL                |
 | `billing_due_today` | the last day                            | HEADLINE, PLAN_NAME, AMOUNT, ANNUAL_AMOUNT, DUE_DATE, INVOICE_NUMBER, BILLING_URL                           |
 | `billing_overdue`   | after the end, and the day before close | HEADLINE, CLOSES_ON, DAYS_TO_CLOSE, PLAN_NAME, AMOUNT, ANNUAL_AMOUNT, DUE_DATE, INVOICE_NUMBER, BILLING_URL |
 | `payment_received`  | a payment is received                   | PLAN_NAME, AMOUNT, PERIOD, PAID_UNTIL, INVOICE_NUMBER, REFERENCE, BILLING_URL                               |
+| `announcement`      | Email owners (console)                  | SUBJECT, MESSAGE                                                                                            |
+| `referral_credit`   | a referred restaurant's first payment   | REFERRED_NAME, MONTHS_TEXT, PAID_UNTIL, BILLING_URL                                                         |
 
 **Setting one up in Resend** (Templates → Create template):
 

@@ -30,6 +30,10 @@ const DEFAULT_PLATFORM = {
   // Who invoices and receipts are from: name, address, email, TIN (one per
   // line; the first line is the name).
   billingFrom: '',
+  // Referral codes (offers.js): what the new restaurant saves on its first
+  // payment, and the free months the restaurant that referred it gets.
+  referralPercent: 10,
+  referralMonths: 1,
 };
 
 // Platform-wide settings (the platform console changes them).
@@ -90,6 +94,8 @@ const OPEN_WHEN_CLOSED = new Set([
   // Choosing a plan (restaurants.js, billing.js).
   'getPlans',
   'changePlan',
+  // Signed up to pay now: may start the free trial instead (offers.js).
+  'startTrialInstead',
 ]);
 
 // Called for every Cloud function run for a restaurant (errors.js). Access
@@ -189,6 +195,15 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
   if (pin.length < 6) throw invalid('Choose a PIN or password of at least 6 characters');
   if (phone.replace(/\D/g, '').length < 9) throw invalid('Enter your phone number');
   if (!require('./lib/email').validEmail(ownerEmail)) throw invalid('Enter your email address');
+  // Start with a free trial, or pay now (and only then with a discount or
+  // referral code: offers.js).
+  const payNow = p.start === 'pay';
+  const offerCode = String(p.offerCode || '').trim();
+  if (offerCode && !payNow)
+    throw invalid('Codes apply when you pay now. Choose “Pay now” to use one');
+  const offer = offerCode
+    ? await require('./offers').resolveCode(offerCode, (await platformSettings()).values)
+    : null;
   // Only complete sign-ups count towards the limit.
   if (!request.master && !allowSignUp(request.ip || 'unknown'))
     throw forbidden('Too many sign-ups from here. Try again in an hour');
@@ -204,7 +219,9 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
     name: restaurantName,
     code,
     suspended: false,
-    trialEndsAt: new Date(Date.now() + Number(platform.trialDays) * 86400000),
+    trialEndsAt: payNow ? new Date() : new Date(Date.now() + Number(platform.trialDays) * 86400000),
+    payFirst: payNow,
+    ...(offer ? { offer } : {}),
     ownerName,
     ownerEmail,
     billingPhone: phone,
@@ -241,7 +258,8 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
       await audit(owner, 'restaurant.signed_up', restaurant, null, {
         name: restaurantName,
         code,
-        trialDays: platform.trialDays,
+        trialDays: payNow ? 0 : platform.trialDays,
+        ...(payNow ? { payNow: true, offerCode: offer?.code || '' } : {}),
       });
     },
     code,
@@ -257,7 +275,10 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
       USERNAME: username,
       PLAN_NAME: planOfRow(restaurant, platform).name,
       TRIAL_DAYS: String(platform.trialDays),
-      TRIAL_ENDS: dateText(restaurant.get('trialEndsAt')),
+      TRIAL_ENDS: payNow ? 'No trial: pay to start' : dateText(restaurant.get('trialEndsAt')),
+      START_LINE: payNow
+        ? 'Pay your first period in the app to open it for you and your team.'
+        : `Your ${platform.trialDays}-day free trial has started.`,
     },
     platform,
   );
@@ -299,6 +320,10 @@ function summarise(row, platform) {
     ownerEmail: row.get('ownerEmail') || '',
     ownerName: row.get('ownerName') || '',
     billingPhone: row.get('billingPhone') || '',
+    trialDays: Number(platform.trialDays) || 0,
+    // Signed up to pay now: closed until the first payment (offers.js).
+    payFirst: access.payFirst === true,
+    offerCode: access.payFirst ? row.get('offer')?.code || '' : '',
   };
 }
 
@@ -569,6 +594,14 @@ Parse.Cloud.define('platformResetOwner', async (request) => {
 
 // Platform: the currency, trial and grace days and the support contact
 // restaurants see (prices are on the plans).
+// A whole number in range, or the saved value when not given.
+function referralSetting(value, saved, min, max, message) {
+  if (value === undefined || value === null || value === '') return Number(saved) || 0;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) throw invalid(message);
+  return number;
+}
+
 Parse.Cloud.define('platformSaveSettings', async (request) => {
   const actor = await requirePlatform(request);
   const p = request.params || {};
@@ -593,6 +626,20 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
     supportContact: String(p.supportContact || '')
       .trim()
       .slice(0, 120),
+    referralPercent: referralSetting(
+      p.referralPercent,
+      before.referralPercent,
+      0,
+      50,
+      'Referral discount: 0 to 50%',
+    ),
+    referralMonths: referralSetting(
+      p.referralMonths,
+      before.referralMonths,
+      0,
+      12,
+      'Referral reward: 0 to 12 months',
+    ),
     billingFrom: String(p.billingFrom ?? before.billingFrom ?? '')
       .split('\n')
       .map((line) => line.trim())

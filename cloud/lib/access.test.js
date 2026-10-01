@@ -60,3 +60,16 @@ describe('addMonths', () => {
     );
   });
 });
+
+describe('pay first (no trial)', () => {
+  test('closed until the first payment, then paid as usual', () => {
+    expect(accessOf(row({ payFirst: true, trialEndsAt: at(0) }), 7, NOW)).toMatchObject({
+      status: 'expired',
+      ok: false,
+      payFirst: true,
+    });
+    expect(
+      accessOf(row({ payFirst: true, trialEndsAt: at(0), paidUntil: at(30) }), 7, NOW),
+    ).toMatchObject({ status: 'active', ok: true });
+  });
+});

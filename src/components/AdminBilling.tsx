@@ -186,6 +186,8 @@ export function AdminBilling() {
                                 periodStart: inv.periodStart,
                                 periodEnd: inv.periodEnd,
                                 paidAt: inv.issuedAt,
+                                discount: inv.discount || 0,
+                                discountCode: inv.discountCode || '',
                               },
                               r,
                               config.timezone,

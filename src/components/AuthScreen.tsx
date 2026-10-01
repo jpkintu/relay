@@ -7,6 +7,7 @@ import { startGoogleSignIn } from '../lib/googleSignIn';
 // username and PIN. Build with VITE_ENABLE_GOOGLE_SIGNIN=true to show it again.
 const GOOGLE_SIGN_IN = import.meta.env.VITE_ENABLE_GOOGLE_SIGNIN === 'true';
 import { useSession } from '../lib/session';
+import { formatMoney } from '../lib/format';
 import { AuthSide } from './AuthSide';
 import { BrandMark } from './BrandMark';
 import { PlanCard, useOfferedPlans } from './Subscription';
@@ -299,7 +300,16 @@ function FindRestaurant({
   );
 }
 
-// Relay Hosted: a new restaurant and its owner's account, on a free trial.
+// Relay Hosted: a new restaurant and its owner's account, on a free trial or
+// paying now (then with an optional discount or referral code).
+type CodeCheck = {
+  code: string;
+  type: 'code' | 'referral';
+  label: string;
+  referrerName: string;
+  currency: string;
+  prices: Record<number, { list: number; discount: number; amount: number }>;
+};
 function SignUp({
   trialDays,
   onCancel,
@@ -320,6 +330,10 @@ function SignUp({
     plan: '',
   });
   const offered = useOfferedPlans();
+  const [start, setStart] = useState<'trial' | 'pay'>(trialDays > 0 ? 'trial' : 'pay');
+  const [offerCode, setOfferCode] = useState('');
+  const [offerCheck, setOfferCheck] = useState<CodeCheck | null>(null);
+  const [offerError, setOfferError] = useState('');
   const [codeEdited, setCodeEdited] = useState(false);
   const [codeState, setCodeState] = useState<{ code: string; free: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -342,6 +356,22 @@ function SignUp({
     return () => window.clearTimeout(timer);
   }, [code]);
 
+  const plan = form.plan || offered?.plans[0]?.key || '';
+  const applyCode = async () => {
+    setOfferError('');
+    setOfferCheck(null);
+    try {
+      setOfferCheck(await Parse.Cloud.run('checkSignupCode', { code: offerCode, plan }));
+    } catch (e) {
+      setOfferError(e instanceof Error ? e.message : 'This code is not valid');
+    }
+  };
+  // The applied code's prices follow the chosen plan.
+  useEffect(() => {
+    if (offerCheck && plan) void applyCode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan]);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -351,6 +381,8 @@ function SignUp({
         ...form,
         code,
         username: form.username.trim().toLowerCase(),
+        start,
+        offerCode: start === 'pay' ? offerCode.trim() : '',
       });
       await onDone(result.code, result.username, form.pin);
     } catch (e) {
@@ -362,10 +394,12 @@ function SignUp({
   return (
     <>
       <p className="eyebrow">New restaurant</p>
-      <h2>Start your free trial.</h2>
+      <h2>{start === 'trial' ? 'Start your free trial.' : 'Pay now and start today.'}</h2>
       <p className="muted">
-        {trialDays > 0 ? `${trialDays} days free, no payment now. ` : ''}You become the owner and
-        add your riders and cashiers afterwards.
+        {start === 'trial'
+          ? `${trialDays} days free, no payment now. `
+          : 'Pay your first period right after sign-up, with a discount or referral code if you have one. '}
+        You become the owner and add your riders and cashiers afterwards.
       </p>
       <form onSubmit={submit}>
         <label>
@@ -463,6 +497,81 @@ function SignUp({
             </div>
           </fieldset>
         )}
+        <fieldset className="signup-start">
+          <legend>How do you want to start?</legend>
+          <div className="filter-toggle" role="radiogroup" aria-label="How to start">
+            {trialDays > 0 && (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={start === 'trial'}
+                className={start === 'trial' ? 'active' : ''}
+                onClick={() => setStart('trial')}
+              >
+                {trialDays}-day free trial
+              </button>
+            )}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={start === 'pay'}
+              className={start === 'pay' ? 'active' : ''}
+              onClick={() => setStart('pay')}
+            >
+              Pay now
+            </button>
+          </div>
+          {start === 'pay' ? (
+            <div className="signup-code">
+              <label>
+                Discount or referral code (optional)
+                <span className="signup-code-row">
+                  <input
+                    value={offerCode}
+                    onChange={(e) => {
+                      setOfferCode(e.target.value);
+                      setOfferCheck(null);
+                      setOfferError('');
+                    }}
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="e.g. LAUNCH20 or a restaurant’s code"
+                  />
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={!offerCode.trim()}
+                    onClick={() => void applyCode()}
+                  >
+                    Apply
+                  </button>
+                </span>
+              </label>
+              {offerError && <p className="form-error">{offerError}</p>}
+              {offerCheck && (
+                <p className="form-success" role="status">
+                  <b>{offerCheck.code}</b>
+                  {offerCheck.referrerName ? ` (referred by ${offerCheck.referrerName})` : ''}:{' '}
+                  {offerCheck.label}. A month{' '}
+                  {formatMoney(offerCheck.prices[1].amount, offerCheck.currency)}
+                  {offerCheck.prices[1].discount
+                    ? ` instead of ${formatMoney(offerCheck.prices[1].list, offerCheck.currency)}`
+                    : ''}
+                  ; a year {formatMoney(offerCheck.prices[12].amount, offerCheck.currency)}.
+                </p>
+              )}
+              <span className="field-hint">
+                Codes only apply when paying now, on your first payment. The app opens as soon as it
+                is paid.
+              </span>
+            </div>
+          ) : (
+            <span className="field-hint">
+              Nothing to pay now. Codes are for paying now; a trial cannot use one.
+            </span>
+          )}
+        </fieldset>
         <p className="field-hint">
           You can change the plan later under your subscription. By creating a restaurant you accept{' '}
           <a href="/terms" target="_blank" rel="noreferrer">
@@ -472,7 +581,7 @@ function SignUp({
         </p>
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button" disabled={busy || codeState?.free === false}>
-          {busy ? 'Creating…' : 'Create restaurant'}
+          {busy ? 'Creating…' : start === 'pay' ? 'Create and pay' : 'Create restaurant'}
           <ArrowRight size={19} />
         </button>
       </form>

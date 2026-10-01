@@ -8,6 +8,10 @@
 // the paid or trial period ends: still usable), expired, suspended.
 function accessOf(row, graceDays = 0, now = Date.now()) {
   if (row.get('suspended') === true) return { status: 'suspended', ok: false, until: null };
+  // Chose to pay at sign-up instead of a trial: closed until the first
+  // payment (only the owner signs in, to pay).
+  if (row.get('payFirst') === true && !row.get('paidUntil'))
+    return { status: 'expired', ok: false, until: null, payFirst: true };
   const trial = row.get('trialEndsAt');
   const paid = row.get('paidUntil');
   const end = Math.max(trial ? trial.getTime() : 0, paid ? paid.getTime() : 0);

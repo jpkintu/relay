@@ -5,6 +5,7 @@ import { PlatformWhatsApp } from './PlatformWhatsApp';
 import { PlatformEmail } from './PlatformEmail';
 import { PlatformBroadcast } from './PlatformBroadcast';
 import { PlatformRevenue } from './PlatformRevenue';
+import { PlatformDiscounts } from './PlatformDiscounts';
 import { PlatformPlans, type Plan } from './PlatformPlans';
 import { formatDate, formatMoney } from '../lib/format';
 import { useSession, type RestaurantSummary } from '../lib/session';
@@ -24,6 +25,8 @@ type Settings = {
   graceDays: number;
   supportContact: string;
   billingFrom: string;
+  referralPercent: number;
+  referralMonths: number;
 };
 type Row = RestaurantSummary & {
   ownerName: string;
@@ -212,6 +215,15 @@ export function PlatformConsole() {
         )}
 
         <PlatformPlans onChanged={() => void load()} />
+
+        {settings && (
+          <PlatformDiscounts
+            currency={settings.currency}
+            timeZone={TIMEZONE}
+            referralPercent={settings.referralPercent}
+            referralMonths={settings.referralMonths}
+          />
+        )}
 
         {settings && (
           <SettingsForm
@@ -720,6 +732,8 @@ function SettingsForm({
     graceDays: String(settings.graceDays),
     supportContact: settings.supportContact || '',
     billingFrom: settings.billingFrom || '',
+    referralPercent: String(settings.referralPercent ?? 10),
+    referralMonths: String(settings.referralMonths ?? 1),
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -739,6 +753,8 @@ function SettingsForm({
         graceDays: Number(form.graceDays),
         supportContact: form.supportContact,
         billingFrom: form.billingFrom,
+        referralPercent: Number(form.referralPercent),
+        referralMonths: Number(form.referralMonths),
       });
       setDone('Saved.');
       onSaved(saved);
@@ -773,6 +789,20 @@ function SettingsForm({
             onChange={set('supportContact')}
             placeholder="e.g. Relay support 0700 000000"
           />
+        </label>
+        <label className="setup-field">
+          Referral discount (% off the first payment)
+          <input
+            inputMode="numeric"
+            value={form.referralPercent}
+            onChange={set('referralPercent')}
+          />
+          <small>0 turns referrals off.</small>
+        </label>
+        <label className="setup-field">
+          Referral reward (free months)
+          <input inputMode="numeric" value={form.referralMonths} onChange={set('referralMonths')} />
+          <small>For the restaurant whose code was used, once the new one has paid.</small>
         </label>
         <label className="setup-field platform-note">
           Invoices and receipts are from

@@ -333,6 +333,7 @@ export function ClosedScreen() {
   if (!r) return null;
   const owner = profile?.role === 'admin';
   const contact = r.supportContact ? ` (${r.supportContact})` : '';
+  if (r.payFirst) return <PayFirstScreen />;
   return (
     <main className="auth-shell">
       <AuthSide />
@@ -383,6 +384,77 @@ export function ClosedScreen() {
   );
 }
 
+// Signed up to pay now (no free trial): the owner pays the first period, with
+// the sign-up code taken off, or starts the free trial instead.
+function PayFirstScreen() {
+  const { profile, logout, refresh } = useSession();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const r = profile?.restaurant;
+  if (!r) return null;
+  const owner = profile?.role === 'admin';
+  const trialInstead = async () => {
+    if (
+      r.offerCode &&
+      !window.confirm(`Start the free trial instead? The code ${r.offerCode} will no longer apply.`)
+    )
+      return;
+    setBusy(true);
+    setError('');
+    try {
+      await Parse.Cloud.run('startTrialInstead');
+      await refresh();
+    } catch (e) {
+      setError(message(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <main className="auth-shell">
+      <AuthSide />
+      <section className="auth-panel">
+        <div className="login-card">
+          <BrandMark className="mobile-brand" />
+          <p className="eyebrow">{r.name}</p>
+          <h2>Pay to start.</h2>
+          {owner ? (
+            <>
+              <p className="muted">
+                You chose to pay now instead of a free trial. Pay your first period to open the app
+                for you and your team.
+              </p>
+              <BillingPanel />
+              {error && <p className="form-error">{error}</p>}
+              {(r.trialDays ?? 0) > 0 && (
+                <button
+                  className="link-button pay-first-trial"
+                  disabled={busy}
+                  onClick={() => void trialInstead()}
+                >
+                  Start the {r.trialDays}-day free trial instead
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="muted">
+              {r.name} opens once the owner has made the first payment. You can sign in as soon as
+              they do.
+            </p>
+          )}
+          <div className="closed-actions">
+            <button className="secondary-button" onClick={() => void refresh()}>
+              Check again
+            </button>
+            <button className="preview-button" onClick={() => void logout()}>
+              <LogOut size={17} /> Sign out
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 type Payment = {
   id: string;
   createdAt: string | null;
@@ -409,6 +481,10 @@ export type Invoice = {
   periodStart: string | null;
   periodEnd: string | null;
   paymentId: string | null;
+  // A first payment with a sign-up code: the price before it.
+  listAmount?: number | null;
+  discount?: number;
+  discountCode?: string;
   // Paid invoices: how it was paid (for the receipt).
   method?: 'iotec' | 'manual';
   payer?: string;
@@ -417,6 +493,9 @@ export type Invoice = {
 export type Billing = {
   restaurant: RestaurantSummary;
   prices: Record<number, number>;
+  // Before a sign-up code (offers.js), and the code's wording.
+  listPrices?: Record<number, number>;
+  offer?: { code: string; type: 'code' | 'referral'; label: string; referrerName: string } | null;
   invoices: Invoice[];
   payInApp: boolean;
   sandbox: boolean;
@@ -521,9 +600,18 @@ export function BillingPanel({
           Not paid: {current.message || 'the payment did not go through'}.
         </p>
       ) : null}
+      {data.offer && (
+        <p className="billing-offer" role="status">
+          <b>{data.offer.code}</b>
+          {data.offer.type === 'referral' && data.offer.referrerName
+            ? ` (referred by ${data.offer.referrerName}): `
+            : ': '}
+          {data.offer.label}.
+        </p>
+      )}
       {!data.payInApp ? (
         <p className="muted">
-          Paying in the app is not switched on yet. Contact Relay{contact} to renew.
+          Paying in the app is not switched on yet. Contact Relay{contact} to pay.
         </p>
       ) : (
         current?.status !== 'pending' && (
@@ -534,8 +622,8 @@ export function BillingPanel({
                 {data.months.map((m) => (
                   <option key={m} value={m}>
                     {m === 12 ? '1 year' : `${m} month${m === 1 ? '' : 's'}`} · {money(priceOf(m))}
-                    {m === 12 && r.monthlyPrice * 12 > priceOf(12)
-                      ? ` (save ${money(r.monthlyPrice * 12 - priceOf(12))})`
+                    {r.monthlyPrice * m > priceOf(m)
+                      ? ` (save ${money(r.monthlyPrice * m - priceOf(m))})`
                       : ''}
                   </option>
                 ))}

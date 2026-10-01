@@ -15,10 +15,11 @@ const {
   restaurantSummary,
   priceOf,
   annualPriceOf,
-  amountFor,
   forEachRestaurant,
 } = require('./restaurants');
 const { dateText, moneyText } = require('./lib/emailTemplates');
+// Discount and referral codes on a first payment (offers.js; loaded late).
+const offers = () => require('./offers');
 
 const MONTHS = [1, 3, 6, 12];
 // ioTec's smallest collection.
@@ -48,6 +49,9 @@ function toJSON(row) {
     periodStart: row.get('periodStart')?.toISOString() || null,
     periodEnd: row.get('periodEnd')?.toISOString() || null,
     paidAt: row.get('paidAt')?.toISOString() || null,
+    listAmount: row.get('listAmount') ?? null,
+    discount: row.get('discount') || 0,
+    discountCode: row.get('discountCode') || '',
   };
 }
 
@@ -68,7 +72,15 @@ async function settle(payment, { reference = '', message = '' } = {}) {
   );
   const end = addMonths(base, Number(payment.get('months')) || 1);
   row.set('paidUntil', end);
+  // The first payment of a restaurant that chose to pay at sign-up: its code
+  // is used now (offers.js).
+  const offer = row.get('payFirst') === true ? row.get('offer') || null : null;
+  if (row.get('payFirst') === true) {
+    row.set('payFirst', false);
+    row.unset('offer');
+  }
   await tenancy.withoutTenant(() => row.save(null, MASTER));
+  if (offer) void offers().offerUsed(row, payment, offer);
   tenancy.clearCache();
   payment.set({
     status: 'paid',
@@ -151,6 +163,9 @@ function invoicesOf(row, platform, payments) {
       method: p.get('method') || 'iotec',
       payer: p.get('payer') || '',
       reference: p.get('reference') || '',
+      listAmount: p.get('listAmount') ?? null,
+      discount: p.get('discount') || 0,
+      discountCode: p.get('discountCode') || '',
     }));
   const access = accessOf(row, platform.graceDays);
   const end = new Date(
@@ -182,11 +197,23 @@ async function billingState() {
   const row = await restaurantRow();
   const { values: platform } = await platformSettings();
   const payments = await history(100);
+  // What each choice costs (12 months: the annual price), after a sign-up
+  // code on the first payment.
+  const priced = await offers().pricesFor(row, platform);
+  const invoices = invoicesOf(row, platform, payments);
+  if (priced.offer && invoices[0] && invoices[0].status !== 'paid')
+    Object.assign(invoices[0], {
+      amount: priced.prices[1],
+      listAmount: priced.listPrices[1],
+      discount: priced.listPrices[1] - priced.prices[1],
+      discountCode: priced.offer.code,
+    });
   return {
     restaurant: await restaurantSummary(),
-    // What each choice costs (12 months: the annual price).
-    prices: Object.fromEntries(MONTHS.map((m) => [m, amountFor(row, platform, m)])),
-    invoices: invoicesOf(row, platform, payments),
+    prices: priced.prices,
+    listPrices: priced.listPrices,
+    offer: priced.offer,
+    invoices,
     // False until the ioTec keys are set in the Back4App app.
     payInApp: iotec.configured(),
     sandbox: iotec.sandbox(),
@@ -242,7 +269,8 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
   if (phone.replace(/\D/g, '').length < 9)
     throw invalid('Enter the mobile money number to pay from');
   const row = await restaurantRow();
-  const amount = amountFor(row, platform, months);
+  const priced = await offers().priceFor(row, platform, months);
+  const amount = priced.amount;
   if (amount < MIN_AMOUNT) throw invalid('Nothing to pay at this price. Contact Relay');
 
   for (const waiting of await pendingPayments()) {
@@ -261,6 +289,9 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
     method: 'iotec',
     status: 'pending',
     payer: phone,
+    ...(priced.discount
+      ? { listAmount: priced.list, discount: priced.discount, discountCode: priced.code }
+      : {}),
     externalId: `relay-${row.get('code')}-${Date.now().toString(36)}-${Math.random()
       .toString(36)
       .slice(2, 8)}`,
@@ -319,8 +350,12 @@ Parse.Cloud.define('platformRecordPayment', async (request) => {
   const months = Number(p.months);
   if (!Number.isInteger(months) || months < 1 || months > 24) throw invalid('Months: 1 to 24');
   const { values: platform } = await platformSettings();
-  const amount =
-    p.amount === undefined || p.amount === '' ? amountFor(row, platform, months) : Number(p.amount);
+  // Without an amount: the price, after a sign-up code on a first payment.
+  const priced =
+    p.amount === undefined || p.amount === ''
+      ? await offers().priceFor(row, platform, months)
+      : null;
+  const amount = priced ? priced.amount : Number(p.amount);
   if (!Number.isFinite(amount) || amount < 0) throw invalid('Amount: a number from 0 up');
   const payment = await tenancy.runAs(
     row.id,
@@ -332,6 +367,9 @@ Parse.Cloud.define('platformRecordPayment', async (request) => {
         months,
         method: 'manual',
         status: 'pending',
+        ...(priced?.discount
+          ? { listAmount: priced.list, discount: priced.discount, discountCode: priced.code }
+          : {}),
         reference: String(p.reference || '')
           .trim()
           .slice(0, 100),

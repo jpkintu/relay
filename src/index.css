@@ -8482,3 +8482,47 @@ tr.split-row td {
     grid-template-columns: 1fr;
   }
 }
+
+/* A sign-up code on the first payment */
+.billing-offer {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--good-soft, #e4f6ea);
+  color: var(--good-ink, #17653a);
+}
+
+/* Sign-up: free trial or pay now, and the code */
+.signup-start {
+  border: 0;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 10px;
+}
+.signup-start legend {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.signup-code {
+  display: grid;
+  gap: 8px;
+}
+.signup-code-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.signup-code-row input {
+  flex: 1;
+  min-width: 0;
+}
+.pay-first-trial {
+  margin-top: 12px;
+}
+.revenue-tables > div {
+  min-width: 0;
+}
+.revenue-tables p + h3 {
+  margin-top: 20px;
+}

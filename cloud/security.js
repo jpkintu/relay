@@ -55,6 +55,7 @@ const PROTECTED_CLASSES = [
   'SubscriptionPayment',
   'Plan',
   'PlatformBroadcast',
+  'DiscountCode',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -71,6 +72,7 @@ const PRIVATE_CLASSES = [
   'SubscriptionPayment',
   'Plan',
   'PlatformBroadcast',
+  'DiscountCode',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -508,6 +510,10 @@ const SCHEMAS = {
     // Forgot password: hash of the emailed token, and when it runs out.
     resetTokenHash: S,
     resetTokenExpires: D,
+    // Chose to pay at sign-up instead of a free trial; the code it gave
+    // (offers.js). Cleared by the first payment.
+    payFirst: B,
+    offer: 'Object',
   },
   SubscriptionPayment: {
     amount: N,
@@ -525,6 +531,10 @@ const SCHEMAS = {
     periodEnd: D,
     paidAt: D,
     recordedBy: user,
+    // A first payment with a code (offers.js): the price before it.
+    listAmount: N,
+    discount: N,
+    discountCode: S,
   },
   // Relay Hosted plans (lib/plans.js).
   Plan: {
@@ -538,6 +548,18 @@ const SCHEMAS = {
     features: 'Object',
     active: B,
     sortOrder: N,
+  },
+  // Discount codes for a first payment at sign-up (offers.js).
+  DiscountCode: {
+    code: S,
+    kind: S,
+    value: N,
+    minMonths: N,
+    maxUses: N,
+    used: N,
+    expiresAt: D,
+    active: B,
+    note: S,
   },
   // Emails from platform staff to owners (platformBroadcast.js).
   PlatformBroadcast: {
@@ -559,6 +581,8 @@ const SCHEMAS = {
     graceDays: N,
     supportContact: S,
     billingFrom: S,
+    referralPercent: N,
+    referralMonths: N,
     // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
     whatsapp: 'Object',
     // The email service (lib/email.js), API key included.

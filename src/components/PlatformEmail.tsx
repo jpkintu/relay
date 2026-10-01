@@ -268,7 +268,7 @@ export function PlatformEmail() {
             )}
           </label>
           <div className="table-scroll">
-            <table className="data-table">
+            <table className="data">
               <thead>
                 <tr>
                   <th>Email</th>

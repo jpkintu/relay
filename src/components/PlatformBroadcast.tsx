@@ -219,7 +219,7 @@ export function PlatformBroadcast({
       </div>
       {history.length > 0 && (
         <div className="table-scroll">
-          <table className="data-table">
+          <table className="data">
             <thead>
               <tr>
                 <th>Sent</th>

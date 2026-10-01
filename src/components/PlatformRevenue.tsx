@@ -151,7 +151,10 @@ export function PlatformRevenue({ timeZone }: { timeZone: string }) {
         <article>
           <span>Due in the next 30 days</span>
           <strong>{money(data.dueIn30Days)}</strong>
-          <small>{data.upcoming.length} renewals and trials ending</small>
+          <small>
+            {data.upcoming.length} renewal{data.upcoming.length === 1 ? '' : 's'} or trial
+            {data.upcoming.length === 1 ? '' : 's'} ending
+          </small>
         </article>
         <article className={data.overdue.length ? 'metric-alert' : ''}>
           <span>Overdue</span>
@@ -173,7 +176,7 @@ export function PlatformRevenue({ timeZone }: { timeZone: string }) {
           <h3>Coming up (30 days)</h3>
           {data.upcoming.length ? (
             <div className="table-scroll">
-              <table className="data-table">
+              <table className="data compact-table">
                 <thead>
                   <tr>
                     <th>Restaurant</th>
@@ -208,7 +211,7 @@ export function PlatformRevenue({ timeZone }: { timeZone: string }) {
           <h3>Overdue</h3>
           {data.overdue.length ? (
             <div className="table-scroll">
-              <table className="data-table">
+              <table className="data compact-table">
                 <thead>
                   <tr>
                     <th>Restaurant</th>
@@ -239,7 +242,7 @@ export function PlatformRevenue({ timeZone }: { timeZone: string }) {
             <>
               <h3>By plan</h3>
               <div className="table-scroll">
-                <table className="data-table">
+                <table className="data compact-table">
                   <thead>
                     <tr>
                       <th>Plan</th>

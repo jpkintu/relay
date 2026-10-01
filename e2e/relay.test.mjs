@@ -5806,6 +5806,7 @@ const ACCESS = {
     'getPlans',
     'requestOwnerReset',
     'completeOwnerReset',
+    'checkSignupCode',
   ],
   nobody: [
     'bootstrapOwner',
@@ -5825,6 +5826,8 @@ const ACCESS = {
     'platformSendBroadcast',
     'platformListBroadcasts',
     'platformRevenue',
+    'platformListDiscountCodes',
+    'platformSaveDiscountCode',
     'platformGetWhatsApp',
     'platformSaveWhatsApp',
     'platformTestWhatsApp',
@@ -5914,6 +5917,7 @@ const ACCESS = {
     'changePlan',
     'startSubscriptionPayment',
     'checkSubscriptionPayment',
+    'startTrialInstead',
     'adminGetEfrisSettings',
     'adminSaveEfrisSettings',
     'adminTestEfris',
@@ -7485,5 +7489,219 @@ describe('owner email: password reset and emails from Relay (Relay Hosted)', () 
     );
     for (const row of revenue.upcoming)
       assert.ok(new Date(row.dueAt) - Date.now() <= 30 * 86400000);
+  });
+});
+
+describe('sign-up codes: pay now with a discount or referral (Relay Hosted)', () => {
+  let ops;
+  const M = { useMasterKey: true };
+  const DAY = 86400000;
+  const base = (code, name) => ({
+    restaurantName: name,
+    code,
+    ownerName: 'Pat',
+    username: 'owner',
+    pin: PINS.owner,
+    phone: '0701 222333',
+    email: `${code}@example.com`,
+  });
+  const listed = async () => run('platformListRestaurants', {}, ops);
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  before(async () => {
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+  });
+
+  test('platform staff make discount codes and set the referral terms', async () => {
+    const save = (params) => run('platformSaveDiscountCode', params, ops);
+    await rejects(save({ code: 'x', kind: 'percent', value: 10 }), /Code: 3 to 30/);
+    await rejects(save({ code: 'BIG', kind: 'percent', value: 95 }), /1 to 90/);
+    await rejects(save({ code: 'mail-cafe', kind: 'percent', value: 10 }), /restaurant’s code/);
+    const saved = await save({ code: 'launch20', kind: 'percent', value: 20, maxUses: 1 });
+    assert.equal(saved.code, 'LAUNCH20');
+    assert.equal(saved.used, 0);
+    await rejects(save({ code: 'LAUNCH20', kind: 'percent', value: 20 }), /already exists/);
+    await save({
+      code: 'OLD10',
+      kind: 'percent',
+      value: 10,
+      expiresAt: new Date(Date.now() - DAY).toISOString(),
+    });
+    await rejects(
+      run('platformListDiscountCodes', {}, await login('owner', 'new-pass-9', 'mail-cafe')),
+      /platform role required/,
+    );
+    const { settings: s } = await listed();
+    const terms = {
+      currency: s.currency,
+      trialDays: s.trialDays,
+      graceDays: s.graceDays,
+      supportContact: s.supportContact,
+    };
+    await rejects(
+      run('platformSaveSettings', { ...terms, referralPercent: 80 }, ops),
+      /Referral discount/,
+    );
+    const next = await run(
+      'platformSaveSettings',
+      { ...terms, referralPercent: 15, referralMonths: 2 },
+      ops,
+    );
+    assert.equal(next.referralPercent, 15);
+    assert.equal(next.referralMonths, 2);
+  });
+
+  test('the sign-up page checks a code; codes only work when paying now', async () => {
+    const plan = (await listed()).settings.plans.find((p) => p.active);
+    const check = await Parse.Cloud.run(
+      'checkSignupCode',
+      { code: ' launch20 ', plan: plan.key },
+      M,
+    );
+    assert.equal(check.code, 'LAUNCH20');
+    assert.equal(check.type, 'code');
+    assert.equal(check.prices[1].discount, Math.round(plan.price * 0.2));
+    assert.equal(check.prices[12].list, plan.annualPrice);
+    assert.match(check.label, /20% off your first payment/);
+    await rejects(Parse.Cloud.run('checkSignupCode', { code: 'OLD10' }, M), /expired/);
+    await rejects(Parse.Cloud.run('checkSignupCode', { code: 'NOPE' }, M), /not valid/);
+    const referral = await Parse.Cloud.run('checkSignupCode', { code: 'Mail Cafe' }, M);
+    assert.equal(referral.type, 'referral');
+    assert.equal(referral.code, 'mail-cafe');
+    assert.equal(referral.referrerName, 'Mail Cafe');
+    assert.match(referral.label, /15% off/);
+    await rejects(
+      Parse.Cloud.run(
+        'signUpRestaurant',
+        { ...base('code-cafe', 'Code Cafe'), offerCode: 'LAUNCH20' },
+        M,
+      ),
+      /Codes apply when you pay now/,
+    );
+    await rejects(
+      Parse.Cloud.run(
+        'signUpRestaurant',
+        { ...base('code-cafe', 'Code Cafe'), start: 'pay', offerCode: 'NOPE' },
+        M,
+      ),
+      /not valid/,
+    );
+  });
+
+  test('paying now with a code: closed until paid, then the code is used once', async () => {
+    await Parse.Cloud.run(
+      'signUpRestaurant',
+      { ...base('code-cafe', 'Code Cafe'), start: 'pay', offerCode: 'launch20' },
+      M,
+    );
+    const owner = await login('owner', PINS.owner, 'code-cafe');
+    const { restaurant } = await run('getMyProfile', {}, owner);
+    assert.equal(restaurant.usable, false);
+    assert.equal(restaurant.payFirst, true);
+    assert.equal(restaurant.offerCode, 'LAUNCH20');
+    await rejects(run('getDashboard', {}, owner), /subscription/);
+    const billing = await run('getBilling', {}, owner);
+    assert.equal(billing.offer.code, 'LAUNCH20');
+    assert.equal(
+      billing.prices[1],
+      billing.listPrices[1] - Math.round(billing.listPrices[1] * 0.2),
+    );
+    assert.equal(billing.invoices[0].status, 'due');
+    assert.equal(billing.invoices[0].amount, billing.prices[1]);
+    assert.equal(billing.invoices[0].discountCode, 'LAUNCH20');
+
+    const started = await run(
+      'startSubscriptionPayment',
+      { months: 1, phone: '0772555111' },
+      owner,
+    );
+    assert.equal(started.amount, billing.prices[1]);
+    assert.equal(started.discountCode, 'LAUNCH20');
+    await run('checkSubscriptionPayment', { id: started.id }, owner);
+    const done = await run('checkSubscriptionPayment', { id: started.id }, owner);
+    assert.equal(done.payment.status, 'paid');
+    assert.equal(done.restaurant.status, 'active');
+    assert.equal(done.restaurant.payFirst, false);
+    const after = await run('getBilling', {}, owner);
+    assert.equal(after.offer, null);
+    assert.equal(after.prices[1], after.listPrices[1]);
+    const invoice = after.invoices.find((inv) => inv.status === 'paid');
+    assert.equal(invoice.discountCode, 'LAUNCH20');
+    assert.equal(invoice.discount, billing.listPrices[1] - billing.prices[1]);
+
+    let code;
+    for (let i = 0; i < 50; i += 1) {
+      code = (await run('platformListDiscountCodes', {}, ops)).rows.find(
+        (row) => row.code === 'LAUNCH20',
+      );
+      if (code.used === 1) break;
+      await wait(100);
+    }
+    assert.equal(code.used, 1);
+    assert.equal(code.given, invoice.discount);
+    // One use only: used up for the next restaurant.
+    await rejects(Parse.Cloud.run('checkSignupCode', { code: 'LAUNCH20' }, M), /used up/);
+  });
+
+  test('a referral: the new restaurant saves; the referrer gets free months once it pays', async () => {
+    const mailCafe = async () => (await listed()).rows.find((r) => r.code === 'mail-cafe');
+    const before = new Date((await mailCafe()).paidUntil);
+    await Parse.Cloud.run(
+      'signUpRestaurant',
+      { ...base('ref-cafe', 'Ref Cafe'), start: 'pay', offerCode: 'mail-cafe' },
+      M,
+    );
+    const owner = await login('owner', PINS.owner, 'ref-cafe');
+    const billing = await run('getBilling', {}, owner);
+    assert.equal(billing.offer.type, 'referral');
+    assert.equal(billing.offer.referrerName, 'Mail Cafe');
+    assert.equal(
+      billing.prices[3],
+      billing.listPrices[3] - Math.round(billing.listPrices[3] * 0.15),
+    );
+    // A payment recorded by hand gets the same price.
+    mailbox.length = 0;
+    const row = (await listed()).rows.find((r) => r.code === 'ref-cafe');
+    const paid = await run(
+      'platformRecordPayment',
+      { id: row.id, months: 3, reference: 'Cash at the office' },
+      ops,
+    );
+    assert.equal(paid.amount, billing.prices[3]);
+    assert.equal(paid.discountCode, 'mail-cafe');
+    let after = before;
+    for (let i = 0; i < 50 && after <= before; i += 1) {
+      await wait(100);
+      after = new Date((await mailCafe()).paidUntil);
+    }
+    const days = (after - before) / DAY;
+    assert.ok(days >= 58 && days <= 63, `credited ${days} days`);
+    const referrer = await login('owner', 'new-pass-9', 'mail-cafe');
+    const { items } = await run('getNotifications', {}, referrer);
+    assert.ok(items.some((n) => /2 months free: Ref Cafe joined/.test(n.title)));
+    for (let i = 0; i < 50 && !mailbox.some((m) => /referral/.test(m.subject)); i += 1)
+      await wait(100);
+    const email = mailbox.find((m) => /referral/.test(m.subject));
+    assert.equal(email.to, 'mary@cafe.example');
+    assert.match(email.text, /Ref Cafe joined Relay with your restaurant code/);
+    // Once only, even if a second payment comes.
+    await run('platformRecordPayment', { id: row.id, months: 1 }, ops);
+    await wait(500);
+    assert.equal(new Date((await mailCafe()).paidUntil).getTime(), after.getTime());
+  });
+
+  test('the free trial instead: the code no longer applies', async () => {
+    await Parse.Cloud.run(
+      'signUpRestaurant',
+      { ...base('trial-cafe', 'Trial Cafe'), start: 'pay', offerCode: 'mail-cafe' },
+      M,
+    );
+    const owner = await login('owner', PINS.owner, 'trial-cafe');
+    await run('startTrialInstead', {}, owner);
+    const { restaurant } = await run('getMyProfile', {}, owner);
+    assert.equal(restaurant.usable, true);
+    assert.equal(restaurant.status, 'trial');
+    assert.equal(restaurant.payFirst, false);
+    assert.equal((await run('getBilling', {}, owner)).offer, null);
+    await rejects(run('startTrialInstead', {}, owner), /not waiting for its first payment/);
   });
 });

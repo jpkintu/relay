@@ -163,6 +163,7 @@ async function lookUp(field, value) {
         suspended: row.get('suspended') === true,
         trialEndsAt: row.get('trialEndsAt') || null,
         paidUntil: row.get('paidUntil') || null,
+        payFirst: row.get('payFirst') === true,
       }
     : null;
   cache.set(key, { restaurant, at: Date.now() });

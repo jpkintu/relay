@@ -100,6 +100,10 @@ export type RestaurantSummary = {
   billingFrom?: string;
   ownerName?: string;
   billingPhone?: string;
+  trialDays?: number;
+  // Signed up to pay now: closed until the first payment, with its code.
+  payFirst?: boolean;
+  offerCode?: string;
   currency: string;
   graceDays: number;
   supportContact: string;

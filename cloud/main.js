@@ -58,6 +58,7 @@ require('./platformWhatsapp');
 require('./platformEmail');
 require('./platformBroadcast');
 require('./platformRevenue');
+require('./offers');
 require('./people');
 require('./admin');
 require('./onboarding');

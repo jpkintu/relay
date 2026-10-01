@@ -18,6 +18,10 @@ export type ReceiptPayment = {
   periodStart: string | null;
   periodEnd: string | null;
   paidAt: string | null;
+  // A first payment with a sign-up code: the price before it.
+  listAmount?: number | null;
+  discount?: number;
+  discountCode?: string;
 };
 
 export type InvoiceDoc = {
@@ -30,6 +34,9 @@ export type InvoiceDoc = {
   currency: string;
   periodStart: string | null;
   periodEnd: string | null;
+  listAmount?: number | null;
+  discount?: number;
+  discountCode?: string;
 };
 
 // What the documents know about the restaurant (its summary).
@@ -69,6 +76,8 @@ type Doc = {
   periodStart: string | null;
   periodEnd: string | null;
   paidWith?: string;
+  discount?: number;
+  discountCode?: string;
 };
 
 const STYLE = `
@@ -137,7 +146,10 @@ function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
   const plan = restaurant.planName ? `Relay ${restaurant.planName} plan` : 'Relay subscription';
   const description = `${plan}${year ? ', paid yearly' : ''}`;
   const qty = year ? '1' : String(doc.months);
-  const unit = year ? doc.amount : Math.round(doc.amount / Math.max(1, doc.months));
+  // The item at its full price; a sign-up code comes off in the totals.
+  const discount = doc.discount || 0;
+  const full = doc.amount + discount;
+  const unit = year ? full : Math.round(full / Math.max(1, doc.months));
   const period =
     doc.periodStart && doc.periodEnd
       ? `${formatDate(doc.periodStart, timeZone, { dateStyle: 'medium' })} – ${formatDate(
@@ -177,9 +189,13 @@ ${paid ? '' : `<a class="pay" href="${escape(payUrl)}">Pay online</a>`}
 <table class="items"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
 <tbody><tr><td>${escape(description)}${period ? `<div class="sub">${escape(period)}</div>` : ''}</td>
 <td class="num">${qty}</td><td class="num">${escape(money(unit))}<div class="sub">${unitLabel}</div></td><td class="num">${escape(
-    money(doc.amount),
+    money(full),
   )}</td></tr></tbody></table>
-<table class="totals"><tr><td>Subtotal</td><td>${escape(money(doc.amount))}</td></tr>
+<table class="totals"><tr><td>Subtotal</td><td>${escape(money(full))}</td></tr>${
+    discount
+      ? `<tr><td>Discount${doc.discountCode ? ` (${escape(doc.discountCode)})` : ''}</td><td>−${escape(money(discount))}</td></tr>`
+      : ''
+  }
 <tr><td>Total</td><td>${escape(money(doc.amount))}</td></tr>
 <tr class="strong"><td>${paid ? 'Amount paid' : 'Amount due'}</td><td>${escape(
     `${money(doc.amount)}`,
@@ -235,6 +251,8 @@ export function printSubscriptionReceipt(
         paidAt: payment.paidAt,
         months: payment.months,
         amount: payment.amount,
+        discount: payment.discount || 0,
+        discountCode: payment.discountCode || '',
         currency: payment.currency,
         periodStart: payment.periodStart,
         periodEnd: payment.periodEnd,
@@ -263,6 +281,8 @@ export function printSubscriptionInvoice(
         paidAt: invoice.status === 'paid' ? invoice.issuedAt : null,
         months: invoice.months,
         amount: invoice.amount,
+        discount: invoice.discount || 0,
+        discountCode: invoice.discountCode || '',
         currency: invoice.currency,
         periodStart: invoice.periodStart,
         periodEnd: invoice.periodEnd,
