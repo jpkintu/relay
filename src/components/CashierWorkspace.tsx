@@ -21,7 +21,7 @@ import { groupBySplit } from '../lib/cart';
 import { CashierHandovers } from './CashierHandovers';
 import { CashierPayouts } from './CashierPayouts';
 import { CashierDrawer } from './CashierDrawer';
-import { openDrawer } from '../lib/drawer';
+import { autoSetUp, hasSavedDevice, openDrawer, watchDevices } from '../lib/drawer';
 import { CashierProfile } from './Profile';
 import { ShiftPanel } from './ShiftPanel';
 import { useMoney, useSession } from '../lib/session';
@@ -210,6 +210,15 @@ export function CashierWorkspace() {
     };
     void refresh();
   }, [preview, pathname, liveTick, myBranch]);
+
+  // A till that was never set up for the cash drawer uses the first receipt
+  // printer it finds (now, or when one is plugged in).
+  const drawerOn = !preview && !!config.drawer;
+  useEffect(() => {
+    if (!drawerOn || hasSavedDevice()) return undefined;
+    void autoSetUp({ scan: true }).catch(() => undefined);
+    return watchDevices(() => void autoSetUp().catch(() => undefined));
+  }, [drawerOn]);
 
   const modules = profile?.config.modules;
   const takesOrders = !!(modules?.callIn || modules?.counter);

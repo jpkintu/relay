@@ -60,6 +60,11 @@ export const kickBytes = (pin: 2 | 5 = 2) =>
 type UsbDevice = {
   vendorId: number;
   productId: number;
+  productName?: string;
+  manufacturerName?: string;
+  serialNumber?: string;
+  // Available without opening the device.
+  configurations?: { interfaces: { alternates: { interfaceClass: number }[] }[] }[];
   open: () => Promise<void>;
   close: () => Promise<void>;
   selectConfiguration: (n: number) => Promise<void>;
@@ -78,14 +83,18 @@ type SerialPortLike = {
   close: () => Promise<void>;
   writable: WritableStream<Uint8Array> | null;
 };
+type Events = {
+  addEventListener: (type: string, listener: () => void) => void;
+  removeEventListener: (type: string, listener: () => void) => void;
+};
 const nav = () =>
   navigator as Navigator & {
-    usb?: {
+    usb?: Events & {
       requestDevice: (o: { filters: object[] }) => Promise<UsbDevice>;
       getDevices: () => Promise<UsbDevice[]>;
     };
-    serial?: {
-      requestPort: () => Promise<SerialPortLike>;
+    serial?: Events & {
+      requestPort: (o?: { filters: object[] }) => Promise<SerialPortLike>;
       getPorts: () => Promise<SerialPortLike[]>;
     };
   };
@@ -94,10 +103,61 @@ export const supports = {
   serial: () => typeof navigator !== 'undefined' && !!nav().serial,
 };
 
+// Receipt printer makers, by USB vendor id: the browser's list shows their
+// printers (and any device of the USB printer class) first.
+export const PRINTER_VENDORS: Record<number, string> = {
+  0x04b8: 'Epson',
+  0x0519: 'Star',
+  0x1504: 'Bixolon',
+  0x1d90: 'Citizen',
+  0x154f: 'SNBC',
+  0x0fe6: 'Rongta / ICS',
+  0x0416: 'Winbond (Xprinter, Gprinter)',
+  0x0483: 'STMicro (POS printer)',
+  0x1fc9: 'NXP (POS printer)',
+  0x28e9: 'GigaDevice (POS printer)',
+  0x6868: 'POS printer',
+  0x20d1: 'Rongta',
+  0x0dd4: 'Custom',
+  0x0a5f: 'Zebra',
+  0x2730: 'Citizen',
+  0x1a86: 'QinHeng (USB-serial)',
+  0x067b: 'Prolific (USB-serial)',
+  0x0403: 'FTDI (USB-serial)',
+  0x10c4: 'Silicon Labs (USB-serial)',
+};
+const USB_PRINTER_CLASS = 7;
+const hex = (n?: number) => (n ?? 0).toString(16).padStart(4, '0');
+
+// Whether a USB device looks like a printer: the printer class on one of its
+// interfaces, or a receipt printer maker.
+export function looksLikePrinter(d: Pick<UsbDevice, 'vendorId' | 'configurations'>) {
+  const printerClass = (d.configurations || []).some((c) =>
+    c.interfaces.some((i) => i.alternates.some((a) => a.interfaceClass === USB_PRINTER_CLASS)),
+  );
+  return printerClass || d.vendorId in PRINTER_VENDORS;
+}
+const usbLabel = (d: UsbDevice) =>
+  [d.manufacturerName || PRINTER_VENDORS[d.vendorId], d.productName].filter(Boolean).join(' ') ||
+  `USB device ${hex(d.vendorId)}:${hex(d.productId)}`;
+const serialLabel = (info: { usbVendorId?: number; usbProductId?: number }) =>
+  info.usbVendorId
+    ? `${PRINTER_VENDORS[info.usbVendorId] || 'Serial printer'} (${hex(info.usbVendorId)}:${hex(
+        info.usbProductId,
+      )})`
+    : 'Serial port (COM)';
+
 // Choosing the printer (needs a click: the browser shows its own list).
-export async function chooseUsbPrinter(device: DrawerDevice): Promise<DrawerDevice> {
+// `all`: every USB device, not only the ones that look like printers.
+export async function chooseUsbPrinter(device: DrawerDevice, all = false): Promise<DrawerDevice> {
   if (!nav().usb) throw new Error('This browser cannot use USB printers. Use Chrome or Edge.');
-  const chosen = await nav().usb!.requestDevice({ filters: [] });
+  const filters = all
+    ? []
+    : [
+        { classCode: USB_PRINTER_CLASS },
+        ...Object.keys(PRINTER_VENDORS).map((id) => ({ vendorId: Number(id) })),
+      ];
+  const chosen = await nav().usb!.requestDevice({ filters });
   return { ...device, mode: 'usb', vendorId: chosen.vendorId, productId: chosen.productId };
 }
 export async function chooseSerialPrinter(device: DrawerDevice): Promise<DrawerDevice> {
@@ -108,12 +168,183 @@ export async function chooseSerialPrinter(device: DrawerDevice): Promise<DrawerD
   return { ...device, mode: 'serial', vendorId: info.usbVendorId, productId: info.usbProductId };
 }
 
+// ---- Finding devices ----
+//
+// Without a click, a browser only lists USB and serial devices this site was
+// allowed to use before (or that were added once with "Add a USB printer").
+// Network printers are found by the print bridge, which looks for printers
+// answering on port 9100 on this computer's local network.
+
+export type FoundDevice = {
+  // Stable key for lists.
+  key: string;
+  mode: 'usb' | 'serial' | 'bridge';
+  label: string;
+  // usb: whether it looks like a receipt printer.
+  printer: boolean;
+  vendorId?: number;
+  productId?: number;
+  printerHost?: string;
+  printerPort?: number;
+};
+export type Found = {
+  devices: FoundDevice[];
+  bridge: { running: boolean; version?: string; scanned?: boolean; error?: string };
+};
+
+async function fetchJson(url: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(json.error || `Answered ${response.status}`);
+    return json;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Every printer this device can reach now. `scan`: ask the bridge to look
+// for network printers (a few seconds).
+export async function findDevices(
+  options: { bridgeUrl?: string; scan?: boolean } = {},
+): Promise<Found> {
+  const devices: FoundDevice[] = [];
+  const usb = nav().usb;
+  if (usb) {
+    const list = await usb.getDevices().catch(() => [] as UsbDevice[]);
+    for (const d of list)
+      devices.push({
+        key: `usb:${hex(d.vendorId)}:${hex(d.productId)}:${d.serialNumber || ''}`,
+        mode: 'usb',
+        label: usbLabel(d),
+        printer: looksLikePrinter(d),
+        vendorId: d.vendorId,
+        productId: d.productId,
+      });
+  }
+  const serial = nav().serial;
+  if (serial) {
+    const ports = await serial.getPorts().catch(() => [] as SerialPortLike[]);
+    ports.forEach((port, i) => {
+      const info = port.getInfo();
+      devices.push({
+        key: `serial:${hex(info.usbVendorId)}:${hex(info.usbProductId)}:${i}`,
+        mode: 'serial',
+        label: serialLabel(info),
+        printer: true,
+        vendorId: info.usbVendorId,
+        productId: info.usbProductId,
+      });
+    });
+  }
+  const base = options.bridgeUrl || DEFAULT_BRIDGE;
+  const bridge: Found['bridge'] = { running: false };
+  try {
+    const status = await fetchJson(`${base}/status`, 1500);
+    bridge.running = !!status.ok;
+    bridge.version = status.version;
+  } catch {
+    // The bridge is not running on this computer.
+  }
+  if (bridge.running && options.scan) {
+    try {
+      const result = await fetchJson(`${base}/scan`, 15000);
+      bridge.scanned = true;
+      for (const p of result.printers || [])
+        devices.push({
+          key: `bridge:${p.host}:${p.port}`,
+          mode: 'bridge',
+          label: `Network printer at ${p.host}${p.port === 9100 ? '' : `:${p.port}`}`,
+          printer: true,
+          printerHost: p.host,
+          printerPort: p.port,
+        });
+    } catch (e) {
+      // An older bridge cannot look for printers.
+      bridge.error =
+        e instanceof Error && /404|Not found/i.test(e.message)
+          ? 'Update the print bridge to let it find network printers.'
+          : 'The print bridge could not look for printers.';
+    }
+  }
+  return { devices, bridge };
+}
+
+// Whether `found` is the printer this device is set up with.
+export function isCurrent(device: DrawerDevice, found: FoundDevice) {
+  if (device.mode !== found.mode) return false;
+  if (found.mode === 'bridge')
+    return (
+      device.printerHost === found.printerHost &&
+      (device.printerPort || 9100) === (found.printerPort || 9100)
+    );
+  return device.vendorId === found.vendorId && device.productId === found.productId;
+}
+
+// The setting that uses `found`, keeping the drawer pin and bridge address.
+export function deviceFor(device: DrawerDevice, found: FoundDevice): DrawerDevice {
+  if (found.mode === 'bridge')
+    return {
+      ...device,
+      mode: 'bridge',
+      printerHost: found.printerHost,
+      printerPort: found.printerPort || 9100,
+    };
+  return { ...device, mode: found.mode, vendorId: found.vendorId, productId: found.productId };
+}
+
+// The printer to set up by itself: the first receipt printer, preferring a
+// direct USB or serial one over the network.
+export function pickAuto(devices: FoundDevice[]): FoundDevice | undefined {
+  const order = { usb: 0, serial: 1, bridge: 2 };
+  return devices.filter((d) => d.printer).sort((a, b) => order[a.mode] - order[b.mode])[0];
+}
+
+// Whether this device was ever set up (choosing "no drawer" counts).
+export function hasSavedDevice() {
+  try {
+    return localStorage.getItem(KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+// Sets this device up by itself when it was never set up and a printer is
+// found. Returns the printer used, if any.
+export async function autoSetUp(options: { scan?: boolean } = {}) {
+  if (hasSavedDevice()) return undefined;
+  const device = loadDevice();
+  const found = pickAuto((await findDevices({ bridgeUrl: device.bridgeUrl, ...options })).devices);
+  if (!found || hasSavedDevice()) return undefined;
+  saveDevice(deviceFor(device, found));
+  return found;
+}
+
+// Calls `onChange` when a USB or serial device is plugged in or out.
+export function watchDevices(onChange: () => void) {
+  const targets = [nav().usb, nav().serial].filter(Boolean) as Events[];
+  for (const t of targets) {
+    t.addEventListener('connect', onChange);
+    t.addEventListener('disconnect', onChange);
+  }
+  return () => {
+    for (const t of targets) {
+      t.removeEventListener('connect', onChange);
+      t.removeEventListener('disconnect', onChange);
+    }
+  };
+}
+
 async function sendUsb(device: DrawerDevice, bytes: Uint8Array) {
   const usb = nav().usb;
   if (!usb) throw new Error('This browser cannot use USB printers');
-  const printer = (await usb.getDevices()).find(
-    (d) => d.vendorId === device.vendorId && d.productId === device.productId,
-  );
+  const list = await usb.getDevices();
+  const printers = list.filter(looksLikePrinter);
+  const printer =
+    list.find((d) => d.vendorId === device.vendorId && d.productId === device.productId) ||
+    (printers.length === 1 ? printers[0] : undefined);
   if (!printer) throw new Error('The USB printer is not connected. Choose it again.');
   await printer.open();
   try {
