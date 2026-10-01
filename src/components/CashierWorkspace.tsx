@@ -233,7 +233,11 @@ export function CashierWorkspace() {
       <header className="ops-header">
         <BrandMark logo={profile?.config.restaurantLogo} name={profile?.config.restaurantName} />
         <nav hidden={onShift === false}>
-          <button className={tab === 'orders' ? 'active' : ''} onClick={() => navigate('/cashier')}>
+          <button
+            className={tab === 'orders' ? 'active' : ''}
+            onClick={() => navigate('/cashier')}
+            title="Kitchen board"
+          >
             <UtensilsCrossed />
             Kitchen board
           </button>
@@ -241,6 +245,7 @@ export function CashierWorkspace() {
             <button
               className={tab === 'new' ? 'active' : ''}
               onClick={() => navigate('/cashier/new')}
+              title="New order"
             >
               <Plus />
               New order
@@ -249,6 +254,7 @@ export function CashierWorkspace() {
           <button
             className={tab === 'handovers' ? 'active' : ''}
             onClick={() => navigate('/cashier/handovers')}
+            title="Cash handovers"
           >
             <HandCoins />
             Cash handovers {pendingHandovers > 0 && <b>{pendingHandovers}</b>}
@@ -256,6 +262,7 @@ export function CashierWorkspace() {
           <button
             className={tab === 'payments' ? 'active' : ''}
             onClick={() => navigate('/cashier/payments')}
+            title={config.card ? 'Payments' : 'Mobile money'}
           >
             <Smartphone />
             {config.card ? 'Payments' : 'Mobile money'}{' '}
@@ -264,22 +271,24 @@ export function CashierWorkspace() {
           <button
             className={tab === 'payouts' ? 'active' : ''}
             onClick={() => navigate('/cashier/payouts')}
+            title="Payouts"
           >
             <Banknote />
             Payouts
           </button>
-          {config.drawer && (
-            <button
-              className={tab === 'drawer' ? 'active' : ''}
-              onClick={() => navigate('/cashier/drawer')}
-            >
-              <Archive />
-              Drawer
-            </button>
-          )}
+          {/* Always shown: the page explains how to switch the drawer on. */}
+          <button
+            className={tab === 'drawer' ? 'active' : ''}
+            onClick={() => navigate('/cashier/drawer')}
+            title="Drawer"
+          >
+            <Archive />
+            Drawer
+          </button>
           <button
             className={tab === 'stock' ? 'active' : ''}
             onClick={() => navigate('/cashier/stock')}
+            title="Stock"
           >
             <Package />
             Stock
@@ -287,12 +296,13 @@ export function CashierWorkspace() {
           <button
             className={tab === 'shift' ? 'active' : ''}
             onClick={() => navigate('/cashier/shift')}
+            title="Shift"
           >
             <Clock3 />
             Shift
           </button>
           {profile?.role === 'admin' && (
-            <button onClick={() => navigate('/admin')}>
+            <button onClick={() => navigate('/admin')} title="Admin">
               <LayoutDashboard />
               Admin
             </button>
