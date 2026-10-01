@@ -206,11 +206,23 @@ reports stay open.
 
 ## Billing (phase 3)
 
-**Owner.** The Overview shows the trial or paid-until date with **Pay now** /
-**Pay ahead**. When the restaurant has expired, the owner signs in to the same
-payment form. Choose 1, 3, 6 or 12 months and the mobile money number, tap
-Pay, approve the prompt on the phone; the page follows it and opens the app as
-soon as ioTec says Success. Past payments are listed under the form.
+**Owner.** Admin → **Billing** holds everything about the subscription: the
+plan, its status and paid-until date, the monthly and annual price, the
+payment form, the plan cards (with a **Monthly / Annual** switch), the account
+email and the **invoices**: one paid invoice per payment received, plus the
+next month's invoice (unpaid, then overdue) from 14 days before the paid month
+ends. Each invoice downloads as a PDF (the browser's print to PDF). The
+Overview shows a short notice with **Billing** / **Pay now** only when
+something needs doing: a trial, a payment due within 7 days or overdue, or no
+owner email. When the restaurant has expired, the owner signs in to the same
+payment form. Choose 1, 3, 6 or 12 months (12 months is "1 year" at the annual
+price) and the mobile money number, tap Pay, approve the prompt on the phone;
+the page follows it and opens the app as soon as ioTec says Success.
+
+**Annual price.** Paying a year at once costs the plan's annual price: by
+default 10 months (two months free). Platform staff can set a plan's own
+"Price for a year" in the console (empty = the 10-month default). A restaurant
+with a negotiated monthly price pays 10 of those months for a year.
 
 **Server** (`cloud/billing.js`, `cloud/lib/iotec.js`):
 

@@ -1,3 +1,4 @@
+import { AdminBilling } from './AdminBilling';
 import { Suspense, useCallback, useEffect, useState, type FormEvent } from 'react';
 import { LockKeyhole, Lock } from 'lucide-react';
 import Parse from '../parse';
@@ -132,6 +133,7 @@ export function AdminSite({
         </p>
       )}
       <Suspense fallback={<p className="section-loading">Loading…</p>}>
+        {tab === 'billing' && <AdminBilling />}
         {tab === 'settings' && <AdminSetup section="Settings" preview={false} />}
         {tab === 'branding' && <AdminSetup section="Branding" preview={false} />}
         {tab === 'payments' && <AdminPayments />}

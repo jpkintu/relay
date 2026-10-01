@@ -60,6 +60,16 @@ const priceOf = (row, platform) => {
   if (typeof own === 'number' && own >= 0) return own;
   return planOfRow(row, platform).price;
 };
+// A year paid at once: a negotiated monthly price gets the same two months
+// free; otherwise the plan's annual price.
+const annualPriceOf = (row, platform) => {
+  const own = row.get('priceOverride');
+  if (typeof own === 'number' && own >= 0) return require('./lib/plans').annualOf(own, null);
+  return planOfRow(row, platform).annualPrice;
+};
+// What `months` cost: 12 months is the annual price, others the monthly one.
+const amountFor = (row, platform, months) =>
+  Number(months) === 12 ? annualPriceOf(row, platform) : priceOf(row, platform) * Number(months);
 
 // Functions an expired or suspended restaurant can still use: sign-in
 // details, the profile (which says why the app is closed), changing one's
@@ -280,6 +290,7 @@ function summarise(row, platform) {
     trialEndsAt: row.get('trialEndsAt')?.toISOString() || null,
     paidUntil: row.get('paidUntil')?.toISOString() || null,
     monthlyPrice: priceOf(row, platform),
+    annualPrice: annualPriceOf(row, platform),
     plan: planOfRow(row, platform).key,
     planName: planOfRow(row, platform).name,
     currency: platform.currency,
@@ -647,6 +658,13 @@ Parse.Cloud.define('platformSavePlan', async (request) => {
   const price = Number(p.price);
   if (!Number.isFinite(price) || price < 0 || price > 100000000)
     throw invalid('Price: a number from 0 up');
+  // Empty: ten months' price (two months free).
+  const annual =
+    p.annualPrice === null || p.annualPrice === undefined || p.annualPrice === ''
+      ? null
+      : Number(p.annualPrice);
+  if (annual !== null && (!Number.isFinite(annual) || annual < 0 || annual > 1000000000))
+    throw invalid('Annual price: a number from 0 up, or empty for 10 months');
   const limits = {};
   for (const key of plans.LIMITS) {
     const value = p.limits?.[key];
@@ -689,6 +707,7 @@ Parse.Cloud.define('platformSavePlan', async (request) => {
       .trim()
       .slice(0, 160),
     price: Math.round(price),
+    annualPrice: annual === null ? null : Math.round(annual),
     limits,
     features,
     active,
@@ -733,6 +752,8 @@ Parse.Cloud.define('platformGetAudit', async (request) => {
 
 module.exports = {
   priceOf,
+  annualPriceOf,
+  amountFor,
   checkAccess,
   isPlatform,
   accessOf,

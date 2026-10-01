@@ -14,6 +14,7 @@ const {
   requirePlatform,
   restaurantSummary,
   priceOf,
+  amountFor,
   forEachRestaurant,
 } = require('./restaurants');
 
@@ -124,17 +125,66 @@ async function history(limit = 20) {
   return query.find(MASTER);
 }
 
+// Invoices: every paid payment, and the next period while it is coming up
+// (within INVOICE_DAYS of the end of the trial or paid period) or overdue.
+const INVOICE_DAYS = 14;
+function invoicesOf(row, platform, payments) {
+  const code = row.get('code');
+  const paid = payments
+    .filter((p) => p.get('status') === 'paid')
+    .map((p) => ({
+      number: `INV-${code.toUpperCase()}-${p.id}`,
+      status: 'paid',
+      issuedAt: (p.get('paidAt') || p.createdAt).toISOString(),
+      dueAt: null,
+      months: Number(p.get('months')) || 1,
+      amount: Number(p.get('amount')) || 0,
+      currency: p.get('currency') || platform.currency,
+      periodStart: p.get('periodStart')?.toISOString() || null,
+      periodEnd: p.get('periodEnd')?.toISOString() || null,
+      paymentId: p.id,
+    }));
+  const access = accessOf(row, platform.graceDays);
+  const end = new Date(
+    Math.max(row.get('trialEndsAt')?.getTime() || 0, row.get('paidUntil')?.getTime() || 0),
+  );
+  const daysLeft = Math.ceil((end.getTime() - Date.now()) / DAY);
+  const next =
+    access.status !== 'suspended' && end.getTime() > 0 && daysLeft <= INVOICE_DAYS
+      ? [
+          {
+            number: `INV-${code.toUpperCase()}-${end.toISOString().slice(0, 10).replace(/-/g, '')}`,
+            status: daysLeft < 0 ? 'overdue' : 'due',
+            issuedAt: new Date(end.getTime() - INVOICE_DAYS * DAY).toISOString(),
+            dueAt: end.toISOString(),
+            months: 1,
+            amount: priceOf(row, platform),
+            currency: platform.currency,
+            periodStart: end.toISOString(),
+            periodEnd: addMonths(end, 1).toISOString(),
+            paymentId: null,
+          },
+        ]
+      : [];
+  return [...next, ...paid];
+}
+
 async function billingState() {
   for (const payment of await pendingPayments()) await refresh(payment);
   const row = await restaurantRow();
+  const { values: platform } = await platformSettings();
+  const payments = await history(100);
   return {
     restaurant: await restaurantSummary(),
+    // What each choice costs (12 months: the annual price).
+    prices: Object.fromEntries(MONTHS.map((m) => [m, amountFor(row, platform, m)])),
+    invoices: invoicesOf(row, platform, payments),
     // False until the ioTec keys are set in the Back4App app.
     payInApp: iotec.configured(),
     sandbox: iotec.sandbox(),
     billingPhone: row.get('billingPhone') || '',
     months: MONTHS,
-    payments: (await history()).map(toJSON),
+    payments: payments.slice(0, 20).map(toJSON),
   };
 }
 
@@ -184,7 +234,7 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
   if (phone.replace(/\D/g, '').length < 9)
     throw invalid('Enter the mobile money number to pay from');
   const row = await restaurantRow();
-  const amount = priceOf(row, platform) * months;
+  const amount = amountFor(row, platform, months);
   if (amount < MIN_AMOUNT) throw invalid('Nothing to pay at this price. Contact Relay');
 
   for (const waiting of await pendingPayments()) {
@@ -262,7 +312,7 @@ Parse.Cloud.define('platformRecordPayment', async (request) => {
   if (!Number.isInteger(months) || months < 1 || months > 24) throw invalid('Months: 1 to 24');
   const { values: platform } = await platformSettings();
   const amount =
-    p.amount === undefined || p.amount === '' ? priceOf(row, platform) * months : Number(p.amount);
+    p.amount === undefined || p.amount === '' ? amountFor(row, platform, months) : Number(p.amount);
   if (!Number.isFinite(amount) || amount < 0) throw invalid('Amount: a number from 0 up');
   const payment = await tenancy.runAs(
     row.id,

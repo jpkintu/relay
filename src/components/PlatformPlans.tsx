@@ -15,6 +15,9 @@ export type Plan = {
   name: string;
   description: string;
   price: number;
+  annualPrice: number;
+  // False: the annual price is the default (10 months).
+  annualSet: boolean;
   active: boolean;
   sortOrder: number;
   limits: Record<string, number | null>;
@@ -45,6 +48,7 @@ type Draft = {
   name: string;
   description: string;
   price: string;
+  annualPrice: string;
   active: boolean;
   limits: Record<string, string>;
   features: Record<string, boolean>;
@@ -55,6 +59,7 @@ const draftOf = (plan: Plan | null, features: string[], limits: string[]): Draft
   name: plan?.name || '',
   description: plan?.description || '',
   price: plan ? String(plan.price) : '',
+  annualPrice: plan?.annualSet ? String(plan.annualPrice) : '',
   active: plan ? plan.active : true,
   limits: Object.fromEntries(
     limits.map((k) => [k, plan?.limits[k] === null || !plan ? '' : String(plan.limits[k])]),
@@ -97,6 +102,7 @@ export function PlatformPlans({ onChanged }: { onChanged: () => void }) {
         name: draft.name,
         description: draft.description,
         price: Number(draft.price),
+        annualPrice: draft.annualPrice.trim() === '' ? null : Number(draft.annualPrice),
         active: draft.active,
         limits: Object.fromEntries(
           Object.entries(draft.limits).map(([k, v]) => [k, v.trim() === '' ? null : Number(v)]),
@@ -142,6 +148,7 @@ export function PlatformPlans({ onChanged }: { onChanged: () => void }) {
             <tr>
               <th>Plan</th>
               <th className="num">Price a month</th>
+              <th className="num">A year</th>
               {data.limits.map((k) => (
                 <th key={k} className="num">
                   {LIMIT_NAMES[k] || k}
@@ -167,6 +174,10 @@ export function PlatformPlans({ onChanged }: { onChanged: () => void }) {
                   </small>
                 </td>
                 <td className="num">{formatMoney(plan.price, data.currency)}</td>
+                <td className="num">
+                  {formatMoney(plan.annualPrice, data.currency)}
+                  {!plan.annualSet && <small className="cell-sub">10 months</small>}
+                </td>
                 {data.limits.map((k) => (
                   <td key={k} className="num">
                     {limitText(plan.limits[k])}
@@ -216,6 +227,21 @@ export function PlatformPlans({ onChanged }: { onChanged: () => void }) {
               inputMode="numeric"
               value={draft.price}
               onChange={(e) => setDraft({ ...draft, price: e.target.value.replace(/[^\d]/g, '') })}
+            />
+          </label>
+          <label className="setup-field">
+            Price for a year ({data.currency})
+            <input
+              inputMode="numeric"
+              value={draft.annualPrice}
+              placeholder={
+                draft.price
+                  ? `Empty: ${formatMoney(Number(draft.price) * 10, data.currency)} (2 months free)`
+                  : 'Empty: 10 months (2 months free)'
+              }
+              onChange={(e) =>
+                setDraft({ ...draft, annualPrice: e.target.value.replace(/[^\d]/g, '') })
+              }
             />
           </label>
           <label className="setup-field platform-note">

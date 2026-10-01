@@ -1,5 +1,6 @@
 // The pages inside Admin (behind the owner's PIN), in menu order.
 export const ADMIN_TABS = [
+  ['billing', 'Billing'],
   ['settings', 'Settings'],
   ['branding', 'Branding'],
   ['payments', 'Payments'],

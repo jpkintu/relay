@@ -15,6 +15,12 @@ const FEATURES = ['branches', 'finance', 'accounting', 'reports', 'efris', 'what
 // Limits per role and branches; null = no limit.
 const LIMITS = ['branches', 'cashier', 'rider', 'finance'];
 
+// Paying a year at once costs this many months by default (two months free);
+// platform staff can set each plan's annual price.
+const ANNUAL_MONTHS = 10;
+const annualOf = (price, annual) =>
+  typeof annual === 'number' && annual >= 0 ? annual : price * ANNUAL_MONTHS;
+
 const DEFAULTS = [
   {
     key: 'basic',
@@ -52,6 +58,9 @@ function view(row) {
     name: row.get('name'),
     description: row.get('description') || '',
     price: Number(row.get('price') || 0),
+    // A year paid at once (null when not set: ANNUAL_MONTHS × price).
+    annualPrice: annualOf(Number(row.get('price') || 0), row.get('annualPrice')),
+    annualSet: typeof row.get('annualPrice') === 'number',
     active: row.get('active') !== false,
     sortOrder: Number(row.get('sortOrder') || 0),
     limits: Object.fromEntries(
@@ -115,4 +124,13 @@ function planFor(plans, key) {
   );
 }
 
-module.exports = { FEATURES, LIMITS, loadPlans, clearPlans, planFor, view };
+module.exports = {
+  FEATURES,
+  LIMITS,
+  ANNUAL_MONTHS,
+  annualOf,
+  loadPlans,
+  clearPlans,
+  planFor,
+  view,
+};

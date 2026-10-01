@@ -95,6 +95,8 @@ export type RestaurantSummary = {
   planName?: string;
   // Relay Hosted: where Relay emails the owner (password resets, reminders).
   ownerEmail?: string;
+  // A year paid at once (Admin → Billing).
+  annualPrice?: number;
   currency: string;
   graceDays: number;
   supportContact: string;

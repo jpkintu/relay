@@ -530,6 +530,8 @@ const SCHEMAS = {
     name: S,
     description: S,
     price: N,
+    // A year paid at once; empty: 10 months' price (lib/plans.js).
+    annualPrice: N,
     limits: 'Object',
     features: 'Object',
     active: B,

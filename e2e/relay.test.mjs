@@ -6174,7 +6174,9 @@ describe('platform console and access (Relay Hosted)', () => {
     (await run('platformListPlans', {}, ops)).plans.find((plan) => plan.key === key);
   const savePlan = async (key, changes) => {
     const plan = await planByKey(key);
-    return run('platformSavePlan', { ...plan, ...changes }, ops);
+    // The listed annual price is computed unless set; send it back only then.
+    const annualPrice = plan.annualSet ? plan.annualPrice : null;
+    return run('platformSavePlan', { ...plan, annualPrice, ...changes }, ops);
   };
 
   after(async () => {
@@ -6605,6 +6607,45 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
     const entry = audit.rows.find((row) => row.action === 'platform.payment_recorded');
     assert.equal(entry.entityId, k.id);
     assert.equal(entry.after.reference, 'Bank slip 889');
+  });
+
+  test('a year at once costs the annual price; invoices list paid and due', async () => {
+    const billing = await run('getBilling', {}, k.owner);
+    assert.equal(billing.prices[3], 150000);
+    // No annual price set: ten months (two months free).
+    assert.equal(billing.prices[12], 500000);
+    assert.equal(billing.restaurant.annualPrice, 500000);
+    const started = await pay({ months: 12, phone: '0772555111' });
+    assert.equal(started.amount, 500000);
+    await check(started.id);
+    const done = await check(started.id);
+    assert.equal(done.payment.status, 'paid');
+    const days = (new Date(done.payment.periodEnd) - new Date(done.payment.periodStart)) / DAY;
+    assert.ok(days >= 364 && days <= 366, `a year is ${days} days`);
+    const after = await run('getBilling', {}, k.owner);
+    const paid = after.invoices.filter((inv) => inv.status === 'paid');
+    assert.ok(paid.length >= 4);
+    assert.equal(paid[0].amount, 500000);
+    assert.equal(paid[0].months, 12);
+    assert.match(paid[0].number, /^INV-KATO-GRILL-/);
+    // Far from the end of the period: no unpaid invoice yet.
+    assert.ok(!after.invoices.some((inv) => inv.status !== 'paid'));
+    await run('platformUpdateRestaurant', { id: k.id, paidUntil: when(3) }, k.ops);
+    const due = (await run('getBilling', {}, k.owner)).invoices[0];
+    assert.equal(due.status, 'due');
+    assert.equal(due.amount, 50000);
+    assert.equal(due.paymentId, null);
+    await run('platformUpdateRestaurant', { id: k.id, paidUntil: when(-2) }, k.ops);
+    assert.equal((await run('getBilling', {}, k.owner)).invoices[0].status, 'overdue');
+    // Platform staff can set a plan's annual price.
+    const basic = (await run('platformListPlans', {}, k.ops)).plans.find((p) => p.key === 'basic');
+    assert.equal(basic.annualSet, false);
+    await run('platformSavePlan', { ...basic, annualPrice: 450000 }, k.ops);
+    assert.equal((await run('getBilling', {}, k.owner)).prices[12], 450000);
+    await rejects(run('platformSavePlan', { ...basic, annualPrice: -1 }, k.ops), /Annual price/);
+    await run('platformSavePlan', { ...basic, annualPrice: '' }, k.ops);
+    assert.equal((await run('getBilling', {}, k.owner)).prices[12], 500000);
+    await run('platformUpdateRestaurant', { id: k.id, paidUntil: when(30) }, k.ops);
   });
 
   test('owners are reminded before the month ends, once', async () => {

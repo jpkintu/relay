@@ -721,6 +721,8 @@ var require_plans = __commonJS({
     var MASTER = { useMasterKey: true };
     var FEATURES = ["branches", "finance", "accounting", "reports", "efris", "whatsapp"];
     var LIMITS = ["branches", "cashier", "rider", "finance"];
+    var ANNUAL_MONTHS = 10;
+    var annualOf = (price, annual) => typeof annual === "number" && annual >= 0 ? annual : price * ANNUAL_MONTHS;
     var DEFAULTS = [
       {
         key: "basic",
@@ -756,6 +758,9 @@ var require_plans = __commonJS({
         name: row.get("name"),
         description: row.get("description") || "",
         price: Number(row.get("price") || 0),
+        // A year paid at once (null when not set: ANNUAL_MONTHS × price).
+        annualPrice: annualOf(Number(row.get("price") || 0), row.get("annualPrice")),
+        annualSet: typeof row.get("annualPrice") === "number",
         active: row.get("active") !== false,
         sortOrder: Number(row.get("sortOrder") || 0),
         limits: Object.fromEntries(
@@ -806,7 +811,16 @@ var require_plans = __commonJS({
     function planFor(plans, key) {
       return plans.find((plan) => plan.key === key) || plans.find((plan) => plan.active) || plans[0] || { key: "none", name: "None", price: 0, limits: {}, features: {} };
     }
-    module2.exports = { FEATURES, LIMITS, loadPlans, clearPlans, planFor, view };
+    module2.exports = {
+      FEATURES,
+      LIMITS,
+      ANNUAL_MONTHS,
+      annualOf,
+      loadPlans,
+      clearPlans,
+      planFor,
+      view
+    };
   }
 });
 
@@ -1825,6 +1839,8 @@ var require_security = __commonJS({
         name: S,
         description: S,
         price: N,
+        // A year paid at once; empty: 10 months' price (lib/plans.js).
+        annualPrice: N,
         limits: "Object",
         features: "Object",
         active: B,
@@ -3082,6 +3098,12 @@ var require_restaurants = __commonJS({
       if (typeof own === "number" && own >= 0) return own;
       return planOfRow(row, platform).price;
     };
+    var annualPriceOf = (row, platform) => {
+      const own = row.get("priceOverride");
+      if (typeof own === "number" && own >= 0) return require_plans().annualOf(own, null);
+      return planOfRow(row, platform).annualPrice;
+    };
+    var amountFor = (row, platform, months) => Number(months) === 12 ? annualPriceOf(row, platform) : priceOf(row, platform) * Number(months);
     var OPEN_WHEN_CLOSED = /* @__PURE__ */ new Set([
       "getAppInfo",
       "getMyProfile",
@@ -3246,6 +3268,7 @@ var require_restaurants = __commonJS({
         trialEndsAt: row.get("trialEndsAt")?.toISOString() || null,
         paidUntil: row.get("paidUntil")?.toISOString() || null,
         monthlyPrice: priceOf(row, platform),
+        annualPrice: annualPriceOf(row, platform),
         plan: planOfRow(row, platform).key,
         planName: planOfRow(row, platform).name,
         currency: platform.currency,
@@ -3539,6 +3562,9 @@ var require_restaurants = __commonJS({
       const price = Number(p.price);
       if (!Number.isFinite(price) || price < 0 || price > 1e8)
         throw invalid("Price: a number from 0 up");
+      const annual = p.annualPrice === null || p.annualPrice === void 0 || p.annualPrice === "" ? null : Number(p.annualPrice);
+      if (annual !== null && (!Number.isFinite(annual) || annual < 0 || annual > 1e9))
+        throw invalid("Annual price: a number from 0 up, or empty for 10 months");
       const limits = {};
       for (const key of plans.LIMITS) {
         const value = p.limits?.[key];
@@ -3574,6 +3600,7 @@ var require_restaurants = __commonJS({
         name,
         description: String(p.description || "").trim().slice(0, 160),
         price: Math.round(price),
+        annualPrice: annual === null ? null : Math.round(annual),
         limits,
         features,
         active,
@@ -3615,6 +3642,8 @@ var require_restaurants = __commonJS({
     });
     module2.exports = {
       priceOf,
+      annualPriceOf,
+      amountFor,
       checkAccess,
       isPlatform,
       accessOf,
@@ -34029,6 +34058,7 @@ var require_billing = __commonJS({
       requirePlatform,
       restaurantSummary,
       priceOf,
+      amountFor,
       forEachRestaurant
     } = require_restaurants();
     var MONTHS = [1, 3, 6, 12];
@@ -34123,17 +34153,58 @@ var require_billing = __commonJS({
       query.limit(limit);
       return query.find(MASTER);
     }
+    var INVOICE_DAYS = 14;
+    function invoicesOf(row, platform, payments) {
+      const code = row.get("code");
+      const paid = payments.filter((p) => p.get("status") === "paid").map((p) => ({
+        number: `INV-${code.toUpperCase()}-${p.id}`,
+        status: "paid",
+        issuedAt: (p.get("paidAt") || p.createdAt).toISOString(),
+        dueAt: null,
+        months: Number(p.get("months")) || 1,
+        amount: Number(p.get("amount")) || 0,
+        currency: p.get("currency") || platform.currency,
+        periodStart: p.get("periodStart")?.toISOString() || null,
+        periodEnd: p.get("periodEnd")?.toISOString() || null,
+        paymentId: p.id
+      }));
+      const access = accessOf(row, platform.graceDays);
+      const end = new Date(
+        Math.max(row.get("trialEndsAt")?.getTime() || 0, row.get("paidUntil")?.getTime() || 0)
+      );
+      const daysLeft = Math.ceil((end.getTime() - Date.now()) / DAY);
+      const next = access.status !== "suspended" && end.getTime() > 0 && daysLeft <= INVOICE_DAYS ? [
+        {
+          number: `INV-${code.toUpperCase()}-${end.toISOString().slice(0, 10).replace(/-/g, "")}`,
+          status: daysLeft < 0 ? "overdue" : "due",
+          issuedAt: new Date(end.getTime() - INVOICE_DAYS * DAY).toISOString(),
+          dueAt: end.toISOString(),
+          months: 1,
+          amount: priceOf(row, platform),
+          currency: platform.currency,
+          periodStart: end.toISOString(),
+          periodEnd: addMonths(end, 1).toISOString(),
+          paymentId: null
+        }
+      ] : [];
+      return [...next, ...paid];
+    }
     async function billingState() {
       for (const payment of await pendingPayments()) await refresh(payment);
       const row = await restaurantRow();
+      const { values: platform } = await platformSettings();
+      const payments = await history(100);
       return {
         restaurant: await restaurantSummary(),
+        // What each choice costs (12 months: the annual price).
+        prices: Object.fromEntries(MONTHS.map((m) => [m, amountFor(row, platform, m)])),
+        invoices: invoicesOf(row, platform, payments),
         // False until the ioTec keys are set in the Back4App app.
         payInApp: iotec.configured(),
         sandbox: iotec.sandbox(),
         billingPhone: row.get("billingPhone") || "",
         months: MONTHS,
-        payments: (await history()).map(toJSON)
+        payments: payments.slice(0, 20).map(toJSON)
       };
     }
     Parse.Cloud.define("getBilling", async (request) => {
@@ -34171,7 +34242,7 @@ var require_billing = __commonJS({
       if (phone.replace(/\D/g, "").length < 9)
         throw invalid("Enter the mobile money number to pay from");
       const row = await restaurantRow();
-      const amount = priceOf(row, platform) * months;
+      const amount = amountFor(row, platform, months);
       if (amount < MIN_AMOUNT) throw invalid("Nothing to pay at this price. Contact Relay");
       for (const waiting of await pendingPayments()) {
         await refresh(waiting);
@@ -34235,7 +34306,7 @@ var require_billing = __commonJS({
       const months = Number(p.months);
       if (!Number.isInteger(months) || months < 1 || months > 24) throw invalid("Months: 1 to 24");
       const { values: platform } = await platformSettings();
-      const amount = p.amount === void 0 || p.amount === "" ? priceOf(row, platform) * months : Number(p.amount);
+      const amount = p.amount === void 0 || p.amount === "" ? amountFor(row, platform, months) : Number(p.amount);
       if (!Number.isFinite(amount) || amount < 0) throw invalid("Amount: a number from 0 up");
       const payment = await tenancy.runAs(
         row.id,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Check, LogOut, Minus } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import Parse from '../parse';
 import { formatDate, formatMoney } from '../lib/format';
 import { printSubscriptionReceipt } from '../lib/subscriptionReceipt';
@@ -22,6 +23,8 @@ export type OfferedPlan = {
   name: string;
   description: string;
   price: number;
+  // A year paid at once (default: 10 months).
+  annualPrice: number;
   limits: Record<string, number | null>;
   features: Record<string, boolean>;
 };
@@ -90,6 +93,33 @@ export function useOfferedPlans() {
 
 // One plan: price, what it allows and what it includes. With `onSelect`
 // (the sign-up form) the card itself is a choice.
+export type Cycle = 'month' | 'year';
+
+// Monthly or annual prices on the plan cards.
+export function CycleToggle({ cycle, onChange }: { cycle: Cycle; onChange: (c: Cycle) => void }) {
+  return (
+    <div className="filter-toggle cycle-toggle" role="tablist" aria-label="Billing period">
+      {(
+        [
+          ['month', 'Monthly'],
+          ['year', 'Annual · 2 months free'],
+        ] as const
+      ).map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          aria-selected={cycle === key}
+          className={cycle === key ? 'active' : ''}
+          onClick={() => onChange(key)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function PlanCard({
   plan,
   currency,
@@ -97,6 +127,7 @@ export function PlanCard({
   action,
   onSelect,
   badge = 'Your plan',
+  cycle = 'month',
 }: {
   plan: OfferedPlan;
   currency: string;
@@ -104,7 +135,9 @@ export function PlanCard({
   action?: ReactNode;
   onSelect?: () => void;
   badge?: string;
+  cycle?: Cycle;
 }) {
+  const saving = plan.price * 12 - plan.annualPrice;
   const spec = planSpec(plan);
   const choice = onSelect
     ? {
@@ -129,10 +162,21 @@ export function PlanCard({
         <h3>{plan.name}</h3>
         {current && <span className="status-pill good">{badge}</span>}
       </header>
-      <p className="plan-price">
-        <strong>{formatMoney(plan.price, currency)}</strong>
-        <span>a month</span>
-      </p>
+      {cycle === 'year' ? (
+        <p className="plan-price">
+          <strong>{formatMoney(plan.annualPrice, currency)}</strong>
+          <span>a year</span>
+          {saving > 0 && <em className="plan-saving">Save {formatMoney(saving, currency)}</em>}
+        </p>
+      ) : (
+        <p className="plan-price">
+          <strong>{formatMoney(plan.price, currency)}</strong>
+          <span>a month</span>
+        </p>
+      )}
+      {cycle === 'month' && plan.annualPrice > 0 && (
+        <p className="plan-annual">or {formatMoney(plan.annualPrice, currency)} paid yearly</p>
+      )}
       {plan.description && <p className="plan-description">{plan.description}</p>}
       <dl className="plan-limits">
         {spec.limits.map((limit) => (
@@ -168,14 +212,17 @@ export function PlanPicker() {
   const offered = useOfferedPlans();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [cycle, setCycle] = useState<Cycle>('month');
   if (!r || !offered) return null;
   return (
     <div className="plan-picker">
+      <CycleToggle cycle={cycle} onChange={setCycle} />
       {offered.plans.map((plan) => (
         <PlanCard
           key={plan.key}
           plan={plan}
           currency={offered.currency}
+          cycle={cycle}
           current={plan.key === r.plan}
           action={
             <button
@@ -223,12 +270,20 @@ export function SubscriptionBanner() {
 }
 
 // The owner, on the Overview: trial or paid-until, and the monthly price.
+// The owner, on the Overview: only when something needs doing (the trial,
+// the last days of a paid period, or a period that has ended). Everything
+// else about the subscription is in Admin → Billing.
+const NOTICE_DAYS = 7;
 export function SubscriptionNotice() {
   const { profile, config } = useSession();
+  const navigate = useNavigate();
   const [paying, setPaying] = useState(false);
-  const [plans, setPlans] = useState(false);
   const r = profile?.restaurant;
   if (!r || profile?.role !== 'admin') return null;
+  const left = daysLeft(r.until);
+  const needed = r.status === 'trial' || r.status === 'past_due' || left <= NOTICE_DAYS;
+  const noEmail = !r.ownerEmail;
+  if (!needed && !noEmail) return null;
   const date = formatDate(r.until, config.timezone, { dateStyle: 'medium' });
   return (
     <div className={`setup-notice subscription-notice${paying ? ' open' : ''}`}>
@@ -239,27 +294,30 @@ export function SubscriptionNotice() {
           </>
         ) : r.status === 'trial' ? (
           <>
-            <b>Free trial:</b> {plural(daysLeft(r.until), 'day')} left (until {date}). Then{' '}
-            {priceText(r)}.
+            <b>Free trial:</b> {plural(left, 'day')} left (until {date}). Then {priceText(r)}.
+          </>
+        ) : needed ? (
+          <>
+            <b>Subscription:</b> paid until {date} ({plural(left, 'day')} left) · {priceText(r)}.
           </>
         ) : (
           <>
-            <b>Subscription:</b> paid until {date} · {priceText(r)}.
+            <b>Add your email</b> so you can reset your password and get Relay&apos;s reminders.
           </>
         )}
       </span>
       {!paying && (
         <span className="subscription-actions">
-          <button className="setup-secondary" onClick={() => setPlans((v) => !v)}>
-            {plans ? 'Hide plans' : 'Plans'}
+          <button className="setup-secondary" onClick={() => navigate('/admin/site/billing')}>
+            Billing
           </button>
-          <button onClick={() => setPaying(true)}>
-            {r.status === 'active' ? 'Pay ahead' : 'Pay now'}
-          </button>
+          {needed && (
+            <button onClick={() => setPaying(true)}>
+              {r.status === 'active' ? 'Pay ahead' : 'Pay now'}
+            </button>
+          )}
         </span>
       )}
-      {plans && !paying && <PlanPicker />}
-      {!paying && <OwnerEmail />}
       {paying && <BillingPanel onClose={() => setPaying(false)} />}
     </div>
   );
@@ -338,8 +396,22 @@ type Payment = {
   periodEnd: string | null;
   paidAt: string | null;
 };
-type Billing = {
+export type Invoice = {
+  number: string;
+  status: 'paid' | 'due' | 'overdue';
+  issuedAt: string;
+  dueAt: string | null;
+  months: number;
+  amount: number;
+  currency: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  paymentId: string | null;
+};
+export type Billing = {
   restaurant: RestaurantSummary;
+  prices: Record<number, number>;
+  invoices: Invoice[];
   payInApp: boolean;
   sandbox: boolean;
   billingPhone: string;
@@ -352,10 +424,19 @@ const message = (e: unknown) => (e instanceof Error ? e.message : 'That did not 
 
 // The owner pays the Relay subscription with mobile money (ioTec): choose the
 // months, approve the prompt on the phone, and the app opens again.
-export function BillingPanel({ onClose }: { onClose?: () => void }) {
+export function BillingPanel({
+  onClose,
+  initialMonths = 1,
+  onLoaded,
+}: {
+  onClose?: () => void;
+  initialMonths?: number;
+  onLoaded?: (billing: Billing) => void;
+}) {
   const { refresh, config } = useSession();
   const [data, setData] = useState<Billing | null>(null);
-  const [months, setMonths] = useState(1);
+  const [months, setMonths] = useState(initialMonths);
+  useEffect(() => setMonths(initialMonths), [initialMonths]);
   const [phone, setPhone] = useState('');
   const [current, setCurrent] = useState<Payment | null>(null);
   const [busy, setBusy] = useState(false);
@@ -366,12 +447,14 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
     try {
       const next: Billing = await Parse.Cloud.run('getBilling');
       setData(next);
+      onLoaded?.(next);
       setPhone((p) => p || next.billingPhone);
       const waiting = next.payments.find((pay) => pay.status === 'pending');
       if (waiting) setCurrent(waiting);
     } catch (e) {
       setError(message(e));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     void load();
@@ -412,6 +495,8 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
   if (!data) return <p className="muted">{error || 'Loading…'}</p>;
   const r = data.restaurant;
   const money = (n: number) => formatMoney(n, r.currency);
+  // What the server will charge (12 months: the annual price).
+  const priceOf = (m: number) => data.prices?.[m] ?? r.monthlyPrice * m;
   const day = (value: string | null) => formatDate(value, config.timezone, { dateStyle: 'medium' });
   const contact = r.supportContact ? ` (${r.supportContact})` : '';
   return (
@@ -442,7 +527,10 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
               <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
                 {data.months.map((m) => (
                   <option key={m} value={m}>
-                    {m} month{m === 1 ? '' : 's'} · {money(r.monthlyPrice * m)}
+                    {m === 12 ? '1 year' : `${m} month${m === 1 ? '' : 's'}`} · {money(priceOf(m))}
+                    {m === 12 && r.monthlyPrice * 12 > priceOf(12)
+                      ? ` (save ${money(r.monthlyPrice * 12 - priceOf(12))})`
+                      : ''}
                   </option>
                 ))}
               </select>
@@ -460,7 +548,7 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
             {error && <p className="form-error">{error}</p>}
             <div className="billing-actions">
               <button className="primary-button" disabled={busy}>
-                {busy ? 'Sending…' : `Pay ${money(r.monthlyPrice * months)}`}
+                {busy ? 'Sending…' : `Pay ${money(priceOf(months))}`}
               </button>
               {onClose && (
                 <button type="button" className="secondary-button" onClick={onClose}>
@@ -512,7 +600,7 @@ export function BillingPanel({ onClose }: { onClose?: () => void }) {
 
 // The owner's email (password reset links and Relay's emails): shown under
 // the subscription notice, with a way to change it.
-function OwnerEmail() {
+export function OwnerEmail() {
   const { profile, refresh } = useSession();
   const current = profile?.restaurant?.ownerEmail || '';
   const [editing, setEditing] = useState(false);

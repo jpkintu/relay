@@ -8342,3 +8342,58 @@ tr.split-row td {
 .plan-card.choosable.current:hover {
   border-color: var(--ink);
 }
+
+/* Relay Hosted: monthly / annual prices and Admin → Billing. */
+.plan-picker > .cycle-toggle {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.plan-saving {
+  font-style: normal;
+  font: 600 12px var(--font-body);
+  color: #1f7a4d;
+  background: #e3f4ea;
+  border-radius: 99px;
+  padding: 3px 9px;
+}
+.plan-annual {
+  margin: -8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.billing-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px 40px;
+}
+.billing-summary h2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0 0;
+}
+.billing-summary dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 40px;
+  margin: 0;
+}
+.billing-summary dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+.billing-summary dd {
+  margin: 4px 0 0;
+  font: 600 22px var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+.billing-summary dd small {
+  display: block;
+  font: 500 12px var(--font-body);
+  color: var(--muted);
+}
+.billing-page .owner-email {
+  margin: 0;
+}
