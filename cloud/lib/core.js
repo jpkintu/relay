@@ -213,6 +213,25 @@ function withRiderLimit(config, rider) {
   return typeof own === 'number' && own >= 0 ? { ...config, maxRiderFloat: own } : config;
 }
 
+// Parse Server's sign-in lockout (S5: `accountLockout` in the server options,
+// docs/ROADMAP.md §2) keeps these two hidden fields on the account. Clearing
+// them lets the person sign in again at once instead of after the lockout.
+// The in-app PIN lock (verifyPin) is lifted with it.
+async function clearSignInLock(user) {
+  const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER);
+  fresh.set('pinFailures', 0);
+  fresh.unset('pinLockedUntil');
+  await fresh.save(null, MASTER);
+  // As Parse Server unlocks an account itself: straight in the database,
+  // past the _User triggers (a save through them drops these hidden fields).
+  const unlock = {
+    _account_lockout_expires_at: { __op: 'Delete' },
+    _failed_login_count: { __op: 'Delete' },
+  };
+  const database = Parse.Server?.database;
+  if (database) await database.update('_User', { objectId: user.id }, unlock);
+}
+
 // Signs a user out everywhere (after a PIN reset or change). `keepToken`
 // keeps one session alive.
 async function endSessions(user, keepToken) {
@@ -369,7 +388,13 @@ async function verifyPin(user, pin) {
   if (!value) throw invalid('Enter your PIN to continue');
   try {
     await Parse.User.verifyPassword(fresh.get('username'), value);
-  } catch {
+  } catch (error) {
+    // Parse Server's sign-in lockout (S5) shares the count with sign-in: while
+    // it lasts even the right PIN is refused, which is not another wrong one.
+    if (/locked due to multiple failed login attempts/i.test(String(error?.message)))
+      throw invalid(
+        `Too many wrong PINs. Try again in ${PIN_LOCK_MINUTES} min, or ask the owner to unlock you`,
+      );
     const failures = Number(fresh.get('pinFailures') || 0) + 1;
     const locked = failures >= PIN_ATTEMPTS;
     fresh.set('pinFailures', locked ? 0 : failures);
@@ -431,6 +456,7 @@ const isBrokenCode = (code) => typeof code === 'string' && /object|undefined|NaN
 
 module.exports = {
   MASTER,
+  clearSignInLock,
   findAll,
   DEFAULT_CONFIG,
   forbidden,

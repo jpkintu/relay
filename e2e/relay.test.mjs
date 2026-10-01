@@ -345,6 +345,11 @@ before(async () => {
     filesAdapter: new FileSystemAdapter(),
     // The classes the app subscribes to for live updates (see src/lib/live.ts).
     liveQuery: { classNames: LIVE_CLASSES },
+    // The release checklist's Custom Parse Options (docs/ROADMAP.md §2):
+    // five wrong PINs lock sign-in for 15 minutes (S5); sessions last 30
+    // days (S7).
+    accountLockout: { duration: 15, threshold: 5 },
+    sessionLength: 30 * 86400,
   });
   await parseServer.start();
   const app = express();
@@ -2229,9 +2234,8 @@ describe('cash integrity: PINs, one cashier per order, safe handovers, payouts',
     await rejects(run('createHandover', { orderIds: [id], pin: '0000' }, s.pia), /Locked for 15/);
     // Even the right PIN waits out the lock.
     await rejects(run('createHandover', { orderIds: [id], pin: '1357' }, s.pia), /Try again in/);
-    const me = await new Parse.Query(Parse.User).get(s.pia.id, M);
-    me.set('pinLockedUntil', new Date(Date.now() - 1000));
-    await me.save(null, M);
+    // The owner lifts it (both the in-app lock and the sign-in lockout).
+    await run('adminUnlockSignIn', { id: s.pia.id }, s.owner);
     const handover = await run('createHandover', { orderIds: [id] }, s.pia);
     assert.ok(handover.id);
     s.piaFirstHandover = handover.id;
@@ -5792,6 +5796,8 @@ const ACCESS = {
     'adminGetAuditLog',
     'adminSettleTillDifference',
     'adminResetPin',
+    'adminUnlockSignIn',
+    'adminSecurityStatus',
     'adminGetMember',
     'adminApplySecurity',
     'getSetupProgress',
@@ -6143,5 +6149,62 @@ describe('restore from a backup file', () => {
     assert.equal((await run('getMyProfile', {}, back)).role, 'rider');
     // Everyone else was matched, not duplicated.
     assert.equal(team.skipped + team.updated, backup._User.length - 1);
+  });
+});
+
+describe('sign-in lockout and session length (S5, S7)', () => {
+  const M = { useMasterKey: true };
+  const profile = (user) => run('getMyProfile', {}, user);
+  test('five wrong PINs lock sign-in; the owner unlocks it, the PIN stays', async () => {
+    for (let i = 0; i < 5; i += 1)
+      await rejects(login('nia', '0000'), /Invalid username\/password/);
+    // Even the right PIN is refused now, and the password check says nothing.
+    await rejects(login('nia', PINS.nia), /locked due to multiple failed login attempts/);
+    const verify = await fetch(`${SERVER_URL}/verifyPassword?username=nia&password=${PINS.nia}`, {
+      headers: { 'X-Parse-Application-Id': APP_ID },
+    });
+    assert.match(await verify.text(), /locked/);
+    const nia = await new Parse.Query(Parse.User).equalTo('username', 'nia').first(M);
+    const carl = await login('carl', PINS.carl);
+    await rejects(run('adminUnlockSignIn', { id: nia.id }, carl), /admin role required/);
+    await run('adminUnlockSignIn', { id: nia.id }, s.owner);
+    s.nia = await login('nia', PINS.nia);
+    // A new PIN from the owner unlocks it too.
+    for (let i = 0; i < 5; i += 1) await rejects(login('nia', '0000'), /Invalid/);
+    await run('adminResetPin', { id: nia.id, pin: '1357' }, s.owner);
+    PINS.nia = '1357';
+    s.nia = await login('nia', PINS.nia);
+  });
+
+  test('the owner sees whether the sign-in protections are on', async () => {
+    const status = await run('adminSecurityStatus', {}, s.owner);
+    assert.deepEqual(status.lockout, { threshold: 5, minutes: 15 });
+    assert.equal(status.serverSessionDays, 30);
+    assert.equal(status.staffDays, 30);
+    assert.equal(status.ownerDays, 14);
+  });
+
+  test('a sign-in past its days ends: 14 for the owner, 30 for staff', async () => {
+    const owner = await login('owner', PINS.owner);
+    const rider = await login('nia', PINS.nia);
+    // A few hundred milliseconds instead of days.
+    process.env.RELAY_ADMIN_SESSION_DAYS = String(0.3 / 86400);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await rejects(profile(owner), /Your sign-in has expired/);
+      // Gone for good: the session itself was deleted.
+      await rejects(profile(owner), /Invalid session token/);
+      assert.equal((await profile(rider)).role, 'rider');
+    } finally {
+      delete process.env.RELAY_ADMIN_SESSION_DAYS;
+    }
+    process.env.RELAY_SESSION_DAYS = String(0.3 / 86400);
+    try {
+      const fresh = await login('nia', PINS.nia);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await rejects(profile(fresh), /Your sign-in has expired/);
+    } finally {
+      delete process.env.RELAY_SESSION_DAYS;
+    }
   });
 });

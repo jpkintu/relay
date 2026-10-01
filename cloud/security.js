@@ -757,4 +757,26 @@ Parse.Cloud.define('adminApplySecurity', async (request) => {
   return updated;
 });
 
+// Owner: whether the server's sign-in protections are on (the release
+// checklist's Custom Parse Options, docs/ROADMAP.md §2): the lockout after
+// wrong PINs (S5) and how long a sign-in lasts (S7; the app also ends
+// sign-ins past their days itself, lib/sessions.js).
+Parse.Cloud.define('adminSecurityStatus', async (request) => {
+  await requireAdminUnlock(request);
+  const server = Parse.Server || {};
+  const lockout = server.accountLockout;
+  const { sessionDays } = require('./lib/sessions');
+  return {
+    known: !!Parse.Server,
+    lockout: lockout?.threshold
+      ? { threshold: Number(lockout.threshold), minutes: Number(lockout.duration) }
+      : null,
+    serverSessionDays: server.sessionLength
+      ? Math.round(Number(server.sessionLength) / 86400)
+      : null,
+    staffDays: sessionDays('rider'),
+    ownerDays: sessionDays('admin'),
+  };
+});
+
 module.exports = { applySecurity };

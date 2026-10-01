@@ -110,6 +110,7 @@ async function createOrResetOwner(params) {
   }
   user.setACL(userAcl(user, 'admin'));
   await user.save(null, MASTER);
+  await require('./lib/core').clearSignInLock(user);
   await makeOwner(user, user);
   return { username, created, role: 'admin' };
 }

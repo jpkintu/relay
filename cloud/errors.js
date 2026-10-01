@@ -88,6 +88,8 @@ Parse.Cloud.define = (name, handler, validator) =>
     name,
     async (request) => {
       const started = Date.now();
+      // A sign-in past its days ends here (lib/sessions.js).
+      await require('./lib/sessions').checkSession(request);
       try {
         return await handler(request);
       } catch (error) {

@@ -16,6 +16,7 @@ const {
   verifyPin,
   withRiderLimit,
   endSessions,
+  clearSignInLock,
 } = require('./lib/core');
 const { orderRiderPay } = require('./lib/money');
 const { riderOutstanding } = require('./shifts');
@@ -84,9 +85,24 @@ Parse.Cloud.define('adminResetPin', async (request) => {
   user.set({ password: pin, pinFailures: 0 });
   user.unset('pinLockedUntil');
   await user.save(null, MASTER);
+  await clearSignInLock(user);
   const signedOut = await endSessions(user);
   await audit(actor, 'team.pin_reset', user, null, { signedOut });
   return { ok: true, signedOut };
+});
+
+// Owner: let a team member locked out after five wrong PINs (at sign-in, S5,
+// or when asked for the PIN again) carry on now instead of after 15
+// minutes. Their PIN stays.
+Parse.Cloud.define('adminUnlockSignIn', async (request) => {
+  const actor = await adminOnly(request);
+  const user = await new Parse.Query(Parse.User)
+    .get(String(request.params.id || ''), MASTER)
+    .catch(() => null);
+  if (!user) throw invalid('Team member not found');
+  await clearSignInLock(user);
+  await audit(actor, 'team.signin_unlocked', user, null, {});
+  return { ok: true };
 });
 
 const openOrderJSON = (order) => ({
