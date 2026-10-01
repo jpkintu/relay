@@ -93,6 +93,16 @@ function client(settings, onToken = async () => undefined) {
       throw new Error(json.message || `Zoho Books answered ${response.status}`);
     return json;
   }
+  async function remove(path) {
+    try {
+      await call('DELETE', path);
+      return true;
+    } catch (error) {
+      if (/not (be )?found|does not exist|no longer exists/i.test(String(error?.message)))
+        return false;
+      throw error;
+    }
+  }
   return {
     call,
     organization: () => call('GET', '/organizations/' + settings.orgId),
@@ -112,6 +122,11 @@ function client(settings, onToken = async () => undefined) {
     createPayment: async (payment) =>
       (await call('POST', '/customerpayments', { body: payment })).payment,
     createJournal: async (journal) => (await call('POST', '/journals', { body: journal })).journal,
+    // Deleting (purge.js). Something already gone in Zoho counts as deleted.
+    deletePayment: (id) => remove(`/customerpayments/${id}`),
+    deleteInvoice: (id) => remove(`/invoices/${id}`),
+    deleteContact: (id) => remove(`/contacts/${id}`),
+    deleteJournal: (id) => remove(`/journals/${id}`),
   };
 }
 

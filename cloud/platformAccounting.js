@@ -98,7 +98,8 @@ async function paidPayments(to) {
       const paidAt = p.get('paidAt') || p.createdAt;
       return {
         id: p.id,
-        number: `INV-${String(r?.get('code') || '').toUpperCase()}-${p.id}`,
+        // A deleted restaurant's kept payments keep their numbers (purge.js).
+        number: `INV-${String(r?.get('deletedCode') || r?.get('code') || '').toUpperCase()}-${p.id}`,
         amount: Number(p.get('amount')) || 0,
         currency: p.get('currency') || platform.currency,
         paidAt: paidAt.toISOString(),
@@ -115,7 +116,7 @@ async function paidPayments(to) {
         discountCode: p.get('discountCode') || '',
         restaurantId: r?.id || '',
         restaurant: r?.get('name') || '',
-        code: r?.get('code') || '',
+        code: r?.get('deletedCode') || r?.get('code') || '',
         ownerName: r?.get('ownerName') || '',
         ownerEmail: r?.get('ownerEmail') || '',
         billingPhone: r?.get('billingPhone') || '',
@@ -398,7 +399,7 @@ async function syncMonth(month) {
 
 // The journal moving the month's earnings from prepayments to revenue; once
 // per month, for a month that is over.
-async function postMonth(month, actorName) {
+async function postMonth(month, actorName, { repost = false } = {}) {
   const { z, api } = await zohoClient();
   if (!ready(z)) throw invalid('Choose the three Zoho accounts first');
   if (z.fromMonth && month < z.fromMonth)
@@ -409,7 +410,8 @@ async function postMonth(month, actorName) {
   // Two posts at the same moment: only one goes on (a failed one may retry
   // a minute later).
   const minute = Math.floor(Date.now() / 60000);
-  if (!(await tenancy.withoutTenant(() => claimOnce(`zoho-journal:${month}:${minute}`))))
+  const claim = `${repost ? 'zoho-repost' : 'zoho-journal'}:${month}:${minute}`;
+  if (!(await tenancy.withoutTenant(() => claimOnce(claim))))
     throw invalid(`${month} is being posted`);
   // Only payments that are in Zoho count (from the start month on).
   const startFrom = z.fromMonth ? bounds(z.fromMonth)[0] : -Infinity;
@@ -510,4 +512,106 @@ async function autoPostMonths() {
   }
 }
 
-module.exports = { autoSyncPayment, autoPostMonths, bounds, monthOf };
+// ---------------------------------------------------------------------------
+// Deleting a test restaurant completely (purge.js)
+
+// Before anything is deleted here: its customer payments, invoices and
+// customer in Zoho Books, in that order (Zoho keeps an invoice with a payment
+// on it, and a customer with invoices). Each deletion is saved as it goes, so
+// a failure can be retried. Throws when Zoho refuses. → { payments,
+// invoices, contact, earned } where `earned` is the restaurant's paid
+// payments, for the journals afterwards.
+async function removeRestaurantFromZoho(restaurantId) {
+  const pointer = { __type: 'Pointer', className: 'Restaurant', objectId: restaurantId };
+  const rows = await tenancy.withoutTenant(() =>
+    new Parse.Query('SubscriptionPayment').equalTo('tenant', pointer).findAll(MASTER),
+  );
+  const restaurant = await tenancy.withoutTenant(() =>
+    new Parse.Query('Restaurant').get(restaurantId, MASTER),
+  );
+  const earned = (await paidPayments(Date.now() + 1)).filter(
+    (p) => p.restaurantId === restaurantId,
+  );
+  const done = { payments: 0, invoices: 0, contact: false, earned };
+  const inZoho =
+    restaurant.get('zohoContactId') ||
+    rows.some((p) => p.get('zohoPaymentId') || p.get('zohoInvoiceId'));
+  if (!inZoho) return done;
+  const { zoho: z } = await loadZoho();
+  if (!connected(z))
+    throw invalid(
+      'This restaurant is in Zoho Books but Zoho is not connected. Connect it again (Accounting), or untick “Also delete it in Zoho Books”.',
+    );
+  const { api } = await zohoClient();
+  try {
+    for (const p of rows) {
+      if (p.get('zohoPaymentId')) {
+        await api.deletePayment(p.get('zohoPaymentId'));
+        p.unset('zohoPaymentId');
+        await p.save(null, MASTER);
+        done.payments += 1;
+      }
+    }
+    for (const p of rows) {
+      if (p.get('zohoInvoiceId')) {
+        await api.deleteInvoice(p.get('zohoInvoiceId'));
+        p.unset('zohoInvoiceId');
+        await p.save(null, MASTER);
+        done.invoices += 1;
+      }
+    }
+    if (restaurant.get('zohoContactId')) {
+      await api.deleteContact(restaurant.get('zohoContactId'));
+      restaurant.unset('zohoContactId');
+      await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
+      done.contact = true;
+    }
+  } catch (error) {
+    if (error instanceof Parse.Error) throw error;
+    throw invalid(
+      `Zoho Books refused: ${errorMessage(error)}. Nothing was deleted in Relay; what was already removed from Zoho stays removed. Try again, or untick “Also delete it in Zoho Books”.`,
+    );
+  }
+  return done;
+}
+
+// After: the month journals that counted the restaurant's earnings are
+// posted again without them (the old journal deleted in Zoho). → { reposted:
+// [months], errors: [messages] }
+async function repostWithout(earned, restaurantName) {
+  const result = { reposted: [], errors: [] };
+  if (!earned.length) return result;
+  const { zoho: z } = await loadZoho();
+  if (!ready(z)) return result;
+  const postings = await tenancy.withoutTenant(() =>
+    new Parse.Query('AccountingPosting').findAll(MASTER),
+  );
+  const startFrom = z.fromMonth ? bounds(z.fromMonth)[0] : -Infinity;
+  const counted = earned.filter((p) => new Date(p.paidAt).getTime() >= startFrom);
+  for (const posting of postings.sort((a, b) => (a.get('month') < b.get('month') ? -1 : 1))) {
+    const month = posting.get('month');
+    const [from, to] = bounds(month);
+    if (!(monthEarnings(counted, from, to).totals.earned > 0)) continue;
+    try {
+      const now = (await paidPayments(to)).filter((p) => new Date(p.paidAt).getTime() >= startFrom);
+      if (monthEarnings(now, from, to).totals.earned === Number(posting.get('amount'))) continue;
+      const { api } = await zohoClient();
+      if (posting.get('zohoJournalId')) await api.deleteJournal(posting.get('zohoJournalId'));
+      await tenancy.withoutTenant(() => posting.destroy(MASTER));
+      await postMonth(month, `Re-posted: ${restaurantName} deleted`, { repost: true });
+      result.reposted.push(month);
+    } catch (error) {
+      result.errors.push(`${month}: ${errorMessage(error)}`);
+    }
+  }
+  return result;
+}
+
+module.exports = {
+  autoSyncPayment,
+  autoPostMonths,
+  bounds,
+  monthOf,
+  removeRestaurantFromZoho,
+  repostWithout,
+};

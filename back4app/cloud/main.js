@@ -32411,6 +32411,16 @@ var require_zoho = __commonJS({
           throw new Error(json.message || `Zoho Books answered ${response.status}`);
         return json;
       }
+      async function remove(path) {
+        try {
+          await call("DELETE", path);
+          return true;
+        } catch (error) {
+          if (/not (be )?found|does not exist|no longer exists/i.test(String(error?.message)))
+            return false;
+          throw error;
+        }
+      }
       return {
         call,
         organization: () => call("GET", "/organizations/" + settings.orgId),
@@ -32423,7 +32433,12 @@ var require_zoho = __commonJS({
         })).invoice,
         markSent: (invoiceId) => call("POST", `/invoices/${invoiceId}/status/sent`),
         createPayment: async (payment) => (await call("POST", "/customerpayments", { body: payment })).payment,
-        createJournal: async (journal) => (await call("POST", "/journals", { body: journal })).journal
+        createJournal: async (journal) => (await call("POST", "/journals", { body: journal })).journal,
+        // Deleting (purge.js). Something already gone in Zoho counts as deleted.
+        deletePayment: (id) => remove(`/customerpayments/${id}`),
+        deleteInvoice: (id) => remove(`/invoices/${id}`),
+        deleteContact: (id) => remove(`/contacts/${id}`),
+        deleteJournal: (id) => remove(`/journals/${id}`)
       };
     }
     module2.exports = { DATA_CENTRES, exchangeGrant, client };
@@ -32502,7 +32517,8 @@ var require_platformAccounting = __commonJS({
         const paidAt = p.get("paidAt") || p.createdAt;
         return {
           id: p.id,
-          number: `INV-${String(r?.get("code") || "").toUpperCase()}-${p.id}`,
+          // A deleted restaurant's kept payments keep their numbers (purge.js).
+          number: `INV-${String(r?.get("deletedCode") || r?.get("code") || "").toUpperCase()}-${p.id}`,
           amount: Number(p.get("amount")) || 0,
           currency: p.get("currency") || platform.currency,
           paidAt: paidAt.toISOString(),
@@ -32519,7 +32535,7 @@ var require_platformAccounting = __commonJS({
           discountCode: p.get("discountCode") || "",
           restaurantId: r?.id || "",
           restaurant: r?.get("name") || "",
-          code: r?.get("code") || "",
+          code: r?.get("deletedCode") || r?.get("code") || "",
           ownerName: r?.get("ownerName") || "",
           ownerEmail: r?.get("ownerEmail") || "",
           billingPhone: r?.get("billingPhone") || "",
@@ -32757,7 +32773,7 @@ var require_platformAccounting = __commonJS({
       }
       return { synced, already: rows.length - synced - errors.length, errors };
     }
-    async function postMonth(month, actorName) {
+    async function postMonth(month, actorName, { repost = false } = {}) {
       const { z, api } = await zohoClient();
       if (!ready(z)) throw invalid("Choose the three Zoho accounts first");
       if (z.fromMonth && month < z.fromMonth)
@@ -32766,7 +32782,8 @@ var require_platformAccounting = __commonJS({
       if (to > Date.now()) throw invalid("Post a month once it is over");
       if (await postingOf(month)) throw invalid(`${month} is already posted`);
       const minute = Math.floor(Date.now() / 6e4);
-      if (!await tenancy.withoutTenant(() => claimOnce(`zoho-journal:${month}:${minute}`)))
+      const claim = `${repost ? "zoho-repost" : "zoho-journal"}:${month}:${minute}`;
+      if (!await tenancy.withoutTenant(() => claimOnce(claim)))
         throw invalid(`${month} is being posted`);
       const startFrom = z.fromMonth ? bounds(z.fromMonth)[0] : -Infinity;
       const payments = (await paidPayments(to)).filter(
@@ -32857,7 +32874,93 @@ var require_platformAccounting = __commonJS({
         return 0;
       }
     }
-    module2.exports = { autoSyncPayment, autoPostMonths, bounds, monthOf };
+    async function removeRestaurantFromZoho(restaurantId) {
+      const pointer = { __type: "Pointer", className: "Restaurant", objectId: restaurantId };
+      const rows = await tenancy.withoutTenant(
+        () => new Parse.Query("SubscriptionPayment").equalTo("tenant", pointer).findAll(MASTER)
+      );
+      const restaurant = await tenancy.withoutTenant(
+        () => new Parse.Query("Restaurant").get(restaurantId, MASTER)
+      );
+      const earned = (await paidPayments(Date.now() + 1)).filter(
+        (p) => p.restaurantId === restaurantId
+      );
+      const done = { payments: 0, invoices: 0, contact: false, earned };
+      const inZoho = restaurant.get("zohoContactId") || rows.some((p) => p.get("zohoPaymentId") || p.get("zohoInvoiceId"));
+      if (!inZoho) return done;
+      const { zoho: z } = await loadZoho();
+      if (!connected(z))
+        throw invalid(
+          "This restaurant is in Zoho Books but Zoho is not connected. Connect it again (Accounting), or untick \u201CAlso delete it in Zoho Books\u201D."
+        );
+      const { api } = await zohoClient();
+      try {
+        for (const p of rows) {
+          if (p.get("zohoPaymentId")) {
+            await api.deletePayment(p.get("zohoPaymentId"));
+            p.unset("zohoPaymentId");
+            await p.save(null, MASTER);
+            done.payments += 1;
+          }
+        }
+        for (const p of rows) {
+          if (p.get("zohoInvoiceId")) {
+            await api.deleteInvoice(p.get("zohoInvoiceId"));
+            p.unset("zohoInvoiceId");
+            await p.save(null, MASTER);
+            done.invoices += 1;
+          }
+        }
+        if (restaurant.get("zohoContactId")) {
+          await api.deleteContact(restaurant.get("zohoContactId"));
+          restaurant.unset("zohoContactId");
+          await tenancy.withoutTenant(() => restaurant.save(null, MASTER));
+          done.contact = true;
+        }
+      } catch (error) {
+        if (error instanceof Parse.Error) throw error;
+        throw invalid(
+          `Zoho Books refused: ${errorMessage(error)}. Nothing was deleted in Relay; what was already removed from Zoho stays removed. Try again, or untick \u201CAlso delete it in Zoho Books\u201D.`
+        );
+      }
+      return done;
+    }
+    async function repostWithout(earned, restaurantName) {
+      const result = { reposted: [], errors: [] };
+      if (!earned.length) return result;
+      const { zoho: z } = await loadZoho();
+      if (!ready(z)) return result;
+      const postings = await tenancy.withoutTenant(
+        () => new Parse.Query("AccountingPosting").findAll(MASTER)
+      );
+      const startFrom = z.fromMonth ? bounds(z.fromMonth)[0] : -Infinity;
+      const counted = earned.filter((p) => new Date(p.paidAt).getTime() >= startFrom);
+      for (const posting of postings.sort((a, b) => a.get("month") < b.get("month") ? -1 : 1)) {
+        const month = posting.get("month");
+        const [from, to] = bounds(month);
+        if (!(monthEarnings(counted, from, to).totals.earned > 0)) continue;
+        try {
+          const now = (await paidPayments(to)).filter((p) => new Date(p.paidAt).getTime() >= startFrom);
+          if (monthEarnings(now, from, to).totals.earned === Number(posting.get("amount"))) continue;
+          const { api } = await zohoClient();
+          if (posting.get("zohoJournalId")) await api.deleteJournal(posting.get("zohoJournalId"));
+          await tenancy.withoutTenant(() => posting.destroy(MASTER));
+          await postMonth(month, `Re-posted: ${restaurantName} deleted`, { repost: true });
+          result.reposted.push(month);
+        } catch (error) {
+          result.errors.push(`${month}: ${errorMessage(error)}`);
+        }
+      }
+      return result;
+    }
+    module2.exports = {
+      autoSyncPayment,
+      autoPostMonths,
+      bounds,
+      monthOf,
+      removeRestaurantFromZoho,
+      repostWithout
+    };
   }
 });
 
@@ -33020,7 +33123,9 @@ var require_purge = __commonJS({
       return counts;
     }
     var closedCode = (id) => `deleted-${id.toLowerCase()}-${Date.now().toString(36)}`.slice(0, 30);
-    async function deleteRestaurant(row, { keepPayments, actor = null, reason }) {
+    async function deleteRestaurant(row, { keepPayments, actor = null, reason, zoho = false }) {
+      const accounting = require_platformAccounting();
+      const inZoho = zoho && !keepPayments ? await accounting.removeRestaurantFromZoho(row.id) : null;
       const before = {
         name: row.get("name"),
         code: row.get("code"),
@@ -33059,6 +33164,16 @@ var require_purge = __commonJS({
         await tenancy.withoutTenant(() => row.destroy(MASTER));
       }
       tenancy.clearCache();
+      if (inZoho) {
+        const journals = await accounting.repostWithout(inZoho.earned, before.name);
+        counts.zoho = {
+          payments: inZoho.payments,
+          invoices: inZoho.invoices,
+          contact: inZoho.contact,
+          reposted: journals.reposted,
+          errors: journals.errors
+        };
+      }
       await tenancy.withoutTenant(
         () => audit(actor, "platform.restaurant_deleted", row, before, { reason, keepPayments, counts })
       );
@@ -33146,7 +33261,8 @@ var require_purge = __commonJS({
       const counts = await deleteRestaurant(row, {
         keepPayments: !everything,
         actor,
-        reason: everything ? "test" : "platform"
+        reason: everything ? "test" : "platform",
+        zoho: everything && p.zoho !== false
       });
       return { counts, everything };
     });

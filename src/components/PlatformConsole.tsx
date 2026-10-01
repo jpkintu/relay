@@ -93,6 +93,8 @@ export function PlatformConsole() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  // What the last deletion did (shown above the list).
+  const [deletedNote, setDeletedNote] = useState('');
   const [query, setQuery] = useState('');
   // Console sections, remembered in the address (#restaurants…).
   const [tab, setTab] = useState<Tab>(() => {
@@ -181,6 +183,11 @@ export function PlatformConsole() {
               <div className="panel-title">
                 <h2>Restaurants</h2>
               </div>
+              {deletedNote && (
+                <p className="form-success" role="status">
+                  {deletedNote}
+                </p>
+              )}
               <input
                 className="platform-search"
                 value={query}
@@ -270,8 +277,9 @@ export function PlatformConsole() {
                   void load();
                 }}
                 onClose={() => setSelected(null)}
-                onDeleted={() => {
+                onDeleted={(note) => {
                   setSelected(null);
+                  setDeletedNote(note);
                   void load();
                 }}
               />
@@ -397,7 +405,7 @@ function RestaurantEditor({
   settings: Settings;
   onSaved: (row: Row) => void;
   onClose: () => void;
-  onDeleted: () => void;
+  onDeleted: (note: string) => void;
 }) {
   const [price, setPrice] = useState(row.priceOverride === null ? '' : String(row.priceOverride));
   const [plan, setPlan] = useState(row.plan || '');
@@ -608,9 +616,43 @@ function RestaurantEditor({
 
 // Deleting a restaurant: a test one completely, a real one keeping its
 // subscription payments. The code must be typed to confirm.
-function DeleteRestaurant({ row, onDeleted }: { row: Row; onDeleted: () => void }) {
+type Deleted = {
+  counts: {
+    zoho?: {
+      payments: number;
+      invoices: number;
+      contact: boolean;
+      reposted: string[];
+      errors: string[];
+    };
+  };
+};
+// One line on what a deletion did, Zoho Books included.
+function deletedNote(name: string, everything: boolean, result: Deleted) {
+  const z = result.counts.zoho;
+  const parts = [
+    everything
+      ? `${name} is deleted completely.`
+      : `${name}'s data is deleted; its payments are kept.`,
+  ];
+  if (z) {
+    const removed = [
+      z.invoices && `${z.invoices} invoice${z.invoices === 1 ? '' : 's'}`,
+      z.payments && `${z.payments} payment${z.payments === 1 ? '' : 's'}`,
+      z.contact && 'the customer',
+    ].filter(Boolean);
+    if (removed.length) parts.push(`Removed from Zoho Books: ${removed.join(', ')}.`);
+    if (z.reposted.length) parts.push(`Earnings journals posted again: ${z.reposted.join(', ')}.`);
+    if (z.errors.length)
+      parts.push(`Re-post these months by hand in Accounting: ${z.errors.join('; ')}.`);
+  }
+  return parts.join(' ');
+}
+
+function DeleteRestaurant({ row, onDeleted }: { row: Row; onDeleted: (note: string) => void }) {
   const code = row.deleted ? row.deletedCode : row.code;
   const [everything, setEverything] = useState(row.deleted);
+  const [zoho, setZoho] = useState(true);
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -618,8 +660,13 @@ function DeleteRestaurant({ row, onDeleted }: { row: Row; onDeleted: () => void 
     setBusy(true);
     setError('');
     try {
-      await Parse.Cloud.run('platformDeleteRestaurant', { id: row.id, confirm, everything });
-      onDeleted();
+      const result: Deleted = await Parse.Cloud.run('platformDeleteRestaurant', {
+        id: row.id,
+        confirm,
+        everything: everything || row.deleted,
+        zoho,
+      });
+      onDeleted(deletedNote(row.name, everything || row.deleted, result));
     } catch (e) {
       setError(message(e));
       setBusy(false);
@@ -657,6 +704,17 @@ function DeleteRestaurant({ row, onDeleted }: { row: Row; onDeleted: () => void 
           Also deletes its subscription payments and the restaurant itself: they leave Accounting
           and the revenue figures.
         </p>
+      )}
+      {(everything || row.deleted) && (
+        <label className="setup-checkbox">
+          <input type="checkbox" checked={zoho} onChange={(e) => setZoho(e.target.checked)} /> Also
+          delete it in Zoho Books
+          <small className="muted">
+            {' '}
+            Its invoices, payments and customer there, if it was sent; months whose earnings journal
+            counted it are posted again without it.
+          </small>
+        </label>
       )}
       <label className="setup-field">
         <span>

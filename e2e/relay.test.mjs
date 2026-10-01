@@ -454,6 +454,38 @@ function startMomoMock() {
     zohoBooks.journals.push(journal);
     res.json({ code: 0, journal });
   });
+  // Deleting, as Zoho does: not an invoice with a payment on it, nor a
+  // customer with invoices.
+  const drop = (list, key, id) => {
+    const i = list.findIndex((x) => x[key] === id);
+    if (i < 0) return false;
+    list.splice(i, 1);
+    return true;
+  };
+  app.delete('/zoho/books/v3/customerpayments/:id', (req, res) =>
+    drop(zohoBooks.payments, 'payment_id', req.params.id)
+      ? res.json({ code: 0, message: 'The payment has been deleted.' })
+      : res.status(404).json({ code: 1002, message: 'Payment does not exist.' }),
+  );
+  app.delete('/zoho/books/v3/invoices/:id', (req, res) => {
+    if (zohoBooks.payments.some((p) => p.invoices?.[0]?.invoice_id === req.params.id))
+      return res.json({ code: 1037, message: 'Invoices with payments cannot be deleted.' });
+    return drop(zohoBooks.invoices, 'invoice_id', req.params.id)
+      ? res.json({ code: 0, message: 'The invoice has been deleted.' })
+      : res.status(404).json({ code: 1002, message: 'Invoice does not exist.' });
+  });
+  app.delete('/zoho/books/v3/contacts/:id', (req, res) => {
+    if (zohoBooks.invoices.some((i) => i.customer_id === req.params.id))
+      return res.json({ code: 3021, message: 'The contact has transactions.' });
+    return drop(zohoBooks.contacts, 'contact_id', req.params.id)
+      ? res.json({ code: 0, message: 'The contact has been deleted.' })
+      : res.status(404).json({ code: 1002, message: 'Contact does not exist.' });
+  });
+  app.delete('/zoho/books/v3/journals/:id', (req, res) =>
+    drop(zohoBooks.journals, 'journal_id', req.params.id)
+      ? res.json({ code: 0, message: 'The journal has been deleted.' })
+      : res.status(404).json({ code: 1002, message: 'Journal does not exist.' }),
+  );
   app.post('/email/emails', express.json(), (req, res) => {
     if (req.headers.authorization !== 'Bearer email-key')
       return res.status(401).json({ message: 'API key is invalid' });
@@ -8414,6 +8446,121 @@ describe('deleting restaurants (Relay Hosted)', () => {
     );
     assert.equal(await payments(row.id), 0);
     await run('platformSaveSettings', { ...settings, deleteAfterDays: 0 }, ops);
+  });
+
+  test('a test restaurant leaves Zoho Books too, and the earnings journal is posted again', async () => {
+    const twoAgo = (() => {
+      const d = new Date(Date.now() + 3 * 3600000);
+      d.setUTCDate(15);
+      d.setUTCMonth(d.getUTCMonth() - 2);
+      return d.toISOString().slice(0, 7);
+    })();
+    await run(
+      'platformConnectZoho',
+      {
+        dc: 'com',
+        orgId: '123456',
+        clientId: 'zoho-client',
+        clientSecret: 'zoho-secret',
+        grantCode: 'grant-ok',
+      },
+      ops,
+    );
+    await run(
+      'platformSaveZoho',
+      {
+        accounts: { deferred: 'acc-def', revenue: 'acc-rev', deposit: 'acc-bank' },
+        autoSync: true,
+        fromMonth: twoAgo,
+      },
+      ops,
+    );
+    const row = await signUp('del-zoho-cafe', 'zoho@del.example');
+    // Paid two months ago (put in place), and now (sent to Zoho by itself).
+    const [y, m] = twoAgo.split('-').map(Number);
+    const paidAt = new Date(Date.UTC(y, m - 1, 5, 9));
+    await new Parse.Object('SubscriptionPayment', {
+      tenant: pointer(row.id),
+      amount: 300000,
+      currency: 'UGX',
+      months: 3,
+      kind: 'period',
+      method: 'manual',
+      status: 'paid',
+      paidAt,
+      periodStart: paidAt,
+      periodEnd: new Date(paidAt.getTime() + 90 * DAY),
+    }).save(null, M);
+    const before = zohoBooks.payments.length;
+    await run('platformRecordPayment', { id: row.id, months: 1, reference: 'Cash 7' }, ops);
+    for (let i = 0; i < 50 && zohoBooks.payments.length === before; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    // Two months ago: its earnings journal counts this restaurant.
+    const posted = await run('platformPostEarnings', { month: twoAgo }, ops);
+    assert.ok(posted.amount > 0);
+    const contact = (await new Parse.Query('Restaurant').get(row.id, M)).get('zohoContactId');
+    assert.ok(contact);
+    const mine = () => ({
+      invoices: zohoBooks.invoices.filter((i) => i.customer_id === contact).length,
+      payments: zohoBooks.payments.filter((p) => p.customer_id === contact).length,
+      contact: zohoBooks.contacts.some((c) => c.contact_id === contact),
+    });
+    assert.deepEqual(mine(), { invoices: 2, payments: 2, contact: true });
+    const oldJournal = posted.zohoJournalId;
+
+    // Zoho off: the deletion stops before anything here is deleted.
+    const z = await run('platformGetZoho', {}, ops);
+    await run('platformDisconnectZoho', {}, ops);
+    await rejects(
+      run('platformDeleteRestaurant', { id: row.id, confirm: row.code, everything: true }, ops),
+      /Zoho is not connected/,
+    );
+    assert.ok((await leftOf(row.id))._User >= 1);
+    await run(
+      'platformConnectZoho',
+      {
+        dc: 'com',
+        orgId: '123456',
+        clientId: 'zoho-client',
+        clientSecret: 'zoho-secret',
+        grantCode: 'grant-ok',
+      },
+      ops,
+    );
+    await run(
+      'platformSaveZoho',
+      { accounts: z.accounts, autoSync: false, fromMonth: twoAgo },
+      ops,
+    );
+
+    const { counts } = await run(
+      'platformDeleteRestaurant',
+      { id: row.id, confirm: row.code, everything: true },
+      ops,
+    );
+    assert.deepEqual(
+      {
+        payments: counts.zoho.payments,
+        invoices: counts.zoho.invoices,
+        contact: counts.zoho.contact,
+      },
+      { payments: 2, invoices: 2, contact: true },
+    );
+    assert.deepEqual(mine(), { invoices: 0, payments: 0, contact: false });
+    assert.deepEqual(counts.zoho.errors, []);
+    assert.deepEqual(counts.zoho.reposted, [twoAgo]);
+    assert.equal(
+      zohoBooks.journals.some((j) => j.journal_id === oldJournal),
+      false,
+      'the old journal is gone',
+    );
+    // Nothing else earned then: posted again at 0, without a journal.
+    const again = await run('platformGetAccounting', { month: twoAgo }, ops);
+    assert.equal(again.posting.amount, 0);
+    assert.equal(again.totals.earned, 0);
+    assert.deepEqual(await leftOf(row.id), {});
+    assert.equal(await payments(row.id), 0);
+    await run('platformDisconnectZoho', {}, ops);
   });
 
   test('a paying restaurant is never on its way to deletion', async () => {

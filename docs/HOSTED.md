@@ -401,8 +401,19 @@ Platform console → Restaurants → open one → **Delete this restaurant**
   the revenue figures and Zoho still name it. Shown as "Data deleted"; it can
   be removed completely later with Everything.
 
+With Everything, **Also delete it in Zoho Books** (on by default) first
+deletes the restaurant's customer payments, then its invoices, then its
+customer in Zoho Books (that order: Zoho keeps an invoice that has a payment
+and a customer that has invoices). If Zoho refuses, or the restaurant was sent
+to Zoho but Zoho is no longer connected, nothing is deleted in Relay; what was
+already removed from Zoho stays removed, so trying again carries on. Then each
+month whose earnings journal counted the restaurant is posted again without it
+(the old journal deleted in Zoho). Keeping the payments leaves Zoho as it is.
+A deleted restaurant's kept payments keep their invoice numbers (from
+`deletedCode`).
+
 The console's history (`platform.restaurant_deleted`) keeps who deleted what
-and the counts.
+and the counts (Zoho included).
 
 **Unpaid restaurants** are deleted automatically (keeping their payments):
 `deleteAfterDays` (default 30; 0 = never) after the app closes for lack of

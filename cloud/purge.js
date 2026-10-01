@@ -142,7 +142,11 @@ async function eraseRestaurant(row, { keepPayments }) {
 // A code nobody can sign in with, freeing the restaurant's own.
 const closedCode = (id) => `deleted-${id.toLowerCase()}-${Date.now().toString(36)}`.slice(0, 30);
 
-async function deleteRestaurant(row, { keepPayments, actor = null, reason }) {
+async function deleteRestaurant(row, { keepPayments, actor = null, reason, zoho = false }) {
+  // A test restaurant also leaves Zoho Books (first: a refusal there stops
+  // everything, so it can be tried again).
+  const accounting = require('./platformAccounting');
+  const inZoho = zoho && !keepPayments ? await accounting.removeRestaurantFromZoho(row.id) : null;
   const before = {
     name: row.get('name'),
     code: row.get('code'),
@@ -182,6 +186,16 @@ async function deleteRestaurant(row, { keepPayments, actor = null, reason }) {
     await tenancy.withoutTenant(() => row.destroy(MASTER));
   }
   tenancy.clearCache();
+  if (inZoho) {
+    const journals = await accounting.repostWithout(inZoho.earned, before.name);
+    counts.zoho = {
+      payments: inZoho.payments,
+      invoices: inZoho.invoices,
+      contact: inZoho.contact,
+      reposted: journals.reposted,
+      errors: journals.errors,
+    };
+  }
   await tenancy.withoutTenant(() =>
     audit(actor, 'platform.restaurant_deleted', row, before, { reason, keepPayments, counts }),
   );
@@ -266,7 +280,9 @@ function retentionDue() {
 
 // Platform: delete a restaurant. { id, confirm (its code, typed), everything
 // (true: a test restaurant, nothing kept; false: keep its subscription
-// payments) } → { counts }
+// payments), zoho (with everything: also delete its invoices, payments and
+// customer in Zoho Books and re-post the month journals that counted it;
+// default true) } → { counts }
 Parse.Cloud.define('platformDeleteRestaurant', async (request) => {
   const actor = await require('./restaurants').requirePlatform(request);
   const p = request.params || {};
@@ -288,6 +304,7 @@ Parse.Cloud.define('platformDeleteRestaurant', async (request) => {
     keepPayments: !everything,
     actor,
     reason: everything ? 'test' : 'platform',
+    zoho: everything && p.zoho !== false,
   });
   return { counts, everything };
 });
