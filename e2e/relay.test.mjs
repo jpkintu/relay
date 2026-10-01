@@ -6747,7 +6747,7 @@ describe('subscription payments with ioTec (Relay Hosted)', () => {
     assert.equal(sent.currency, 'UGX');
     assert.equal(sent.walletId, 'wallet-1');
     assert.equal(sent.category, 'MobileMoney');
-    assert.match(sent.payerNote, /Relay for Kato Grill: .*3 months/);
+    assert.match(sent.payerNote, /RelayEats for Kato Grill: .*3 months/);
     assert.match(sent.externalId, /^relay-kato-grill-/);
     // One prompt at a time.
     await rejects(pay({ months: 1, phone: '0772555111' }), /already waiting for approval/);
@@ -7641,7 +7641,7 @@ describe('owner email: password reset and emails from Relay (Relay Hosted)', () 
     for (let i = 0; i < 20 && !mailbox.length; i += 1)
       await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(mailbox[0].to, 'mary@example.com');
-    assert.match(mailbox[0].subject, /Welcome to Relay, Mail Cafe/);
+    assert.match(mailbox[0].subject, /Welcome to RelayEats, Mail Cafe/);
     assert.match(mailbox[0].text, /Restaurant code: mail-cafe/);
     const owner = await login('owner', PINS.owner, CODE3);
     assert.equal((await run('getMyProfile', {}, owner)).restaurant.ownerEmail, 'mary@example.com');
@@ -7738,10 +7738,10 @@ describe('owner email: password reset and emails from Relay (Relay Hosted)', () 
     mail = await remindAt(when(0.5), 3);
     assert.match(mail.subject, /Your paid period ends today/);
     mail = await remindAt(when(-1), 4);
-    assert.match(mail.subject, /Payment overdue: Relay closes in \d+ days/);
+    assert.match(mail.subject, /Payment overdue: RelayEats closes in \d+ days/);
     assert.match(mail.text, /The app keeps working until/);
     mail = await remindAt(when(-(graceDays - 0.5)), 5);
-    assert.match(mail.subject, /Relay closes tomorrow/);
+    assert.match(mail.subject, /RelayEats closes tomorrow/);
 
     // Platform staff point a kind at their own Resend template.
     await rejects(
@@ -8088,7 +8088,7 @@ describe('sign-up codes: pay now with a discount or referral (Relay Hosted)', ()
       await wait(100);
     const email = mailbox.find((m) => /referral/.test(m.subject));
     assert.equal(email.to, 'mary@cafe.example');
-    assert.match(email.text, /Ref Cafe joined Relay with your restaurant code/);
+    assert.match(email.text, /Ref Cafe joined RelayEats with your restaurant code/);
     // Once only, even if a second payment comes.
     await run('platformRecordPayment', { id: row.id, months: 1 }, ops);
     await wait(500);
@@ -8398,7 +8398,7 @@ describe('deleting restaurants (Relay Hosted)', () => {
     const mail = mine()[0];
     assert.match(
       mail.subject,
-      /^del lapsed cafe: your Relay account will be deleted on \d+ \w+ \d{4}$/,
+      /^del lapsed cafe: your RelayEats account will be deleted on \d+ \w+ \d{4}$/,
     );
     assert.match(mail.text, /deleted for good/);
     assert.match(mail.text, /https:\/\/relay\.example\/admin\/site\/billing/);
@@ -8639,5 +8639,62 @@ describe('sign-in lockout and session length (S5, S7)', () => {
     } finally {
       delete process.env.RELAY_SESSION_DAYS;
     }
+  });
+});
+
+describe('restaurant subdomains (Relay Hosted)', () => {
+  let ops;
+  before(async () => {
+    ops = await Parse.User.logIn('ops', 'ops-pass-123');
+  });
+
+  test('platform staff set the restaurant domain; links and emails use it', async () => {
+    const { settings } = await run('platformListRestaurants', {}, ops);
+    await rejects(
+      run('platformSaveSettings', { ...settings, restaurantDomain: 'not a domain' }, ops),
+      /a domain such as relayeats.app/,
+    );
+    const saved = await run(
+      'platformSaveSettings',
+      { ...settings, restaurantDomain: 'https://RelayEats.app/' },
+      ops,
+    );
+    assert.equal(saved.restaurantDomain, 'relayeats.app');
+    // The app learns it before anyone signs in.
+    assert.equal((await run('getAppInfo', {})).platform.restaurantDomain, 'relayeats.app');
+    assert.equal(
+      (await run('getAppInfo', { restaurant: CODE })).platform.restaurantDomain,
+      'relayeats.app',
+    );
+    const row = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.code === CODE);
+    assert.equal(row.link, `https://${CODE}.relayeats.app`);
+
+    // A new restaurant's welcome email links to its own address.
+    mailbox.length = 0;
+    await Parse.Cloud.run(
+      'signUpRestaurant',
+      {
+        restaurantName: 'Sub Cafe',
+        ownerName: 'Sam',
+        username: 'owner',
+        pin: PINS.owner,
+        phone: '0701 555666',
+        email: 'sam@sub.example',
+      },
+      { useMasterKey: true },
+    );
+    for (let i = 0; i < 30 && !mailbox.length; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.match(mailbox[0].text, /https:\/\/sub-cafe\.relayeats\.app/);
+    assert.equal(mailbox[0].text.includes('/r/sub-cafe'), false);
+
+    // Names used by the platform's own subdomains are never restaurant codes.
+    for (const code of ['www', 'mail', 'relayeats'])
+      assert.equal((await run('checkRestaurantCode', { code })).free, false, code);
+
+    // Back to /r/<code> links when the domain is cleared.
+    await run('platformSaveSettings', { ...settings, restaurantDomain: '' }, ops);
+    const plain = (await run('platformListRestaurants', {}, ops)).rows.find((r) => r.code === CODE);
+    assert.match(plain.link, new RegExp(`/r/${CODE}$`));
   });
 });

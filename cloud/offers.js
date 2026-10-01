@@ -179,7 +179,7 @@ async function offerUsed(row, payment, offer) {
           kind: 'billing.referral',
           tone: 'success',
           title: `${monthsText} free: ${row.get('name')} joined with your code`,
-          body: `Thank you for the referral. Relay is now paid until ${dateText(until)}.`,
+          body: `Thank you for the referral. RelayEats is now paid until ${dateText(until)}.`,
           link: '/admin/site/billing',
           key: `referral:${row.id}`,
         });

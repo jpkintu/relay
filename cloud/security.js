@@ -630,6 +630,8 @@ const SCHEMAS = {
     referralMonths: N,
     deleteAfterDays: N,
     deleteWarnDays: N,
+    // Restaurants' own addresses (<code>.<restaurantDomain>).
+    restaurantDomain: S,
     // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
     whatsapp: 'Object',
     // The email service (lib/email.js), API key included.

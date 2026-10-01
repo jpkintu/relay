@@ -143,7 +143,7 @@ function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
   ];
 
   // From: the platform's business details (console → Platform settings).
-  const fromLines = (restaurant.billingFrom || 'Relay').split('\n').filter(Boolean);
+  const fromLines = (restaurant.billingFrom || 'RelayEats').split('\n').filter(Boolean);
   if (restaurant.supportContact && !fromLines.includes(restaurant.supportContact))
     fromLines.push(restaurant.supportContact);
   const [fromName, ...fromRest] = fromLines;
@@ -154,7 +154,7 @@ function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
   const upgrade = doc.payKind === 'upgrade';
   const year = doc.months === 12;
   const planName = doc.planName || restaurant.planName;
-  const plan = planName ? `Relay ${planName} plan` : 'Relay subscription';
+  const plan = planName ? `RelayEats ${planName} plan` : 'RelayEats subscription';
   const description = upgrade
     ? `Upgrade to ${plan}, for the days left`
     : `${plan}${year ? ', paid yearly' : ''}`;
@@ -190,7 +190,7 @@ function render(doc: Doc, restaurant: BilledRestaurant, timeZone: string) {
 <table class="meta">${metaRows
     .map(([k, v]) => `<tr><td>${escape(k)}</td><td>${escape(v)}</td></tr>`)
     .join('')}</table></div>
-<div class="mark"><img src="${relayLogo}" alt="">Relay</div></div>
+<div class="mark"><img src="${relayLogo}" alt="">RelayEats</div></div>
 <div class="parties">
 <div><h3>${escape(fromName)}</h3><p>${fromRest.map(escape).join('<br>')}</p></div>
 <div><h3>Bill to</h3><p><strong>${escape(restaurant.name)}</strong><span class="tag">@${escape(
@@ -223,7 +223,7 @@ ${
 }
 <p class="note">${
     paid
-      ? 'Thank you for using Relay.'
+      ? 'Thank you for using RelayEats.'
       : `Pay in the app: Admin → Billing → Pay, with MTN MoMo or Airtel Money.${
           restaurant.supportContact ? ` Questions: ${escape(restaurant.supportContact)}.` : ''
         }`
@@ -243,7 +243,7 @@ function open(html: string) {
 
 const paidWith = (payment: ReceiptPayment) =>
   payment.method === 'manual'
-    ? `Received by Relay${payment.reference ? ` (${payment.reference})` : ''}`
+    ? `Received by RelayEats${payment.reference ? ` (${payment.reference})` : ''}`
     : `Mobile money ${payment.payer}${payment.reference ? ` · ${payment.reference}` : ''}`;
 
 // The receipt for a paid subscription payment.

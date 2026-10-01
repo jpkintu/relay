@@ -17,6 +17,9 @@ interface ImportMetaEnv {
   readonly VITE_BACK4APP_OAUTH_PROXY_URL?: string;
   /** Build date (set in vite.config.ts), sent with crash reports. */
   readonly VITE_APP_VERSION?: string;
+  // Relay Hosted: restaurants' own addresses are <code>.<this domain>, e.g.
+  // relayeats.app (the platform setting overrides it once known).
+  readonly VITE_RESTAURANT_DOMAIN?: string;
 }
 
 interface ImportMeta {

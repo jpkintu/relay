@@ -45,7 +45,7 @@ class EfrisError extends Error {
 // The taxpayer's private key from what the owner uploads: a keystore
 // (.pfx / .p12, with its password) or a PEM private key. → PEM (PKCS#8).
 const CERTIFICATE_NOT_KEY =
-  'That file is a certificate (the public key): upload it on the EFRIS portal. Relay needs the private key instead; if you made the key pair in Relay, it is already saved and nothing needs uploading here.';
+  'That file is a certificate (the public key): upload it on the EFRIS portal. RelayEats needs the private key instead; if you made the key pair in RelayEats, it is already saved and nothing needs uploading here.';
 
 function isCertificate(bytes, text) {
   if (/-----BEGIN (TRUSTED )?CERTIFICATE-----/.test(text)) return true;
@@ -111,7 +111,7 @@ function generateKeyPair({ tin, name = '', years = 5 } = {}) {
   cert.validity.notBefore = from;
   cert.validity.notAfter = until;
   const subject = [
-    { name: 'commonName', value: String(tin || 'Relay') },
+    { name: 'commonName', value: String(tin || 'RelayEats') },
     ...(name ? [{ name: 'organizationName', value: String(name).slice(0, 64) }] : []),
     { name: 'countryName', value: 'UG' },
   ];
@@ -240,7 +240,7 @@ function openContent(data, key) {
   try {
     return JSON.parse(body);
   } catch {
-    throw new EfrisError('EFRIS sent an answer Relay could not read');
+    throw new EfrisError('EFRIS sent an answer RelayEats could not read');
   }
 }
 
@@ -417,7 +417,7 @@ function buildInvoice({ settings, reference, operator, buyer, lines, payment, is
       antifakeCode: '',
       deviceNo: settings.deviceNo,
       issuedDate: ugandaTime(issuedAt),
-      operator: String(operator || 'Relay').slice(0, 150),
+      operator: String(operator || 'RelayEats').slice(0, 150),
       currency: 'UGX',
       oriInvoiceId: '',
       invoiceType: '1',

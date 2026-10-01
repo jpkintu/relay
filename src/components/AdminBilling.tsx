@@ -126,7 +126,7 @@ export function AdminBilling() {
           <div>
             <h2>Account</h2>
             <p className="muted">
-              Relay sends password reset links, receipts and reminders to this email.
+              RelayEats sends password reset links, receipts and reminders to this email.
             </p>
           </div>
         </div>
@@ -253,7 +253,7 @@ function ReferSection({ referrals }: { referrals: NonNullable<Billing['referrals
   const link = `${window.location.origin}/?ref=${encodeURIComponent(referrals.code)}`;
   const on = referrals.percent > 0;
   const reward = `${referrals.months} free month${referrals.months === 1 ? '' : 's'}`;
-  const text = `Run your restaurant on Relay. Sign up with my code ${referrals.code} and pay now to get ${referrals.percent}% off your first payment: ${link}`;
+  const text = `Run your restaurant on RelayEats. Sign up with my code ${referrals.code} and pay now to get ${referrals.percent}% off your first payment: ${link}`;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(link);
@@ -265,7 +265,7 @@ function ReferSection({ referrals }: { referrals: NonNullable<Billing['referrals
   const share = async () => {
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'Relay', text, url: link });
+        await navigator.share({ title: 'RelayEats', text, url: link });
         return;
       } catch {
         // Cancelled: nothing to do.
@@ -323,7 +323,7 @@ function ReferSection({ referrals }: { referrals: NonNullable<Billing['referrals
                 If they switch to the free trial before paying, the code no longer applies and there
                 is no reward.
               </li>
-              <li>Relay can change these terms; rewards already given stay.</li>
+              <li>RelayEats can change these terms; rewards already given stay.</li>
             </ul>
           </details>
         </>

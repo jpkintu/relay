@@ -137,7 +137,7 @@ export function AuditLog() {
           </h2>
         </div>
         <p className="muted small">
-          Every change made in Relay, newest first. Owner overrides are highlighted.
+          Every change made in RelayEats, newest first. Owner overrides are highlighted.
         </p>
         {rows.length ? (
           <div className="table-scroll">

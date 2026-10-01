@@ -28,8 +28,8 @@ export function PrivacyPage() {
       <article>
         <h1>Privacy and terms</h1>
         <p className="lead">
-          {name} uses Relay to take and deliver orders and to account for the money. This page says
-          what information that involves, why, who can see it and how long it is kept.
+          {name} uses RelayEats to take and deliver orders and to account for the money. This page
+          says what information that involves, why, who can see it and how long it is kept.
         </p>
 
         <h2>Customers</h2>
@@ -54,13 +54,13 @@ export function PrivacyPage() {
 
         <h2>People who work here</h2>
         <p>
-          Riders, cashiers and the owner have their own account. Relay records your name, phone
+          Riders, cashiers and the owner have their own account. RelayEats records your name, phone
           number, username, shifts, the orders you take, deliver or handle, the cash you collect and
           hand over, and changes you make. This record exists to keep the money accountable and to
-          settle disagreements fairly; the owner can see it. Relay does not track where you are.
+          settle disagreements fairly; the owner can see it. RelayEats does not track where you are.
         </p>
 
-        <h2>Using Relay at work</h2>
+        <h2>Using RelayEats at work</h2>
         <ul>
           <li>
             Your account and PIN are yours alone. Do not share them or sign in as someone else.
@@ -81,9 +81,9 @@ export function PrivacyPage() {
 
         <h2>Where the information is kept</h2>
         <p>
-          Relay stores its records with Back4App, a hosting service, on servers that may be outside
-          your country. Connections are encrypted. Notifications on your phone go through your
-          phone’s own notification service (Google or Apple).
+          RelayEats stores its records with Back4App, a hosting service, on servers that may be
+          outside your country. Connections are encrypted. Notifications on your phone go through
+          your phone’s own notification service (Google or Apple).
         </p>
 
         <h2>Questions and requests</h2>
@@ -99,7 +99,7 @@ export function PrivacyPage() {
           is handled. You may also complain to your country’s data protection authority (in Uganda,
           the Personal Data Protection Office).
         </p>
-        <p className="muted small">Relay is software by Embiro Concepts, used by {name}.</p>
+        <p className="muted small">RelayEats is software by Embiro Concepts, used by {name}.</p>
       </article>
     </main>
   );
@@ -122,10 +122,10 @@ export function PlatformTerms() {
         </a>
       </header>
       <article>
-        <h1>Relay terms for restaurants</h1>
+        <h1>RelayEats terms for restaurants</h1>
         <p className="lead">
-          Relay runs your restaurant’s orders, riders, kitchen and cash on our servers for a monthly
-          subscription. These terms apply when you create a restaurant on Relay.
+          RelayEats runs your restaurant’s orders, riders, kitchen and cash on our servers for a
+          monthly subscription. These terms apply when you create a restaurant on RelayEats.
         </p>
 
         <h2>Trial and subscription</h2>
@@ -135,14 +135,14 @@ export function PlatformTerms() {
             taken during the trial.
           </li>
           <li>
-            After the trial, Relay starts at {price ? <b>{price} a month</b> : 'a monthly fee'}.
+            After the trial, RelayEats starts at {price ? <b>{price} a month</b> : 'a monthly fee'}.
             Your restaurant’s price may be agreed with you, higher or lower, depending on its size
             and needs; it is always shown in the app before you pay.
           </li>
           <li>
             You pay in the app with mobile money (through ioTec Pay), for 1 to 12 months at a time,
-            or directly to Relay by arrangement. Each payment extends your paid period; it is not
-            renewed automatically.
+            or directly to RelayEats by arrangement. Each payment extends your paid period; it is
+            not renewed automatically.
           </li>
           <li>
             If a period ends unpaid, the app keeps working for{' '}
@@ -154,7 +154,7 @@ export function PlatformTerms() {
         <h2>Your information</h2>
         <ul>
           <li>
-            Your restaurant’s records (menu, team, orders, customers, cash) belong to you. Relay
+            Your restaurant’s records (menu, team, orders, customers, cash) belong to you. RelayEats
             keeps them separate from every other restaurant and uses them only to run the service
             for you.
           </li>
@@ -168,15 +168,15 @@ export function PlatformTerms() {
           </li>
         </ul>
 
-        <h2>Using Relay</h2>
+        <h2>Using RelayEats</h2>
         <ul>
           <li>Keep your owner password safe; you are responsible for the accounts you create.</li>
           <li>
-            Do not use Relay for anything unlawful or to harm others. We may pause a restaurant that
-            does, or that asks us to; paused restaurants cannot sign in and nothing is deleted.
+            Do not use RelayEats for anything unlawful or to harm others. We may pause a restaurant
+            that does, or that asks us to; paused restaurants cannot sign in and nothing is deleted.
           </li>
           <li>
-            We work to keep Relay available and correct, but cannot promise it will never be
+            We work to keep RelayEats available and correct, but cannot promise it will never be
             interrupted. Keep your own records of money received.
           </li>
           <li>We may update these terms; the current version is always on this page.</li>
@@ -190,10 +190,10 @@ export function PlatformTerms() {
               <b>{contact}</b>.
             </>
           ) : (
-            <>Questions: contact Relay through the person who set up your restaurant.</>
+            <>Questions: contact RelayEats through the person who set up your restaurant.</>
           )}
         </p>
-        <p className="muted small">Relay is software by Embiro Concepts.</p>
+        <p className="muted small">RelayEats is software by Embiro Concepts.</p>
       </article>
     </main>
   );

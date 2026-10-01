@@ -26,7 +26,7 @@ export function PlatformEmail() {
     provider: 'resend',
     apiKey: '',
     from: '',
-    fromName: 'Relay',
+    fromName: 'RelayEats',
     appUrl: '',
     templates: {} as Record<string, string>,
   });
@@ -128,7 +128,7 @@ export function PlatformEmail() {
         kind.key,
         true,
         `Sent to ${testTo.trim()} ${
-          result.template ? `with template ${result.template}` : "with Relay's own design"
+          result.template ? `with template ${result.template}` : "with RelayEats's own design"
         }. Check your inbox (and spam).`,
       );
     } catch (e) {
@@ -160,8 +160,8 @@ export function PlatformEmail() {
         <div>
           <h2>Email</h2>
           <p className="muted">
-            How Relay writes to restaurant owners, at the email they gave at sign-up: password reset
-            links, the welcome email and subscription reminders. Create an account with{' '}
+            How RelayEats writes to restaurant owners, at the email they gave at sign-up: password
+            reset links, the welcome email and subscription reminders. Create an account with{' '}
             <a href="https://resend.com" target="_blank" rel="noreferrer">
               Resend
             </a>{' '}
@@ -212,7 +212,7 @@ export function PlatformEmail() {
           </label>
           <label className="setup-field">
             Sender name
-            <input value={form.fromName} onChange={set('fromName')} placeholder="Relay" />
+            <input value={form.fromName} onChange={set('fromName')} placeholder="RelayEats" />
           </label>
           <label className="setup-field platform-note">
             The app&apos;s address (for links in emails)
@@ -247,11 +247,11 @@ export function PlatformEmail() {
         <div className="email-templates">
           <h3>Templates</h3>
           <p className="muted">
-            Relay sends its own designed emails. To edit one in{' '}
+            RelayEats sends its own designed emails. To edit one in{' '}
             {PROVIDER_NAMES[form.provider] || form.provider} instead: copy its HTML, create a
             template there (paste the HTML, set the subject shown here, add each variable), publish
             it and enter its {form.provider === 'brevo' ? 'number' : 'ID or alias'} below. Leave it
-            empty to keep Relay&apos;s own. Send each one to yourself to check it, then save.
+            empty to keep RelayEats&apos;s own. Send each one to yourself to check it, then save.
           </p>
           <label className="setup-field email-test-to">
             Send tests to
@@ -293,7 +293,7 @@ export function PlatformEmail() {
                         aria-label={`${kind.label} template`}
                         value={form.templates[kind.key] || ''}
                         onChange={setTemplate(kind.key)}
-                        placeholder="Relay's own"
+                        placeholder="RelayEats's own"
                       />
                     </td>
                     <td className="email-template-actions">

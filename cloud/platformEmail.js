@@ -29,7 +29,7 @@ const cleanEmail = (value) =>
 const view = (email) => ({
   provider: email.provider || 'resend',
   from: email.from || '',
-  fromName: email.fromName || 'Relay',
+  fromName: email.fromName || 'RelayEats',
   appUrl: email.appUrl || '',
   keySet: !!email.apiKey,
   ready: ready(email),
@@ -75,7 +75,7 @@ Parse.Cloud.define('platformSaveEmail', async (request) => {
     ...email,
     provider,
     from,
-    fromName: String(p.fromName ?? email.fromName ?? 'Relay')
+    fromName: String(p.fromName ?? email.fromName ?? 'RelayEats')
       .trim()
       .slice(0, 60),
     appUrl,
@@ -150,8 +150,8 @@ Parse.Cloud.define('platformTestEmail', async (request) => {
     }
     await sendWith(email, {
       to,
-      subject: 'Relay test email',
-      text: 'Email from Relay works. Owners will get password reset links and reminders like this.',
+      subject: 'RelayEats test email',
+      text: 'Email from RelayEats works. Owners will get password reset links and reminders like this.',
     });
   } catch (error) {
     throw invalid(`Not sent: ${errorMessage(error)}`);
@@ -203,7 +203,7 @@ Parse.Cloud.define('requestOwnerReset', async (request) => {
   if (!code || !validEmail(email)) throw invalid('Enter the restaurant code and your email');
   const { email: settings } = await loadEmail();
   if (!ready(settings) || !settings.appUrl)
-    throw invalid('Password reset by email is not set up yet. Ask Relay support to reset it');
+    throw invalid('Password reset by email is not set up yet. Ask RelayEats support to reset it');
   if (!request.master && !allow(`${request.ip || 'unknown'}:${code}`))
     throw invalid('Too many requests. Try again in an hour');
   const done = { sent: true };
@@ -223,7 +223,7 @@ Parse.Cloud.define('requestOwnerReset', async (request) => {
     });
   } catch (error) {
     log('warn', 'email.reset_failed', { restaurant: row.id, error: errorMessage(error) });
-    throw invalid('The email could not be sent. Try again later or ask Relay support');
+    throw invalid('The email could not be sent. Try again later or ask RelayEats support');
   }
   return done;
 });
@@ -265,7 +265,7 @@ function ownerVariables(row, platform = {}) {
   return {
     OWNER_NAME: row.get('ownerName') || 'there',
     RESTAURANT_NAME: row.get('name') || '',
-    SUPPORT_LINE: support ? `Questions? Contact Relay support: ${support}.` : '',
+    SUPPORT_LINE: support ? `Questions? Contact RelayEats support: ${support}.` : '',
   };
 }
 
@@ -274,10 +274,19 @@ function ownerVariables(row, platform = {}) {
 async function emailOwner(row, kind, variables = {}, platform = {}) {
   try {
     const { appUrl = '' } = (await loadEmail()).email;
+    // Links open on the restaurant's own address (aldea.relayeats.app) when
+    // the platform has a restaurant domain.
+    const settings =
+      platform.restaurantDomain === undefined
+        ? (await require('./restaurants').platformSettings()).values
+        : platform;
+    const { restaurantLink } = require('./restaurants');
+    const own = settings.restaurantDomain ? restaurantLink(row.get('code'), settings) : '';
+    const base = own || appUrl;
     return await sendEmail(kind, row.get('ownerEmail'), {
-      ...ownerVariables(row, platform),
-      BILLING_URL: appUrl ? `${appUrl}/admin/site/billing` : '',
-      SIGN_IN_URL: appUrl ? `${appUrl}/r/${row.get('code')}` : '',
+      ...ownerVariables(row, settings),
+      BILLING_URL: base ? `${base}/admin/site/billing` : '',
+      SIGN_IN_URL: restaurantLink(row.get('code'), settings, appUrl),
       ...variables,
     });
   } catch (error) {

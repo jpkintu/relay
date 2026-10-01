@@ -76,8 +76,8 @@ export function AccessRules() {
           <h2>Apply security rules</h2>
         </div>
         <p className="muted small">
-          Relay applies these for every restaurant after each update, so you do not need to. Use
-          this only if Relay support asks you to: it re-applies your records' permissions and
+          RelayEats applies these for every restaurant after each update, so you do not need to. Use
+          this only if RelayEats support asks you to: it re-applies your records' permissions and
           assigns missing rider and cashier codes. It is safe to run again.
         </p>
         <button
@@ -152,7 +152,7 @@ export function SignInProtection({
             ? `on (${status.lockout!.threshold} wrong PINs lock it for ${status.lockout!.minutes} minutes; unlock someone from Team).`
             : forPlatform
               ? 'off. Anyone could keep guessing a 4-digit PIN. Turn it on in Back4App (below).'
-              : 'not on yet. Relay turns it on for every restaurant; ask Relay support.'}
+              : 'not on yet. RelayEats turns it on for every restaurant; ask RelayEats support.'}
         </li>
         <li className="ok">
           <b>Sign-ins end after:</b> {status.staffDays} days for riders and cashiers,{' '}

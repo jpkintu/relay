@@ -1,6 +1,6 @@
 {
-  "name": "Relay",
-  "short_name": "Relay",
+  "name": "RelayEats",
+  "short_name": "RelayEats",
   "description": "Orders, riders and every cash handover.",
   "start_url": "/",
   "scope": "/",

@@ -73,7 +73,7 @@ Parse.Cloud.define('platformTestWhatsApp', async (request) => {
   const { sender } = await loadSender();
   if (!sender.phoneNumberId || !sender.token)
     throw invalid('Save the phone number ID and the access token first');
-  const text = 'Relay test: WhatsApp summaries can reach this number.';
+  const text = 'RelayEats test: WhatsApp summaries can reach this number.';
   try {
     await send({ ...sender, managed: true }, to, { text, line: text, full: text });
   } catch (error) {

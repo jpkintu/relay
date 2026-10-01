@@ -35,6 +35,8 @@ type Settings = {
   // app closes (0: never), the owner warned this many days before.
   deleteAfterDays: number;
   deleteWarnDays: number;
+  // Restaurants' own addresses: <code>.<restaurantDomain>.
+  restaurantDomain: string;
 };
 type Row = RestaurantSummary & {
   ownerName: string;
@@ -45,6 +47,8 @@ type Row = RestaurantSummary & {
   createdAt: string;
   staff: number;
   orders30: number;
+  // Its own address (https://aldea.relayeats.app, or …/r/aldea).
+  link: string;
   // Data deleted (subscription payments kept), never deleted automatically,
   // or when it will be.
   deleted: boolean;
@@ -147,7 +151,7 @@ export function PlatformConsole() {
       <header className="platform-header">
         <BrandMark />
         <div>
-          <strong>Relay platform</strong>
+          <strong>RelayEats platform</strong>
           <small>{profile?.name}</small>
         </div>
         <button className="secondary-button" onClick={() => void load()}>
@@ -228,7 +232,9 @@ export function PlatformConsole() {
                         >
                           <td>
                             <b>{r.name}</b>
-                            <small className="cell-sub">{r.code}</small>
+                            <small className="cell-sub">
+                              {r.link ? r.link.replace(/^https?:\/\//, '') : r.code}
+                            </small>
                           </td>
                           <td>
                             {r.ownerName}
@@ -480,7 +486,14 @@ function RestaurantEditor({
         <div>
           <h2>{row.name}</h2>
           <p className="muted">
-            {row.code} · {row.ownerName} · {row.billingPhone} · since {day(row.createdAt)}
+            {row.link && !row.deleted ? (
+              <a href={row.link} target="_blank" rel="noreferrer">
+                {row.link.replace(/^https?:\/\//, '')}
+              </a>
+            ) : (
+              row.code
+            )}{' '}
+            · {row.ownerName} · {row.billingPhone} · since {day(row.createdAt)}
           </p>
         </div>
         <button className="secondary-button" onClick={onClose}>
@@ -541,7 +554,7 @@ function RestaurantEditor({
               placeholder="owner@example.com"
             />
             <small>
-              Password reset links and Relay&apos;s emails go here.
+              Password reset links and RelayEats&apos;s emails go here.
               {row.ownerEmail && (
                 <>
                   {' '}
@@ -698,7 +711,7 @@ function DeleteRestaurant({ row, onDeleted }: { row: Row; onDeleted: (note: stri
               <b>Its data, keeping its subscription payments</b>
               <small>
                 For a real restaurant that left: everything goes except the payments it made to
-                Relay (and the invoices from them), which stay in Accounting under its name.
+                RelayEats (and the invoices from them), which stay in Accounting under its name.
               </small>
             </span>
           </label>
@@ -989,6 +1002,7 @@ function SettingsForm({
     referralMonths: String(settings.referralMonths ?? 1),
     deleteAfterDays: String(settings.deleteAfterDays ?? 30),
     deleteWarnDays: String(settings.deleteWarnDays ?? 3),
+    restaurantDomain: settings.restaurantDomain || '',
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1012,6 +1026,7 @@ function SettingsForm({
         referralMonths: Number(form.referralMonths),
         deleteAfterDays: Number(form.deleteAfterDays),
         deleteWarnDays: Number(form.deleteWarnDays),
+        restaurantDomain: form.restaurantDomain,
       });
       setDone('Saved.');
       onSaved(saved);
@@ -1044,7 +1059,7 @@ function SettingsForm({
           <input
             value={form.supportContact}
             onChange={set('supportContact')}
-            placeholder="e.g. Relay support 0700 000000"
+            placeholder="e.g. RelayEats support 0700 000000"
           />
         </label>
         <label className="setup-field">
@@ -1077,6 +1092,22 @@ function SettingsForm({
           Warn the owner (days before)
           <input inputMode="numeric" value={form.deleteWarnDays} onChange={set('deleteWarnDays')} />
           <small>By email (Account to be deleted). Never deleted sooner after the warning.</small>
+        </label>
+        <label className="setup-field platform-note">
+          Restaurant domain
+          <input
+            value={form.restaurantDomain}
+            onChange={set('restaurantDomain')}
+            placeholder="e.g. relayeats.app"
+            autoCapitalize="none"
+            spellCheck={false}
+          />
+          <small>
+            Each restaurant opens at its own address:{' '}
+            <b>{`aldea.${form.restaurantDomain.trim() || 'relayeats.app'}`}</b>. Needs a wildcard
+            DNS record (*.{form.restaurantDomain.trim() || 'relayeats.app'}) pointing at the app;
+            see docs/HOSTED.md. Empty: restaurants use /r/their-code.
+          </small>
         </label>
         <label className="setup-field platform-note">
           Invoices and receipts are from

@@ -239,7 +239,7 @@ Parse.Cloud.define('adminGenerateEfrisKey', async (request) => {
   const replaced = !!settings.privateKey;
   Object.assign(settings, {
     privateKey: made.privateKey,
-    keyName: `Made by Relay on ${new Date().toISOString().slice(0, 10)}`,
+    keyName: `Made by RelayEats on ${new Date().toISOString().slice(0, 10)}`,
     certificate: made.certificate,
     certificateDer: made.certificateDer,
     certificateValidUntil: made.validUntil,

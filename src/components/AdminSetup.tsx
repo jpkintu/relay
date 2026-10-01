@@ -411,7 +411,7 @@ function LoginPictures({
 
 // A few ready-made colour pairs; any pair can be picked by hand.
 const PRESETS: [string, Theme][] = [
-  ['Relay', DEFAULT_THEME],
+  ['RelayEats', DEFAULT_THEME],
   ['Forest', { ink: '#123524', accent: '#e0a526' }],
   ['Wine', { ink: '#3b0d1c', accent: '#f2b33d' }],
   ['Ocean', { ink: '#0b2e4a', accent: '#2bc4b4' }],
@@ -527,7 +527,7 @@ function BrandColours({
           disabled={disabled}
           onClick={() => onSave({ ink: '', accent: '' })}
         >
-          Use Relay's colours
+          Use RelayEats's colours
         </button>
       </div>
     </div>
@@ -1517,7 +1517,7 @@ export function AdminSetup({
         <div className="admin-panel">
           <h2>Colours</h2>
           <p className="muted">
-            Replace Relay's colours with your restaurant's. The main colour is used for the menu
+            Replace RelayEats's colours with your restaurant's. The main colour is used for the menu
             bar, headers, main buttons and text; the accent for highlights and secondary buttons.
             Everyone sees the change the next time their screen loads. The app icon stays the same.
           </p>
@@ -1557,7 +1557,7 @@ export function AdminSetup({
           <p className="muted">
             Up to {MAX_LOGIN_IMAGES} photos of your food or restaurant, shown one after another
             beside the sign-in form under a wash of your main colour. Landscape photos work best.
-            Without any, a short introduction to Relay plays there instead.
+            Without any, a short introduction to RelayEats plays there instead.
           </p>
           <LoginPictures
             images={config.loginImages ?? []}

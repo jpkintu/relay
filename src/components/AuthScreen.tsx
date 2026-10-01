@@ -13,7 +13,13 @@ import { BrandMark } from './BrandMark';
 import { PlanCard, useOfferedPlans } from './Subscription';
 import { RelayMark } from './RelayMark';
 import { useImageReady } from '../lib/imageReady';
-import { normaliseCode, rememberRestaurant, signInName } from '../lib/restaurant';
+import {
+  hostCode,
+  normaliseCode,
+  rememberRestaurant,
+  restaurantAddress,
+  signInName,
+} from '../lib/restaurant';
 
 // Staff usernames are stored in lowercase, but phone keyboards capitalize the
 // first letter. Try the name as typed first (older accounts may use capitals),
@@ -143,7 +149,7 @@ export function AuthScreen() {
             />
           ) : (
             <>
-              {/* The restaurant's logo (Settings), else the Relay mark, with the
+              {/* The restaurant's logo (Settings), else the RelayEats mark, with the
                 restaurant's name under it. */}
               <div
                 className={`login-identity${appInfo.restaurantLogo ? '' : ' no-logo'}${
@@ -190,8 +196,8 @@ export function AuthScreen() {
                 {error && <p className="form-error">{error}</p>}
                 {serverError && (
                   <p className="form-error">
-                    Can't reach the Relay server functions ({serverError}). Sign-in may still work,
-                    but ask your administrator to check the Cloud Code deployment.
+                    Can't reach the RelayEats server functions ({serverError}). Sign-in may still
+                    work, but ask your administrator to check the Cloud Code deployment.
                   </p>
                 )}
                 <button className="primary-button" disabled={busy}>
@@ -226,7 +232,11 @@ export function AuthScreen() {
                   className="preview-button"
                   onClick={() => {
                     setError('');
-                    void chooseRestaurant('');
+                    // On a restaurant's own address, another restaurant is
+                    // chosen on the main one.
+                    const domain = appInfo.platform?.restaurantDomain || '';
+                    if (hostCode(domain)) window.location.href = `https://${domain}/`;
+                    else void chooseRestaurant('');
                   }}
                 >
                   Not {appInfo.restaurantName}? Change restaurant
@@ -254,6 +264,7 @@ function FindRestaurant({
   onFind: (code: string) => Promise<{ found?: boolean }>;
   onSignUp: () => void;
 }) {
+  const domain = useSession().appInfo.platform?.restaurantDomain || '';
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -279,12 +290,12 @@ function FindRestaurant({
     <>
       <div className="login-identity no-logo">
         <RelayMark />
-        <span>Relay</span>
+        <span>RelayEats</span>
       </div>
       <h2>Find your restaurant.</h2>
       <p className="muted">
-        Type the restaurant code, or open your restaurant’s own link (relay…/r/your-code) once on
-        this device.
+        Type the restaurant code, or open your restaurant’s own address
+        {domain ? ` (your-code.${domain})` : ' (…/r/your-code)'} once on this device.
       </p>
       <form onSubmit={find}>
         <label>
@@ -301,7 +312,7 @@ function FindRestaurant({
         {error && <p className="form-error">{error}</p>}
         {serverError && (
           <p className="form-error">
-            Can’t reach the Relay server ({serverError}). Try again soon.
+            Can’t reach the RelayEats server ({serverError}). Try again soon.
           </p>
         )}
         <button className="primary-button" disabled={busy}>
@@ -337,6 +348,7 @@ function SignUp({
   onCancel: () => void;
   onDone: (code: string, username: string, pin: string) => Promise<void>;
 }) {
+  const domain = useSession().appInfo.platform?.restaurantDomain || '';
   const [form, setForm] = useState({
     restaurantName: '',
     code: '',
@@ -445,9 +457,9 @@ function SignUp({
               ? 'Letters, digits and dashes; staff use it to find you.'
               : codeState?.code === code
                 ? codeState.free
-                  ? `Free: your address will be /r/${code}`
+                  ? `Free: your address will be ${restaurantAddress(code, domain)}`
                   : `“${code}” is taken. Choose another.`
-                : `Your address will be /r/${code}`}
+                : `Your address will be ${restaurantAddress(code, domain)}`}
           </span>
         </label>
         <label>
@@ -476,7 +488,7 @@ function SignUp({
             placeholder="you@example.com"
             required
           />
-          <span className="field-hint">For password resets and emails from Relay.</span>
+          <span className="field-hint">For password resets and emails from RelayEats.</span>
         </label>
         <label>
           Your username
@@ -596,7 +608,7 @@ function SignUp({
         <p className="field-hint">
           You can change the plan later under your subscription. By creating a restaurant you accept{' '}
           <a href="/terms" target="_blank" rel="noreferrer">
-            Relay’s terms
+            RelayEats’s terms
           </a>
           .
         </p>
@@ -638,9 +650,9 @@ function PlatformSignIn({ onSignedIn }: { onSignedIn: (user: Parse.User) => void
   };
   return (
     <>
-      <p className="eyebrow">Relay platform</p>
+      <p className="eyebrow">RelayEats platform</p>
       <h2>Staff sign-in.</h2>
-      <p className="muted">For Relay’s own team. Restaurants sign in on the main page.</p>
+      <p className="muted">For RelayEats’s own team. Restaurants sign in on the main page.</p>
       <form onSubmit={submit}>
         <label>
           Username

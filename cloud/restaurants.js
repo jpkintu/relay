@@ -39,7 +39,33 @@ const DEFAULT_PLATFORM = {
   // by email this many days before.
   deleteAfterDays: 30,
   deleteWarnDays: 3,
+  // Restaurants' own addresses: <code>.<restaurantDomain> (e.g.
+  // aldea.relayeats.app); empty: <app address>/r/<code>.
+  restaurantDomain: '',
 };
+
+const DOMAIN = /^(?=.{3,100}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
+// What platform staff typed, as a bare domain: "https://RelayEats.app/" →
+// "relayeats.app". Throws when it is not one.
+function domainFrom(text) {
+  const domain = String(text || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/.*$/, '')
+    .replace(/^\*\./, '');
+  if (domain && !DOMAIN.test(domain))
+    throw invalid('Restaurant domain: a domain such as relayeats.app');
+  return domain;
+}
+
+// A restaurant's own address: https://<code>.<domain> when the platform has
+// a restaurant domain, else <app address>/r/<code> ('' when neither is set).
+function restaurantLink(code, platform = {}, appUrl = '') {
+  if (!code) return '';
+  if (platform.restaurantDomain) return `https://${code}.${platform.restaurantDomain}`;
+  return appUrl ? `${appUrl}/r/${code}` : '';
+}
 
 // Platform-wide settings (the platform console changes them).
 async function platformSettings() {
@@ -124,7 +150,7 @@ async function checkAccess(name, restaurant) {
   const contact = platform.supportContact ? ` (${platform.supportContact})` : '';
   throw forbidden(
     access.status === 'suspended'
-      ? `This restaurant is suspended. Contact Relay${contact}`
+      ? `This restaurant is suspended. Contact RelayEats${contact}`
       : 'This restaurant’s subscription has ended. The owner can renew it in the app',
   );
 }
@@ -138,7 +164,7 @@ Parse.Cloud.beforeLogin(async (request) => {
   if (restaurant?.suspended) {
     const { supportContact } = await cachedPlatform();
     throw forbidden(
-      `This restaurant is suspended. Contact Relay${supportContact ? ` (${supportContact})` : ''}`,
+      `This restaurant is suspended. Contact RelayEats${supportContact ? ` (${supportContact})` : ''}`,
     );
   }
 });
@@ -152,7 +178,19 @@ const codeFrom = (text) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 30);
-const RESERVED = new Set(['admin', 'api', 'app', 'platform', 'relay', 'signup', 'www', 'help']);
+// Also kept for subdomains that are not restaurants (www.relayeats.app …).
+const RESERVED = new Set([
+  'admin',
+  'api',
+  'app',
+  'platform',
+  'relay',
+  'relayeats',
+  'signup',
+  'www',
+  'help',
+  'mail',
+]);
 
 async function codeTaken(code) {
   if (RESERVED.has(code)) return true;
@@ -476,6 +514,8 @@ async function restaurantRow(row, platform) {
     orders30,
     // Deleting (purge.js): data already deleted (payments kept), never
     // deleted automatically, or when it will be.
+    // Its own address (the platform's restaurant domain, or /r/<code>).
+    link: restaurantLink(row.get('code'), platform, platform.appUrl || ''),
     deleted: row.get('deleted') === true,
     deletedAt: row.get('deletedAt')?.toISOString() || null,
     deletedCode: row.get('deletedCode') || '',
@@ -498,9 +538,11 @@ Parse.Cloud.define('platformListRestaurants', async (request) => {
   const query = new Parse.Query('Restaurant');
   const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
   rows.sort((a, b) => b.createdAt - a.createdAt);
+  // The app's address, for the /r/<code> links without a restaurant domain.
+  const { appUrl = '' } = (await require('./lib/email').loadEmail()).email;
   return {
     settings: platform,
-    rows: await Promise.all(rows.map((row) => restaurantRow(row, platform))),
+    rows: await Promise.all(rows.map((row) => restaurantRow(row, { ...platform, appUrl }))),
   };
 });
 
@@ -693,6 +735,7 @@ Parse.Cloud.define('platformSaveSettings', async (request) => {
       30,
       'Warn before deleting: 1 to 30 days',
     ),
+    restaurantDomain: domainFrom(p.restaurantDomain ?? before.restaurantDomain ?? ''),
     billingFrom: String(p.billingFrom ?? before.billingFrom ?? '')
       .split('\n')
       .map((line) => line.trim())
@@ -863,6 +906,8 @@ Parse.Cloud.define('platformGetAudit', async (request) => {
 });
 
 module.exports = {
+  restaurantLink,
+  domainFrom,
   priceOf,
   annualPriceOf,
   amountFor,

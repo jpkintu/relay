@@ -15,7 +15,10 @@ const PROVIDERS = {
 async function loadEmail() {
   const tenancy = require('./tenant');
   const row = await tenancy.withoutTenant(() => new Parse.Query('PlatformSettings').first(MASTER));
-  return { row, email: { provider: 'resend', fromName: 'Relay', ...(row?.get('email') || {}) } };
+  return {
+    row,
+    email: { provider: 'resend', fromName: 'RelayEats', ...(row?.get('email') || {}) },
+  };
 }
 
 const ready = (email) => !!(email.apiKey && email.from && PROVIDERS[email.provider]);
@@ -29,7 +32,7 @@ const validEmail = (value) =>
 // service refuses it.
 async function sendWith(email, { to, subject, text, html, template }) {
   const base = process.env.RELAY_EMAIL_URL || PROVIDERS[email.provider];
-  const name = String(email.fromName || 'Relay').replace(/[<>"]/g, '');
+  const name = String(email.fromName || 'RelayEats').replace(/[<>"]/g, '');
   const request =
     email.provider === 'brevo'
       ? {

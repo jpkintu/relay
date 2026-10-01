@@ -48,9 +48,9 @@ const MODES: { mode: DrawerMode; title: string; detail: string; check?: () => bo
   },
   {
     mode: 'bridge',
-    title: 'Network printer (Relay print bridge)',
+    title: 'Network printer (RelayEats print bridge)',
     detail:
-      'For Wi-Fi or Ethernet printers. Run the Relay print bridge on this computer (ask your Relay contact or see tools/print-bridge), then enter the printer’s address from its self-test page.',
+      'For Wi-Fi or Ethernet printers. Run the RelayEats print bridge on this computer (ask your RelayEats contact or see tools/print-bridge), then enter the printer’s address from its self-test page.',
   },
 ];
 
@@ -126,7 +126,7 @@ export function CashierDrawer() {
       if (!response.ok || !json.ok) throw new Error(json.error || 'No answer');
       setDone(`The print bridge ${json.version} is running.`);
     } catch {
-      setError('The Relay print bridge is not running on this computer.');
+      setError('The RelayEats print bridge is not running on this computer.');
     }
   };
   // Opening without a sale: the server checks the PIN and records it first.
@@ -278,7 +278,7 @@ export function CashierDrawer() {
             )}
           </div>
           <small className="muted">
-            The browser asks once before Relay may use a USB or serial printer; after that it is
+            The browser asks once before RelayEats may use a USB or serial printer; after that it is
             found by itself whenever it is plugged in.
           </small>
         </div>

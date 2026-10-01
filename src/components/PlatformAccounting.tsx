@@ -156,7 +156,7 @@ export function PlatformAccounting({ timeZone }: { timeZone: string }) {
         r.earnedInMonth,
         r.deferredAfter,
         r.paidInMonth ? 'yes' : 'no',
-        r.method === 'manual' ? 'Recorded by Relay' : 'Mobile money',
+        r.method === 'manual' ? 'Recorded by RelayEats' : 'Mobile money',
         r.reference,
         r.zohoInvoiceId,
         r.zohoPaymentId,
@@ -217,7 +217,7 @@ export function PlatformAccounting({ timeZone }: { timeZone: string }) {
         },
       })),
       timeZone,
-      `Relay invoices ${data.month}`,
+      `RelayEats invoices ${data.month}`,
     );
   };
 
@@ -515,7 +515,7 @@ function ZohoSettings({ onChanged }: { onChanged: () => void }) {
             </li>
             <li>
               The organization ID is in Zoho Books → Settings → Organization profile. Your books
-              should use the same currency as Relay.
+              should use the same currency as RelayEats.
             </li>
           </ol>
           <label className="setup-field">

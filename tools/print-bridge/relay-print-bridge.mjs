@@ -161,9 +161,9 @@ const server = http.createServer((req, res) => {
 // Started as a program (not imported by a test).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`Relay print bridge ${VERSION} on http://127.0.0.1:${PORT}`);
+    console.log(`RelayEats print bridge ${VERSION} on http://127.0.0.1:${PORT}`);
     if (!ORIGINS.length)
-      console.log('Tip: set RELAY_ORIGIN to your Relay address so only Relay can use it.');
+      console.log('Tip: set RELAY_ORIGIN to your RelayEats address so only RelayEats can use it.');
   });
 
 export { server };

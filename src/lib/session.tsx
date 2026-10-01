@@ -5,7 +5,7 @@ import { completeGoogleSignIn } from './googleSignIn';
 import { formatMoney } from './format';
 import { forgetPush } from './push';
 import { applyTheme, type Theme } from './theme';
-import { rememberRestaurant, restaurantCode } from './restaurant';
+import { hostCode, rememberDomain, rememberRestaurant, restaurantCode } from './restaurant';
 
 export type Role = 'admin' | 'finance' | 'cashier' | 'rider';
 
@@ -126,7 +126,14 @@ export type AppInfo = {
   signUpOpen?: boolean;
   trialDays?: number;
   // Relay Hosted: Relay's own terms (price, grace days, contact).
-  platform?: { monthlyPrice: number; currency: string; graceDays: number; supportContact: string };
+  platform?: {
+    monthlyPrice: number;
+    currency: string;
+    graceDays: number;
+    supportContact: string;
+    // Restaurants' own addresses: <code>.<restaurantDomain> ('' = /r/<code>).
+    restaurantDomain?: string;
+  };
   restaurant?: RestaurantSummary | null;
   // For the privacy notice (Admin → Data & privacy).
   privacy?: { contact: string; retentionMonths: number };
@@ -154,11 +161,12 @@ function rememberBrand({ restaurantName, restaurantLogo }: AppInfo) {
 
 // The name to show for the app: the restaurant's, unless it is still the
 // placeholder the server starts with.
-export const restaurantTitle = (name?: string) => (name && name !== 'Restaurant' ? name : 'Relay');
+export const restaurantTitle = (name?: string) =>
+  name && name !== 'Restaurant' ? name : 'RelayEats';
 
 // Only used until the server answers; real values come from Configuration.
 const FALLBACK_INFO: AppInfo = {
-  restaurantName: 'Relay',
+  restaurantName: 'RelayEats',
   ...rememberedBrand(),
   currencySymbol: '',
   currencyCode: '',
@@ -222,7 +230,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    loadInfo(code).catch((e) => setServerError(e instanceof Error ? e.message : String(e)));
+    loadInfo(code)
+      .then((info) => {
+        // Relay Hosted: a restaurant's subdomain (aldea.relayeats.app) chooses it.
+        const domain = info.platform?.restaurantDomain || '';
+        rememberDomain(domain);
+        const fromHost = hostCode(domain);
+        if (fromHost && fromHost !== code) void chooseRestaurant(fromHost);
+      })
+      .catch((e) => setServerError(e instanceof Error ? e.message : String(e)));
     completeGoogleSignIn()
       .then((signedIn) => signedIn && setUserState(signedIn))
       .catch(() => undefined);

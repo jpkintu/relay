@@ -76,7 +76,7 @@ function layout({ title, preheader, tag, heading, blocks }) {
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${LINE};border-radius:16px;">
           <tr>
             <td style="padding:28px 32px 6px 32px;">
-              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">Relay</span>
+              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">RelayEats</span>
               <span style="font-size:13px;color:${MUTED};">&nbsp;·&nbsp;{{{RESTAURANT_NAME}}}</span>
             </td>
           </tr>
@@ -91,7 +91,7 @@ function layout({ title, preheader, tag, heading, blocks }) {
           <tr>
             <td style="padding:28px 32px 28px 32px;">
               <p style="margin:0;font-size:13px;line-height:1.5;color:${MUTED};">{{{SUPPORT_LINE}}}</p>
-              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:${MUTED};">Sent by Relay to the owner of {{{RESTAURANT_NAME}}}.</p>
+              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:${MUTED};">Sent by RelayEats to the owner of {{{RESTAURANT_NAME}}}.</p>
             </td>
           </tr>
           </table>
@@ -110,7 +110,7 @@ const TAGS = {
   today: { label: 'Payment due', bg: '#ffe6dc', fg: '#a8361a' },
   overdue: { label: 'Overdue', bg: '#fde2e2', fg: '#a11a1a' },
   paid: { label: 'Paid', bg: '#dff5e6', fg: '#17653a' },
-  news: { label: 'From Relay', bg: '#e8eefc', fg: '#1d3fa8' },
+  news: { label: 'From RelayEats', bg: '#e8eefc', fg: '#1d3fa8' },
   reward: { label: 'Referral reward', bg: '#dff5e6', fg: '#17653a' },
   deletion: { label: 'Account to be deleted', bg: '#fde2e2', fg: '#a11a1a' },
 };
@@ -128,7 +128,7 @@ const KINDS = {
   welcome: {
     label: 'Welcome',
     when: 'Right after a restaurant signs up.',
-    subject: 'Welcome to Relay, {{{RESTAURANT_NAME}}}',
+    subject: 'Welcome to RelayEats, {{{RESTAURANT_NAME}}}',
     variables: [
       ...COMMON,
       'RESTAURANT_CODE',
@@ -139,10 +139,10 @@ const KINDS = {
       'SIGN_IN_URL',
     ],
     html: layout({
-      title: 'Welcome to Relay',
+      title: 'Welcome to RelayEats',
       preheader: '{{{START_LINE}}} Here is how to sign in.',
       tag: TAGS.info,
-      heading: '{{{RESTAURANT_NAME}}} is ready on Relay',
+      heading: '{{{RESTAURANT_NAME}}} is ready on RelayEats',
       blocks: [
         para('Hello {{{OWNER_NAME}}},'),
         para('{{{START_LINE}}} Add your menu and your team, and orders can start today.'),
@@ -152,7 +152,7 @@ const KINDS = {
           row('Plan', '{{{PLAN_NAME}}}'),
           row('Trial ends', '{{{TRIAL_ENDS}}}'),
         ]),
-        button('Sign in to Relay', '{{{SIGN_IN_URL}}}'),
+        button('Sign in to RelayEats', '{{{SIGN_IN_URL}}}'),
         small(
           'Forgot your password? Use “Forgot password” on the sign-in page and we will email you a link.',
         ),
@@ -161,7 +161,7 @@ const KINDS = {
     text: [
       'Hello {{{OWNER_NAME}}},',
       '',
-      '{{{RESTAURANT_NAME}}} is set up on Relay. {{{START_LINE}}}',
+      '{{{RESTAURANT_NAME}}} is set up on RelayEats. {{{START_LINE}}}',
       'Restaurant code: {{{RESTAURANT_CODE}}}',
       'Your username: {{{USERNAME}}}',
       'Plan: {{{PLAN_NAME}}}',
@@ -187,7 +187,7 @@ const KINDS = {
       blocks: [
         para('Hello {{{OWNER_NAME}}},'),
         para(
-          'Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay. Open the link within {{{EXPIRES_IN}}} to choose a new one.',
+          'Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on RelayEats. Open the link within {{{EXPIRES_IN}}} to choose a new one.',
         ),
         button('Choose a new password', '{{{RESET_URL}}}'),
         small('If it was not you, ignore this email: your password stays as it is.'),
@@ -199,7 +199,7 @@ const KINDS = {
     text: [
       'Hello {{{OWNER_NAME}}},',
       '',
-      'Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay.',
+      'Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on RelayEats.',
       'Open this link within {{{EXPIRES_IN}}} to choose a new one:',
       '{{{RESET_URL}}}',
       '',
@@ -214,13 +214,13 @@ const KINDS = {
     variables: [...COMMON, ...BILLING, 'HEADLINE', 'DAYS_LEFT'],
     html: layout({
       title: 'Payment due soon',
-      preheader: '{{{HEADLINE}}}. Pay {{{AMOUNT}}} by {{{DUE_DATE}}} to keep Relay open.',
+      preheader: '{{{HEADLINE}}}. Pay {{{AMOUNT}}} by {{{DUE_DATE}}} to keep RelayEats open.',
       tag: TAGS.soon,
       heading: '{{{HEADLINE}}}',
       blocks: [
         para('Hello {{{OWNER_NAME}}},'),
         para(
-          'To keep {{{RESTAURANT_NAME}}} running on Relay without a break, pay before <strong>{{{DUE_DATE}}}</strong>. You can pay a month, a few months, or a whole year at once and get two months free.',
+          'To keep {{{RESTAURANT_NAME}}} running on RelayEats without a break, pay before <strong>{{{DUE_DATE}}}</strong>. You can pay a month, a few months, or a whole year at once and get two months free.',
         ),
         details(billingRows),
         button('Pay now', '{{{BILLING_URL}}}'),
@@ -232,7 +232,7 @@ const KINDS = {
     text: [
       'Hello {{{OWNER_NAME}}},',
       '',
-      '{{{HEADLINE}}}. To keep {{{RESTAURANT_NAME}}} running on Relay, pay before {{{DUE_DATE}}}.',
+      '{{{HEADLINE}}}. To keep {{{RESTAURANT_NAME}}} running on RelayEats, pay before {{{DUE_DATE}}}.',
       '',
       'Plan: {{{PLAN_NAME}}}',
       'Invoice: {{{INVOICE_NUMBER}}}',
@@ -252,7 +252,7 @@ const KINDS = {
     variables: [...COMMON, ...BILLING, 'HEADLINE'],
     html: layout({
       title: 'Payment due',
-      preheader: '{{{HEADLINE}}}. Pay {{{AMOUNT}}} to keep Relay open.',
+      preheader: '{{{HEADLINE}}}. Pay {{{AMOUNT}}} to keep RelayEats open.',
       tag: TAGS.today,
       heading: '{{{HEADLINE}}}',
       blocks: [
@@ -335,13 +335,13 @@ const KINDS = {
     ],
     html: layout({
       title: 'Payment received',
-      preheader: 'We received {{{AMOUNT}}}. Relay is paid until {{{PAID_UNTIL}}}.',
+      preheader: 'We received {{{AMOUNT}}}. RelayEats is paid until {{{PAID_UNTIL}}}.',
       tag: TAGS.paid,
       heading: 'Payment received, thank you',
       blocks: [
         para('Hello {{{OWNER_NAME}}},'),
         para(
-          'We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until <strong>{{{PAID_UNTIL}}}</strong>.',
+          'We received your payment for {{{RESTAURANT_NAME}}}. RelayEats is paid until <strong>{{{PAID_UNTIL}}}</strong>.',
         ),
         details([
           row('Invoice', '{{{INVOICE_NUMBER}}}'),
@@ -358,7 +358,7 @@ const KINDS = {
     text: [
       'Hello {{{OWNER_NAME}}},',
       '',
-      'We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until {{{PAID_UNTIL}}}.',
+      'We received your payment for {{{RESTAURANT_NAME}}}. RelayEats is paid until {{{PAID_UNTIL}}}.',
       '',
       'Invoice: {{{INVOICE_NUMBER}}}',
       'Plan: {{{PLAN_NAME}}}',
@@ -394,13 +394,13 @@ const KINDS = {
     variables: [...COMMON, 'REFERRED_NAME', 'MONTHS_TEXT', 'PAID_UNTIL', 'BILLING_URL'],
     html: layout({
       title: 'Referral reward',
-      preheader: '{{{REFERRED_NAME}}} joined Relay with your code: {{{MONTHS_TEXT}}} free.',
+      preheader: '{{{REFERRED_NAME}}} joined RelayEats with your code: {{{MONTHS_TEXT}}} free.',
       tag: TAGS.reward,
       heading: 'You earned {{{MONTHS_TEXT}}} free',
       blocks: [
         para('Hello {{{OWNER_NAME}}},'),
         para(
-          '{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}.',
+          '{{{REFERRED_NAME}}} joined RelayEats with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}.',
         ),
         details([row('Now paid until', '{{{PAID_UNTIL}}}')]),
         button('View billing', '{{{BILLING_URL}}}'),
@@ -412,7 +412,7 @@ const KINDS = {
     text: [
       'Hello {{{OWNER_NAME}}},',
       '',
-      '{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment.',
+      '{{{REFERRED_NAME}}} joined RelayEats with your restaurant code and made its first payment.',
       'We added {{{MONTHS_TEXT}}} to {{{RESTAURANT_NAME}}}. Now paid until {{{PAID_UNTIL}}}.',
       '',
       'Billing: {{{BILLING_URL}}}',
@@ -424,18 +424,18 @@ const KINDS = {
   account_deletion: {
     label: 'Account to be deleted',
     when: 'A few days (Delete warning, platform settings) before the data of a restaurant that stopped paying is deleted.',
-    subject: '{{{RESTAURANT_NAME}}}: your Relay account will be deleted on {{{DELETE_ON}}}',
+    subject: '{{{RESTAURANT_NAME}}}: your RelayEats account will be deleted on {{{DELETE_ON}}}',
     variables: [...COMMON, 'PLAN_NAME', 'AMOUNT', 'CLOSED_ON', 'DELETE_ON', 'BILLING_URL'],
     html: layout({
       title: 'Account to be deleted',
       preheader:
         'Renew by {{{DELETE_ON}}} to keep your menu, orders, staff and reports. After that they are deleted.',
       tag: TAGS.deletion,
-      heading: 'Your Relay account will be deleted on {{{DELETE_ON}}}',
+      heading: 'Your RelayEats account will be deleted on {{{DELETE_ON}}}',
       blocks: [
         para('Hello {{{OWNER_NAME}}},'),
         para(
-          'Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed. If it is not renewed by <strong>{{{DELETE_ON}}}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.',
+          'RelayEats for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed. If it is not renewed by <strong>{{{DELETE_ON}}}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.',
         ),
         details([
           row('Plan', '{{{PLAN_NAME}}}'),
@@ -445,14 +445,14 @@ const KINDS = {
         ]),
         button('Renew to keep it', '{{{BILLING_URL}}}'),
         small(
-          'Sign in as the owner and pay in Admin → Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact Relay support before that date.',
+          'Sign in as the owner and pay in Admin → Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact RelayEats support before that date.',
         ),
       ],
     }),
     text: [
       'Hello {{{OWNER_NAME}}},',
       '',
-      'Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed.',
+      'RelayEats for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed.',
       'If it is not renewed by {{{DELETE_ON}}}, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.',
       '',
       'Plan: {{{PLAN_NAME}}}',
@@ -470,7 +470,7 @@ const KINDS = {
 const SAMPLE = {
   OWNER_NAME: 'Sarah Achieng',
   RESTAURANT_NAME: 'Kampala Grill House',
-  SUPPORT_LINE: 'Questions? Contact Relay support: 0700 123456.',
+  SUPPORT_LINE: 'Questions? Contact RelayEats support: 0700 123456.',
   RESTAURANT_CODE: 'kampala-grill-house',
   USERNAME: 'sarah',
   PLAN_NAME: 'Basic',

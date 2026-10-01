@@ -105,9 +105,10 @@ export function AdminErrors({
         </p>
       ) : (
         <p className="section-intro">
-          Problems Relay ran into on anyone&apos;s phone or computer, and on the server. Mistakes
-          people are told about on screen (a wrong PIN, a missing field) are not listed. Send this
-          list to whoever maintains Relay; mark an entry fixed once the fix is deployed.
+          Problems RelayEats ran into on anyone&apos;s phone or computer, and on the server.
+          Mistakes people are told about on screen (a wrong PIN, a missing field) are not listed.
+          Send this list to whoever maintains RelayEats; mark an entry fixed once the fix is
+          deployed.
         </p>
       )}
       <div className="filter-bar">
@@ -168,7 +169,9 @@ export function AdminErrors({
       </div>
       {data && !rows.length && (
         <p className="empty-orders">
-          {state === 'open' ? 'No errors. Relay is running cleanly.' : 'Nothing marked fixed yet.'}
+          {state === 'open'
+            ? 'No errors. RelayEats is running cleanly.'
+            : 'Nothing marked fixed yet.'}
         </p>
       )}
     </div>
@@ -237,7 +240,7 @@ function ErrorCard({
             <dt>Marked fixed</dt>
             <dd>
               {when(row.resolvedAt)}
-              {row.resolvedByRelay && ' · by Relay'}
+              {row.resolvedByRelay && ' · by RelayEats'}
             </dd>
           </div>
         )}

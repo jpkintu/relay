@@ -332,7 +332,7 @@ async function syncPayment(api, z, row) {
         due_date: dayOf(row.paidAt),
         line_items: [
           {
-            name: `Relay ${row.planName || 'subscription'}${row.kind === 'upgrade' ? ' upgrade' : ''}`,
+            name: `RelayEats ${row.planName || 'subscription'}${row.kind === 'upgrade' ? ' upgrade' : ''}`,
             description: [
               row.kind === 'upgrade'
                 ? 'Upgrade for the days left'
@@ -349,7 +349,7 @@ async function syncPayment(api, z, row) {
             account_id: z.accounts.deferred,
           },
         ],
-        notes: 'Relay subscription, paid in advance: earned over the period.',
+        notes: 'RelayEats subscription, paid in advance: earned over the period.',
       });
       invoiceId = invoice.invoice_id;
       payment.set('zohoInvoiceId', invoiceId);
@@ -426,7 +426,7 @@ async function postMonth(month, actorName, { repost = false } = {}) {
     const journal = await api.createJournal({
       journal_date: lastDay(month),
       reference_number: `RELAY-EARNED-${month}`,
-      notes: `Relay subscriptions earned in ${month} (${rows.length} invoices): unearned revenue released.`,
+      notes: `RelayEats subscriptions earned in ${month} (${rows.length} invoices): unearned revenue released.`,
       line_items: [
         {
           account_id: z.accounts.deferred,
@@ -569,7 +569,7 @@ async function removeRestaurantFromZoho(restaurantId) {
   } catch (error) {
     if (error instanceof Parse.Error) throw error;
     throw invalid(
-      `Zoho Books refused: ${errorMessage(error)}. Nothing was deleted in Relay; what was already removed from Zoho stays removed. Try again, or untick “Also delete it in Zoho Books”.`,
+      `Zoho Books refused: ${errorMessage(error)}. Nothing was deleted in RelayEats; what was already removed from Zoho stays removed. Try again, or untick “Also delete it in Zoho Books”.`,
     );
   }
   return done;

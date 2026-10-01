@@ -41,8 +41,8 @@ class ErrorBoundary extends React.Component<
         <main className="crash-screen" role="alert">
           <h1>Something went wrong</h1>
           <p>
-            Relay hit a problem on this screen. The owner has been sent the details. Reload to carry
-            on; nothing you saved is lost.
+            RelayEats hit a problem on this screen. The owner has been sent the details. Reload to
+            carry on; nothing you saved is lost.
           </p>
           <button className="primary-button" onClick={() => window.location.reload()}>
             Reload

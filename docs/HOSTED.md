@@ -1,4 +1,4 @@
-# Relay Hosted: the multi-restaurant edition
+# RelayEats Hosted: the multi-restaurant edition
 
 Relay comes in two editions from one codebase:
 
@@ -443,6 +443,39 @@ staff unlock an owner with **Reset owner password**. Sign-ins end after 30
 days for staff, 14 for owners and finance, and **1 day for platform staff**
 (`RELAY_PLATFORM_SESSION_DAYS`), checked inside the restaurant's context on
 every Cloud function call.
+
+## Restaurant addresses (aldea.relayeats.app)
+
+Each restaurant opens at its own subdomain once platform staff set
+**Restaurant domain** (Settings & errors → Platform settings), e.g.
+`relayeats.app`: `aldea.relayeats.app` opens straight on Aldea's sign-in,
+with its logo and name. The app reads the code from the address
+(src/lib/restaurant.ts `subdomainCode`; `www`, `app`, `api`, `admin`,
+`platform`, `mail`, `help` are never restaurants, and `www`, `mail`,
+`relayeats` cannot be taken as codes). Welcome, billing and other owner
+emails, the console's restaurant list and the sign-up form use the subdomain
+(`restaurantLink` in restaurants.js). Old `/r/<code>` links keep working;
+with the setting empty, links are `/r/<code>` as before.
+
+Setting it up (once):
+
+1. **DNS:** an `A`/`CNAME` record for `relayeats.app` and a wildcard record
+   `*.relayeats.app`, both pointing at where the frontend is hosted.
+2. **Hosting:** the frontend host must accept the wildcard domain and serve
+   it with HTTPS (`.app` is HTTPS-only in every browser). If Back4App's web
+   hosting cannot take a wildcard custom domain, host the built frontend
+   (`npm run build`, the `dist/` folder) on a host that can, e.g. Cloudflare
+   (DNS + a Worker or Pages in front, wildcard certificate included) or
+   Vercel (wildcard domains with its nameservers). The Cloud Code stays on
+   Back4App; only the static files move.
+3. **Platform console:** Settings & errors → Restaurant domain →
+   `relayeats.app` → Save. Email → app address: `https://relayeats.app`.
+4. Optional: build with `VITE_RESTAURANT_DOMAIN=relayeats.app` so a
+   subdomain is recognised before the first server answer (otherwise it is
+   picked up a moment later and remembered on the device).
+
+Each origin keeps its own sign-in: someone signed in at
+`relayeats.app` signs in once more at `aldea.relayeats.app`.
 
 ## Phases
 

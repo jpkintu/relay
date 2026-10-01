@@ -367,7 +367,7 @@ Parse.Cloud.define('changePlan', async (request) => {
   if (!target) throw invalid('Choose one of the plans on offer');
   const row = await restaurantRow();
   if (negotiated(row))
-    throw invalid('Your price was agreed with Relay. Contact Relay to change plan');
+    throw invalid('Your price was agreed with RelayEats. Contact RelayEats to change plan');
   const current = planOfRow(row, platform);
   const before = { plan: current.key, nextPlan: row.get('nextPlan') || '' };
   if (target.key === current.key) {
@@ -405,7 +405,7 @@ Parse.Cloud.define('changePlan', async (request) => {
 
 const notConfigured = (platform) =>
   invalid(
-    `Paying in the app is not switched on yet. Contact Relay${
+    `Paying in the app is not switched on yet. Contact RelayEats${
       platform.supportContact ? ` (${platform.supportContact})` : ''
     } to pay`,
   );
@@ -450,7 +450,7 @@ async function collectPayment({ row, platform, user, phone, amount, fields, note
       currency: platform.currency,
       payer: phone,
       payerName: row.get('ownerName') || row.get('name'),
-      note: `Relay for ${row.get('name')}: ${note}`.slice(0, 100),
+      note: `RelayEats for ${row.get('name')}: ${note}`.slice(0, 100),
     });
     payment.set({ providerId: result.id, message: result.message || 'Waiting for approval' });
     if (result.status === 'failed') payment.set('status', 'failed');
@@ -481,7 +481,7 @@ async function periodPlan(row, platform, key) {
   const target = platform.plans.find((plan) => plan.active && plan.key === key);
   if (!target) throw invalid('Choose one of the plans on offer');
   if (negotiated(row))
-    throw invalid('Your price was agreed with Relay. Contact Relay to change plan');
+    throw invalid('Your price was agreed with RelayEats. Contact RelayEats to change plan');
   const access = accessOf(row, platform.graceDays);
   if (access.status === 'active')
     throw invalid(
@@ -509,7 +509,7 @@ Parse.Cloud.define('startSubscriptionPayment', async (request) => {
   const plan = await periodPlan(row, platform, p.plan ? String(p.plan) : '');
   const priced = await offers().priceFor(row, platform, months, undefined, plan);
   const amount = priced.amount;
-  if (amount < MIN_AMOUNT) throw invalid('Nothing to pay at this price. Contact Relay');
+  if (amount < MIN_AMOUNT) throw invalid('Nothing to pay at this price. Contact RelayEats');
   return collectPayment({
     row,
     platform,
@@ -575,7 +575,7 @@ Parse.Cloud.define('startPlanUpgrade', async (request) => {
   const target = platform.plans.find((plan) => plan.active && plan.key === p.plan);
   if (!target) throw invalid('Choose one of the plans on offer');
   if (negotiated(row))
-    throw invalid('Your price was agreed with Relay. Contact Relay to change plan');
+    throw invalid('Your price was agreed with RelayEats. Contact RelayEats to change plan');
   const quote = await upgradeQuote(row, platform, target);
   if (!quote)
     throw invalid(
@@ -659,7 +659,7 @@ Parse.Cloud.define('platformRecordPayment', async (request) => {
       });
       created.setACL(readAcl(null, ['admin']));
       await created.save(null, MASTER);
-      return settle(created, { message: 'Recorded by Relay' });
+      return settle(created, { message: 'Recorded by RelayEats' });
     },
     row.get('code'),
   );
@@ -743,7 +743,9 @@ function emailStage(row, platform, now = Date.now()) {
       due,
       vars: {
         HEADLINE:
-          left <= 1 ? 'Relay closes tomorrow' : `Payment overdue: Relay closes in ${plural(left)}`,
+          left <= 1
+            ? 'RelayEats closes tomorrow'
+            : `Payment overdue: RelayEats closes in ${plural(left)}`,
         CLOSES_ON: dateText(access.until),
         DAYS_TO_CLOSE: String(left),
       },

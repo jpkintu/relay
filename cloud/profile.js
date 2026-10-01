@@ -70,6 +70,8 @@ const platformInfo = (platform) => ({
   currency: platform.currency,
   graceDays: Number(platform.graceDays) || 0,
   supportContact: platform.supportContact || '',
+  // Restaurants' own addresses: <code>.<restaurantDomain> ('' = /r/<code>).
+  restaurantDomain: platform.restaurantDomain || '',
 });
 
 // Pre-login info for the sign-in screen. Relay Hosted: for the restaurant

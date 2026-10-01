@@ -123,7 +123,7 @@ self.addEventListener('push', (event) => {
   try {
     data = event.data ? event.data.json() : {};
   } catch {
-    data = { title: 'Relay', body: event.data ? event.data.text() : '' };
+    data = { title: 'RelayEats', body: event.data ? event.data.text() : '' };
   }
   const tone = data.tone || 'update';
   event.waitUntil(
@@ -139,7 +139,7 @@ self.addEventListener('push', (event) => {
       )
         return;
       try {
-        await self.registration.showNotification(data.title || 'Relay', {
+        await self.registration.showNotification(data.title || 'RelayEats', {
           body: data.body || '',
           tag: data.id || undefined,
           renotify: Boolean(data.id),

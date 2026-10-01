@@ -24,7 +24,7 @@ describe('email templates', () => {
 
   test('rendering fills every variable and escapes the HTML', () => {
     const out = render('welcome', { ...SAMPLE, RESTAURANT_NAME: 'Rose & <Co>' });
-    expect(out.subject).toBe('Welcome to Relay, Rose & <Co>');
+    expect(out.subject).toBe('Welcome to RelayEats, Rose & <Co>');
     expect(out.html).toContain('Rose &amp; &lt;Co&gt;');
     expect(out.html).not.toMatch(/\{\{\{/);
     expect(out.text).toContain('Restaurant code: kampala-grill-house');

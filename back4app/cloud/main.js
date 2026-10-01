@@ -1,5 +1,5 @@
-// Relay, designed and developed by Embiro Concepts. See NOTICE.
-// GENERATED FILE: do not edit. Source: cloud/ in the Relay repository.
+// RelayEats, designed and developed by Embiro Concepts. See NOTICE.
+// GENERATED FILE: do not edit. Source: cloud/ in the RelayEats repository.
 // Rebuild with `npm run build:cloud`. Upload this single file as the
 // Back4App app's Cloud Code main.js (see docs/ROADMAP.md §2).
 "use strict";
@@ -8511,7 +8511,7 @@ var require_push = __commonJS({
             return {
               device,
               ok: false,
-              problem: DEAD.includes(status) ? `${problem}. This device's registration was out of date and has been removed; opening Relay on it registers it again.` : problem
+              problem: DEAD.includes(status) ? `${problem}. This device's registration was out of date and has been removed; opening RelayEats on it registers it again.` : problem
             };
           }
         })
@@ -27017,7 +27017,7 @@ var require_efrisApi = __commonJS({
         this.code = String(code || "");
       }
     };
-    var CERTIFICATE_NOT_KEY = "That file is a certificate (the public key): upload it on the EFRIS portal. Relay needs the private key instead; if you made the key pair in Relay, it is already saved and nothing needs uploading here.";
+    var CERTIFICATE_NOT_KEY = "That file is a certificate (the public key): upload it on the EFRIS portal. RelayEats needs the private key instead; if you made the key pair in RelayEats, it is already saved and nothing needs uploading here.";
     function isCertificate(bytes, text) {
       if (/-----BEGIN (TRUSTED )?CERTIFICATE-----/.test(text)) return true;
       if (text.includes("-----BEGIN")) return false;
@@ -27070,7 +27070,7 @@ var require_efrisApi = __commonJS({
       cert.validity.notBefore = from;
       cert.validity.notAfter = until;
       const subject = [
-        { name: "commonName", value: String(tin || "Relay") },
+        { name: "commonName", value: String(tin || "RelayEats") },
         ...name ? [{ name: "organizationName", value: String(name).slice(0, 64) }] : [],
         { name: "countryName", value: "UG" }
       ];
@@ -27182,7 +27182,7 @@ var require_efrisApi = __commonJS({
       try {
         return JSON.parse(body);
       } catch {
-        throw new EfrisError("EFRIS sent an answer Relay could not read");
+        throw new EfrisError("EFRIS sent an answer RelayEats could not read");
       }
     }
     async function post(settings, body) {
@@ -27326,7 +27326,7 @@ var require_efrisApi = __commonJS({
           antifakeCode: "",
           deviceNo: settings.deviceNo,
           issuedDate: ugandaTime(issuedAt),
-          operator: String(operator || "Relay").slice(0, 150),
+          operator: String(operator || "RelayEats").slice(0, 150),
           currency: "UGX",
           oriInvoiceId: "",
           invoiceType: "1",
@@ -27830,7 +27830,7 @@ var require_efris = __commonJS({
       const replaced = !!settings.privateKey;
       Object.assign(settings, {
         privateKey: made.privateKey,
-        keyName: `Made by Relay on ${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`,
+        keyName: `Made by RelayEats on ${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`,
         certificate: made.certificate,
         certificateDer: made.certificateDer,
         certificateValidUntil: made.validUntil,
@@ -31245,7 +31245,7 @@ var require_emailTemplates = __commonJS({
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${LINE};border-radius:16px;">
           <tr>
             <td style="padding:28px 32px 6px 32px;">
-              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">Relay</span>
+              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">RelayEats</span>
               <span style="font-size:13px;color:${MUTED};">&nbsp;\xB7&nbsp;{{{RESTAURANT_NAME}}}</span>
             </td>
           </tr>
@@ -31260,7 +31260,7 @@ var require_emailTemplates = __commonJS({
           <tr>
             <td style="padding:28px 32px 28px 32px;">
               <p style="margin:0;font-size:13px;line-height:1.5;color:${MUTED};">{{{SUPPORT_LINE}}}</p>
-              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:${MUTED};">Sent by Relay to the owner of {{{RESTAURANT_NAME}}}.</p>
+              <p style="margin:10px 0 0 0;font-size:12px;line-height:1.5;color:${MUTED};">Sent by RelayEats to the owner of {{{RESTAURANT_NAME}}}.</p>
             </td>
           </tr>
           </table>
@@ -31278,7 +31278,7 @@ var require_emailTemplates = __commonJS({
       today: { label: "Payment due", bg: "#ffe6dc", fg: "#a8361a" },
       overdue: { label: "Overdue", bg: "#fde2e2", fg: "#a11a1a" },
       paid: { label: "Paid", bg: "#dff5e6", fg: "#17653a" },
-      news: { label: "From Relay", bg: "#e8eefc", fg: "#1d3fa8" },
+      news: { label: "From RelayEats", bg: "#e8eefc", fg: "#1d3fa8" },
       reward: { label: "Referral reward", bg: "#dff5e6", fg: "#17653a" },
       deletion: { label: "Account to be deleted", bg: "#fde2e2", fg: "#a11a1a" }
     };
@@ -31293,7 +31293,7 @@ var require_emailTemplates = __commonJS({
       welcome: {
         label: "Welcome",
         when: "Right after a restaurant signs up.",
-        subject: "Welcome to Relay, {{{RESTAURANT_NAME}}}",
+        subject: "Welcome to RelayEats, {{{RESTAURANT_NAME}}}",
         variables: [
           ...COMMON,
           "RESTAURANT_CODE",
@@ -31304,10 +31304,10 @@ var require_emailTemplates = __commonJS({
           "SIGN_IN_URL"
         ],
         html: layout({
-          title: "Welcome to Relay",
+          title: "Welcome to RelayEats",
           preheader: "{{{START_LINE}}} Here is how to sign in.",
           tag: TAGS.info,
-          heading: "{{{RESTAURANT_NAME}}} is ready on Relay",
+          heading: "{{{RESTAURANT_NAME}}} is ready on RelayEats",
           blocks: [
             para("Hello {{{OWNER_NAME}}},"),
             para("{{{START_LINE}}} Add your menu and your team, and orders can start today."),
@@ -31317,7 +31317,7 @@ var require_emailTemplates = __commonJS({
               row("Plan", "{{{PLAN_NAME}}}"),
               row("Trial ends", "{{{TRIAL_ENDS}}}")
             ]),
-            button("Sign in to Relay", "{{{SIGN_IN_URL}}}"),
+            button("Sign in to RelayEats", "{{{SIGN_IN_URL}}}"),
             small(
               "Forgot your password? Use \u201CForgot password\u201D on the sign-in page and we will email you a link."
             )
@@ -31326,7 +31326,7 @@ var require_emailTemplates = __commonJS({
         text: [
           "Hello {{{OWNER_NAME}}},",
           "",
-          "{{{RESTAURANT_NAME}}} is set up on Relay. {{{START_LINE}}}",
+          "{{{RESTAURANT_NAME}}} is set up on RelayEats. {{{START_LINE}}}",
           "Restaurant code: {{{RESTAURANT_CODE}}}",
           "Your username: {{{USERNAME}}}",
           "Plan: {{{PLAN_NAME}}}",
@@ -31351,7 +31351,7 @@ var require_emailTemplates = __commonJS({
           blocks: [
             para("Hello {{{OWNER_NAME}}},"),
             para(
-              "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay. Open the link within {{{EXPIRES_IN}}} to choose a new one."
+              "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on RelayEats. Open the link within {{{EXPIRES_IN}}} to choose a new one."
             ),
             button("Choose a new password", "{{{RESET_URL}}}"),
             small("If it was not you, ignore this email: your password stays as it is."),
@@ -31363,7 +31363,7 @@ var require_emailTemplates = __commonJS({
         text: [
           "Hello {{{OWNER_NAME}}},",
           "",
-          "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on Relay.",
+          "Someone asked to reset the owner password for {{{RESTAURANT_NAME}}} on RelayEats.",
           "Open this link within {{{EXPIRES_IN}}} to choose a new one:",
           "{{{RESET_URL}}}",
           "",
@@ -31377,13 +31377,13 @@ var require_emailTemplates = __commonJS({
         variables: [...COMMON, ...BILLING, "HEADLINE", "DAYS_LEFT"],
         html: layout({
           title: "Payment due soon",
-          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} by {{{DUE_DATE}}} to keep Relay open.",
+          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} by {{{DUE_DATE}}} to keep RelayEats open.",
           tag: TAGS.soon,
           heading: "{{{HEADLINE}}}",
           blocks: [
             para("Hello {{{OWNER_NAME}}},"),
             para(
-              "To keep {{{RESTAURANT_NAME}}} running on Relay without a break, pay before <strong>{{{DUE_DATE}}}</strong>. You can pay a month, a few months, or a whole year at once and get two months free."
+              "To keep {{{RESTAURANT_NAME}}} running on RelayEats without a break, pay before <strong>{{{DUE_DATE}}}</strong>. You can pay a month, a few months, or a whole year at once and get two months free."
             ),
             details(billingRows),
             button("Pay now", "{{{BILLING_URL}}}"),
@@ -31395,7 +31395,7 @@ var require_emailTemplates = __commonJS({
         text: [
           "Hello {{{OWNER_NAME}}},",
           "",
-          "{{{HEADLINE}}}. To keep {{{RESTAURANT_NAME}}} running on Relay, pay before {{{DUE_DATE}}}.",
+          "{{{HEADLINE}}}. To keep {{{RESTAURANT_NAME}}} running on RelayEats, pay before {{{DUE_DATE}}}.",
           "",
           "Plan: {{{PLAN_NAME}}}",
           "Invoice: {{{INVOICE_NUMBER}}}",
@@ -31414,7 +31414,7 @@ var require_emailTemplates = __commonJS({
         variables: [...COMMON, ...BILLING, "HEADLINE"],
         html: layout({
           title: "Payment due",
-          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} to keep Relay open.",
+          preheader: "{{{HEADLINE}}}. Pay {{{AMOUNT}}} to keep RelayEats open.",
           tag: TAGS.today,
           heading: "{{{HEADLINE}}}",
           blocks: [
@@ -31495,13 +31495,13 @@ var require_emailTemplates = __commonJS({
         ],
         html: layout({
           title: "Payment received",
-          preheader: "We received {{{AMOUNT}}}. Relay is paid until {{{PAID_UNTIL}}}.",
+          preheader: "We received {{{AMOUNT}}}. RelayEats is paid until {{{PAID_UNTIL}}}.",
           tag: TAGS.paid,
           heading: "Payment received, thank you",
           blocks: [
             para("Hello {{{OWNER_NAME}}},"),
             para(
-              "We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until <strong>{{{PAID_UNTIL}}}</strong>."
+              "We received your payment for {{{RESTAURANT_NAME}}}. RelayEats is paid until <strong>{{{PAID_UNTIL}}}</strong>."
             ),
             details([
               row("Invoice", "{{{INVOICE_NUMBER}}}"),
@@ -31518,7 +31518,7 @@ var require_emailTemplates = __commonJS({
         text: [
           "Hello {{{OWNER_NAME}}},",
           "",
-          "We received your payment for {{{RESTAURANT_NAME}}}. Relay is paid until {{{PAID_UNTIL}}}.",
+          "We received your payment for {{{RESTAURANT_NAME}}}. RelayEats is paid until {{{PAID_UNTIL}}}.",
           "",
           "Invoice: {{{INVOICE_NUMBER}}}",
           "Plan: {{{PLAN_NAME}}}",
@@ -31552,13 +31552,13 @@ var require_emailTemplates = __commonJS({
         variables: [...COMMON, "REFERRED_NAME", "MONTHS_TEXT", "PAID_UNTIL", "BILLING_URL"],
         html: layout({
           title: "Referral reward",
-          preheader: "{{{REFERRED_NAME}}} joined Relay with your code: {{{MONTHS_TEXT}}} free.",
+          preheader: "{{{REFERRED_NAME}}} joined RelayEats with your code: {{{MONTHS_TEXT}}} free.",
           tag: TAGS.reward,
           heading: "You earned {{{MONTHS_TEXT}}} free",
           blocks: [
             para("Hello {{{OWNER_NAME}}},"),
             para(
-              "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}."
+              "{{{REFERRED_NAME}}} joined RelayEats with your restaurant code and made its first payment. Thank you: we added <strong>{{{MONTHS_TEXT}}}</strong> to {{{RESTAURANT_NAME}}}."
             ),
             details([row("Now paid until", "{{{PAID_UNTIL}}}")]),
             button("View billing", "{{{BILLING_URL}}}"),
@@ -31570,7 +31570,7 @@ var require_emailTemplates = __commonJS({
         text: [
           "Hello {{{OWNER_NAME}}},",
           "",
-          "{{{REFERRED_NAME}}} joined Relay with your restaurant code and made its first payment.",
+          "{{{REFERRED_NAME}}} joined RelayEats with your restaurant code and made its first payment.",
           "We added {{{MONTHS_TEXT}}} to {{{RESTAURANT_NAME}}}. Now paid until {{{PAID_UNTIL}}}.",
           "",
           "Billing: {{{BILLING_URL}}}",
@@ -31581,17 +31581,17 @@ var require_emailTemplates = __commonJS({
       account_deletion: {
         label: "Account to be deleted",
         when: "A few days (Delete warning, platform settings) before the data of a restaurant that stopped paying is deleted.",
-        subject: "{{{RESTAURANT_NAME}}}: your Relay account will be deleted on {{{DELETE_ON}}}",
+        subject: "{{{RESTAURANT_NAME}}}: your RelayEats account will be deleted on {{{DELETE_ON}}}",
         variables: [...COMMON, "PLAN_NAME", "AMOUNT", "CLOSED_ON", "DELETE_ON", "BILLING_URL"],
         html: layout({
           title: "Account to be deleted",
           preheader: "Renew by {{{DELETE_ON}}} to keep your menu, orders, staff and reports. After that they are deleted.",
           tag: TAGS.deletion,
-          heading: "Your Relay account will be deleted on {{{DELETE_ON}}}",
+          heading: "Your RelayEats account will be deleted on {{{DELETE_ON}}}",
           blocks: [
             para("Hello {{{OWNER_NAME}}},"),
             para(
-              "Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed. If it is not renewed by <strong>{{{DELETE_ON}}}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports."
+              "RelayEats for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed. If it is not renewed by <strong>{{{DELETE_ON}}}</strong>, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports."
             ),
             details([
               row("Plan", "{{{PLAN_NAME}}}"),
@@ -31601,14 +31601,14 @@ var require_emailTemplates = __commonJS({
             ]),
             button("Renew to keep it", "{{{BILLING_URL}}}"),
             small(
-              "Sign in as the owner and pay in Admin \u2192 Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact Relay support before that date."
+              "Sign in as the owner and pay in Admin \u2192 Billing; the app opens again at once and nothing is deleted. Your invoices and receipts for past payments are kept either way. Need a copy of your data first? Contact RelayEats support before that date."
             )
           ]
         }),
         text: [
           "Hello {{{OWNER_NAME}}},",
           "",
-          "Relay for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed.",
+          "RelayEats for {{{RESTAURANT_NAME}}} has been closed since {{{CLOSED_ON}}} because the subscription was not renewed.",
           "If it is not renewed by {{{DELETE_ON}}}, the account and all its data are deleted for good: the menu, orders, customers, staff accounts, cash records and reports.",
           "",
           "Plan: {{{PLAN_NAME}}}",
@@ -31624,7 +31624,7 @@ var require_emailTemplates = __commonJS({
     var SAMPLE = {
       OWNER_NAME: "Sarah Achieng",
       RESTAURANT_NAME: "Kampala Grill House",
-      SUPPORT_LINE: "Questions? Contact Relay support: 0700 123456.",
+      SUPPORT_LINE: "Questions? Contact RelayEats support: 0700 123456.",
       RESTAURANT_CODE: "kampala-grill-house",
       USERNAME: "sarah",
       PLAN_NAME: "Basic",
@@ -31718,13 +31718,16 @@ var require_email = __commonJS({
     async function loadEmail() {
       const tenancy = require_tenant();
       const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
-      return { row, email: { provider: "resend", fromName: "Relay", ...row?.get("email") || {} } };
+      return {
+        row,
+        email: { provider: "resend", fromName: "RelayEats", ...row?.get("email") || {} }
+      };
     }
     var ready = (email) => !!(email.apiKey && email.from && PROVIDERS[email.provider]);
     var validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(value || "").trim()) && String(value).trim().length <= 120;
     async function sendWith(email, { to, subject, text, html, template }) {
       const base = process.env.RELAY_EMAIL_URL || PROVIDERS[email.provider];
-      const name = String(email.fromName || "Relay").replace(/[<>"]/g, "");
+      const name = String(email.fromName || "RelayEats").replace(/[<>"]/g, "");
       const request = email.provider === "brevo" ? {
         url: `${base}/smtp/email`,
         headers: { "api-key": email.apiKey },
@@ -31814,7 +31817,7 @@ var require_platformEmail = __commonJS({
     var view = (email) => ({
       provider: email.provider || "resend",
       from: email.from || "",
-      fromName: email.fromName || "Relay",
+      fromName: email.fromName || "RelayEats",
       appUrl: email.appUrl || "",
       keySet: !!email.apiKey,
       ready: ready(email),
@@ -31851,7 +31854,7 @@ var require_platformEmail = __commonJS({
         ...email,
         provider,
         from,
-        fromName: String(p.fromName ?? email.fromName ?? "Relay").trim().slice(0, 60),
+        fromName: String(p.fromName ?? email.fromName ?? "RelayEats").trim().slice(0, 60),
         appUrl
       };
       if (p.templates && typeof p.templates === "object") {
@@ -31913,8 +31916,8 @@ var require_platformEmail = __commonJS({
         }
         await sendWith(email, {
           to,
-          subject: "Relay test email",
-          text: "Email from Relay works. Owners will get password reset links and reminders like this."
+          subject: "RelayEats test email",
+          text: "Email from RelayEats works. Owners will get password reset links and reminders like this."
         });
       } catch (error) {
         throw invalid(`Not sent: ${errorMessage(error)}`);
@@ -31951,7 +31954,7 @@ var require_platformEmail = __commonJS({
       if (!code || !validEmail(email)) throw invalid("Enter the restaurant code and your email");
       const { email: settings } = await loadEmail();
       if (!ready(settings) || !settings.appUrl)
-        throw invalid("Password reset by email is not set up yet. Ask Relay support to reset it");
+        throw invalid("Password reset by email is not set up yet. Ask RelayEats support to reset it");
       if (!request.master && !allow(`${request.ip || "unknown"}:${code}`))
         throw invalid("Too many requests. Try again in an hour");
       const done = { sent: true };
@@ -31971,7 +31974,7 @@ var require_platformEmail = __commonJS({
         });
       } catch (error) {
         log("warn", "email.reset_failed", { restaurant: row.id, error: errorMessage(error) });
-        throw invalid("The email could not be sent. Try again later or ask Relay support");
+        throw invalid("The email could not be sent. Try again later or ask RelayEats support");
       }
       return done;
     });
@@ -32009,16 +32012,20 @@ var require_platformEmail = __commonJS({
       return {
         OWNER_NAME: row.get("ownerName") || "there",
         RESTAURANT_NAME: row.get("name") || "",
-        SUPPORT_LINE: support ? `Questions? Contact Relay support: ${support}.` : ""
+        SUPPORT_LINE: support ? `Questions? Contact RelayEats support: ${support}.` : ""
       };
     }
     async function emailOwner(row, kind, variables = {}, platform = {}) {
       try {
         const { appUrl = "" } = (await loadEmail()).email;
+        const settings = platform.restaurantDomain === void 0 ? (await require_restaurants().platformSettings()).values : platform;
+        const { restaurantLink } = require_restaurants();
+        const own = settings.restaurantDomain ? restaurantLink(row.get("code"), settings) : "";
+        const base = own || appUrl;
         return await sendEmail(kind, row.get("ownerEmail"), {
-          ...ownerVariables(row, platform),
-          BILLING_URL: appUrl ? `${appUrl}/admin/site/billing` : "",
-          SIGN_IN_URL: appUrl ? `${appUrl}/r/${row.get("code")}` : "",
+          ...ownerVariables(row, settings),
+          BILLING_URL: base ? `${base}/admin/site/billing` : "",
+          SIGN_IN_URL: restaurantLink(row.get("code"), settings, appUrl),
           ...variables
         });
       } catch (error) {
@@ -32183,7 +32190,7 @@ var require_offers2 = __commonJS({
               kind: "billing.referral",
               tone: "success",
               title: `${monthsText} free: ${row.get("name")} joined with your code`,
-              body: `Thank you for the referral. Relay is now paid until ${dateText(until)}.`,
+              body: `Thank you for the referral. RelayEats is now paid until ${dateText(until)}.`,
               link: "/admin/site/billing",
               key: `referral:${row.id}`
             });
@@ -32780,7 +32787,7 @@ var require_platformAccounting = __commonJS({
             due_date: dayOf(row.paidAt),
             line_items: [
               {
-                name: `Relay ${row.planName || "subscription"}${row.kind === "upgrade" ? " upgrade" : ""}`,
+                name: `RelayEats ${row.planName || "subscription"}${row.kind === "upgrade" ? " upgrade" : ""}`,
                 description: [
                   row.kind === "upgrade" ? "Upgrade for the days left" : row.months === 12 ? "1 year" : `${row.months} month${row.months === 1 ? "" : "s"}`,
                   period,
@@ -32791,7 +32798,7 @@ var require_platformAccounting = __commonJS({
                 account_id: z.accounts.deferred
               }
             ],
-            notes: "Relay subscription, paid in advance: earned over the period."
+            notes: "RelayEats subscription, paid in advance: earned over the period."
           });
           invoiceId = invoice.invoice_id;
           payment.set("zohoInvoiceId", invoiceId);
@@ -32860,7 +32867,7 @@ var require_platformAccounting = __commonJS({
         const journal = await api.createJournal({
           journal_date: lastDay(month),
           reference_number: `RELAY-EARNED-${month}`,
-          notes: `Relay subscriptions earned in ${month} (${rows.length} invoices): unearned revenue released.`,
+          notes: `RelayEats subscriptions earned in ${month} (${rows.length} invoices): unearned revenue released.`,
           line_items: [
             {
               account_id: z.accounts.deferred,
@@ -32983,7 +32990,7 @@ var require_platformAccounting = __commonJS({
       } catch (error) {
         if (error instanceof Parse.Error) throw error;
         throw invalid(
-          `Zoho Books refused: ${errorMessage(error)}. Nothing was deleted in Relay; what was already removed from Zoho stays removed. Try again, or untick \u201CAlso delete it in Zoho Books\u201D.`
+          `Zoho Books refused: ${errorMessage(error)}. Nothing was deleted in RelayEats; what was already removed from Zoho stays removed. Try again, or untick \u201CAlso delete it in Zoho Books\u201D.`
         );
       }
       return done;
@@ -33638,7 +33645,7 @@ var require_billing = __commonJS({
       if (!target) throw invalid("Choose one of the plans on offer");
       const row = await restaurantRow();
       if (negotiated(row))
-        throw invalid("Your price was agreed with Relay. Contact Relay to change plan");
+        throw invalid("Your price was agreed with RelayEats. Contact RelayEats to change plan");
       const current = planOfRow2(row, platform);
       const before = { plan: current.key, nextPlan: row.get("nextPlan") || "" };
       if (target.key === current.key) {
@@ -33672,7 +33679,7 @@ var require_billing = __commonJS({
       return billingState();
     });
     var notConfigured = (platform) => invalid(
-      `Paying in the app is not switched on yet. Contact Relay${platform.supportContact ? ` (${platform.supportContact})` : ""} to pay`
+      `Paying in the app is not switched on yet. Contact RelayEats${platform.supportContact ? ` (${platform.supportContact})` : ""} to pay`
     );
     var cleanPhone = (value) => {
       const phone = String(value || "").replace(/[^\d+]/g, "");
@@ -33709,7 +33716,7 @@ var require_billing = __commonJS({
           currency: platform.currency,
           payer: phone,
           payerName: row.get("ownerName") || row.get("name"),
-          note: `Relay for ${row.get("name")}: ${note}`.slice(0, 100)
+          note: `RelayEats for ${row.get("name")}: ${note}`.slice(0, 100)
         });
         payment.set({ providerId: result.id, message: result.message || "Waiting for approval" });
         if (result.status === "failed") payment.set("status", "failed");
@@ -33736,7 +33743,7 @@ var require_billing = __commonJS({
       const target = platform.plans.find((plan) => plan.active && plan.key === key);
       if (!target) throw invalid("Choose one of the plans on offer");
       if (negotiated(row))
-        throw invalid("Your price was agreed with Relay. Contact Relay to change plan");
+        throw invalid("Your price was agreed with RelayEats. Contact RelayEats to change plan");
       const access = accessOf(row, platform.graceDays);
       if (access.status === "active")
         throw invalid(
@@ -33759,7 +33766,7 @@ var require_billing = __commonJS({
       const plan = await periodPlan(row, platform, p.plan ? String(p.plan) : "");
       const priced = await offers().priceFor(row, platform, months, void 0, plan);
       const amount = priced.amount;
-      if (amount < MIN_AMOUNT) throw invalid("Nothing to pay at this price. Contact Relay");
+      if (amount < MIN_AMOUNT) throw invalid("Nothing to pay at this price. Contact RelayEats");
       return collectPayment({
         row,
         platform,
@@ -33810,7 +33817,7 @@ var require_billing = __commonJS({
       const target = platform.plans.find((plan) => plan.active && plan.key === p.plan);
       if (!target) throw invalid("Choose one of the plans on offer");
       if (negotiated(row))
-        throw invalid("Your price was agreed with Relay. Contact Relay to change plan");
+        throw invalid("Your price was agreed with RelayEats. Contact RelayEats to change plan");
       const quote = await upgradeQuote(row, platform, target);
       if (!quote)
         throw invalid(
@@ -33872,7 +33879,7 @@ var require_billing = __commonJS({
           });
           created.setACL(readAcl(null, ["admin"]));
           await created.save(null, MASTER);
-          return settle(created, { message: "Recorded by Relay" });
+          return settle(created, { message: "Recorded by RelayEats" });
         },
         row.get("code")
       );
@@ -33944,7 +33951,7 @@ var require_billing = __commonJS({
           key: `billing:${left <= 1 ? "closing" : "overdue"}:${day}`,
           due: due2,
           vars: {
-            HEADLINE: left <= 1 ? "Relay closes tomorrow" : `Payment overdue: Relay closes in ${plural(left)}`,
+            HEADLINE: left <= 1 ? "RelayEats closes tomorrow" : `Payment overdue: RelayEats closes in ${plural(left)}`,
             CLOSES_ON: dateText(access.until),
             DAYS_TO_CLOSE: String(left)
           }
@@ -35126,6 +35133,8 @@ var require_security = __commonJS({
         referralMonths: N,
         deleteAfterDays: N,
         deleteWarnDays: N,
+        // Restaurants' own addresses (<code>.<restaurantDomain>).
+        restaurantDomain: S,
         // The platform's WhatsApp sender (lib/whatsappSender.js), token included.
         whatsapp: "Object",
         // The email service (lib/email.js), API key included.
@@ -36214,8 +36223,23 @@ var require_restaurants = __commonJS({
       // deleted this many days after the app closes (0: never), the owner warned
       // by email this many days before.
       deleteAfterDays: 30,
-      deleteWarnDays: 3
+      deleteWarnDays: 3,
+      // Restaurants' own addresses: <code>.<restaurantDomain> (e.g.
+      // aldea.relayeats.app); empty: <app address>/r/<code>.
+      restaurantDomain: ""
     };
+    var DOMAIN = /^(?=.{3,100}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
+    function domainFrom(text) {
+      const domain = String(text || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\*\./, "");
+      if (domain && !DOMAIN.test(domain))
+        throw invalid("Restaurant domain: a domain such as relayeats.app");
+      return domain;
+    }
+    function restaurantLink(code, platform = {}, appUrl = "") {
+      if (!code) return "";
+      if (platform.restaurantDomain) return `https://${code}.${platform.restaurantDomain}`;
+      return appUrl ? `${appUrl}/r/${code}` : "";
+    }
     async function platformSettings() {
       const row = await tenancy.withoutTenant(() => new Parse.Query("PlatformSettings").first(MASTER));
       const values = { ...DEFAULT_PLATFORM };
@@ -36271,7 +36295,7 @@ var require_restaurants = __commonJS({
       if (access.ok) return;
       const contact = platform.supportContact ? ` (${platform.supportContact})` : "";
       throw forbidden(
-        access.status === "suspended" ? `This restaurant is suspended. Contact Relay${contact}` : "This restaurant\u2019s subscription has ended. The owner can renew it in the app"
+        access.status === "suspended" ? `This restaurant is suspended. Contact RelayEats${contact}` : "This restaurant\u2019s subscription has ended. The owner can renew it in the app"
       );
     }
     Parse.Cloud.beforeLogin(async (request) => {
@@ -36281,12 +36305,23 @@ var require_restaurants = __commonJS({
       if (restaurant?.suspended) {
         const { supportContact } = await cachedPlatform();
         throw forbidden(
-          `This restaurant is suspended. Contact Relay${supportContact ? ` (${supportContact})` : ""}`
+          `This restaurant is suspended. Contact RelayEats${supportContact ? ` (${supportContact})` : ""}`
         );
       }
     });
     var codeFrom = (text) => String(text || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
-    var RESERVED = /* @__PURE__ */ new Set(["admin", "api", "app", "platform", "relay", "signup", "www", "help"]);
+    var RESERVED = /* @__PURE__ */ new Set([
+      "admin",
+      "api",
+      "app",
+      "platform",
+      "relay",
+      "relayeats",
+      "signup",
+      "www",
+      "help",
+      "mail"
+    ]);
     async function codeTaken(code) {
       if (RESERVED.has(code)) return true;
       const query = new Parse.Query("Restaurant");
@@ -36547,6 +36582,8 @@ var require_restaurants = __commonJS({
         orders30,
         // Deleting (purge.js): data already deleted (payments kept), never
         // deleted automatically, or when it will be.
+        // Its own address (the platform's restaurant domain, or /r/<code>).
+        link: restaurantLink(row.get("code"), platform, platform.appUrl || ""),
         deleted: row.get("deleted") === true,
         deletedAt: row.get("deletedAt")?.toISOString() || null,
         deletedCode: row.get("deletedCode") || "",
@@ -36565,9 +36602,10 @@ var require_restaurants = __commonJS({
       const query = new Parse.Query("Restaurant");
       const rows = await tenancy.withoutTenant(() => query.findAll({ ...MASTER, batchSize: 500 }));
       rows.sort((a, b) => b.createdAt - a.createdAt);
+      const { appUrl = "" } = (await require_email().loadEmail()).email;
       return {
         settings: platform,
-        rows: await Promise.all(rows.map((row) => restaurantRow(row, platform)))
+        rows: await Promise.all(rows.map((row) => restaurantRow(row, { ...platform, appUrl })))
       };
     });
     var dateOrNull = (value, label) => {
@@ -36726,6 +36764,7 @@ var require_restaurants = __commonJS({
           30,
           "Warn before deleting: 1 to 30 days"
         ),
+        restaurantDomain: domainFrom(p.restaurantDomain ?? before.restaurantDomain ?? ""),
         billingFrom: String(p.billingFrom ?? before.billingFrom ?? "").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 8).join("\n").slice(0, 600)
       });
       await tenancy.withoutTenant(() => row.save(null, MASTER));
@@ -36857,6 +36896,8 @@ var require_restaurants = __commonJS({
       };
     });
     module2.exports = {
+      restaurantLink,
+      domainFrom,
       priceOf,
       annualPriceOf,
       amountFor,
@@ -39710,7 +39751,7 @@ var require_platformWhatsapp = __commonJS({
       const { sender } = await loadSender();
       if (!sender.phoneNumberId || !sender.token)
         throw invalid("Save the phone number ID and the access token first");
-      const text = "Relay test: WhatsApp summaries can reach this number.";
+      const text = "RelayEats test: WhatsApp summaries can reach this number.";
       try {
         await send({ ...sender, managed: true }, to, { text, line: text, full: text });
       } catch (error) {
@@ -41408,7 +41449,9 @@ var require_profile = __commonJS({
       plans: (platform.plans || []).filter((plan) => plan.active).map((plan) => ({ name: plan.name, price: plan.price })),
       currency: platform.currency,
       graceDays: Number(platform.graceDays) || 0,
-      supportContact: platform.supportContact || ""
+      supportContact: platform.supportContact || "",
+      // Restaurants' own addresses: <code>.<restaurantDomain> ('' = /r/<code>).
+      restaurantDomain: platform.restaurantDomain || ""
     });
     Parse.Cloud.define("getAppInfo", async () => {
       if (!tenancy.current()) {

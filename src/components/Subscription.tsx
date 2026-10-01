@@ -357,7 +357,7 @@ export function PlanPicker({
       {error && <p className="form-error">{error}</p>}
       <p className="muted small">
         {state.negotiated
-          ? 'Your price was agreed with Relay: contact Relay to change plan.'
+          ? 'Your price was agreed with RelayEats: contact RelayEats to change plan.'
           : state.renewal !== state.current
             ? `You move to ${state.renewalName} on ${day(state.renewalFrom)}; until then you keep ${state.currentName}.`
             : 'Moving up while a paid period runs costs only the difference for the days left, and the plan changes once it is paid. Moving down starts when your paid period ends.'}
@@ -549,7 +549,7 @@ export function SubscriptionNotice() {
           </>
         ) : (
           <>
-            <b>Add your email</b> so you can reset your password and get Relay&apos;s reminders.
+            <b>Add your email</b> so you can reset your password and get RelayEats&apos;s reminders.
           </>
         )}
       </span>
@@ -589,7 +589,7 @@ export function ClosedScreen() {
           <h2>{r.status === 'suspended' ? 'Paused.' : 'Subscription ended.'}</h2>
           {r.status === 'suspended' ? (
             <p className="muted">
-              Relay has paused this restaurant. Nothing has been deleted. Contact Relay
+              RelayEats has paused this restaurant. Nothing has been deleted. Contact RelayEats
               {contact} to reopen it.
             </p>
           ) : owner ? (
@@ -935,14 +935,14 @@ export function BillingPanel({
     <div className="billing-panel">
       {current?.status === 'pending' ? (
         <div className="billing-waiting" role="status">
-          <b>Check your phone ({current.payer}).</b> Approve {money(current.amount)} for Relay with
-          your mobile money PIN. This page updates by itself.
+          <b>Check your phone ({current.payer}).</b> Approve {money(current.amount)} for RelayEats
+          with your mobile money PIN. This page updates by itself.
         </div>
       ) : current?.status === 'paid' ? (
         <p className="form-success">
           {current.kind === 'upgrade'
             ? `Paid, thank you. You are now on ${data.plan?.currentName || 'the new plan'}.`
-            : `Paid, thank you. Relay is open until ${day(current.periodEnd)}.`}
+            : `Paid, thank you. RelayEats is open until ${day(current.periodEnd)}.`}
         </p>
       ) : current?.status === 'failed' ? (
         <p className="form-error">
@@ -960,7 +960,7 @@ export function BillingPanel({
       )}
       {!data.payInApp ? (
         <p className="muted">
-          Paying in the app is not switched on yet. Contact Relay{contact} to pay.
+          Paying in the app is not switched on yet. Contact RelayEats{contact} to pay.
         </p>
       ) : (
         current?.status !== 'pending' &&
@@ -1075,7 +1075,7 @@ export function BillingPanel({
                 <span>{day(p.createdAt)}</span>
                 <span>
                   {money(p.amount)} · {p.months} month{p.months === 1 ? '' : 's'}
-                  {p.method === 'manual' ? ' · recorded by Relay' : ''}
+                  {p.method === 'manual' ? ' · recorded by RelayEats' : ''}
                 </span>
                 <span className={`billing-status ${p.status}`}>
                   {p.status === 'paid' ? 'Paid' : p.status === 'failed' ? 'Not paid' : 'Waiting'}
@@ -1131,7 +1131,7 @@ export function OwnerEmail() {
           </>
         ) : (
           <>
-            <b>Add your email</b> so you can reset your password and get Relay&apos;s reminders.
+            <b>Add your email</b> so you can reset your password and get RelayEats&apos;s reminders.
           </>
         )}{' '}
         <button

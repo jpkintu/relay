@@ -6,7 +6,7 @@ import { sendTestPush, waitForArrival, type Arrival, type TestResult } from '../
 const ARRIVAL: Record<Arrival, { good: boolean; text: string }> = {
   shown: {
     good: true,
-    text: 'received and handed to the system. If no banner appeared, notifications for this browser are off or silenced on the device: on Windows, Settings → System → Notifications (Chrome on, Do not disturb / Focus off); on Android, Settings → Apps → Chrome (or Relay) → Notifications, and Do not disturb off.',
+    text: 'received and handed to the system. If no banner appeared, notifications for this browser are off or silenced on the device: on Windows, Settings → System → Notifications (Chrome on, Do not disturb / Focus off); on Android, Settings → Apps → Chrome (or RelayEats) → Notifications, and Do not disturb off.',
   },
   error: { good: false, text: 'received, but the browser would not show it: ' },
   'not-received': {
@@ -106,11 +106,11 @@ export function PushPrompt({ card = false }: { card?: boolean }) {
     push === 'install' ? (
       <span>
         On iPhone or iPad: tap <Share aria-label="Share" className="inline-icon" /> Share →{' '}
-        <b>Add to Home Screen</b>, then open Relay from the new icon and turn notifications on.
+        <b>Add to Home Screen</b>, then open RelayEats from the new icon and turn notifications on.
       </span>
     ) : (
       <span>
-        Get new orders and updates as they happen, even when Relay is closed or the screen is
+        Get new orders and updates as they happen, even when RelayEats is closed or the screen is
         locked.
       </span>
     );
