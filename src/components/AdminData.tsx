@@ -471,20 +471,28 @@ function ForgetCustomer() {
 }
 
 // The order the server restores in: records a record links to come first
-// (cloud/restore.js).
+// (cloud/restore.js ORDER; cloud/lib/restoreOrder.test.js keeps them equal).
 const RESTORE_ORDER = [
   'Configuration',
+  'Branch',
   '_User',
   'MenuCategory',
   'Accompaniment',
   'MenuItem',
   'Customer',
+  'DiningTable',
   'Shift',
   'TillPayout',
   'Order',
   'OrderItem',
   'CashHandover',
+  'Voucher',
   'ZReport',
+  'Supplier',
+  'Purchase',
+  'Expense',
+  'StockItem',
+  'StockCount',
   'AuditLog',
 ];
 const RESTORE_BATCH = 200;

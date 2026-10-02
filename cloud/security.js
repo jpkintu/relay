@@ -784,6 +784,8 @@ for (const className of [
   'Expense',
   'StockItem',
   'StockCount',
+  'DiningTable',
+  'Voucher',
 ])
   Object.assign(SCHEMAS[className], {
     restoredFrom: S,
