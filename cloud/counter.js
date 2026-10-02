@@ -363,6 +363,8 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
     });
   } else throw invalid('Choose cash, mobile money or card');
   await order.save(null, MASTER);
+  // Served already (eat in): paid in cash, it is finished.
+  await require('./orders').closeServed(order, actor);
   await audit(
     actor,
     'payment.counter',

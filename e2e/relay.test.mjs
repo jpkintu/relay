@@ -5692,6 +5692,7 @@ const ACCESS = {
     'placeOnlineOrder',
     'getOnlineOrder',
     'cancelOnlineOrder',
+    'getMyOnlineOrders',
   ],
   nobody: [
     'bootstrapOwner',
@@ -6467,7 +6468,7 @@ describe('eat in: guests order from the QR code on their table (tables.js)', () 
     );
     await rejects(run('placeOnlineOrder', at(t1, { customerPhone: '12' })), /phone number/);
 
-    placed = await run('placeOnlineOrder', at(t1, { notes: 'no onions' }));
+    placed = await run('placeOnlineOrder', at(t1, { notes: 'no onions', device: 'd-phone-one' }));
     const row = await new Parse.Query('Order').equalTo('onlineToken', placed.token).first(M);
     assert.equal(row.get('orderType'), 'eat_in');
     assert.equal(row.get('channel'), 'table');
@@ -6484,6 +6485,24 @@ describe('eat in: guests order from the QR code on their table (tables.js)', () 
     assert.equal(tracked.table, 'Table 1');
     assert.equal(tracked.billOpen, true);
     assert.equal(tracked.orderType, 'eat_in');
+  });
+
+  test('a phone that lost its links finds its orders again; a table shows its open orders', async () => {
+    const tokens = async (params) =>
+      (await run('getMyOnlineOrders', params)).orders.map((o) => o.token);
+    // The same phone (network address and browser), its saved id gone.
+    assert.ok((await tokens({})).includes(placed.token));
+    assert.ok((await tokens({ device: 'd-phone-one' })).includes(placed.token));
+    // Another phone that looks the same but has its own id: not its order.
+    assert.equal((await tokens({ device: 'd-phone-two' })).includes(placed.token), false);
+    // Anyone scanning the table sees what is still open at it.
+    assert.ok((await tokens({ device: 'd-phone-two', table: t1.token })).includes(placed.token));
+    assert.equal(
+      (await tokens({ device: 'd-phone-two', table: t2.token })).includes(placed.token),
+      false,
+    );
+    const listed = (await run('getMyOnlineOrders', {})).orders[0];
+    assert.deepEqual(Object.keys(listed).sort(), ['orderCode', 'placedAt', 'token']);
   });
 
   test('the guests move: the board moves the order (and its bill) to their new table', async () => {
@@ -6507,6 +6526,31 @@ describe('eat in: guests order from the QR code on their table (tables.js)', () 
       run('moveOrderTable', { orderId: delivery.id, tableId: t1.id }, s.owner),
       /Only eat-in orders/,
     );
+  });
+
+  test('served before paying: it waits on the board for payment, then closes', async () => {
+    const row = await new Parse.Query('Order').equalTo('onlineToken', placed.token).first(M);
+    for (const action of ['accept', 'ready'])
+      await run('transitionOrder', { orderId: row.id, action }, s.owner);
+    assert.deepEqual(
+      await run('transitionOrder', { orderId: row.id, action: 'complete' }, s.owner),
+      { status: 'READY', served: true },
+    );
+    let fresh = await new Parse.Query('Order').get(row.id, M);
+    assert.equal(fresh.get('status'), 'READY');
+    assert.ok(fresh.get('servedAt'));
+    assert.equal(fresh.get('billOpen'), true);
+    assert.equal((await run('getOnlineOrder', { token: placed.token })).served, true);
+    await rejects(
+      run('transitionOrder', { orderId: row.id, action: 'complete' }, s.owner),
+      /waiting for payment/,
+    );
+    // Paid in cash: finished.
+    await run('takeCounterPayment', { orderId: row.id, paymentMethod: 'cash' }, s.owner);
+    fresh = await new Parse.Query('Order').get(row.id, M);
+    assert.equal(fresh.get('status'), 'DELIVERED');
+    assert.equal(fresh.get('billOpen'), false);
+    assert.equal(fresh.get('cashStatus'), 'IN_TILL');
   });
 
   test('a new code retires the old card; closed tables and switching off stop orders', async () => {

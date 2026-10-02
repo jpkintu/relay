@@ -130,6 +130,21 @@ const rememberOrder = (code: string, token: string) =>
     { token, at: Date.now() },
     ...savedOrders(code).filter((o) => o.token !== token),
   ]);
+// This browser's own id (sent with its orders), so a phone that still has it
+// is never shown another phone's orders that look the same to the server.
+const DEVICE_KEY = 'relay:device';
+function deviceId(create: boolean) {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY) || '';
+    if (!id && create) {
+      id = `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch {
+    return '';
+  }
+}
 const forgetOrders = (code: string, tokens: string[]) =>
   storeOrders(
     code,
@@ -196,33 +211,54 @@ function YourOrders({
 }) {
   const [active, setActive] = useState<(Tracked & { token: string })[]>([]);
   useEffect(() => {
-    const saved = savedOrders(code).slice(0, 5);
-    if (!saved.length) return;
     let live = true;
-    void Promise.all(
-      saved.map((o) =>
-        Parse.Cloud.run('getOnlineOrder', { ...params, token: o.token }).then(
-          (order: Tracked) => ({ ...order, token: o.token }),
-          (e: unknown) =>
-            // Gone for good (not a lost connection): forget it.
-            /Order not found/.test(String((e as Error)?.message))
-              ? { token: o.token, gone: true }
-              : null,
-        ),
-      ),
-    ).then((rows) => {
-      if (!live) return;
-      const done = rows
-        .filter((r) => r && ('gone' in r || FINISHED.includes((r as Tracked).status)))
-        .map((r) => r!.token);
-      if (done.length) forgetOrders(code, done);
-      setActive(
-        rows.filter(
-          (r): r is Tracked & { token: string } =>
-            !!r && !('gone' in r) && !FINISHED.includes(r.status),
-        ),
+    void (async () => {
+      // This phone's saved links, and what the restaurant can match to this
+      // phone (or this table) when the browser lost them.
+      const device = deviceId(false);
+      const found: { token: string; placedAt: string }[] = await Parse.Cloud.run(
+        'getMyOnlineOrders',
+        { ...params, ...(device && { device }) },
+      ).then(
+        (r: { orders: { token: string; placedAt: string }[] }) => r.orders,
+        () => [],
       );
-    });
+      const local = savedOrders(code);
+      const recovered = found.filter((o) => !local.some((l) => l.token === o.token));
+      if (recovered.length)
+        storeOrders(code, [
+          ...local,
+          ...recovered.map((o) => ({ token: o.token, at: Date.parse(o.placedAt) || Date.now() })),
+        ]);
+      return savedOrders(code).slice(0, 8);
+    })()
+      .then((saved) =>
+        Promise.all(
+          saved.map((o) =>
+            Parse.Cloud.run('getOnlineOrder', { ...params, token: o.token }).then(
+              (order: Tracked) => ({ ...order, token: o.token }),
+              (e: unknown) =>
+                // Gone for good (not a lost connection): forget it.
+                /Order not found/.test(String((e as Error)?.message))
+                  ? { token: o.token, gone: true }
+                  : null,
+            ),
+          ),
+        ),
+      )
+      .then((rows) => {
+        if (!live) return;
+        const done = rows
+          .filter((r) => r && ('gone' in r || FINISHED.includes((r as Tracked).status)))
+          .map((r) => r!.token);
+        if (done.length) forgetOrders(code, done);
+        setActive(
+          rows.filter(
+            (r): r is Tracked & { token: string } =>
+              !!r && !('gone' in r) && !FINISHED.includes(r.status),
+          ),
+        );
+      });
     return () => {
       live = false;
     };
@@ -650,6 +686,7 @@ function Checkout({
         ...params,
         branchId,
         requestId,
+        device: deviceId(true),
         items: lines.map((line) => ({
           id: line.id,
           quantity: line.quantity,
@@ -950,6 +987,7 @@ type Tracked = {
   cancelReason: string;
   table: string;
   billOpen: boolean;
+  served: boolean;
   lines: { name: string; quantity: number; sides: string[]; total: number }[];
   restaurant: { name: string; logo: string | null; currencySymbol: string };
 };
@@ -960,6 +998,8 @@ const FINISHED = ['DELIVERED', 'CANCELLED'];
 // Where an order is: received, being prepared, ready / on the way, done.
 function stepOf(order: Tracked) {
   const s = order.status;
+  // Eat in: served, maybe before the bill is paid.
+  if (order.served && s !== 'CANCELLED') return 3;
   if (s === 'PLACED') return 0;
   if (s === 'ACCEPTED' || s === 'PREPARING') return 1;
   if (s === 'READY' || s === 'PICKED_UP') return 2;
