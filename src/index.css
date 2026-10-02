@@ -8764,3 +8764,94 @@ tr.split-row td {
   flex: 1;
   min-width: 0;
 }
+.fin-statement table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.fin-statement th {
+  text-align: left;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line, #dde3ee);
+  background: var(--surface-2, #f0f3f9);
+}
+.fin-statement td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line, #eef1f6);
+}
+.fin-statement td.num,
+.fin-statement th.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.fin-statement .fin-section td {
+  font-weight: 800;
+  padding-top: 14px;
+}
+.fin-statement .fin-total td {
+  font-weight: 700;
+}
+.fin-statement .fin-grand td {
+  font-weight: 800;
+  border-top: 1.5px solid var(--ink);
+  border-bottom: 1.5px solid var(--ink);
+}
+.opening-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.opening-panel .opening-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.opening-panel .opening-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.ratio-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.ratio-tiles > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line, #dde3ee);
+  border-radius: 10px;
+}
+.ratio-tiles b {
+  font-size: 22px;
+}
+.fin-scroll {
+  overflow-x: auto;
+}
+/* Accounting: six statements; on a phone the tabs scroll sideways. */
+.accounting .spending-tabs {
+  display: flex;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.accounting .spending-tabs button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+/* Statements keep their columns readable and scroll sideways if needed. */
+.fin-statement table {
+  min-width: 560px;
+}
+@media (max-width: 640px) {
+  .fin-statement table {
+    font-size: 13px;
+  }
+}

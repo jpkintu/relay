@@ -23,6 +23,7 @@ function publicConfig(values) {
     currencySymbol: values.currencySymbol,
     currencyCode: values.currencyCode,
     timezone: values.timezone,
+    fiscalYearStart: Number(values.fiscalYearStart) || 1,
     defaultDeliveryFee: values.defaultDeliveryFee,
     maxRiderFloat: values.maxRiderFloat,
     allowBatching: values.allowBatching,
