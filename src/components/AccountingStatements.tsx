@@ -764,21 +764,19 @@ const RATIOS: Ratio[] = [
 const showRatio = (ratio: Ratio, value: number | null) =>
   value === null ? '—' : ratio.percent ? `${Math.round(value * 100)}%` : value.toFixed(2);
 
-// For comparing, the ratios share a chart only with ratios of the same unit
-// (one axis per chart): percentages of sales, and "times" ratios. The acid
-// test is left off the chart: with no stock counted it is the current ratio
-// and its line would hide under it (the table still has it).
-const COMPARE: { title: string; percent: boolean; keys: RatioKey[] }[] = [
-  {
-    title: 'Profitability (% of net sales)',
-    percent: true,
-    keys: ['grossProfit', 'netProfit', 'operatingCost'],
-  },
-  {
-    title: 'Liquidity, debt and collection (times)',
-    percent: false,
-    keys: ['current', 'debt', 'debtToEquity', 'receivableTurnover'],
-  },
+// Compared, every ratio is on one chart and one axis as its plain value:
+// a percentage ratio is plotted as a fraction of 1 (14% at 0.14), the hover
+// still gives it as a percentage. The acid test is left off the chart: with
+// no stock counted it is the current ratio and its line would hide under it
+// (the table still has it).
+const COMPARE: RatioKey[] = [
+  'grossProfit',
+  'netProfit',
+  'operatingCost',
+  'current',
+  'debt',
+  'debtToEquity',
+  'receivableTurnover',
 ];
 
 // One line per ratio, month by month. Months with no denominator are gaps.
@@ -841,19 +839,16 @@ export function PerformanceRatios() {
   };
   const last = rows.at(-1);
   const narrow = useDevice() === 'phone';
-  const charts = useMemo(
+  const chart = useMemo(
     () =>
       ratio
-        ? [{ title: '', ...ratioChart(rows, [ratio], !!ratio.percent, narrow) }]
-        : COMPARE.map((group) => ({
-            title: group.title,
-            ...ratioChart(
-              rows,
-              group.keys.map((k) => RATIOS.find((r) => r.key === k)!),
-              group.percent,
-              narrow,
-            ),
-          })),
+        ? ratioChart(rows, [ratio], !!ratio.percent, narrow)
+        : ratioChart(
+            rows,
+            COMPARE.map((k) => RATIOS.find((r) => r.key === k)!),
+            false,
+            narrow,
+          ),
     [rows, ratio, narrow],
   );
   return (
@@ -894,17 +889,18 @@ export function PerformanceRatios() {
           <header className="statement-head">
             <h2>Business Performance Ratios</h2>
             <p className="muted small">
-              Every ratio month by month. Ratios in % of sales and ratios in times are on separate
-              charts so each keeps its own scale; tap a name in a legend to hide or show its line.
-              Pick one ratio above for its numbers and averages.
+              Every ratio month by month on one scale: percentage ratios are drawn as their plain
+              value (14% at 0.14), hover to read each in its usual form. Tap a name in the legend to
+              hide or show its line. Pick one ratio above for its numbers and averages.
             </p>
           </header>
-          {charts.map((c) => (
-            <section key={c.title} className="ratio-chart">
-              <h3>{c.title}</h3>
-              <Chart data={c.data} layout={c.layout} label={c.title} busy={loading} height={280} />
-            </section>
-          ))}
+          <Chart
+            data={chart.data}
+            layout={chart.layout}
+            label="All business performance ratios by month"
+            busy={loading}
+            height={360}
+          />
           <div className="fin-scroll">
             <table className="data ratio-compare">
               <thead>
@@ -954,8 +950,8 @@ export function PerformanceRatios() {
               ))}
           </div>
           <Chart
-            data={charts[0].data}
-            layout={charts[0].layout}
+            data={chart.data}
+            layout={chart.layout}
             label={`${ratio.label} by month`}
             busy={loading}
           />
