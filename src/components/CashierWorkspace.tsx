@@ -489,6 +489,24 @@ function KitchenBoard() {
   // Automatic payments: the number to send the request to, and the ticket
   // whose request is on its way.
   const [payPhone, setPayPhone] = useState('');
+  // The customer's voucher (vouchers.js) paying part or all of the bill.
+  const [vPhone, setVPhone] = useState('');
+  const [vList, setVList] = useState<{ code: string; amount: number }[] | null>(null);
+  const [vCode, setVCode] = useState('');
+  const findVouchers = async (phone: string) => {
+    setVList(null);
+    setVCode('');
+    if (phone.replace(/\D/g, '').length < 9) return;
+    try {
+      const r: { vouchers: { code: string; amount: number }[] } = await Parse.Cloud.run(
+        'findVouchers',
+        { phone },
+      );
+      setVList(r.vouchers);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not look up vouchers');
+    }
+  };
   const [requesting, setRequesting] = useState<{ id: string; code: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -638,11 +656,20 @@ function KitchenBoard() {
     await load();
   };
 
+  const voucherCoversAll = (ticket: Ticket) => {
+    const v = vList?.find((x) => x.code === vCode);
+    return !!v && v.amount >= ticket.total;
+  };
   const takePayment = async (ticket: Ticket) => {
-    const request = payMethod === 'mobile_money' && autoFor(payProvider) && !payRef.trim();
+    const request =
+      !voucherCoversAll(ticket) &&
+      payMethod === 'mobile_money' &&
+      autoFor(payProvider) &&
+      !payRef.trim();
     try {
       await Parse.Cloud.run('takeCounterPayment', {
         orderId: ticket.id,
+        ...(vCode && { voucherCode: vCode, voucherPhone: vPhone }),
         paymentMethod: payMethod,
         ...(payMethod === 'mobile_money' && {
           paymentProvider: payProvider,
@@ -652,7 +679,7 @@ function KitchenBoard() {
         ...(payMethod === 'card' && { paymentProvider: 'card', paymentReference: payRef.trim() }),
       });
       if (request) setRequesting({ id: ticket.id, code: ticket.code });
-      if (payMethod === 'cash' && config.drawer?.onSale)
+      if (payMethod === 'cash' && !voucherCoversAll(ticket) && config.drawer?.onSale)
         void openDrawer('payment', { ref: ticket.id });
       setPaying(null);
       setPayRef('');
@@ -864,6 +891,47 @@ function KitchenBoard() {
                       </div>
                     ) : paying === ticket.id ? (
                       <div className="ticket-close">
+                        <div className="voucher-find">
+                          <input
+                            value={vPhone}
+                            onChange={(e) => setVPhone(e.target.value)}
+                            inputMode="tel"
+                            placeholder="Customer’s number, for their vouchers"
+                            aria-label="Customer’s number for vouchers"
+                          />
+                          <button onClick={() => void findVouchers(vPhone)}>Vouchers</button>
+                        </div>
+                        {vList && !vList.length && <small>No voucher for this number.</small>}
+                        {vList && vList.length > 0 && (
+                          <div className="filter-toggle" role="group" aria-label="Voucher">
+                            {vList.map((v) => (
+                              <button
+                                key={v.code}
+                                className={vCode === v.code ? 'active' : ''}
+                                onClick={() => setVCode(vCode === v.code ? '' : v.code)}
+                              >
+                                {v.code} · {money(v.amount)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {(() => {
+                          const v = vList?.find((x) => x.code === vCode);
+                          if (!v) return null;
+                          const covered = Math.min(v.amount, ticket.total);
+                          return (
+                            <small>
+                              The voucher pays {money(covered)}
+                              {v.amount > covered
+                                ? ` (${money(v.amount - covered)} stays the customer’s)`
+                                : ''}
+                              .{' '}
+                              {ticket.total > covered
+                                ? `Take the other ${money(ticket.total - covered)} below.`
+                                : 'Nothing more to pay.'}
+                            </small>
+                          );
+                        })()}
                         <div className="filter-toggle" role="group" aria-label="Paid by">
                           {(
                             [
@@ -932,11 +1000,12 @@ function KitchenBoard() {
                           <button onClick={() => setPaying(null)}>Back</button>
                           <button
                             disabled={
-                              (payMethod === 'card' && !!referenceProblem(payRef)) ||
-                              (payMethod === 'mobile_money' &&
-                                (!payProvider ||
-                                  (!payRef.trim() &&
-                                    (!autoFor(payProvider) || !!payerPhoneProblem(payPhone)))))
+                              !voucherCoversAll(ticket) &&
+                              ((payMethod === 'card' && !!referenceProblem(payRef)) ||
+                                (payMethod === 'mobile_money' &&
+                                  (!payProvider ||
+                                    (!payRef.trim() &&
+                                      (!autoFor(payProvider) || !!payerPhoneProblem(payPhone))))))
                             }
                             onClick={() => void takePayment(ticket)}
                           >
@@ -1081,6 +1150,8 @@ function KitchenBoard() {
                               setPayMethod('cash');
                               setPayProvider('');
                               setPayRef('');
+                              setVPhone(ticket.phone || '');
+                              void findVouchers(ticket.phone || '');
                             }}
                           >
                             <Banknote /> Take payment

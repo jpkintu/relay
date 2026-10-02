@@ -15,6 +15,9 @@ const isConfirmed = (fact) =>
       ? fact.paymentStatus === 'VERIFIED'
       : true;
 const OPEN = ['PLACED', 'ACCEPTED', 'PREPARING', 'READY', 'PICKED_UP'];
+// Money paid for a sale: its total less any voucher (vouchers.js), which is
+// money the restaurant already had.
+const paidOf = (fact) => round(fact.total) - round(fact.voucher || 0);
 
 // % change from previous to current; null when there is nothing to compare.
 function growth(current, previous) {
@@ -59,14 +62,14 @@ function summarize(facts) {
     net: revenue - commission,
     avgOrder: delivered.length ? Math.round(revenue / delivered.length) : 0,
     // Confirmed money only; the rest is still with riders or waiting for a check.
-    cashSales: confirmed.filter((f) => f.method === 'cash').reduce((n, f) => n + round(f.total), 0),
+    cashSales: confirmed.filter((f) => f.method === 'cash').reduce((n, f) => n + paidOf(f), 0),
     mobileMoneySales: confirmed
       .filter((f) => f.method === 'mobile_money')
-      .reduce((n, f) => n + round(f.total), 0),
-    cardSales: confirmed.filter((f) => f.method === 'card').reduce((n, f) => n + round(f.total), 0),
-    unconfirmedSales: delivered
-      .filter((f) => !isConfirmed(f))
-      .reduce((n, f) => n + round(f.total), 0),
+      .reduce((n, f) => n + paidOf(f), 0),
+    // Paid with customers' vouchers (money received earlier).
+    voucherSales: delivered.reduce((n, f) => n + round(f.voucher || 0), 0),
+    cardSales: confirmed.filter((f) => f.method === 'card').reduce((n, f) => n + paidOf(f), 0),
+    unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + paidOf(f), 0),
     customers: perCustomer.size,
     repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
     avgDeliveryMinutes: average(minutes),
@@ -211,11 +214,19 @@ function paymentMix(facts) {
         ? fact.provider || 'mobile_money'
         : fact.method === 'card'
           ? 'card'
-          : 'cash';
-    const row = byKey.get(key) || { key, orders: 0, amount: 0 };
-    row.orders += 1;
-    row.amount += round(fact.total);
-    byKey.set(key, row);
+          : fact.method === 'voucher'
+            ? 'voucher'
+            : 'cash';
+    // A voucher's part shows as paid by voucher; the rest by how it was paid.
+    const add = (part, amount) => {
+      const row = byKey.get(part) || { key: part, orders: 0, amount: 0 };
+      row.orders += 1;
+      row.amount += amount;
+      byKey.set(part, row);
+    };
+    const voucher = round(fact.voucher || 0);
+    if (key !== 'voucher' && (paidOf(fact) > 0 || !voucher)) add(key, paidOf(fact));
+    if (voucher) add('voucher', voucher);
   }
   return [...byKey.values()].sort((a, b) => b.amount - a.amount);
 }

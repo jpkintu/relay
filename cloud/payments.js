@@ -135,11 +135,12 @@ async function settlePayment(order, { received, reason = '', actor }) {
   );
   if (refundDue) {
     const { values: config } = await loadConfig();
+    const [voucher] = await require('./vouchers').openForOrder(order);
     await notifyStaff({
       kind: 'payment.refund_due',
       tone: 'alert',
       title: `Payment arrived for cancelled order ${order.get('orderCode')}`,
-      body: `${money(config, order.get('total'))} by ${order.get('paymentProvider') || 'mobile money'} (${order.get('paymentReference') || 'no reference'}) from ${order.get('payRequestPhone') || order.get('customerPhone') || 'the customer'}: refund it, then mark it refunded on the order.`,
+      body: `${money(config, order.get('total'))} by ${order.get('paymentProvider') || 'mobile money'} (${order.get('paymentReference') || 'no reference'}) from ${order.get('payRequestPhone') || order.get('customerPhone') || 'the customer'}. It is the customer's voucher${voucher ? ` ${voucher.get('code')}` : ''}: they can spend it on a new order, or you refund it (Accounting → Refunds).`,
       link: `/admin/orders/${order.id}`,
       order,
     });

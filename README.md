@@ -178,6 +178,14 @@ card is retired with **New code**. **Served** works before the bill is paid:
 the order stays on the board as _Served · waiting for payment_ and closes when
 it is paid. Rescanning the table shows the orders still open at it.
 
+**Refunds and vouchers.** Money paid for an order that is then cancelled is
+the customer's voucher (Accounting → Refunds & vouchers). They spend it on a
+new order, at the counter or online with their phone number: a voucher is used
+whole, any rest of the bill is paid in cash or mobile money, and what the order
+does not use stays theirs as a new voucher. Or the owner refunds it, less the
+charges for sending it (flat and/or %), and the books show what was sent and
+what was charged. Until then it is a liability on the balance sheet.
+
 Orders arrive on the kitchen board as Incoming, tagged **Online**, with the
 customer's number to call; deliveries are given a rider like call-in orders.
 Cashiers can pause online orders when the kitchen is full. The owner switches

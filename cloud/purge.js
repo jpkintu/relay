@@ -76,6 +76,7 @@ const ORDER = [
   'MenuCategory',
   'Branch',
   'DiningTable',
+  'Voucher',
   'Notification',
   'PushSubscription',
   'Counter',

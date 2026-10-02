@@ -195,8 +195,14 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
     ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0))
     : 0;
   const total = subtotal + fee;
+  // A customer's voucher (vouchers.js) pays as much of the bill as it can;
+  // the rest is paid as chosen.
+  const vouchers = require('./vouchers');
+  const voucherPhone = p.voucherPhone || p.customerPhone;
+  const covered = p.voucherCode ? await vouchers.peek(p.voucherCode, voucherPhone, total) : 0;
+  const due = total - covered;
   const momo =
-    method === 'mobile_money' && !payLater
+    method === 'mobile_money' && !payLater && due > 0
       ? await checkMobileMoney(
           config,
           p.paymentProvider,
@@ -204,7 +210,7 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
           undefined,
           p.payerPhone || p.customerPhone,
         )
-      : method === 'card' && !payLater
+      : method === 'card' && !payLater && due > 0
         ? await checkCard(config, p.paymentReference)
         : null;
 
@@ -253,10 +259,16 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
       paymentStatus: PENDING,
     }),
   });
-  if (payLater) order.set({ billOpen: true, cashStatus: 'UNPAID', amountToCollect: total });
+  const spent = p.voucherCode
+    ? await vouchers.spend(order, p.voucherCode, voucherPhone, actor)
+    : null;
+  if (spent && isDelivery && method === 'cash') order.set('amountToCollect', due);
+  if (spent && !due) vouchers.paidByVoucher(order);
+  else if (payLater) order.set({ billOpen: true, cashStatus: 'UNPAID', amountToCollect: due });
   else if (!isDelivery && method === 'cash') await cashIntoTill(order, actor, role);
   order.setACL(readAcl(rider));
   await order.save(null, MASTER);
+  if (spent) await spent.save(order);
   await saveLines(order, lines, rider);
   if (isDelivery || order.get('customerPhone')) {
     const customer = await recordCustomerOrder(order);
@@ -283,7 +295,13 @@ Parse.Cloud.define('createCounterOrder', async (request) => {
     except: actor,
   });
   if (rider) await tellRider(rider, order, config);
-  return { id: order.id, orderCode: order.get('orderCode'), total };
+  // total: what is left to pay (a voucher may have paid some or all).
+  return {
+    id: order.id,
+    orderCode: order.get('orderCode'),
+    total: order.get('total'),
+    ...(spent && { voucher: spent.used }),
+  };
 });
 
 // Cashier/admin: give a call-in delivery to a rider (or another rider),
@@ -331,7 +349,19 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
   if (!order.get('billOpen')) throw invalid('This bill is already paid');
   if (order.get('status') === 'CANCELLED') throw invalid('This order was cancelled');
   const { values: config } = await loadConfig();
-  if (p.paymentMethod === 'cash') await cashIntoTill(order, actor, role);
+  // The customer's voucher (vouchers.js) pays first; the rest as chosen.
+  const vouchers = require('./vouchers');
+  const spent = p.voucherCode
+    ? await vouchers.spend(
+        order,
+        p.voucherCode,
+        p.voucherPhone || order.get('customerPhone'),
+        actor,
+      )
+    : null;
+  if (spent) order.set('amountToCollect', Number(order.get('total') || 0));
+  if (spent && !order.get('total')) vouchers.paidByVoucher(order);
+  else if (p.paymentMethod === 'cash') await cashIntoTill(order, actor, role);
   else if (p.paymentMethod === 'mobile_money') {
     const momo = await checkMobileMoney(
       config,
@@ -363,6 +393,7 @@ Parse.Cloud.define('takeCounterPayment', async (request) => {
     });
   } else throw invalid('Choose cash, mobile money or card');
   await order.save(null, MASTER);
+  if (spent) await spent.save(order);
   // Served already (eat in): paid in cash, it is finished.
   await require('./orders').closeServed(order, actor);
   await audit(
@@ -463,7 +494,15 @@ Parse.Cloud.define('getReceipt', async (request) => {
     splits: order.get('splits') || [],
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
-    total: Number(order.get('total') || 0),
+    // The full bill; a voucher paid part of it (vouchers.js).
+    total: Number(order.get('total') || 0) + Number(order.get('voucherAmount') || 0),
+    voucher: order.get('voucherAmount')
+      ? {
+          code: order.get('voucherCode') || '',
+          amount: Number(order.get('voucherAmount')),
+          toPay: Number(order.get('total') || 0),
+        }
+      : null,
     payment: {
       method,
       provider: order.get('paymentProvider') || '',

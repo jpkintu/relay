@@ -44,6 +44,7 @@ const SCOPED = new Set([
   'SubscriptionPayment',
   'Branch',
   'DiningTable',
+  'Voucher',
   'Supplier',
   'Purchase',
   'Expense',

@@ -72,9 +72,11 @@ function cashMovements({
   refundReceipts = [],
   refundsPaid = [],
 }) {
+  // A voucher's part of a sale is money that came in earlier (as the
+  // voucher's payment), not again now.
   const received = sum(
     orders.filter((o) => o.confirmed),
-    (o) => o.total,
+    (o) => round(o.total) - round(o.voucher || 0),
   );
   const toSuppliers = sum(supplierPayments, (p) => p.amount);
   const onExpenses = sum(expenses, (e) => e.amount);
@@ -88,6 +90,7 @@ function cashMovements({
   );
   const forRefund = sum(refundReceipts, (r) => r.amount);
   const refunded = sum(refundsPaid, (r) => r.amount);
+  const refundCharges = sum(refundsPaid, (r) => r.charges || 0);
   return {
     received,
     forRefund,
@@ -96,7 +99,16 @@ function cashMovements({
     riderPay,
     fromTills,
     refunded,
-    net: received + forRefund - toSuppliers - onExpenses - riderPay - fromTills - refunded,
+    refundCharges,
+    net:
+      received +
+      forRefund -
+      toSuppliers -
+      onExpenses -
+      riderPay -
+      fromTills -
+      refunded -
+      refundCharges,
   };
 }
 
@@ -116,6 +128,9 @@ function cashFlow({ opening, movements }) {
       { key: 'rider_pay', amount: movements.riderPay },
       { key: 'till_expenses', amount: movements.fromTills },
       ...(movements.refunded ? [{ key: 'refunds', amount: movements.refunded }] : []),
+      ...(movements.refundCharges
+        ? [{ key: 'refund_charges', amount: movements.refundCharges }]
+        : []),
     ],
     net: movements.net,
     closing: opening + movements.net,
@@ -139,7 +154,7 @@ function balanceSheet({
 }) {
   const receivable = sum(
     orders.filter((o) => !o.confirmed),
-    (o) => o.total,
+    (o) => round(o.total) - round(o.voucher || 0),
   );
   const owedToSuppliers = sum(purchases, (p) => Math.max(0, round(p.total) - round(p.paid)));
   // Rider pay earned less what was paid out (a shortage taken off a payout

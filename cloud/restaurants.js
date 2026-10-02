@@ -139,6 +139,7 @@ const OPEN_WHEN_CLOSED = new Set([
 // The customers' online menu (online.js).
 const ONLINE_PUBLIC = new Set([
   'getOnlineMenu',
+  'checkVoucher',
   'getMyOnlineOrders',
   'placeOnlineOrder',
   'getOnlineOrder',
