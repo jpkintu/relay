@@ -5725,6 +5725,8 @@ const ACCESS = {
   cashier: ['recordTillPayout'],
   staff: [
     'setOnlineOpen',
+    'getTables',
+    'moveOrderTable',
     'logDrawerOpen',
     'confirmHandover',
     'disputeHandover',
@@ -5772,6 +5774,8 @@ const ACCESS = {
     'getShiftReport',
   ],
   admin: [
+    'adminListTables',
+    'adminSaveTable',
     'adminSaveOnlineOrdering',
     'adminGetOnlineOrdering',
     'adminGetEfrisSettings',
@@ -6406,6 +6410,122 @@ describe('online orders: the public menu, a QR code away (online.js)', () => {
     await run('setOnlineOpen', { open: true }, cashier);
     await run('adminSaveOnlineOrdering', { onlineOrders: false }, s.owner);
     assert.equal((await run('getOnlineMenu', {})).enabled, false);
+    assert.equal((await run('getMyProfile', {}, s.owner)).config.online, null);
+  });
+});
+
+describe('eat in: guests order from the QR code on their table (tables.js)', () => {
+  const M = { useMasterKey: true };
+  let dish;
+  let t1;
+  let t2;
+  let placed;
+  const at = (table, extra = {}) => ({
+    table: table.token,
+    items: [{ id: dish.id, quantity: 1 }],
+    ...extra,
+  });
+
+  test('the owner adds tables, each with its own QR code, and switches table orders on', async () => {
+    const off = await run('getOnlineMenu', { table: 'a'.repeat(24) });
+    assert.equal(off.enabled, false);
+    assert.equal(off.atTable, true);
+    await rejects(run('adminSaveTable', { name: ' ' }, s.owner), /name or number/);
+    t1 = await run('adminSaveTable', { name: 'Table 1' }, s.owner);
+    t2 = await run('adminSaveTable', { name: 'Table 2' }, s.owner);
+    await rejects(run('adminSaveTable', { name: 'table 1' }, s.owner), /already a table/);
+    assert.match(t1.token, /^[a-f0-9]{24}$/);
+    assert.notEqual(t1.token, t2.token);
+    const { tables } = await run('adminListTables', {}, s.owner);
+    assert.deepEqual(
+      tables.map((t) => t.name),
+      ['Table 1', 'Table 2'],
+    );
+    // Table orders on, online pick-up / delivery still off.
+    const saved = await run('adminSaveOnlineOrdering', { onlineTables: true }, s.owner);
+    assert.equal(saved.onlineTables, true);
+    assert.equal(saved.onlineOrders, false);
+    assert.equal((await run('getMyProfile', {}, s.owner)).config.online.open, true);
+    // Clients never read tables (their codes) directly.
+    await rejects(
+      new Parse.Query('DiningTable').find({ sessionToken: s.dina.getSessionToken() }),
+      /Permission denied|not allowed|unauthorized/i,
+    );
+  });
+
+  test('a guest scans the table: its menu, no sign-in, nothing to pay yet', async () => {
+    const menu = await run('getOnlineMenu', { table: t1.token });
+    assert.equal(menu.enabled, true);
+    assert.deepEqual(menu.table, { name: 'Table 1' });
+    dish = menu.items.find((item) => item.accompanimentGroups.every((g) => g.min === 0));
+    assert.ok(dish);
+    await rejects(run('getOnlineMenu', { table: 'b'.repeat(24) }), /no longer in use/);
+    assert.equal((await run('getOnlineMenu', {})).enabled, false);
+    await rejects(
+      run('placeOnlineOrder', { ...at(t1), table: undefined, orderType: 'pickup' }),
+      /does not take online orders/,
+    );
+    await rejects(run('placeOnlineOrder', at(t1, { customerPhone: '12' })), /phone number/);
+
+    placed = await run('placeOnlineOrder', at(t1, { notes: 'no onions' }));
+    const row = await new Parse.Query('Order').equalTo('onlineToken', placed.token).first(M);
+    assert.equal(row.get('orderType'), 'eat_in');
+    assert.equal(row.get('channel'), 'table');
+    assert.equal(row.get('tableLabel'), 'Table 1');
+    assert.equal(row.get('table').id, t1.id);
+    assert.equal(row.get('customerName'), 'Table 1 guest');
+    assert.equal(row.get('status'), 'PLACED');
+    // Paid later, like an open bill at the counter.
+    assert.equal(row.get('billOpen'), true);
+    assert.equal(row.get('cashStatus'), 'UNPAID');
+    assert.equal(row.get('amountToCollect'), row.get('total'));
+    assert.equal(row.get('cashier'), undefined);
+    const tracked = await run('getOnlineOrder', { token: placed.token });
+    assert.equal(tracked.table, 'Table 1');
+    assert.equal(tracked.billOpen, true);
+    assert.equal(tracked.orderType, 'eat_in');
+  });
+
+  test('the guests move: the board moves the order (and its bill) to their new table', async () => {
+    const row = await new Parse.Query('Order').equalTo('onlineToken', placed.token).first(M);
+    const { tables } = await run('getTables', {}, s.owner);
+    assert.ok(tables.some((t) => t.id === t2.id));
+    assert.equal('token' in tables[0], false);
+    assert.deepEqual(await run('moveOrderTable', { orderId: row.id, tableId: t2.id }, s.owner), {
+      table: 'Table 2',
+    });
+    await rejects(
+      run('moveOrderTable', { orderId: row.id, tableId: t2.id }, s.owner),
+      /already at Table 2/,
+    );
+    const moved = await new Parse.Query('Order').get(row.id, M);
+    assert.equal(moved.get('tableLabel'), 'Table 2');
+    assert.equal(moved.get('table').id, t2.id);
+    assert.equal((await run('getOnlineOrder', { token: placed.token })).table, 'Table 2');
+    const delivery = await new Parse.Query('Order').equalTo('orderType', 'delivery').first(M);
+    await rejects(
+      run('moveOrderTable', { orderId: delivery.id, tableId: t1.id }, s.owner),
+      /Only eat-in orders/,
+    );
+  });
+
+  test('a new code retires the old card; closed tables and switching off stop orders', async () => {
+    const renewed = await run(
+      'adminSaveTable',
+      { id: t1.id, name: 'Table 1', newCode: true },
+      s.owner,
+    );
+    assert.notEqual(renewed.token, t1.token);
+    await rejects(run('getOnlineMenu', { table: t1.token }), /no longer in use/);
+    t1 = renewed;
+    await run('adminSaveTable', { id: t2.id, name: 'Table 2', active: false }, s.owner);
+    await rejects(run('placeOnlineOrder', at(t2)), /no longer in use/);
+    assert.equal(
+      (await run('getTables', {}, s.owner)).tables.some((t) => t.id === t2.id),
+      false,
+    );
+    await run('adminSaveOnlineOrdering', { onlineTables: false }, s.owner);
+    await rejects(run('placeOnlineOrder', at(t1)), /from the table/);
     assert.equal((await run('getMyProfile', {}, s.owner)).config.online, null);
   });
 });

@@ -38,16 +38,19 @@ const { money, notifyStaff } = require('./notifications');
 const { priceLines, saveLines, splitFields, clean, cleanPhone, PINNED_ONLY } = require('./orders');
 const { operationalMenu } = require('./menu');
 const { requireAdminUnlock } = require('./adminLock');
+const { tableByToken } = require('./tables');
 
 const TOKEN = /^[a-f0-9]{32}$/;
 const ID = /^[A-Za-z0-9]{1,32}$/;
-const TYPE_LABEL = { delivery: 'Delivery', pickup: 'Pick up' };
+const TYPE_LABEL = { delivery: 'Delivery', pickup: 'Pick up', eat_in: 'Eat in' };
 
 // What the owner chose (Admin → Online orders).
 function onlineSettings(config) {
   const accounts = merchantAccounts(config);
   return {
     enabled: config.onlineOrders === true,
+    // Guests at a table order from its QR code (tables.js), paying later.
+    tables: config.onlineTables === true,
     open: config.onlineOpen !== false,
     pickup: config.onlinePickup !== false,
     delivery: config.onlineDelivery !== false,
@@ -97,7 +100,8 @@ async function branchOf(id, branches) {
   return Parse.Object.extend('Branch').createWithoutData(chosen.id);
 }
 
-// Anyone: the live menu and how to order. { branchId? }
+// Anyone: the live menu and how to order. { branchId?, table? } (table: the
+// token in a table's QR code: that table's branch, eat in, pay later)
 Parse.Cloud.define('getOnlineMenu', async (request) => {
   const { values: config } = await loadConfig();
   const s = onlineSettings(config);
@@ -108,6 +112,24 @@ Parse.Cloud.define('getOnlineMenu', async (request) => {
     currencySymbol: config.currencySymbol,
     currencyCode: config.currencyCode,
   };
+  if (request.params?.table) {
+    if (!s.tables) return { enabled: false, restaurant, atTable: true };
+    const table = await tableByToken(request.params.table);
+    const branches = await openBranches();
+    const branch = table.get('branch') || (await branchOf(null, branches));
+    const menu = await operationalMenu(branch?.id);
+    return {
+      enabled: true,
+      open: s.open,
+      table: { name: table.get('name') },
+      note: s.note,
+      restaurant,
+      branches: [],
+      branchId: branch?.id || '',
+      categories: menu.categories,
+      items: menu.items,
+    };
+  }
   if (!s.enabled) return { enabled: false, restaurant };
   const branches = await openBranches();
   const branch = await branchOf(request.params?.branchId, branches);
@@ -171,7 +193,10 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
   const p = request.params || {};
   const { values: config } = await loadConfig();
   const s = onlineSettings(config);
-  if (!s.enabled) throw forbidden('This restaurant does not take online orders');
+  // Ordered at a table (its QR code): eat in, the bill paid later.
+  if (p.table && !s.tables) throw forbidden('This restaurant does not take orders from the table');
+  const table = p.table ? await tableByToken(p.table) : null;
+  if (!table && !s.enabled) throw forbidden('This restaurant does not take online orders');
   if (!s.open)
     throw forbidden('The restaurant is not taking online orders right now. Try again later');
 
@@ -191,8 +216,8 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
       };
   }
 
-  const type = p.orderType;
-  if (!['pickup', 'delivery'].includes(type) || !s[type])
+  const type = table ? 'eat_in' : p.orderType;
+  if (!table && (!['pickup', 'delivery'].includes(type) || !s[type]))
     throw invalid(
       s.pickup && s.delivery
         ? 'Choose pick-up or delivery'
@@ -201,10 +226,12 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
           : 'Delivery only',
     );
   const isDelivery = type === 'delivery';
-  const customerName = clean(p.customerName, 80);
+  // At a table the name and number are optional.
+  const customerName = clean(p.customerName, 80) || (table ? `${table.get('name')} guest` : '');
   if (!customerName) throw invalid('Enter your name');
   const customerPhone = cleanPhone(p.customerPhone);
-  if (String(customerPhone).replace(/\D/g, '').length < 9)
+  const digits = String(customerPhone).replace(/\D/g, '').length;
+  if (table ? digits > 0 && digits < 9 : digits < 9)
     throw invalid('Enter your phone number, so the restaurant can call you');
   const pin = isDelivery ? cleanLocation(p.location) : { location: null };
   if (pin.error) throw invalid(pin.error);
@@ -213,8 +240,9 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
     : '';
   if (isDelivery && !deliveryAddress)
     throw invalid('Add your delivery address or pin it on the map');
-  const method = p.paymentMethod;
-  if (method === 'cash' ? !s.cash : method === 'mobile_money' ? !s.mobileMoney : true)
+  // A table's bill is paid at the end (an open bill, like a counter one).
+  const method = table ? 'cash' : p.paymentMethod;
+  if (!table && (method === 'cash' ? !s.cash : method === 'mobile_money' ? !s.mobileMoney : true))
     throw invalid(
       [s.cash && 'cash', s.mobileMoney && 'mobile money'].filter(Boolean).join(' or ')
         ? `Pay by ${[s.cash && (isDelivery ? 'cash on delivery' : 'cash on pick-up'), s.mobileMoney && 'mobile money'].filter(Boolean).join(' or ')}`
@@ -224,14 +252,19 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
   // Where it leaves from and the delivery charge (a missing pin is a
   // mistake to fix, not an order to count against the limits below).
   const branches = await openBranches();
-  const branch = await branchOf(p.branchId, branches);
+  const branch = table?.get('branch') || (await branchOf(p.branchId, branches));
   const delivery = isDelivery
     ? deliveryCharge(s, config, originOf(branch, branches, config), pin.location)
     : { fee: 0, km: null };
   const fee = delivery.fee;
 
   const ip = String(request.ip || '');
-  if (!allow(`ip:${ip}`, 8) || !allow(`phone:${customerPhone}`, 4))
+  // A table's guests share the restaurant's Wi-Fi: counted per table.
+  if (
+    table
+      ? !allow(`table:${table.id}`, 10)
+      : !allow(`ip:${ip}`, 8) || !allow(`phone:${customerPhone}`, 4)
+  )
     throw forbidden(
       'Too many orders in a short time. Call the restaurant, or try again in a few minutes',
     );
@@ -259,13 +292,14 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
     }),
     clientId: requestId,
     onlineToken: crypto.randomBytes(16).toString('hex'),
-    channel: 'online',
+    channel: table ? 'table' : 'online',
     orderType: type,
     source: 'counter',
     customerName,
     customerPhone,
     deliveryAddress: isDelivery ? deliveryAddress : TYPE_LABEL[type],
     deliveryNotes: clean(p.notes, 200),
+    ...(table && { table, tableLabel: table.get('name') }),
     ...(pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) }),
     subtotal,
     prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
@@ -303,13 +337,16 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
     status: 'PLACED',
     total,
     orderType: type,
-    source: 'online',
-    payment: method,
+    source: table ? 'table' : 'online',
+    payment: table ? 'later' : method,
+    ...(table && { table: table.get('name') }),
   });
   await notifyStaff({
     kind: 'order.new',
     tone: 'new',
-    title: `New online ${type === 'delivery' ? 'delivery' : 'pick-up'} ${order.get('orderCode')}`,
+    title: table
+      ? `New order ${order.get('orderCode')} at ${table.get('name')}`
+      : `New online ${type === 'delivery' ? 'delivery' : 'pick-up'} ${order.get('orderCode')}`,
     body: [customerName, customerPhone, money(config, total)].join(' · '),
     link: '/cashier',
     order,
@@ -341,6 +378,8 @@ Parse.Cloud.define('getOnlineOrder', async (request) => {
     orderType: order.get('orderType'),
     customerName: order.get('customerName'),
     deliveryAddress: order.get('orderType') === 'delivery' ? order.get('deliveryAddress') : '',
+    table: order.get('orderType') === 'eat_in' ? order.get('tableLabel') || '' : '',
+    billOpen: order.get('billOpen') === true,
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
     deliveryKm: order.get('deliveryKm') ?? null,
@@ -419,11 +458,13 @@ Parse.Cloud.define('adminSaveOnlineOrdering', async (request) => {
       'onlineMobileMoney',
       'onlineNote',
       'onlineDeliveryPerKm',
+      'onlineTables',
     ].map((key) => [key, current[key]]),
   );
   const flag = (key, fallback) => (key in p ? p[key] === true : fallback);
   const next = {
     onlineOrders: flag('onlineOrders', current.onlineOrders === true),
+    onlineTables: flag('onlineTables', current.onlineTables === true),
     onlineOpen: flag('onlineOpen', current.onlineOpen !== false),
     onlinePickup: flag('onlinePickup', current.onlinePickup !== false),
     onlineDelivery: flag('onlineDelivery', current.onlineDelivery !== false),
@@ -461,7 +502,7 @@ Parse.Cloud.define('adminSaveOnlineOrdering', async (request) => {
 Parse.Cloud.define('setOnlineOpen', async (request) => {
   const { user } = await requireRole(request, ['cashier', 'admin']);
   const { object: existing, values: current } = await loadConfig();
-  if (!existing || current.onlineOrders !== true)
+  if (!existing || (current.onlineOrders !== true && current.onlineTables !== true))
     throw invalid('Online orders are not switched on');
   const open = request.params?.open === true;
   existing.set('onlineOpen', open);
@@ -483,6 +524,7 @@ function onlineView(config) {
     mobileMoneyReady: s.accounts.length > 0,
     onlineNote: s.note,
     onlineDeliveryPerKm: s.perKm,
+    onlineTables: s.tables,
   };
 }
 

@@ -38,7 +38,7 @@ function card(f: Flier) {
     <p class="headline">${escape(f.headline)}</p>
     <p class="subline">${escape(f.subline)}</p>
     <div class="qr"><img src="${escape(f.qr)}" alt="QR code"></div>
-    <p class="link">${escape(f.link.replace(/^https?:\/\//, ''))}</p>
+    ${f.link ? `<p class="link">${escape(f.link.replace(/^https?:\/\//, ''))}</p>` : ''}
     ${f.modes ? `<p class="chips">${escape(f.modes)}</p>` : ''}
     ${f.payments ? `<p class="pay">${escape(f.payments)}</p>` : ''}
     ${f.note ? `<p class="note">${escape(f.note)}</p>` : ''}
@@ -50,6 +50,21 @@ function card(f: Flier) {
 export function flierHtml(f: Flier) {
   const copies = f.size === 'cards' ? 4 : 1;
   return `<main class="sheet ${f.size}">${Array.from({ length: copies }, () => card(f)).join('')}</main>`;
+}
+
+// Table cards (eat-in ordering): one card per table with its own QR code,
+// four to an A4 page.
+export function tableCardsHtml(
+  f: Omit<Flier, 'size' | 'qr' | 'link' | 'headline'>,
+  tables: { name: string; qr: string }[],
+) {
+  const cards = tables.map((t) =>
+    card({ ...f, size: 'cards', qr: t.qr, link: '', headline: t.name }),
+  );
+  const pages = [];
+  for (let i = 0; i < cards.length; i += 4)
+    pages.push(`<main class="sheet cards">${cards.slice(i, i + 4).join('')}</main>`);
+  return pages.join('');
 }
 
 export function flierCss(f: Pick<Flier, 'size' | 'ink' | 'accent'>) {
@@ -71,6 +86,7 @@ body { font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: ${i
   -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .sheet { width: ${page === 'A5' ? 148 : 210}mm; height: ${page === 'A5' ? 210 : 297}mm; display: grid; }
 .sheet.cards { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.sheet + .sheet { break-before: page; }
 .flier { position: relative; display: flex; flex-direction: column; overflow: hidden;
   border: ${f.size === 'cards' ? `0.3mm dashed #c9ccd6` : '0'}; }
 .band { height: ${s.pad * 0.9}mm; background: ${accent}; }

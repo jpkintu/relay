@@ -55,6 +55,9 @@ type Menu = {
   branchId?: string;
   categories?: string[];
   items?: Dish[];
+  // Opened from a table's QR code: eat in, the bill paid later.
+  table?: { name: string };
+  atTable?: boolean;
 };
 type Line = {
   key: string;
@@ -66,11 +69,36 @@ type Line = {
   sideNames: string[];
 };
 
-// /order[/<code>][/t/<token>]
+// /order[/<code>][/t/<token>] and /order[/<code>]/table/<table token> (the
+// QR code on a table).
 export function orderPath(pathname: string) {
   const parts = pathname.split('/').filter(Boolean).slice(1);
-  if (parts[0] === 't') return { code: '', token: parts[1] || '' };
-  return { code: parts[0] || '', token: parts[1] === 't' ? parts[2] || '' : '' };
+  const code = ['t', 'table'].includes(parts[0]) ? '' : parts.shift() || '';
+  return {
+    code,
+    token: parts[0] === 't' ? parts[1] || '' : '',
+    table: parts[0] === 'table' ? parts[1] || '' : '',
+  };
+}
+
+// The table this phone last ordered from, so "Back to the menu" returns to
+// it (for the evening, not for ever).
+const TABLE_KEY = 'relay:table';
+const TABLE_MS = 6 * 3600000;
+function rememberTable(code: string, table: string) {
+  try {
+    localStorage.setItem(`${TABLE_KEY}:${code}`, JSON.stringify({ table, at: Date.now() }));
+  } catch {
+    // Private mode.
+  }
+}
+function lastTable(code: string) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`${TABLE_KEY}:${code}`) || 'null');
+    return saved && Date.now() - saved.at < TABLE_MS ? String(saved.table || '') : '';
+  } catch {
+    return '';
+  }
 }
 
 // The orders this phone placed lately, so a customer who closes the page
@@ -124,12 +152,28 @@ export function OnlineOrder() {
     if (code) out.restaurant = code;
     return out;
   }, [code]);
+  const tableParams = useMemo(
+    () => (fromPath.table ? { ...params, table: fromPath.table } : params),
+    [params, fromPath.table],
+  );
+  useEffect(() => {
+    if (fromPath.table) rememberTable(code, fromPath.table);
+  }, [code, fromPath.table]);
   const base = fromPath.code ? `/order/${fromPath.code}` : '/order';
   if (fromPath.token)
-    return <Tracking token={fromPath.token} params={params} onMenu={() => navigate(base)} />;
+    return (
+      <Tracking
+        token={fromPath.token}
+        params={params}
+        onMenu={() => {
+          const table = lastTable(code);
+          navigate(table ? `${base}/table/${table}` : base);
+        }}
+      />
+    );
   return (
     <MenuPage
-      params={params}
+      params={tableParams}
       code={code}
       onPlaced={(token) => {
         rememberOrder(code, token);
@@ -309,7 +353,11 @@ function MenuPage({
     return (
       <main className="om-shell">
         <Header menu={menu.restaurant} />
-        <p className="om-closed">{menu.restaurant.name} does not take online orders yet.</p>
+        <p className="om-closed">
+          {menu.atTable
+            ? `${menu.restaurant.name} does not take orders from the table yet. Ask a member of staff.`
+            : `${menu.restaurant.name} does not take online orders yet.`}
+        </p>
       </main>
     );
 
@@ -321,7 +369,9 @@ function MenuPage({
           {menu.open ? 'Taking orders' : 'Not taking orders right now'}
         </span>
         <span className="om-modes">
-          {[menu.pickup && 'Pick-up', menu.delivery && 'Delivery'].filter(Boolean).join(' · ')}
+          {menu.table
+            ? `${menu.table.name} · eat in, pay when you're done`
+            : [menu.pickup && 'Pick-up', menu.delivery && 'Delivery'].filter(Boolean).join(' · ')}
         </span>
       </div>
       <YourOrders params={params} code={code} onTrack={onTrack} />
@@ -521,7 +571,10 @@ function Checkout({
   onPlaced: (token: string) => void;
 }) {
   const accounts = menu.mobileMoney || [];
-  const [type, setType] = useState<'pickup' | 'delivery'>(menu.pickup ? 'pickup' : 'delivery');
+  const atTable = !!menu.table;
+  const [type, setType] = useState<'pickup' | 'delivery' | 'eat_in'>(
+    atTable ? 'eat_in' : menu.pickup ? 'pickup' : 'delivery',
+  );
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
@@ -675,7 +728,10 @@ function Checkout({
           </ul>
           {!lines.length && <p className="muted">Your order is empty.</p>}
 
-          {menu.pickup && menu.delivery && (
+          {atTable && (
+            <p className="om-table-note">Your order goes to the kitchen for {menu.table?.name}.</p>
+          )}
+          {!atTable && menu.pickup && menu.delivery && (
             <div className="om-toggle" role="radiogroup" aria-label="Pick-up or delivery">
               {(['pickup', 'delivery'] as const).map((t) => (
                 <button
@@ -691,23 +747,23 @@ function Checkout({
             </div>
           )}
           <label className="om-field">
-            Your name
+            Your name{atTable ? ' (optional)' : ''}
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoComplete="name"
-              required
+              required={!atTable}
             />
           </label>
           <label className="om-field">
-            Phone number
+            Phone number{atTable ? ' (optional)' : ''}
             <input
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               autoComplete="tel"
               placeholder="e.g. 0772 123456"
-              required
+              required={!atTable}
             />
           </label>
           {type === 'delivery' && (
@@ -753,84 +809,90 @@ function Checkout({
             />
           </label>
 
-          <fieldset className="om-pay">
-            <legend>Payment</legend>
-            {menu.cash && (
-              <label className="om-option">
-                <input
-                  type="radio"
-                  name="pay"
-                  checked={method === 'cash'}
-                  onChange={() => setMethod('cash')}
-                />
-                <span>{type === 'delivery' ? 'Cash on delivery' : 'Cash when you pick up'}</span>
-              </label>
-            )}
-            {accounts.length > 0 && (
-              <label className="om-option">
-                <input
-                  type="radio"
-                  name="pay"
-                  checked={method === 'mobile_money'}
-                  onChange={() => setMethod('mobile_money')}
-                />
-                <span>Mobile money now</span>
-              </label>
-            )}
-            {method === 'mobile_money' && (
-              <div className="om-momo">
-                {accounts.length > 1 && (
-                  <div className="om-toggle">
-                    {accounts.map((a) => (
-                      <button
-                        type="button"
-                        key={a.provider}
-                        className={provider === a.provider ? 'active' : ''}
-                        onClick={() => setProvider(a.provider)}
-                      >
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {account?.auto ? (
-                  <>
-                    <label className="om-field">
-                      {account.label} number to pay from
-                      <input
-                        type="tel"
-                        value={payer}
-                        onChange={(e) => setPayer(e.target.value)}
-                        placeholder={phone || 'e.g. 0772 123456'}
-                      />
-                    </label>
-                    <small className="muted">
-                      You get a request on this phone: approve {money(total)} with your mobile money
-                      PIN.
-                    </small>
-                  </>
-                ) : account ? (
-                  <>
-                    <p className="om-paycode">
-                      Pay <b>{money(total)}</b> to {account.label} merchant code{' '}
-                      <b>{account.code}</b>
-                      {account.name ? ` (${account.name})` : ''}, then type the transaction ID from
-                      the SMS.
-                    </p>
-                    <label className="om-field">
-                      Transaction ID
-                      <input
-                        value={reference}
-                        onChange={(e) => setReference(e.target.value)}
-                        autoCapitalize="characters"
-                        required
-                      />
-                    </label>
-                  </>
-                ) : null}
-              </div>
-            )}
-          </fieldset>
+          {atTable ? (
+            <p className="om-note">
+              Pay when you&apos;re done: ask for the bill. You can order more from this page.
+            </p>
+          ) : (
+            <fieldset className="om-pay">
+              <legend>Payment</legend>
+              {menu.cash && (
+                <label className="om-option">
+                  <input
+                    type="radio"
+                    name="pay"
+                    checked={method === 'cash'}
+                    onChange={() => setMethod('cash')}
+                  />
+                  <span>{type === 'delivery' ? 'Cash on delivery' : 'Cash when you pick up'}</span>
+                </label>
+              )}
+              {accounts.length > 0 && (
+                <label className="om-option">
+                  <input
+                    type="radio"
+                    name="pay"
+                    checked={method === 'mobile_money'}
+                    onChange={() => setMethod('mobile_money')}
+                  />
+                  <span>Mobile money now</span>
+                </label>
+              )}
+              {method === 'mobile_money' && (
+                <div className="om-momo">
+                  {accounts.length > 1 && (
+                    <div className="om-toggle">
+                      {accounts.map((a) => (
+                        <button
+                          type="button"
+                          key={a.provider}
+                          className={provider === a.provider ? 'active' : ''}
+                          onClick={() => setProvider(a.provider)}
+                        >
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {account?.auto ? (
+                    <>
+                      <label className="om-field">
+                        {account.label} number to pay from
+                        <input
+                          type="tel"
+                          value={payer}
+                          onChange={(e) => setPayer(e.target.value)}
+                          placeholder={phone || 'e.g. 0772 123456'}
+                        />
+                      </label>
+                      <small className="muted">
+                        You get a request on this phone: approve {money(total)} with your mobile
+                        money PIN.
+                      </small>
+                    </>
+                  ) : account ? (
+                    <>
+                      <p className="om-paycode">
+                        Pay <b>{money(total)}</b> to {account.label} merchant code{' '}
+                        <b>{account.code}</b>
+                        {account.name ? ` (${account.name})` : ''}, then type the transaction ID
+                        from the SMS.
+                      </p>
+                      <label className="om-field">
+                        Transaction ID
+                        <input
+                          value={reference}
+                          onChange={(e) => setReference(e.target.value)}
+                          autoCapitalize="characters"
+                          required
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+              )}
+            </fieldset>
+          )}
 
           <dl className="om-totals">
             <div>
@@ -862,7 +924,9 @@ function Checkout({
               ? 'Placing your order…'
               : needsPin
                 ? 'Add your location to order'
-                : `Place order · ${money(total)}`}
+                : atTable
+                  ? `Send to the kitchen · ${money(total)}`
+                  : `Place order · ${money(total)}`}
           </button>
         </form>
       </div>
@@ -873,7 +937,7 @@ function Checkout({
 type Tracked = {
   orderCode: string;
   status: string;
-  orderType: 'pickup' | 'delivery';
+  orderType: 'pickup' | 'delivery' | 'eat_in';
   customerName: string;
   deliveryAddress: string;
   subtotal: number;
@@ -884,6 +948,8 @@ type Tracked = {
   payRequestStatus: string;
   paid: boolean;
   cancelReason: string;
+  table: string;
+  billOpen: boolean;
   lines: { name: string; quantity: number; sides: string[]; total: number }[];
   restaurant: { name: string; logo: string | null; currencySymbol: string };
 };
@@ -902,6 +968,8 @@ function stepOf(order: Tracked) {
 
 function stepsOf(order: Tracked) {
   const pickup = order.orderType === 'pickup';
+  if (order.orderType === 'eat_in')
+    return ['Order received', 'Being prepared', 'Ready, coming to your table', 'Served'];
   return [
     'Order received',
     'Being prepared',
@@ -962,19 +1030,21 @@ function Tracking({
   const pickup = order.orderType === 'pickup';
   const steps = stepsOf(order);
   const payment =
-    order.paymentMethod === 'cash'
-      ? order.paid
-        ? 'Paid. Thank you!'
-        : pickup
-          ? `Pay ${money(order.total)} when you collect.`
-          : `Pay ${money(order.total)} in cash to the rider.`
-      : order.paymentStatus === 'VERIFIED'
-        ? 'Paid by mobile money. Thank you!'
-        : order.paymentStatus === 'REJECTED'
-          ? 'Your mobile money payment was not received. Call the restaurant, or pay when you get your food.'
-          : order.payRequestStatus === 'pending' || order.payRequestStatus === 'queued'
-            ? `Approve the ${money(order.total)} request on your phone with your mobile money PIN.`
-            : 'The restaurant is checking your mobile money payment.';
+    order.orderType === 'eat_in' && order.billOpen
+      ? `Your bill: ${money(order.total)}. Pay when you're done: ask a member of staff.`
+      : order.paymentMethod === 'cash'
+        ? order.paid
+          ? 'Paid. Thank you!'
+          : pickup
+            ? `Pay ${money(order.total)} when you collect.`
+            : `Pay ${money(order.total)} in cash to the rider.`
+        : order.paymentStatus === 'VERIFIED'
+          ? 'Paid by mobile money. Thank you!'
+          : order.paymentStatus === 'REJECTED'
+            ? 'Your mobile money payment was not received. Call the restaurant, or pay when you get your food.'
+            : order.payRequestStatus === 'pending' || order.payRequestStatus === 'queued'
+              ? `Approve the ${money(order.total)} request on your phone with your mobile money PIN.`
+              : 'The restaurant is checking your mobile money payment.';
 
   const cancel = async () => {
     if (!window.confirm('Cancel this order?')) return;
@@ -993,7 +1063,10 @@ function Tracking({
     <main className="om-shell">
       <Header menu={{ ...order.restaurant, theme: {} }} />
       <section className="om-track">
-        <p className="om-code">Order {order.orderCode}</p>
+        <p className="om-code">
+          Order {order.orderCode}
+          {order.table ? ` · ${order.table}` : ''}
+        </p>
         {cancelled ? (
           <p className="om-closed">
             This order was cancelled{order.cancelReason ? `: ${order.cancelReason}` : ''}.
