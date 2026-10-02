@@ -15,7 +15,7 @@ const loadPlotly = loadOnce(() =>
 // Chart colors: Embiro blue and orange first, then the reference palette
 // (validated for colour blindness on the light surface).
 // Slots are assigned in this order and follow the entity, never its rank.
-export const SERIES = ['#0751f0', '#f14c1d', '#1baf7a', '#eda100', '#e87ba4'];
+export const SERIES = ['#0751f0', '#f14c1d', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7'];
 // Diverging pair for growth: up is blue, down is red.
 export const UP = '#0751f0';
 export const DOWN = '#e34948';
