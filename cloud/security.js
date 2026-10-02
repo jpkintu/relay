@@ -132,7 +132,7 @@ const user = ['Pointer', '_User'];
 const branch = ['Pointer', 'Branch'];
 const SCHEMAS = {
   // Outlets of the restaurant (branches.js).
-  Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N },
+  Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N, lat: N, lng: N },
   Order: {
     branch,
     // Split orders: the splits in the order entered (lines carry `split`).
@@ -185,6 +185,8 @@ const SCHEMAS = {
     clientId: S,
     // Online orders (online.js): the customer's private tracking link.
     onlineToken: S,
+    // Online deliveries priced by distance: the km charged for.
+    deliveryKm: N,
     acceptedAt: D,
     readyAt: D,
     cancelledReason: S,
@@ -376,6 +378,7 @@ const SCHEMAS = {
     onlineCash: B,
     onlineMobileMoney: B,
     onlineNote: S,
+    onlineDeliveryPerKm: N,
   },
   MenuItem: {
     title: S,

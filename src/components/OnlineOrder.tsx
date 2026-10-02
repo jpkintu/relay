@@ -5,6 +5,8 @@ import Parse from '../parse';
 import { useSession } from '../lib/session';
 import { applyTheme } from '../lib/theme';
 import { formatMoney } from '../lib/format';
+import { feeByDistance } from '../lib/geo';
+import { PinSheet } from './MapPin';
 
 // The restaurant's public menu (online.js): customers order for pick-up or
 // delivery without signing in, pay cash on pick-up / delivery or by mobile
@@ -40,6 +42,9 @@ type Menu = {
   note?: string;
   mobileMoney?: Account[];
   deliveryFee?: number;
+  // Deliveries priced by distance from the branch (0: the flat fee).
+  deliveryPerKm?: number;
+  origin?: { lat: number; lng: number } | null;
   restaurant: {
     name: string;
     logo: string | null;
@@ -68,21 +73,40 @@ export function orderPath(pathname: string) {
   return { code: parts[0] || '', token: parts[1] === 't' ? parts[2] || '' : '' };
 }
 
-const LAST_KEY = 'relay:last-order';
-const remember = (code: string, token: string) => {
+// The orders this phone placed lately, so a customer who closes the page
+// finds them again on the menu (no sign-in: the tracking token is the key).
+const ORDERS_KEY = 'relay:orders';
+const KEEP_MS = 2 * 86400000;
+type Saved = { token: string; at: number };
+export function savedOrders(code: string, now = Date.now()): Saved[] {
   try {
-    localStorage.setItem(`${LAST_KEY}:${code}`, token);
+    const list: Saved[] = JSON.parse(localStorage.getItem(`${ORDERS_KEY}:${code}`) || '[]');
+    // The single last order kept before this list.
+    const last = localStorage.getItem(`relay:last-order:${code}`);
+    if (last && !list.some((o) => o.token === last)) list.push({ token: last, at: now });
+    return list.filter((o) => o && typeof o.token === 'string' && now - o.at < KEEP_MS);
+  } catch {
+    return [];
+  }
+}
+function storeOrders(code: string, list: Saved[]) {
+  try {
+    localStorage.setItem(`${ORDERS_KEY}:${code}`, JSON.stringify(list.slice(0, 10)));
+    localStorage.removeItem(`relay:last-order:${code}`);
   } catch {
     // Private mode: the link in the address bar still works.
   }
-};
-const lastOrder = (code: string) => {
-  try {
-    return localStorage.getItem(`${LAST_KEY}:${code}`) || '';
-  } catch {
-    return '';
-  }
-};
+}
+const rememberOrder = (code: string, token: string) =>
+  storeOrders(code, [
+    { token, at: Date.now() },
+    ...savedOrders(code).filter((o) => o.token !== token),
+  ]);
+const forgetOrders = (code: string, tokens: string[]) =>
+  storeOrders(
+    code,
+    savedOrders(code).filter((o) => !tokens.includes(o.token)),
+  );
 
 export function OnlineOrder() {
   const session = useSession();
@@ -106,13 +130,75 @@ export function OnlineOrder() {
   return (
     <MenuPage
       params={params}
+      code={code}
       onPlaced={(token) => {
-        remember(code, token);
+        rememberOrder(code, token);
         navigate(`${base}/t/${token}`);
       }}
-      onLast={() => navigate(`${base}/t/${lastOrder(code)}`)}
-      hasLast={!!lastOrder(code)}
+      onTrack={(token) => navigate(`${base}/t/${token}`)}
     />
+  );
+}
+
+// This phone's orders still on their way, at the top of the menu.
+function YourOrders({
+  params,
+  code,
+  onTrack,
+}: {
+  params: Record<string, string>;
+  code: string;
+  onTrack: (token: string) => void;
+}) {
+  const [active, setActive] = useState<(Tracked & { token: string })[]>([]);
+  useEffect(() => {
+    const saved = savedOrders(code).slice(0, 5);
+    if (!saved.length) return;
+    let live = true;
+    void Promise.all(
+      saved.map((o) =>
+        Parse.Cloud.run('getOnlineOrder', { ...params, token: o.token }).then(
+          (order: Tracked) => ({ ...order, token: o.token }),
+          (e: unknown) =>
+            // Gone for good (not a lost connection): forget it.
+            /Order not found/.test(String((e as Error)?.message))
+              ? { token: o.token, gone: true }
+              : null,
+        ),
+      ),
+    ).then((rows) => {
+      if (!live) return;
+      const done = rows
+        .filter((r) => r && ('gone' in r || FINISHED.includes((r as Tracked).status)))
+        .map((r) => r!.token);
+      if (done.length) forgetOrders(code, done);
+      setActive(
+        rows.filter(
+          (r): r is Tracked & { token: string } =>
+            !!r && !('gone' in r) && !FINISHED.includes(r.status),
+        ),
+      );
+    });
+    return () => {
+      live = false;
+    };
+  }, [params, code]);
+  if (!active.length) return null;
+  return (
+    <section className="om-yours" aria-label="Your orders">
+      <h2>Your order{active.length > 1 ? 's' : ''}</h2>
+      {active.map((order) => (
+        <button key={order.token} className="om-yours-row" onClick={() => onTrack(order.token)}>
+          <span>
+            <b>Order {order.orderCode}</b>
+            <small>{stepLabel(order)}</small>
+          </span>
+          <span className="om-yours-go">
+            {formatMoney(order.total, order.restaurant.currencySymbol)} · Track
+          </span>
+        </button>
+      ))}
+    </section>
   );
 }
 
@@ -137,14 +223,14 @@ function Header({ menu }: { menu: Menu['restaurant'] }) {
 
 function MenuPage({
   params,
+  code,
   onPlaced,
-  onLast,
-  hasLast,
+  onTrack,
 }: {
   params: Record<string, string>;
+  code: string;
   onPlaced: (token: string) => void;
-  onLast: () => void;
-  hasLast: boolean;
+  onTrack: (token: string) => void;
 }) {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [error, setError] = useState('');
@@ -237,12 +323,8 @@ function MenuPage({
         <span className="om-modes">
           {[menu.pickup && 'Pick-up', menu.delivery && 'Delivery'].filter(Boolean).join(' · ')}
         </span>
-        {hasLast && (
-          <button className="om-link" onClick={onLast}>
-            Your last order
-          </button>
-        )}
       </div>
+      <YourOrders params={params} code={code} onTrack={onTrack} />
       {menu.note && <p className="om-note">{menu.note}</p>}
       {!!menu.branches?.length && (
         <label className="om-branch">
@@ -445,6 +527,7 @@ function Checkout({
   const [address, setAddress] = useState('');
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
+  const [pinning, setPinning] = useState(false);
   const [notes, setNotes] = useState('');
   const [method, setMethod] = useState<'cash' | 'mobile_money'>(
     menu.cash ? 'cash' : 'mobile_money',
@@ -460,23 +543,48 @@ function Checkout({
   );
 
   const subtotal = lines.reduce((n, line) => n + line.unit * line.quantity, 0);
-  const fee = type === 'delivery' ? Number(menu.deliveryFee) || 0 : 0;
+  // By distance: the branch's pin to the customer's (the server checks it).
+  const perKm = Number(menu.deliveryPerKm) || 0;
+  const byKm = type === 'delivery' && perKm > 0 && !!menu.origin;
+  const distance =
+    byKm && location && menu.origin ? feeByDistance(menu.origin, location, perKm) : null;
+  const needsPin = byKm && !location;
+  const fee = type !== 'delivery' ? 0 : byKm ? (distance?.fee ?? 0) : Number(menu.deliveryFee) || 0;
   const total = subtotal + fee;
   const account = accounts.find((a) => a.provider === provider);
 
   const locate = () => {
-    if (!navigator.geolocation) return setError('This phone cannot share its location');
+    setError('');
+    // Browsers share the location only with https pages.
+    if (!window.isSecureContext || !navigator.geolocation)
+      return setError(
+        'This browser cannot share your location here. Open the link in Chrome or Safari, or pin your place on the map.',
+      );
     setLocating(true);
+    const found = (pos: GeolocationPosition) => {
+      setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      setLocating(false);
+    };
+    const failed = (e: GeolocationPositionError) => {
+      setLocating(false);
+      setError(
+        e.code === e.PERMISSION_DENIED
+          ? 'Location is blocked for this page. Allow location for this site in the browser settings (in WhatsApp or Facebook, open the link in Chrome or Safari first), or pin your place on the map.'
+          : 'Could not find your location. Turn on location (GPS) on the phone and try again, or pin your place on the map.',
+      );
+    };
+    // GPS first; indoors it often times out, so then the network's position.
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setLocating(false);
-      },
-      () => {
-        setError('Could not get your location. Type the address instead.');
-        setLocating(false);
-      },
-      { enableHighAccuracy: true, timeout: 15000 },
+      found,
+      (e) =>
+        e.code === e.PERMISSION_DENIED
+          ? failed(e)
+          : navigator.geolocation.getCurrentPosition(found, failed, {
+              enableHighAccuracy: false,
+              timeout: 20000,
+              maximumAge: 300000,
+            }),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
     );
   };
 
@@ -514,197 +622,251 @@ function Checkout({
     }
   };
   return (
-    <div className="om-sheet" role="dialog" aria-modal="true" aria-label="Your order">
-      <form className="om-sheet-card om-checkout" onSubmit={(e) => void place(e)}>
-        <div className="om-sheet-head">
-          <button type="button" className="om-icon" aria-label="Back to the menu" onClick={onClose}>
-            <ChevronLeft aria-hidden />
-          </button>
-          <h2>Your order</h2>
-        </div>
-        <ul className="om-lines">
-          {lines.map((line) => (
-            <li key={line.key}>
-              <span>
-                <b>{line.title}</b>
-                {line.sideNames.length > 0 && <small>{line.sideNames.join(', ')}</small>}
-              </span>
-              <span className="om-qty">
-                <button type="button" aria-label="One less" onClick={() => onChange(line.key, -1)}>
-                  <Minus aria-hidden />
-                </button>
-                {line.quantity}
-                <button type="button" aria-label="One more" onClick={() => onChange(line.key, 1)}>
-                  <Plus aria-hidden />
-                </button>
-              </span>
-              <span className="om-line-total">{money(line.unit * line.quantity)}</span>
-            </li>
-          ))}
-        </ul>
-        {!lines.length && <p className="muted">Your order is empty.</p>}
-
-        {menu.pickup && menu.delivery && (
-          <div className="om-toggle" role="radiogroup" aria-label="Pick-up or delivery">
-            {(['pickup', 'delivery'] as const).map((t) => (
-              <button
-                type="button"
-                key={t}
-                className={type === t ? 'active' : ''}
-                aria-pressed={type === t}
-                onClick={() => setType(t)}
-              >
-                {t === 'pickup' ? 'Pick-up' : 'Delivery'}
-              </button>
-            ))}
-          </div>
-        )}
-        <label className="om-field">
-          Your name
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoComplete="name"
-            required
-          />
-        </label>
-        <label className="om-field">
-          Phone number
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            autoComplete="tel"
-            placeholder="e.g. 0772 123456"
-            required
-          />
-        </label>
-        {type === 'delivery' && (
-          <>
-            <label className="om-field">
-              Delivery address
-              <textarea
-                rows={2}
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                placeholder="Area, street, building, a landmark"
-              />
-            </label>
-            <button type="button" className="om-secondary" onClick={locate} disabled={locating}>
-              <MapPin aria-hidden />
-              {location ? 'Location added' : locating ? 'Finding you…' : 'Use my location'}
+    <>
+      {pinning && (
+        <PinSheet
+          title="Where should we deliver?"
+          hint="Tap the map where you are, or drag the pin."
+          initial={location}
+          around={location ?? menu.origin}
+          onSave={(pin) => {
+            setLocation(pin);
+            setError('');
+          }}
+          onClose={() => setPinning(false)}
+        />
+      )}
+      <div className="om-sheet" role="dialog" aria-modal="true" aria-label="Your order">
+        <form className="om-sheet-card om-checkout" onSubmit={(e) => void place(e)}>
+          <div className="om-sheet-head">
+            <button
+              type="button"
+              className="om-icon"
+              aria-label="Back to the menu"
+              onClick={onClose}
+            >
+              <ChevronLeft aria-hidden />
             </button>
-          </>
-        )}
-        <label className="om-field">
-          Notes (optional)
-          <input
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="e.g. no onions, call when outside"
-          />
-        </label>
+            <h2>Your order</h2>
+          </div>
+          <ul className="om-lines">
+            {lines.map((line) => (
+              <li key={line.key}>
+                <span>
+                  <b>{line.title}</b>
+                  {line.sideNames.length > 0 && <small>{line.sideNames.join(', ')}</small>}
+                </span>
+                <span className="om-qty">
+                  <button
+                    type="button"
+                    aria-label="One less"
+                    onClick={() => onChange(line.key, -1)}
+                  >
+                    <Minus aria-hidden />
+                  </button>
+                  {line.quantity}
+                  <button type="button" aria-label="One more" onClick={() => onChange(line.key, 1)}>
+                    <Plus aria-hidden />
+                  </button>
+                </span>
+                <span className="om-line-total">{money(line.unit * line.quantity)}</span>
+              </li>
+            ))}
+          </ul>
+          {!lines.length && <p className="muted">Your order is empty.</p>}
 
-        <fieldset className="om-pay">
-          <legend>Payment</legend>
-          {menu.cash && (
-            <label className="om-option">
-              <input
-                type="radio"
-                name="pay"
-                checked={method === 'cash'}
-                onChange={() => setMethod('cash')}
-              />
-              <span>{type === 'delivery' ? 'Cash on delivery' : 'Cash when you pick up'}</span>
-            </label>
+          {menu.pickup && menu.delivery && (
+            <div className="om-toggle" role="radiogroup" aria-label="Pick-up or delivery">
+              {(['pickup', 'delivery'] as const).map((t) => (
+                <button
+                  type="button"
+                  key={t}
+                  className={type === t ? 'active' : ''}
+                  aria-pressed={type === t}
+                  onClick={() => setType(t)}
+                >
+                  {t === 'pickup' ? 'Pick-up' : 'Delivery'}
+                </button>
+              ))}
+            </div>
           )}
-          {accounts.length > 0 && (
-            <label className="om-option">
-              <input
-                type="radio"
-                name="pay"
-                checked={method === 'mobile_money'}
-                onChange={() => setMethod('mobile_money')}
-              />
-              <span>Mobile money now</span>
-            </label>
-          )}
-          {method === 'mobile_money' && (
-            <div className="om-momo">
-              {accounts.length > 1 && (
-                <div className="om-toggle">
-                  {accounts.map((a) => (
-                    <button
-                      type="button"
-                      key={a.provider}
-                      className={provider === a.provider ? 'active' : ''}
-                      onClick={() => setProvider(a.provider)}
-                    >
-                      {a.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {account?.auto ? (
-                <>
-                  <label className="om-field">
-                    {account.label} number to pay from
-                    <input
-                      type="tel"
-                      value={payer}
-                      onChange={(e) => setPayer(e.target.value)}
-                      placeholder={phone || 'e.g. 0772 123456'}
-                    />
-                  </label>
+          <label className="om-field">
+            Your name
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="name"
+              required
+            />
+          </label>
+          <label className="om-field">
+            Phone number
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              autoComplete="tel"
+              placeholder="e.g. 0772 123456"
+              required
+            />
+          </label>
+          {type === 'delivery' && (
+            <>
+              <label className="om-field">
+                Delivery address
+                <textarea
+                  rows={2}
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  placeholder="Area, street, building, a landmark"
+                />
+              </label>
+              <div className="om-locate">
+                <button type="button" className="om-secondary" onClick={locate} disabled={locating}>
+                  <MapPin aria-hidden />
+                  {locating ? 'Finding you…' : 'Use my location'}
+                </button>
+                <button type="button" className="om-secondary" onClick={() => setPinning(true)}>
+                  {location ? 'Move the pin' : 'Pin it on the map'}
+                </button>
+              </div>
+              {location ? (
+                <small className="om-located">
+                  <CheckCircle2 aria-hidden /> Location added
+                  {distance ? ` · ${distance.km} km from us` : ''}
+                </small>
+              ) : (
+                byKm && (
                   <small className="muted">
-                    You get a request on this phone: approve {money(total)} with your mobile money
-                    PIN.
+                    Delivery is {money(perKm)} per km: add your location to see the charge.
                   </small>
-                </>
-              ) : account ? (
-                <>
-                  <p className="om-paycode">
-                    Pay <b>{money(total)}</b> to {account.label} merchant code <b>{account.code}</b>
-                    {account.name ? ` (${account.name})` : ''}, then type the transaction ID from
-                    the SMS.
-                  </p>
-                  <label className="om-field">
-                    Transaction ID
-                    <input
-                      value={reference}
-                      onChange={(e) => setReference(e.target.value)}
-                      autoCapitalize="characters"
-                      required
-                    />
-                  </label>
-                </>
-              ) : null}
-            </div>
+                )
+              )}
+            </>
           )}
-        </fieldset>
+          <label className="om-field">
+            Notes (optional)
+            <input
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. no onions, call when outside"
+            />
+          </label>
 
-        <dl className="om-totals">
-          <div>
-            <dt>Food</dt>
-            <dd>{money(subtotal)}</dd>
-          </div>
-          {fee > 0 && (
+          <fieldset className="om-pay">
+            <legend>Payment</legend>
+            {menu.cash && (
+              <label className="om-option">
+                <input
+                  type="radio"
+                  name="pay"
+                  checked={method === 'cash'}
+                  onChange={() => setMethod('cash')}
+                />
+                <span>{type === 'delivery' ? 'Cash on delivery' : 'Cash when you pick up'}</span>
+              </label>
+            )}
+            {accounts.length > 0 && (
+              <label className="om-option">
+                <input
+                  type="radio"
+                  name="pay"
+                  checked={method === 'mobile_money'}
+                  onChange={() => setMethod('mobile_money')}
+                />
+                <span>Mobile money now</span>
+              </label>
+            )}
+            {method === 'mobile_money' && (
+              <div className="om-momo">
+                {accounts.length > 1 && (
+                  <div className="om-toggle">
+                    {accounts.map((a) => (
+                      <button
+                        type="button"
+                        key={a.provider}
+                        className={provider === a.provider ? 'active' : ''}
+                        onClick={() => setProvider(a.provider)}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {account?.auto ? (
+                  <>
+                    <label className="om-field">
+                      {account.label} number to pay from
+                      <input
+                        type="tel"
+                        value={payer}
+                        onChange={(e) => setPayer(e.target.value)}
+                        placeholder={phone || 'e.g. 0772 123456'}
+                      />
+                    </label>
+                    <small className="muted">
+                      You get a request on this phone: approve {money(total)} with your mobile money
+                      PIN.
+                    </small>
+                  </>
+                ) : account ? (
+                  <>
+                    <p className="om-paycode">
+                      Pay <b>{money(total)}</b> to {account.label} merchant code{' '}
+                      <b>{account.code}</b>
+                      {account.name ? ` (${account.name})` : ''}, then type the transaction ID from
+                      the SMS.
+                    </p>
+                    <label className="om-field">
+                      Transaction ID
+                      <input
+                        value={reference}
+                        onChange={(e) => setReference(e.target.value)}
+                        autoCapitalize="characters"
+                        required
+                      />
+                    </label>
+                  </>
+                ) : null}
+              </div>
+            )}
+          </fieldset>
+
+          <dl className="om-totals">
             <div>
-              <dt>Delivery</dt>
-              <dd>{money(fee)}</dd>
+              <dt>Food</dt>
+              <dd>{money(subtotal)}</dd>
             </div>
-          )}
-          <div className="om-total">
-            <dt>Total</dt>
-            <dd>{money(total)}</dd>
-          </div>
-        </dl>
-        {error && <p className="om-error">{error}</p>}
-        <button className="om-primary" disabled={busy || !lines.length || !menu.open}>
-          {busy ? 'Placing your order…' : `Place order · ${money(total)}`}
-        </button>
-      </form>
-    </div>
+            {(fee > 0 || byKm) && (
+              <div>
+                <dt>
+                  Delivery
+                  {distance && (
+                    <small>
+                      {' '}
+                      ({distance.km} km × {money(perKm)})
+                    </small>
+                  )}
+                </dt>
+                <dd>{needsPin ? 'Add your location' : money(fee)}</dd>
+              </div>
+            )}
+            <div className="om-total">
+              <dt>Total</dt>
+              <dd>{money(total)}</dd>
+            </div>
+          </dl>
+          {error && <p className="om-error">{error}</p>}
+          <button className="om-primary" disabled={busy || !lines.length || !menu.open || needsPin}>
+            {busy
+              ? 'Placing your order…'
+              : needsPin
+                ? 'Add your location to order'
+                : `Place order · ${money(total)}`}
+          </button>
+        </form>
+      </div>
+    </>
   );
 }
 
@@ -726,6 +888,9 @@ type Tracked = {
   restaurant: { name: string; logo: string | null; currencySymbol: string };
 };
 
+// Orders that need no more following.
+const FINISHED = ['DELIVERED', 'CANCELLED'];
+
 // Where an order is: received, being prepared, ready / on the way, done.
 function stepOf(order: Tracked) {
   const s = order.status;
@@ -734,6 +899,22 @@ function stepOf(order: Tracked) {
   if (s === 'READY' || s === 'PICKED_UP') return 2;
   return 3;
 }
+
+function stepsOf(order: Tracked) {
+  const pickup = order.orderType === 'pickup';
+  return [
+    'Order received',
+    'Being prepared',
+    pickup
+      ? 'Ready to collect'
+      : order.status === 'PICKED_UP'
+        ? 'On the way'
+        : 'Ready, waiting for the rider',
+    pickup ? 'Collected' : 'Delivered',
+  ];
+}
+const stepLabel = (order: Tracked) =>
+  order.status === 'CANCELLED' ? 'Cancelled' : stepsOf(order)[stepOf(order)];
 
 function Tracking({
   token,
@@ -779,16 +960,7 @@ function Tracking({
   const cancelled = order.status === 'CANCELLED';
   const step = stepOf(order);
   const pickup = order.orderType === 'pickup';
-  const steps = [
-    'Order received',
-    'Being prepared',
-    pickup
-      ? 'Ready to collect'
-      : order.status === 'PICKED_UP'
-        ? 'On the way'
-        : 'Ready, waiting for the rider',
-    pickup ? 'Collected' : 'Delivered',
-  ];
+  const steps = stepsOf(order);
   const payment =
     order.paymentMethod === 'cash'
       ? order.paid
@@ -878,7 +1050,10 @@ function Tracking({
         <button className="om-secondary" onClick={onMenu}>
           Back to the menu
         </button>
-        <p className="muted small">Keep this page: it updates by itself.</p>
+        <p className="muted small">
+          This page updates by itself. Closed it? Open the menu again on this phone to find your
+          order.
+        </p>
       </section>
       <footer className="om-footer">Ordering by RelayEats</footer>
     </main>

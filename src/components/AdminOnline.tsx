@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
 import { Copy, Download, ExternalLink, Printer, Share2 } from 'lucide-react';
 import { useAdminRun } from '../lib/adminRun';
-import { useSession } from '../lib/session';
+import { useMoney, useSession } from '../lib/session';
 import { printDocument } from '../lib/print';
 import { flierCss, flierHtml, type FlierSize } from '../lib/flier';
 
@@ -19,6 +19,7 @@ type Settings = {
   onlineMobileMoney: boolean;
   mobileMoneyReady: boolean;
   onlineNote: string;
+  onlineDeliveryPerKm: number;
 };
 
 // The public menu's address: the restaurant's own (RelayEats Hosted:
@@ -42,6 +43,7 @@ export function AdminOnline() {
   const adminRun = useAdminRun();
   const { config } = useSession();
   const link = useOrderLink();
+  const money = useMoney();
   const [form, setForm] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -194,8 +196,29 @@ export function AdminOnline() {
                     checked={form.onlineDelivery}
                     onChange={(e) => setForm({ ...form, onlineDelivery: e.target.checked })}
                   />{' '}
-                  Delivery <small className="muted">(the delivery fee in Settings applies)</small>
+                  Delivery
                 </label>
+                {form.onlineDelivery && (
+                  <label className="setup-field online-perkm">
+                    Delivery charge per km
+                    <input
+                      type="number"
+                      min={0}
+                      step={100}
+                      inputMode="numeric"
+                      value={form.onlineDeliveryPerKm || ''}
+                      placeholder="0"
+                      onChange={(e) =>
+                        setForm({ ...form, onlineDeliveryPerKm: Number(e.target.value) || 0 })
+                      }
+                    />
+                    <small className="muted">
+                      {form.onlineDeliveryPerKm > 0
+                        ? `${money(form.onlineDeliveryPerKm)} × the distance from the branch's pin to the customer's (straight line). Pin each branch under Branches; customers pin their location to order.`
+                        : `0: every delivery pays the flat delivery fee from Settings (${money(Number(config.defaultDeliveryFee) || 0)}).`}
+                    </small>
+                  </label>
+                )}
               </fieldset>
               <fieldset>
                 <legend>They pay</legend>
