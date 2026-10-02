@@ -6503,17 +6503,25 @@ describe('restore from a backup file', () => {
   const M = { useMasterKey: true };
   const CLASSES = [
     'Configuration',
+    'Branch',
     '_User',
     'MenuCategory',
     'Accompaniment',
     'MenuItem',
     'Customer',
+    'DiningTable',
     'Shift',
     'TillPayout',
     'Order',
     'OrderItem',
     'CashHandover',
+    'Voucher',
     'ZReport',
+    'Supplier',
+    'Purchase',
+    'Expense',
+    'StockItem',
+    'StockCount',
     'AuditLog',
   ];
   const backup = {};
@@ -6636,6 +6644,46 @@ describe('restore from a backup file', () => {
       onToday.rows.every((row) => row.id !== back.id),
       'not listed as today',
     );
+  });
+
+  test('lost table QR codes and vouchers come back: same card, same voucher code, linked', async () => {
+    // Tables are made later in this file: one of its own.
+    await run('adminSaveTable', { name: 'Backup table' }, s.owner);
+    await exportAll();
+    const table = backup.DiningTable.find((row) => row.token);
+    const voucher = backup.Voucher.find((row) => row.sourceOrder && row.code);
+    assert.ok(table, 'a table to lose');
+    assert.ok(voucher, 'a voucher to lose');
+    await Parse.Object.destroyAll(
+      [
+        await new Parse.Query('DiningTable').get(table.objectId, M),
+        await new Parse.Query('Voucher').get(voucher.objectId, M),
+      ],
+      M,
+    );
+    assert.equal((await restore('DiningTable')).created, 1);
+    assert.equal((await restore('Voucher')).created, 1);
+    assert.equal((await restore('Voucher')).created, 0, 'sent again: not twice');
+    await finish();
+    const backTable = await new Parse.Query('DiningTable')
+      .equalTo('restoredFrom', table.objectId)
+      .first(M);
+    assert.equal(backTable.get('token'), table.token, 'the printed card still works');
+    if (table.branch) assert.equal(backTable.get('branch').id, table.branch.objectId);
+    assert.ok(
+      (await run('adminListTables', {}, s.owner)).tables.some((t) => t.token === table.token),
+    );
+    const backVoucher = await new Parse.Query('Voucher')
+      .equalTo('restoredFrom', voucher.objectId)
+      .first(M);
+    assert.equal(backVoucher.get('code'), voucher.code);
+    assert.equal(backVoucher.get('amount'), voucher.amount);
+    assert.equal(backVoucher.get('sourceOrder').id, voucher.sourceOrder.objectId);
+    assert.ok(
+      (await run('adminListVouchers', {}, s.owner)).vouchers.some((v) => v.code === voucher.code),
+    );
+    // The eat-in tests below start with no tables.
+    await Parse.Object.destroyAll(await new Parse.Query('DiningTable').find(M), M);
   });
 
   test('a lost team member comes back with a new PIN and their role', async () => {

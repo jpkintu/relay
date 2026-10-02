@@ -25,6 +25,10 @@ const EXPORT_CLASSES = [
   'Expense',
   'StockItem',
   'StockCount',
+  // Table QR codes (tables.js: each table's secret token, so printed cards
+  // keep working) and customers' vouchers (vouchers.js).
+  'DiningTable',
+  'Voucher',
   'AuditLog',
 ];
 const PAGE = 500;
