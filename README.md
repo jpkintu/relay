@@ -327,13 +327,13 @@ restaurants and recent changes. See [`docs/HOSTED.md`](docs/HOSTED.md).
 
 ## Who can do what
 
-| Role           | Signs in with       | Main screens                                                                                                     |
-| -------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Rider          | Username + PIN      | Home, New order, Active orders, Cash, Earnings                                                                   |
-| Cashier        | Username + PIN      | Kitchen board, New order, Cash handovers, Payments, Payouts, Stock                                               |
-| Finance        | Username + PIN      | Overview, Reports, Orders (view only), Payments ledger, Commissions, Accounting, Purchases & expenses, Customers |
-| Owner          | Username + password | Everything above, plus Problems, Team, Branches, Menu, Admin (behind the password again) and the kitchen board   |
-| Platform staff | Username + password | The platform console (RelayEats Hosted only)                                                                     |
+| Role           | Signs in with       | Main screens                                                                                                                          |
+| -------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Rider          | Username + PIN      | Home, New order, Active orders, Cash, Earnings                                                                                        |
+| Cashier        | Username + PIN      | Kitchen board, New order, Cash handovers, Payments, Payouts, Stock                                                                    |
+| Finance        | Username + PIN      | Overview, Reports, Orders (view only), Payments ledger, Commissions, Accounting, Purchases & expenses, Customers; all branches or one |
+| Owner          | Username + password | Everything above, plus Problems, Team, Branches, Menu, Admin (behind the password again) and the kitchen board                        |
+| Platform staff | Username + password | The platform console (RelayEats Hosted only)                                                                                          |
 
 ## Development
 

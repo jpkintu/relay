@@ -117,9 +117,10 @@ const rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days
 
 // Riders for the filter drop-downs (everyone who has ever had a rider code).
 Parse.Cloud.define('getReportOptions', async (request) => {
-  await requireRole(request, ['cashier', 'admin', 'finance']);
+  const { branch } = await requireRole(request, ['cashier', 'admin', 'finance']);
   const query = new Parse.Query(Parse.User);
   query.exists('riderCode');
+  if (branch) query.equalTo('branch', branch);
   const riders = (await findAll(query)).sort((a, b) =>
     String(a.get('riderCode')).localeCompare(String(b.get('riderCode'))),
   );
@@ -447,9 +448,16 @@ async function earningsFacts(range, riderId) {
 // A rider's own earnings (admins may pass riderId), grouped by week or month
 // of delivery, with the same-length period before for comparison.
 Parse.Cloud.define('getRiderEarnings', async (request) => {
-  const { user, role } = await requireRole(request, ['rider', 'admin', 'finance']);
+  const who = await requireRole(request, ['rider', 'admin', 'finance']);
+  const { user, role } = who;
   const p = request.params;
   const riderId = role === 'rider' ? user.id : p.riderId || user.id;
+  if (who.branch) {
+    const rider = await new Parse.Query(Parse.User)
+      .get(String(riderId), { useMasterKey: true })
+      .catch(() => null);
+    require('./lib/core').sameBranch(who, rider?.get('branch'));
+  }
   const { values: config } = await loadConfig();
   const range = rangeOf(p, config, { defaultDays: 56 });
   const period = periodOf(p, range);

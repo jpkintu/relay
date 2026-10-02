@@ -116,10 +116,11 @@ Parse.Cloud.define('getMyProfile', async (request) => {
           }
         : null,
     canInitialize: role === null && (await canBootstrapOwner()),
-    // Where they work (riders and cashiers), and how many open branches the
-    // restaurant has (branch filters show when there are two or more).
+    // Where they work (riders, cashiers and a branch finance officer), and
+    // how many open branches they see (branch filters show when there are
+    // two or more; a branch finance officer sees only theirs).
     branch: own ? { id: own.id, name: own.get('name') } : null,
-    branchCount: branches.length,
+    branchCount: role === 'finance' && user.get('branch') ? 1 : branches.length,
     // Parts of the app this restaurant has (lib/limits.js).
     features,
     config: {

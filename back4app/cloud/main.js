@@ -248,11 +248,21 @@ var require_core = __commonJS({
       const names = (await query.find(MASTER)).map((role) => role.getName());
       return ROLE_NAMES.find((name) => names.includes(name)) || null;
     }
+    async function financeBranch(user) {
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER).catch(() => null);
+      return fresh?.get("branch") || null;
+    }
     async function requireRole(request, allowed) {
       const user = requireUser(request);
       const role = await getRoleName(user);
       if (!allowed.includes(role)) throw forbidden(`${allowed.join(" or ")} role required`);
-      return { user, role };
+      const branch = role === "finance" ? await financeBranch(user) : null;
+      if (branch) request.params = { ...request.params || {}, branchId: branch.id };
+      return { user, role, branch };
+    }
+    function sameBranch(who, branch) {
+      if (who?.branch && branch?.id !== who.branch.id)
+        throw forbidden("That belongs to another branch");
     }
     var isRider = async (user) => await getRoleName(user) === "rider";
     var isStaff = async (user) => ["cashier", "admin"].includes(await getRoleName(user));
@@ -514,6 +524,7 @@ var require_core = __commonJS({
       requireUser,
       getRoleName,
       requireRole,
+      sameBranch,
       isRider,
       isStaff,
       adminOnly,
@@ -1047,10 +1058,11 @@ var require_branches = __commonJS({
       members: members[row.id] || { riders: 0, cashiers: 0 }
     });
     Parse.Cloud.define("getBranches", async (request) => {
-      const { user, role } = await requireRole(request, ROLES);
+      const { user, role, branch } = await requireRole(request, ROLES);
       if (role === "admin") await ensureMainBranch(user);
       const rows = await allBranches();
-      if (["admin", "finance"].includes(role)) return { branches: rows.map((row) => view(row)) };
+      if (role === "admin" || role === "finance" && !branch)
+        return { branches: rows.map((row) => view(row)) };
       const own = (await branchFor(user))?.id;
       return { branches: rows.filter((row) => row.id === own).map((row) => view(row)) };
     });
@@ -10050,10 +10062,12 @@ var require_customers = __commonJS({
       };
     });
     Parse.Cloud.define("getCustomer", async (request) => {
-      await requireRole(request, ["admin", "finance"]);
+      const { branch } = await requireRole(request, ["admin", "finance"]);
       const row = await new Parse.Query("Customer").get(String(request.params.id || ""), MASTER).catch(() => null);
       if (!row) throw invalid("Unknown customer");
-      const orders = await new Parse.Query("Order").equalTo("customer", row).descending("createdAt").limit(50).find(MASTER);
+      const orderQuery = new Parse.Query("Order").equalTo("customer", row);
+      if (branch) orderQuery.equalTo("branch", branch);
+      const orders = await orderQuery.descending("createdAt").limit(50).find(MASTER);
       const delivered = orders.filter((o) => o.get("status") === "DELIVERED");
       return {
         ...customerView(row),
@@ -10317,10 +10331,12 @@ var require_vouchers = __commonJS({
       };
     });
     Parse.Cloud.define("adminListVouchers", async (request) => {
-      await requireRole(request, ["admin", "finance"]);
+      const { branch } = await requireRole(request, ["admin", "finance"]);
       await backfill();
       const { values: config } = await loadConfig();
-      const rows = await findAll(new Parse.Query(CLASS));
+      const query = new Parse.Query(CLASS);
+      if (branch) query.equalTo("branch", branch);
+      const rows = await findAll(query);
       const order = { open: 0, used: 1, refunded: 2 };
       return {
         // Open first, newest first.
@@ -30201,9 +30217,14 @@ var require_efris = __commonJS({
       };
     }
     Parse.Cloud.define("issueEfrisReceipt", async (request) => {
-      const { user: actor } = await requireRole(request, ["cashier", "admin", "finance"]);
+      const who = await requireRole(request, ["cashier", "admin", "finance"]);
+      const { user: actor } = who;
       const id = String(request.params?.orderId || "");
       if (!/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid("Unknown order");
+      if (who.branch) {
+        const order2 = await new Parse.Query("Order").get(id, MASTER).catch(() => null);
+        require_core().sameBranch(who, order2?.get("branch"));
+      }
       const { values } = await loadConfig();
       if (values.efrisEnabled !== true) throw invalid("EFRIS is not switched on (Admin \u2192 Tax)");
       if (!await efrisInPlan()) throw invalid("EFRIS receipts are not part of your plan");
@@ -30784,8 +30805,9 @@ var require_payouts = __commonJS({
       return { id: row.id, amount };
     });
     Parse.Cloud.define("getTillPayouts", async (request) => {
-      const { user, role } = await requireRole(request, ["cashier", "admin", "finance"]);
+      const { user, role, branch } = await requireRole(request, ["cashier", "admin", "finance"]);
       const query = new Parse.Query("TillPayout");
+      if (branch) query.equalTo("branch", branch);
       if (role !== "cashier") {
         const { values: config } = await loadConfig();
         const range = resolveRange(request.params, config.timezone, { defaultDays: 7 });
@@ -31611,9 +31633,10 @@ var require_reports2 = __commonJS({
     var byNewest = (field) => (a, b) => (b[field] || 0) - (a[field] || 0);
     var rangeInfo = (range) => ({ from: range.from, to: range.to, days: range.days });
     Parse.Cloud.define("getReportOptions", async (request) => {
-      await requireRole(request, ["cashier", "admin", "finance"]);
+      const { branch } = await requireRole(request, ["cashier", "admin", "finance"]);
       const query = new Parse.Query(Parse.User);
       query.exists("riderCode");
+      if (branch) query.equalTo("branch", branch);
       const riders = (await findAll(query)).sort(
         (a, b) => String(a.get("riderCode")).localeCompare(String(b.get("riderCode")))
       );
@@ -31890,9 +31913,14 @@ var require_reports2 = __commonJS({
       return (await findAll(query)).map(factOf);
     }
     Parse.Cloud.define("getRiderEarnings", async (request) => {
-      const { user, role } = await requireRole(request, ["rider", "admin", "finance"]);
+      const who = await requireRole(request, ["rider", "admin", "finance"]);
+      const { user, role } = who;
       const p = request.params;
       const riderId = role === "rider" ? user.id : p.riderId || user.id;
+      if (who.branch) {
+        const rider = await new Parse.Query(Parse.User).get(String(riderId), { useMasterKey: true }).catch(() => null);
+        require_core().sameBranch(who, rider?.get("branch"));
+      }
       const { values: config } = await loadConfig();
       const range = rangeOf(p, config, { defaultDays: 56 });
       const period = periodOf(p, range);
@@ -32713,16 +32741,16 @@ var require_owner = __commonJS({
       return { day, live: false, savedAt: row.get("generatedAt"), report: row.get("data") };
     });
     Parse.Cloud.define("adminListZReports", async (request) => {
-      await requireRole(request, ["admin", "finance"]);
+      const { branch } = await requireRole(request, ["admin", "finance"]);
       const query = new Parse.Query("ZReport");
       query.descending("day");
       query.limit(62);
       return (await query.find(MASTER)).map((row) => ({
         day: row.get("day"),
         savedAt: row.get("generatedAt"),
-        delivered: row.get("data")?.orders?.delivered ?? 0,
-        sales: row.get("data")?.sales?.total ?? 0,
-        kept: row.get("data")?.sales?.kept ?? 0
+        delivered: branch ? null : row.get("data")?.orders?.delivered ?? 0,
+        sales: branch ? null : row.get("data")?.sales?.total ?? 0,
+        kept: branch ? null : row.get("data")?.sales?.kept ?? 0
       }));
     });
     module2.exports = { zReportDue, buildZReport };
@@ -34473,7 +34501,7 @@ var require_drawer = __commonJS({
       };
     });
     Parse.Cloud.define("getDrawerOpenings", async (request) => {
-      await requireRole(request, ["admin", "finance"]);
+      const { branch } = await requireRole(request, ["admin", "finance"]);
       const { values: config } = await loadConfig();
       const range = resolveRange(request.params || {}, config.timezone);
       if (range.error) throw invalid(range.error);
@@ -34483,7 +34511,7 @@ var require_drawer = __commonJS({
       query.greaterThanOrEqualTo("createdAt", start);
       query.lessThan("createdAt", end);
       query.include("actor");
-      const rows = (await findAll(query)).sort((a, b) => b.createdAt - a.createdAt);
+      const rows = (await findAll(query)).filter((row) => !branch || row.get("actor")?.get("branch")?.id === branch.id).sort((a, b) => b.createdAt - a.createdAt);
       const people = {};
       const items = rows.map((row) => {
         const after = JSON.parse(row.get("afterJson") || "{}");
@@ -34895,7 +34923,7 @@ var require_stock = __commonJS({
 var require_stock2 = __commonJS({
   "cloud/stock.js"(exports2, module2) {
     "use strict";
-    var { MASTER, invalid, audit, loadConfig, findAll, readAcl } = require_core();
+    var { MASTER, invalid, audit, loadConfig, findAll, readAcl, sameBranch } = require_core();
     var { isDay, isoDay, startOfDay, addDays } = require_dates();
     var S = require_stock();
     var { branchParam, branchFor } = require_branches();
@@ -35147,11 +35175,13 @@ var require_stock2 = __commonJS({
       return { ...countView(row), low: low.map((line) => line.itemId) };
     });
     Parse.Cloud.define("voidStockCount", async (request) => {
-      const { user: actor } = await requireFinance(request);
+      const who = await requireFinance(request);
+      const { user: actor } = who;
       const reason = clean(request.params.reason, 200);
       if (reason.length < 3) throw invalid("Say why it is being voided");
       const row = await new Parse.Query(COUNT).get(String(request.params.id || ""), MASTER).catch(() => null);
       if (!row) throw invalid("Not found");
+      sameBranch(who, row.get("branch"));
       if (row.get("voidedAt")) throw invalid("Already voided");
       row.set({ voidedAt: /* @__PURE__ */ new Date(), voidReason: reason, voidedBy: actor });
       await row.save(null, MASTER);
@@ -35197,7 +35227,8 @@ var require_spending = __commonJS({
       loadConfig,
       findAll,
       readAcl,
-      nextDailyCode
+      nextDailyCode,
+      sameBranch
     } = require_core();
     var { isDay, isoDay, startOfDay, resolveRange } = require_dates();
     var { branchParam, branchFor } = require_branches();
@@ -35263,10 +35294,11 @@ var require_spending = __commonJS({
       owed
     });
     var owedOn = (purchase) => purchase.get("voidedAt") ? 0 : Math.max(0, Number(purchase.get("total") || 0) - Number(purchase.get("paid") || 0));
-    async function owedBySupplier() {
+    async function owedBySupplier(branch = null) {
       const query = new Parse.Query("Purchase");
       query.doesNotExist("voidedAt");
       query.notEqualTo("status", "paid");
+      if (branch) query.equalTo("branch", branch);
       const owed = {};
       for (const row of await findAll(query)) {
         const id = row.get("supplier")?.id;
@@ -35275,8 +35307,11 @@ var require_spending = __commonJS({
       return owed;
     }
     Parse.Cloud.define("listSuppliers", async (request) => {
-      await requireFinance(request);
-      const [rows, owed] = await Promise.all([findAll(new Parse.Query("Supplier")), owedBySupplier()]);
+      const { branch } = await requireFinance(request);
+      const [rows, owed] = await Promise.all([
+        findAll(new Parse.Query("Supplier")),
+        owedBySupplier(branch)
+      ]);
       return {
         suppliers: rows.sort((a, b) => a.get("name").localeCompare(b.get("name"))).map((row) => supplierView(row, owed[row.id] || 0))
       };
@@ -35423,11 +35458,13 @@ var require_spending = __commonJS({
       return purchaseView(row);
     });
     Parse.Cloud.define("payPurchase", async (request) => {
-      const { user: actor } = await requireFinance(request);
+      const who = await requireFinance(request);
+      const { user: actor } = who;
       const p = request.params;
       const { values: config } = await loadConfig();
       const row = await new Parse.Query("Purchase").get(String(p.purchaseId || ""), MASTER).catch(() => null);
       if (!row || row.get("voidedAt")) throw invalid("Unknown purchase");
+      sameBranch(who, row.get("branch"));
       const owed = owedOn(row);
       if (!owed) throw invalid("This purchase is already paid");
       const amount = amountOf(p.amount, "amount paid");
@@ -35449,11 +35486,13 @@ var require_spending = __commonJS({
       return purchaseView(row);
     });
     async function voidRecord(className, request, action) {
-      const { user: actor } = await requireFinance(request);
+      const who = await requireFinance(request);
+      const { user: actor } = who;
       const reason = clean(request.params.reason, 200);
       if (reason.length < 3) throw invalid("Say why it is being voided");
       const row = await new Parse.Query(className).get(String(request.params.id || ""), MASTER).catch(() => null);
       if (!row) throw invalid("Not found");
+      sameBranch(who, row.get("branch"));
       if (row.get("voidedAt")) throw invalid("Already voided");
       row.set({ voidedAt: /* @__PURE__ */ new Date(), voidReason: reason, voidedBy: actor });
       await row.save(null, MASTER);
@@ -35780,7 +35819,7 @@ var require_accounts = __commonJS({
 var require_accounting = __commonJS({
   "cloud/accounting.js"() {
     "use strict";
-    var { MASTER, invalid, audit, loadConfig, findAll } = require_core();
+    var { MASTER, invalid, forbidden, audit, loadConfig, findAll } = require_core();
     var { resolveRange, previousRange, isDay, isoDay, startOfDay, addDays } = require_dates();
     var { isConfirmed } = require_reports();
     var A = require_accounts();
@@ -36096,7 +36135,8 @@ var require_accounting = __commonJS({
       };
     });
     Parse.Cloud.define("saveOpeningBalance", async (request) => {
-      const { user: actor } = await requireFinance(request);
+      const { user: actor, branch } = await requireFinance(request);
+      if (branch) throw forbidden("Only the owner or finance for all branches can set these");
       const p = request.params || {};
       const money = (value, label) => {
         const amount = Math.round(Number(value ?? 0));
@@ -36655,7 +36695,7 @@ var require_admin = __commonJS({
       const { values: config } = await loadConfig();
       await require_limits().checkMemberLimit(roleName);
       const branches = require_branches();
-      const branch = roleName !== "finance" && (p.branchId || await branches.mainBranch()) ? await branches.assignableBranch(p.branchId, actor) : null;
+      const branch = roleName === "finance" ? p.branchId && p.branchId !== "all" ? await branches.assignableBranch(p.branchId, actor) : null : p.branchId || await branches.mainBranch() ? await branches.assignableBranch(p.branchId, actor) : null;
       const user = new Parse.User();
       if (branch) user.set("branch", branch);
       user.set({
@@ -36715,8 +36755,13 @@ var require_admin = __commonJS({
         }
       }
       if (p.branchId !== void 0) {
-        const branch = await require_branches().assignableBranch(p.branchId, actor);
-        user.set("branch", branch);
+        const finance = await require_core().getRoleName(user) === "finance";
+        if (finance && (!p.branchId || p.branchId === "all")) {
+          if (user.has("branch")) user.unset("branch");
+        } else {
+          const branch = await require_branches().assignableBranch(p.branchId, actor);
+          user.set("branch", branch);
+        }
       }
       if (p.active === true && user.get("active") === false) {
         const role = await require_core().getRoleName(user);
@@ -36768,6 +36813,7 @@ var require_admin = __commonJS({
       destination.getUsers().add(user);
       await destination.save(null, MASTER);
       if (!user.get(codeField(next))) user.set(codeField(next), await nextStaffCode(next));
+      if (next === "finance" && before !== "finance" && user.has("branch")) user.unset("branch");
       user.setACL(userAcl(user, next));
       await user.save(null, MASTER);
       await audit(actor, "team.role_changed", user, { role: before }, { role: next });
@@ -37923,12 +37969,14 @@ var require_overrides = __commonJS({
       return order.get("paymentProvider") === "airtel" ? id.replace(/-/g, "") : id;
     };
     Parse.Cloud.define("adminGetOrder", async (request) => {
-      const { role } = await requireRole(request, ["admin", "finance"]);
+      const who = await requireRole(request, ["admin", "finance"]);
+      const { role } = who;
       const id = idOf(request.params.id);
       if (!id) throw invalid("Unknown order");
       const query = new Parse.Query("Order");
       query.include(["createdBy", "cashier", "cancelledBy", "paymentCheckedBy", "customer"]);
       const order = await query.get(id, MASTER);
+      require_core().sameBranch(who, order.get("branch"));
       const itemQuery = new Parse.Query("OrderItem");
       itemQuery.equalTo("order", order);
       itemQuery.limit(200);
@@ -38357,10 +38405,11 @@ var require_profile = __commonJS({
           percent: user.get("commissionPercent") || 0
         } : null,
         canInitialize: role === null && await canBootstrapOwner(),
-        // Where they work (riders and cashiers), and how many open branches the
-        // restaurant has (branch filters show when there are two or more).
+        // Where they work (riders, cashiers and a branch finance officer), and
+        // how many open branches they see (branch filters show when there are
+        // two or more; a branch finance officer sees only theirs).
         branch: own ? { id: own.id, name: own.get("name") } : null,
-        branchCount: branches.length,
+        branchCount: role === "finance" && user.get("branch") ? 1 : branches.length,
         // Parts of the app this restaurant has (lib/limits.js).
         features,
         config: {

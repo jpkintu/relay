@@ -14,7 +14,7 @@
 //
 // Nothing is deleted: an item is archived, a wrong count voided with a reason.
 
-const { MASTER, invalid, audit, loadConfig, findAll, readAcl } = require('./lib/core');
+const { MASTER, invalid, audit, loadConfig, findAll, readAcl, sameBranch } = require('./lib/core');
 const { isDay, isoDay, startOfDay, addDays } = require('./lib/dates');
 const S = require('./lib/stock');
 const { branchParam, branchFor } = require('./branches');
@@ -320,13 +320,15 @@ Parse.Cloud.define('recordStockCount', async (request) => {
 
 // Owner / finance: void a wrong count. { id, reason }
 Parse.Cloud.define('voidStockCount', async (request) => {
-  const { user: actor } = await requireFinance(request);
+  const who = await requireFinance(request);
+  const { user: actor } = who;
   const reason = clean(request.params.reason, 200);
   if (reason.length < 3) throw invalid('Say why it is being voided');
   const row = await new Parse.Query(COUNT)
     .get(String(request.params.id || ''), MASTER)
     .catch(() => null);
   if (!row) throw invalid('Not found');
+  sameBranch(who, row.get('branch'));
   if (row.get('voidedAt')) throw invalid('Already voided');
   row.set({ voidedAt: new Date(), voidReason: reason, voidedBy: actor });
   await row.save(null, MASTER);

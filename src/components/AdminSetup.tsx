@@ -562,7 +562,9 @@ export function AdminSetup({
     [phone, setPhone] = useState(''),
     [pin, setPin] = useState(''),
     [role, setRole] = useState('rider'),
-    [memberBranch, setMemberBranch] = useState('');
+    [memberBranch, setMemberBranch] = useState(''),
+    // Finance: '' = all branches, else that branch only.
+    [financeBranch, setFinanceBranch] = useState('');
   const teamBranches = useTeamBranches();
   const mainName = teamBranches.find((b) => b.main)?.name || 'Main branch';
   const [itemBranches, setItemBranches] = useState<string[]>([]);
@@ -650,6 +652,7 @@ export function AdminSetup({
                     pin,
                     role,
                     ...(memberBranch && role !== 'finance' && { branchId: memberBranch }),
+                    ...(role === 'finance' && { branchId: financeBranch || 'all' }),
                   },
                   () => {
                     setName('');
@@ -678,6 +681,19 @@ export function AdminSetup({
                   </small>
                 )}
               </label>
+              {teamBranches.length > 1 && role === 'finance' && (
+                <label className="setup-field">
+                  Branches
+                  <select value={financeBranch} onChange={(e) => setFinanceBranch(e.target.value)}>
+                    <option value="">All branches</option>
+                    {teamBranches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} only
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {teamBranches.length > 0 && role !== 'finance' && (
                 <label className="setup-field">
                   Branch
@@ -738,7 +754,9 @@ export function AdminSetup({
                           <td data-label="Branch">
                             {u.role === 'rider' || u.role === 'cashier'
                               ? branchLabel(teamBranches, u.branchId || '') || mainName
-                              : 'All branches'}
+                              : u.role === 'finance' && u.branchId
+                                ? branchLabel(teamBranches, u.branchId)
+                                : 'All branches'}
                           </td>
                         )}
                         <td data-label="Status">

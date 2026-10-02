@@ -119,11 +119,29 @@ async function getRoleName(user) {
   return ROLE_NAMES.find((name) => names.includes(name)) || null;
 }
 
+// Finance officers work on one branch or on all of them (a branch on their
+// team record, set by the owner). One with a branch is held to it: whatever
+// branch a call asks for, it gets theirs (`params.branchId`), and records of
+// another branch are refused (sameBranch). → the branch, or null for all.
+async function financeBranch(user) {
+  const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER).catch(() => null);
+  return fresh?.get('branch') || null;
+}
+
 async function requireRole(request, allowed) {
   const user = requireUser(request);
   const role = await getRoleName(user);
   if (!allowed.includes(role)) throw forbidden(`${allowed.join(' or ')} role required`);
-  return { user, role };
+  const branch = role === 'finance' ? await financeBranch(user) : null;
+  if (branch) request.params = { ...(request.params || {}), branchId: branch.id };
+  return { user, role, branch };
+}
+
+// A record of another branch than a branch finance officer's own is refused
+// (`who`: what requireRole returned; `branch`: the record's branch pointer).
+function sameBranch(who, branch) {
+  if (who?.branch && branch?.id !== who.branch.id)
+    throw forbidden('That belongs to another branch');
 }
 
 const isRider = async (user) => (await getRoleName(user)) === 'rider';
@@ -485,6 +503,7 @@ module.exports = {
   requireUser,
   getRoleName,
   requireRole,
+  sameBranch,
   isRider,
   isStaff,
   adminOnly,

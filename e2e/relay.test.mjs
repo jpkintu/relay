@@ -5047,6 +5047,76 @@ describe('accounting statements', () => {
     await run('voidPurchase', { id: bought.id, reason: 'Test' }, farida);
   });
 
+  test('a finance officer can be given one branch: they see and record only it', async () => {
+    const { branches } = await run('getBranches', {}, s.owner);
+    const main = branches.find((b) => b.main);
+    const other = branches.find((b) => !b.main);
+    const created = await run(
+      'adminCreateTeamMember',
+      {
+        name: 'Brenda Branch',
+        username: 'brenda',
+        pin: '8642',
+        role: 'finance',
+        branchId: other.id,
+      },
+      s.owner,
+    );
+    const brenda = await login('brenda', '8642');
+    const profile = await run('getMyProfile', {}, brenda);
+    assert.equal(profile.branch.id, other.id);
+    assert.equal(profile.branchCount, 1, 'no branch filters');
+    assert.deepEqual(
+      (await run('getBranches', {}, brenda)).branches.map((b) => b.id),
+      [other.id],
+    );
+    // Asking for another branch gets theirs.
+    const expense = await run(
+      'recordExpense',
+      {
+        category: 'transport',
+        description: 'Boda',
+        amount: 5000,
+        method: 'cash',
+        branchId: main.id,
+      },
+      brenda,
+    );
+    assert.equal(expense.branchId, other.id);
+    const elsewhere = await run(
+      'recordExpense',
+      {
+        category: 'transport',
+        description: 'Boda',
+        amount: 7000,
+        method: 'cash',
+        branchId: main.id,
+      },
+      farida,
+    );
+    await rejects(
+      run('voidExpense', { id: elsewhere.id, reason: 'Not mine' }, brenda),
+      /another branch/,
+    );
+    const listed = await run('listExpenses', { branchId: main.id }, brenda);
+    assert.ok(listed.expenses.every((e) => e.branchId === other.id));
+    assert.ok(listed.expenses.some((e) => e.id === expense.id));
+    const mine = (await run('getBalanceSheet', { branchId: main.id }, brenda)).sheet;
+    const theirs = (await run('getBalanceSheet', { branchId: other.id }, farida)).sheet;
+    assert.deepEqual(mine, theirs, 'the branch’s balance sheet');
+    await rejects(
+      run('saveOpeningBalance', { cash: 1, bank: 1 }, brenda),
+      /finance for all branches/,
+    );
+    // Back to all branches.
+    await run('adminUpdateMember', { id: created.id, branchId: 'all' }, s.owner);
+    assert.equal((await run('getMyProfile', {}, brenda)).branch, null);
+    assert.ok((await run('getBranches', {}, brenda)).branches.length > 1);
+    for (const row of [expense, elsewhere])
+      await run('voidExpense', { id: row.id, reason: 'Test' }, farida);
+    await run('adminUpdateMember', { id: created.id, active: false }, s.owner);
+  });
+
   test('tax receipts list the sales for EFRIS follow-up', async () => {
     const list = await run('listEfrisReceipts', {}, farida);
     assert.equal(typeof list.enabled, 'boolean');
