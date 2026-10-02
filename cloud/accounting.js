@@ -4,7 +4,7 @@
 // whole restaurant or one branch. The maths and the rules are in
 // lib/accounts.js.
 
-const { MASTER, invalid, audit, loadConfig, findAll } = require('./lib/core');
+const { MASTER, invalid, forbidden, audit, loadConfig, findAll } = require('./lib/core');
 const { resolveRange, previousRange, isDay, isoDay, startOfDay, addDays } = require('./lib/dates');
 const { isConfirmed } = require('./lib/reports');
 const A = require('./lib/accounts');
@@ -393,7 +393,9 @@ Parse.Cloud.define('getPerformanceRatios', async (request) => {
 // the month its financial year starts. { cash, bank, fiscalYearStart } or
 // { amount } (one figure: cash).
 Parse.Cloud.define('saveOpeningBalance', async (request) => {
-  const { user: actor } = await requireFinance(request);
+  const { user: actor, branch } = await requireFinance(request);
+  // The opening balances are the whole restaurant's.
+  if (branch) throw forbidden('Only the owner or finance for all branches can set these');
   const p = request.params || {};
   const money = (value, label) => {
     const amount = Math.round(Number(value ?? 0));

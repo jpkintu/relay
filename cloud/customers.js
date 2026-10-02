@@ -183,16 +183,16 @@ Parse.Cloud.define('listCustomers', async (request) => {
 
 // One customer with their recent orders and what they have spent.
 Parse.Cloud.define('getCustomer', async (request) => {
-  await requireRole(request, ['admin', 'finance']);
+  // Customers are the restaurant's; a branch finance officer sees their
+  // orders at that branch.
+  const { branch } = await requireRole(request, ['admin', 'finance']);
   const row = await new Parse.Query('Customer')
     .get(String(request.params.id || ''), MASTER)
     .catch(() => null);
   if (!row) throw invalid('Unknown customer');
-  const orders = await new Parse.Query('Order')
-    .equalTo('customer', row)
-    .descending('createdAt')
-    .limit(50)
-    .find(MASTER);
+  const orderQuery = new Parse.Query('Order').equalTo('customer', row);
+  if (branch) orderQuery.equalTo('branch', branch);
+  const orders = await orderQuery.descending('createdAt').limit(50).find(MASTER);
   const delivered = orders.filter((o) => o.get('status') === 'DELIVERED');
   return {
     ...customerView(row),

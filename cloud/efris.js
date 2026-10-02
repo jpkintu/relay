@@ -646,9 +646,14 @@ async function receiptView(order, values) {
 
 // Staff: issue (or retry) one sale now. { orderId } → the receipt's view.
 Parse.Cloud.define('issueEfrisReceipt', async (request) => {
-  const { user: actor } = await requireRole(request, ['cashier', 'admin', 'finance']);
+  const who = await requireRole(request, ['cashier', 'admin', 'finance']);
+  const { user: actor } = who;
   const id = String(request.params?.orderId || '');
   if (!/^[A-Za-z0-9]{1,32}$/.test(id)) throw invalid('Unknown order');
+  if (who.branch) {
+    const order = await new Parse.Query('Order').get(id, MASTER).catch(() => null);
+    require('./lib/core').sameBranch(who, order?.get('branch'));
+  }
   const { values } = await loadConfig();
   if (values.efrisEnabled !== true) throw invalid('EFRIS is not switched on (Admin → Tax)');
   if (!(await efrisInPlan())) throw invalid('EFRIS receipts are not part of your plan');

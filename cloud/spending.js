@@ -22,6 +22,7 @@ const {
   findAll,
   readAcl,
   nextDailyCode,
+  sameBranch,
 } = require('./lib/core');
 const { isDay, isoDay, startOfDay, resolveRange } = require('./lib/dates');
 const { branchParam, branchFor } = require('./branches');
@@ -113,10 +114,11 @@ const owedOn = (purchase) =>
     ? 0
     : Math.max(0, Number(purchase.get('total') || 0) - Number(purchase.get('paid') || 0));
 
-async function owedBySupplier() {
+async function owedBySupplier(branch = null) {
   const query = new Parse.Query('Purchase');
   query.doesNotExist('voidedAt');
   query.notEqualTo('status', 'paid');
+  if (branch) query.equalTo('branch', branch);
   const owed = {};
   for (const row of await findAll(query)) {
     const id = row.get('supplier')?.id;
@@ -126,8 +128,13 @@ async function owedBySupplier() {
 }
 
 Parse.Cloud.define('listSuppliers', async (request) => {
-  await requireFinance(request);
-  const [rows, owed] = await Promise.all([findAll(new Parse.Query('Supplier')), owedBySupplier()]);
+  // Suppliers are the restaurant's; a branch finance officer sees what
+  // their branch owes each.
+  const { branch } = await requireFinance(request);
+  const [rows, owed] = await Promise.all([
+    findAll(new Parse.Query('Supplier')),
+    owedBySupplier(branch),
+  ]);
   return {
     suppliers: rows
       .sort((a, b) => a.get('name').localeCompare(b.get('name')))
@@ -295,13 +302,15 @@ Parse.Cloud.define('recordPurchase', async (request) => {
 // Owner / finance: pay (part of) what a purchase still owes.
 // { purchaseId, amount, method, day }
 Parse.Cloud.define('payPurchase', async (request) => {
-  const { user: actor } = await requireFinance(request);
+  const who = await requireFinance(request);
+  const { user: actor } = who;
   const p = request.params;
   const { values: config } = await loadConfig();
   const row = await new Parse.Query('Purchase')
     .get(String(p.purchaseId || ''), MASTER)
     .catch(() => null);
   if (!row || row.get('voidedAt')) throw invalid('Unknown purchase');
+  sameBranch(who, row.get('branch'));
   const owed = owedOn(row);
   if (!owed) throw invalid('This purchase is already paid');
   const amount = amountOf(p.amount, 'amount paid');
@@ -324,13 +333,15 @@ Parse.Cloud.define('payPurchase', async (request) => {
 });
 
 async function voidRecord(className, request, action) {
-  const { user: actor } = await requireFinance(request);
+  const who = await requireFinance(request);
+  const { user: actor } = who;
   const reason = clean(request.params.reason, 200);
   if (reason.length < 3) throw invalid('Say why it is being voided');
   const row = await new Parse.Query(className)
     .get(String(request.params.id || ''), MASTER)
     .catch(() => null);
   if (!row) throw invalid('Not found');
+  sameBranch(who, row.get('branch'));
   if (row.get('voidedAt')) throw invalid('Already voided');
   row.set({ voidedAt: new Date(), voidReason: reason, voidedBy: actor });
   await row.save(null, MASTER);

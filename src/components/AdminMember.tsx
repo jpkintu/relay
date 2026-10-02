@@ -339,6 +339,37 @@ export function AdminMember({ id }: { id: string }) {
                 {(financeOn || m.role === 'finance') && <option value="finance">Finance</option>}
               </select>
             </div>
+            {branches.length > 1 && m.role === 'finance' && (
+              <div className="member-action">
+                <div>
+                  <b>Branches</b>
+                  <small>
+                    All branches, or one: they then see and record only that branch&apos;s accounts,
+                    purchases, expenses, stock and reports.
+                  </small>
+                </div>
+                <select
+                  aria-label="Branches"
+                  value={m.branchId || 'all'}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const branch = branches.find((b) => b.id === e.target.value);
+                    void act(
+                      'adminUpdateMember',
+                      { id: m.id, branchId: e.target.value },
+                      branch ? `Now works on ${branch.name} only.` : 'Now works on all branches.',
+                    );
+                  }}
+                >
+                  <option value="all">All branches</option>
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {branches.length > 0 && m.role !== 'finance' && m.role !== 'admin' && (
               <div className="member-action">
                 <div>
