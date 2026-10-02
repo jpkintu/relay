@@ -4767,7 +4767,7 @@ describe('accounting statements', () => {
   const statements = async () => ({
     pl: (await run('getProfitAndLoss', { preset: 'today' }, farida)).current,
     sheet: (await run('getBalanceSheet', {}, farida)).sheet,
-    flow: await run('getCashFlow', {}, farida),
+    flow: (await run('getCashFlow', {}, farida)).current,
   });
 
   test('the statements agree with each other', async () => {
@@ -4776,12 +4776,17 @@ describe('accounting statements', () => {
     assert.equal(pl.netProfit, pl.grossProfit - pl.operating.total);
     assert.equal(sheet.equity.total, sheet.assets.total - sheet.liabilities.total);
     assert.equal(
-      sheet.equity.opening + sheet.equity.profit + sheet.equity.other,
+      sheet.equity.opening + sheet.equity.retained + sheet.equity.currentYear + sheet.equity.other,
       sheet.equity.total,
     );
-    assert.equal(flow.closing, flow.opening + flow.net);
+    assert.equal(sheet.assets.cash, sheet.assets.tills + sheet.assets.bank);
+    assert.equal(
+      sheet.assets.total,
+      sheet.assets.cash + sheet.assets.receivable + sheet.assets.fixed,
+    );
+    assert.equal(flow.ending, flow.beginning + flow.netChange);
     // The cash flow ends where the balance sheet's cash is.
-    assert.equal(flow.closing, sheet.assets.cash);
+    assert.equal(flow.ending, sheet.assets.cash);
   });
 
   test('a purchase on credit, then paid: cost, liability and cash move together', async () => {
@@ -4805,7 +4810,8 @@ describe('accounting statements', () => {
     after = await statements();
     assert.equal(after.sheet.liabilities.suppliers, before.sheet.liabilities.suppliers);
     assert.equal(before.sheet.assets.cash - after.sheet.assets.cash, 100000);
-    assert.equal(before.flow.closing - after.flow.closing, 100000);
+    assert.equal(before.flow.ending - after.flow.ending, 100000);
+    assert.equal(before.sheet.assets.tills - after.sheet.assets.tills, 100000, 'paid in cash');
     const expense = await run(
       'recordExpense',
       { category: 'marketing', description: 'Flyers', amount: 30000, method: 'cash' },
@@ -4825,8 +4831,41 @@ describe('accounting statements', () => {
     const after = (await run('getBalanceSheet', {}, farida)).sheet;
     assert.equal(after.assets.cash - before.assets.cash, 1000000 - before.equity.opening);
     assert.equal(after.equity.opening, 1000000);
+    // Split into cash and mobile money / bank, with a July financial year.
+    await rejects(
+      run('saveOpeningBalance', { cash: 1, bank: 1, fiscalYearStart: 13 }, farida),
+      /financial year starts/,
+    );
+    await run('saveOpeningBalance', { cash: 600000, bank: 400000, fiscalYearStart: 7 }, farida);
+    const split = await run('getBalanceSheet', {}, farida);
+    assert.equal(split.sheet.assets.tills - after.assets.tills, -400000);
+    assert.equal(split.sheet.assets.bank - after.assets.bank, 400000);
+    assert.equal(split.sheet.equity.opening, 1000000);
+    assert.match(split.yearStart, /-07-01$/);
+    assert.ok(split.compare, 'a column a year earlier to compare');
     await rejects(run('getBalanceSheet', { day: '2099-01-01' }, farida), /up to today/);
     await rejects(run('getProfitAndLoss', {}, s.dina), /admin or finance role required/);
+  });
+
+  test('equipment is a fixed asset paid for in investing; ratios by month', async () => {
+    const before = await statements();
+    const bought = await run(
+      'recordExpense',
+      { category: 'equipment', description: 'Chest freezer', amount: 250000, method: 'bank' },
+      farida,
+    );
+    const after = await statements();
+    assert.equal(after.pl.netProfit, before.pl.netProfit, 'not an expense');
+    assert.equal(after.sheet.assets.fixed - before.sheet.assets.fixed, 250000);
+    assert.equal(before.sheet.assets.bank - after.sheet.assets.bank, 250000);
+    assert.equal(before.sheet.assets.total, after.sheet.assets.total);
+    assert.equal(after.flow.investing.total - before.flow.investing.total, -250000);
+    const { months } = await run('getPerformanceRatios', { months: 3 }, farida);
+    assert.equal(months.length, 3);
+    const now = months.at(-1);
+    assert.equal(now.totalAssets, after.sheet.assets.total);
+    assert.equal(now.ratios.debt, Math.round((now.totalLiabilities / now.totalAssets) * 100) / 100);
+    await run('voidExpense', { id: bought.id, reason: 'Test' }, farida);
   });
 
   test('tax receipts list the sales for EFRIS follow-up', async () => {
@@ -5588,9 +5627,9 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.match(cleared.note, /998877/);
     assert.equal(after.sheet.liabilities.refunds, owing.sheet.liabilities.refunds - order.total);
     assert.equal(after.sheet.assets.cash, owing.sheet.assets.cash - order.total);
-    const flow = await run('getCashFlow', {}, s.owner);
-    assert.ok(flow.inflows.some((r) => r.key === 'refund_receipts' && r.amount >= order.total));
-    assert.ok(flow.outflows.some((r) => r.key === 'refunds' && r.amount >= order.total));
+    const flow = (await run('getCashFlow', {}, s.owner)).current;
+    assert.equal(flow.ending, flow.beginning + flow.netChange);
+    assert.equal(flow.ending, after.sheet.assets.cash);
     await rejects(
       run(
         'adminOverrideOrder',
@@ -5718,8 +5757,8 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.equal(cleared.charges, charges);
     assert.equal(after.sheet.liabilities.refunds, owing.sheet.liabilities.refunds - back.amount);
     assert.equal(after.sheet.assets.cash, owing.sheet.assets.cash - back.amount);
-    const flow = await run('getCashFlow', {}, s.owner);
-    assert.ok(flow.outflows.some((r) => r.key === 'refund_charges' && r.amount >= charges));
+    const flow = (await run('getCashFlow', {}, s.owner)).current;
+    assert.equal(flow.ending, after.sheet.assets.cash);
     await run('adminSaveRefundCharges', { flat: 0, percent: 0 }, s.owner);
   });
 
@@ -5944,6 +5983,7 @@ const ACCESS = {
     'findVouchers',
   ],
   reports: [
+    'getPerformanceRatios',
     'adminListVouchers',
     'getDrawerOpenings',
     'getProfitAndLoss',

@@ -217,6 +217,11 @@ var require_core = __commonJS({
       efrisFrom: null,
       // Accounting: cash and bank when the books started (null: not entered).
       openingBalance: null,
+      // Split into cash (tills) and mobile money / bank (accounting.js).
+      openingCash: null,
+      openingBank: null,
+      // The month the financial year starts (1 = January; Uganda: 7, July).
+      fiscalYearStart: 1,
       airtelAutoCollect: false,
       momoDialCode: "256",
       // Card payments at the counter (Settings → Card payments).
@@ -1464,6 +1469,9 @@ var require_security = __commonJS({
         restaurantName: S,
         // Accounting: cash and bank when the books started (accounting.js).
         openingBalance: N,
+        openingCash: N,
+        openingBank: N,
+        fiscalYearStart: N,
         efrisEnabled: B,
         efrisFrom: D,
         mtnAutoCollect: B,
@@ -35181,6 +35189,8 @@ var require_accounts = __commonJS({
       for (const row of rows) out[row[key]] = (out[row[key]] || 0) + round(amount(row));
       return Object.entries(out).map(([k, value]) => ({ key: k, amount: value })).sort((a, b) => b.amount - a.amount);
     }
+    var isAsset = (expense) => expense.category === "equipment";
+    var inCash = (method) => !method || method === "cash";
     function profitAndLoss({ orders, purchases, expenses, tillExpenses }) {
       const food = sum(orders, (o) => o.subtotal);
       const delivery = sum(orders, (o) => o.deliveryFee);
@@ -35189,9 +35199,10 @@ var require_accounts = __commonJS({
       const grossProfit = revenue - costOfSales;
       const riderPay = sum(orders, (o) => o.commission);
       const riderDeliveryFees = sum(orders, (o) => o.deliveryPay ?? o.deliveryFee);
-      const expenseRows = byKey(expenses, "category", (e) => e.amount);
+      const running = expenses.filter((e) => !isAsset(e));
+      const expenseRows = byKey(running, "category", (e) => e.amount);
       const fromTills = sum(tillExpenses, (e) => e.amount);
-      const operating = riderPay + sum(expenses, (e) => e.amount) + fromTills;
+      const operating = riderPay + sum(running, (e) => e.amount) + fromTills;
       const netProfit = grossProfit - operating;
       return {
         revenue: { food, delivery, total: revenue, orders: orders.length },
@@ -35209,105 +35220,118 @@ var require_accounts = __commonJS({
         netMargin: revenue ? Math.round(netProfit / revenue * 1e3) / 10 : null
       };
     }
-    function cashMovements({
-      orders,
-      supplierPayments,
-      expenses,
-      payouts,
-      refundReceipts = [],
-      refundsPaid = []
-    }) {
-      const received = sum(
-        orders.filter((o) => o.confirmed),
-        (o) => round(o.total) - round(o.voucher || 0)
+    var paidOf = (o) => round(o.total) - round(o.voucher || 0);
+    function position({ orders, purchases, expenses, payouts, vouchers = [], opening, profit }) {
+      const confirmed = orders.filter((o) => o.confirmed);
+      const cashSales = sum(
+        confirmed.filter((o) => inCash(o.method) && o.method !== "voucher"),
+        paidOf
       );
-      const toSuppliers = sum(supplierPayments, (p) => p.amount);
-      const onExpenses = sum(expenses, (e) => e.amount);
-      const riderPay = sum(
-        payouts.filter((p) => p.kind === "rider"),
-        (p) => p.amount
+      const bankSales = sum(
+        confirmed.filter((o) => !inCash(o.method) && o.method !== "voucher"),
+        paidOf
       );
-      const fromTills = sum(
-        payouts.filter((p) => p.kind !== "rider"),
-        (p) => p.amount
+      const payments = purchases.flatMap((p) => p.payments || []);
+      const outBy = (rows, pick, cash2) => sum(
+        rows.filter((r) => inCash(r.method) === cash2),
+        pick
       );
-      const forRefund = sum(refundReceipts, (r) => r.amount);
-      const refunded = sum(refundsPaid, (r) => r.amount);
-      const refundCharges = sum(refundsPaid, (r) => r.charges || 0);
-      return {
-        received,
-        forRefund,
-        toSuppliers,
-        onExpenses,
-        riderPay,
-        fromTills,
-        refunded,
-        refundCharges,
-        net: received + forRefund - toSuppliers - onExpenses - riderPay - fromTills - refunded - refundCharges
-      };
-    }
-    function cashFlow({ opening, movements }) {
-      return {
-        opening,
-        inflows: [
-          { key: "sales", amount: movements.received },
-          // Shown only when there were any.
-          ...movements.forRefund ? [{ key: "refund_receipts", amount: movements.forRefund }] : []
-        ],
-        outflows: [
-          { key: "suppliers", amount: movements.toSuppliers },
-          { key: "expenses", amount: movements.onExpenses },
-          { key: "rider_pay", amount: movements.riderPay },
-          { key: "till_expenses", amount: movements.fromTills },
-          ...movements.refunded ? [{ key: "refunds", amount: movements.refunded }] : [],
-          ...movements.refundCharges ? [{ key: "refund_charges", amount: movements.refundCharges }] : []
-        ],
-        net: movements.net,
-        closing: opening + movements.net
-      };
-    }
-    function balanceSheet({
-      openingBalance,
-      cash,
-      orders,
-      purchases,
-      payouts,
-      profit,
-      refundsOwed = 0
-    }) {
+      const tills = round(opening.cash) + cashSales - outBy(payments, (p) => p.amount, true) - outBy(expenses, (e) => e.amount, true) - sum(payouts, (p) => p.amount);
+      const bank = round(opening.bank) + bankSales + sum(vouchers, (v) => v.cashIn) - sum(
+        vouchers.filter((v) => v.refunded),
+        (v) => round(v.sent) + round(v.charges)
+      ) - outBy(payments, (p) => p.amount, false) - outBy(expenses, (e) => e.amount, false);
       const receivable = sum(
         orders.filter((o) => !o.confirmed),
-        (o) => round(o.total) - round(o.voucher || 0)
+        paidOf
       );
-      const owedToSuppliers = sum(purchases, (p) => Math.max(0, round(p.total) - round(p.paid)));
-      const riderPayEarned = sum(orders, (o) => o.commission);
-      const riderPaySettled = sum(
-        payouts.filter((p) => p.kind === "rider"),
-        (p) => round(p.amount) + round(p.deductions)
+      const equipment = sum(expenses.filter(isAsset), (e) => e.amount);
+      const suppliers = sum(purchases, (p) => Math.max(0, round(p.total) - round(p.paid)));
+      const riders = Math.max(
+        0,
+        sum(orders, (o) => o.commission) - sum(
+          payouts.filter((p) => p.kind === "rider"),
+          (p) => round(p.amount) + round(p.deductions)
+        )
       );
-      const owedToRiders = Math.max(0, riderPayEarned - riderPaySettled);
-      const assets = cash + receivable;
-      const liabilities = owedToSuppliers + owedToRiders + refundsOwed;
+      const refunds = sum(vouchers, (v) => v.owed);
+      const cash = tills + bank;
+      const current = cash + receivable;
+      const assets = current + equipment;
+      const liabilities = suppliers + riders + refunds;
       const equity = assets - liabilities;
+      const openingTotal = round(opening.cash) + round(opening.bank);
+      const toDate = round(profit.toDate);
+      const beforeYear = round(profit.beforeYear);
       return {
-        assets: { cash, receivable, total: assets },
+        assets: {
+          tills,
+          bank,
+          cash,
+          receivable,
+          current,
+          equipment,
+          fixed: equipment,
+          total: assets
+        },
         liabilities: {
-          suppliers: owedToSuppliers,
-          riders: owedToRiders,
-          refunds: refundsOwed,
+          suppliers,
+          riders,
+          refunds,
+          current: liabilities,
           total: liabilities
         },
         equity: {
-          opening: openingBalance,
-          profit,
-          // Cash shortages, till differences and the like: what makes the books
-          // balance beyond the recorded profit.
-          other: equity - openingBalance - profit,
+          opening: openingTotal,
+          retained: beforeYear,
+          currentYear: toDate - beforeYear,
+          profit: toDate,
+          // Cash over / short: till and cash differences, shortages taken off
+          // rider pay; what makes the books balance beyond the recorded profit.
+          other: equity - openingTotal - toDate,
           total: equity
         }
       };
     }
-    module2.exports = { profitAndLoss, cashMovements, cashFlow, balanceSheet };
+    function cashFlowStatement({ start, end, netProfit }) {
+      const change = (pick) => pick(end) - pick(start);
+      const operatingLines = [
+        { key: "receivable", amount: -change((p) => p.assets.receivable) },
+        { key: "payable", amount: change((p) => p.liabilities.suppliers) },
+        { key: "riders", amount: change((p) => p.liabilities.riders) },
+        { key: "vouchers", amount: change((p) => p.liabilities.refunds) },
+        { key: "cash_over_short", amount: change((p) => p.equity.other) }
+      ];
+      const operating = round(netProfit) + sum(operatingLines, (l) => l.amount);
+      const investingLines = [{ key: "equipment", amount: -change((p) => p.assets.equipment) }];
+      const investing = sum(investingLines, (l) => l.amount);
+      const financingLines = [{ key: "owner", amount: change((p) => p.equity.opening) }];
+      const financing = sum(financingLines, (l) => l.amount);
+      return {
+        beginning: start.assets.cash,
+        operating: { netIncome: round(netProfit), lines: operatingLines, total: operating },
+        investing: { lines: investingLines, total: investing },
+        financing: { lines: financingLines, total: financing },
+        netChange: operating + investing + financing,
+        ending: end.assets.cash
+      };
+    }
+    function ratios({ pl, position: pos, receivableBefore = 0 }) {
+      const div = (a, b) => b ? Math.round(a / b * 100) / 100 : null;
+      const sales = pl.revenue.total;
+      const averageReceivable = (round(receivableBefore) + pos.assets.receivable) / 2;
+      return {
+        grossProfit: div(pl.grossProfit, sales),
+        netProfit: div(pl.netProfit, sales),
+        operatingCost: div(pl.operating.total, sales),
+        current: div(pos.assets.current, pos.liabilities.current),
+        acidTest: div(pos.assets.current, pos.liabilities.current),
+        debt: div(pos.liabilities.total, pos.assets.total),
+        debtToEquity: div(pos.liabilities.total, pos.equity.total),
+        receivableTurnover: div(sales, averageReceivable)
+      };
+    }
+    module2.exports = { profitAndLoss, position, cashFlowStatement, ratios, paidOf, isAsset };
   }
 });
 
@@ -35323,23 +35347,7 @@ var require_accounting = __commonJS({
     var { branchParam } = require_branches();
     var { requireFinance } = require_spending();
     var inBranch = (query, branch) => branch ? query.equalTo("branch", branch) : query;
-    async function deliveredIn(start, end, branch) {
-      const query = inBranch(new Parse.Query("Order"), branch);
-      query.equalTo("status", "DELIVERED");
-      if (start) query.greaterThanOrEqualTo("deliveredAt", start);
-      query.lessThan("deliveredAt", end);
-      return (await findAll(query)).map((order) => {
-        const fact = factOf(order);
-        return { ...fact, confirmed: isConfirmed(fact) };
-      });
-    }
-    async function spentIn(className, start, end, branch) {
-      const query = inBranch(new Parse.Query(className), branch);
-      query.doesNotExist("voidedAt");
-      if (start) query.greaterThanOrEqualTo("spentAt", start);
-      query.lessThan("spentAt", end);
-      return findAll(query);
-    }
+    var num = (value) => Math.round(Number(value) || 0);
     async function voucherRows(end, branch) {
       const vouchers = require_vouchers();
       await vouchers.backfill();
@@ -35394,78 +35402,124 @@ var require_accounting = __commonJS({
       charges: row.charges,
       note: row.note
     });
-    var inWindow = (date, start, end) => !!date && date < end && (!start || date >= start);
-    var voucherCash = (rows, start, end) => ({
-      refundReceipts: rows.filter((r) => r.cashIn > 0 && inWindow(r.openedAt, start, end)).map((r) => ({ amount: r.cashIn })),
-      refundsPaid: rows.filter((r) => inWindow(r.refundedAt, start, end)).map((r) => ({ amount: r.sent, charges: r.charges }))
-    });
-    async function payoutsIn(start, end, branch) {
-      const query = inBranch(new Parse.Query("TillPayout"), branch);
-      if (start) query.greaterThanOrEqualTo("paidAt", start);
-      query.lessThan("paidAt", end);
-      return (await findAll(query)).map((row) => ({
-        kind: row.get("kind"),
-        amount: Number(row.get("amount") || 0),
-        deductions: Number(row.get("deductions") || 0)
-      }));
-    }
-    function supplierPayments(purchases, fromDay, toDay) {
-      const out = [];
-      for (const row of purchases)
-        for (const payment of row.get("payments") || [])
-          if ((!fromDay || payment.day >= fromDay) && payment.day <= toDay)
-            out.push({ amount: Number(payment.amount || 0) });
-      return out;
-    }
-    var purchaseFacts = (rows) => rows.map((row) => ({
-      total: Number(row.get("total") || 0),
-      paid: Number(row.get("paid") || 0),
-      category: row.get("category") || "other"
-    }));
-    var expenseFacts = (rows) => rows.map((row) => ({ amount: Number(row.get("amount") || 0), category: row.get("category") }));
-    async function profitAndLoss(start, end, branch) {
-      const [orders, purchases, expenses, payouts] = await Promise.all([
-        deliveredIn(start, end, branch),
-        spentIn("Purchase", start, end, branch),
-        spentIn("Expense", start, end, branch),
-        payoutsIn(start, end, branch)
+    async function load(end, branch) {
+      const orderQuery = inBranch(new Parse.Query("Order"), branch);
+      orderQuery.equalTo("status", "DELIVERED");
+      orderQuery.lessThan("deliveredAt", end);
+      const spent = (className) => {
+        const query = inBranch(new Parse.Query(className), branch);
+        query.doesNotExist("voidedAt");
+        query.lessThan("spentAt", end);
+        return findAll(query);
+      };
+      const payoutQuery = inBranch(new Parse.Query("TillPayout"), branch);
+      payoutQuery.lessThan("paidAt", end);
+      const [orders, purchases, expenses, payouts, vouchers] = await Promise.all([
+        findAll(orderQuery),
+        spent("Purchase"),
+        spent("Expense"),
+        findAll(payoutQuery),
+        voucherRows(end, branch)
       ]);
+      return {
+        orders: orders.map((order) => {
+          const fact = factOf(order);
+          return { ...fact, at: order.get("deliveredAt"), confirmed: isConfirmed(fact) };
+        }),
+        purchases: purchases.map((row) => ({
+          at: row.get("spentAt"),
+          total: num(row.get("total")),
+          category: row.get("category") || "other",
+          payments: (row.get("payments") || []).map((p) => ({
+            day: p.day,
+            amount: num(p.amount),
+            method: p.method || "cash"
+          }))
+        })),
+        expenses: expenses.map((row) => ({
+          at: row.get("spentAt"),
+          amount: num(row.get("amount")),
+          category: row.get("category"),
+          method: row.get("method") || "cash"
+        })),
+        payouts: payouts.map((row) => ({
+          at: row.get("paidAt"),
+          kind: row.get("kind"),
+          amount: num(row.get("amount")),
+          deductions: num(row.get("deductions"))
+        })),
+        vouchers
+      };
+    }
+    var within = (rows, start, end) => rows.filter((r) => r.at < end && (!start || r.at >= start));
+    function plOf(rec, start, end) {
+      const payouts = within(rec.payouts, start, end);
       return A.profitAndLoss({
-        orders,
-        purchases: purchaseFacts(purchases),
-        expenses: expenseFacts(expenses),
+        orders: within(rec.orders, start, end),
+        purchases: within(rec.purchases, start, end),
+        expenses: within(rec.expenses, start, end),
         tillExpenses: payouts.filter((p) => p.kind !== "rider")
       });
     }
-    var openingOf = (config, branch) => branch ? 0 : Math.round(Number(config.openingBalance) || 0);
-    async function cashAt(toDay, config, branch) {
-      const end = startOfDay(addDays(toDay, 1), config.timezone);
-      const [orders, purchases, expenses, payouts, refunds] = await Promise.all([
-        deliveredIn(null, end, branch),
-        spentIn("Purchase", null, end, branch),
-        spentIn("Expense", null, end, branch),
-        payoutsIn(null, end, branch),
-        voucherRows(end, branch)
-      ]);
-      const movements = A.cashMovements({
-        orders,
-        supplierPayments: supplierPayments(purchases, null, toDay),
-        expenses: expenseFacts(expenses),
-        payouts,
-        ...voucherCash(refunds, null, end)
-      });
+    function yearStartOf(day, config) {
+      const month = Math.min(12, Math.max(1, Number(config.fiscalYearStart) || 1));
+      const year = Number(day.slice(0, 4)) - (Number(day.slice(5, 7)) < month ? 1 : 0);
+      return `${year}-${String(month).padStart(2, "0")}-01`;
+    }
+    function openingOf(config, branch) {
+      if (branch) return { cash: 0, bank: 0 };
+      const split = config.openingCash !== void 0 && config.openingCash !== null;
       return {
-        cash: openingOf(config, branch) + movements.net,
-        orders,
-        purchases,
-        expenses,
-        payouts,
-        refunds,
-        end
+        cash: num(split ? config.openingCash : config.openingBalance),
+        bank: split ? num(config.openingBank) : 0
       };
     }
+    function positionOf(rec, toDay, config, branch) {
+      const end = startOfDay(addDays(toDay, 1), config.timezone);
+      const yearStart = startOfDay(yearStartOf(toDay, config), config.timezone);
+      return A.position({
+        orders: within(rec.orders, null, end),
+        purchases: within(rec.purchases, null, end).map((p) => {
+          const payments = p.payments.filter((pay) => pay.day <= toDay);
+          return { ...p, payments, paid: payments.reduce((n, pay) => n + pay.amount, 0) };
+        }),
+        expenses: within(rec.expenses, null, end),
+        payouts: within(rec.payouts, null, end),
+        vouchers: rec.vouchers.map((v) => ({
+          cashIn: v.openedAt < end ? v.cashIn : 0,
+          owed: v.openedAt < end ? owedAt(v, end) : 0,
+          refunded: !!v.refundedAt && v.refundedAt < end,
+          sent: v.sent,
+          charges: v.charges
+        })),
+        opening: openingOf(config, branch),
+        profit: {
+          toDate: plOf(rec, null, end).netProfit,
+          beforeYear: plOf(rec, null, yearStart).netProfit
+        }
+      });
+    }
+    function comparisonRange(range, config) {
+      const monthShift = (day, months) => {
+        const date = /* @__PURE__ */ new Date(`${day.slice(0, 7)}-01T00:00:00Z`);
+        date.setUTCMonth(date.getUTCMonth() + months);
+        return date.toISOString().slice(0, 10);
+      };
+      let from = null;
+      if (range.from === yearStartOf(range.from, config)) from = monthShift(range.from, -12);
+      else if (range.from.endsWith("-01")) {
+        const months = (Number(range.to.slice(0, 4)) - Number(range.from.slice(0, 4))) * 12 + Number(range.to.slice(5, 7)) - Number(range.from.slice(5, 7)) + 1;
+        from = monthShift(range.from, -months);
+      }
+      if (!from) return previousRange(range, config.timezone);
+      const compared = resolveRange({ from, to: addDays(range.from, -1) }, config.timezone, {
+        maxDays: 3660
+      });
+      if (compared.error) throw invalid(compared.error);
+      return compared;
+    }
     function rangeOf(params, config) {
-      const range = resolveRange(params, config.timezone, { defaultDays: 30 });
+      const range = resolveRange(params, config.timezone, { defaultDays: 30, maxDays: 3660 });
       if (range.error) throw invalid(range.error);
       return range;
     }
@@ -35473,17 +35527,15 @@ var require_accounting = __commonJS({
       await requireFinance(request);
       const { values: config } = await loadConfig();
       const range = rangeOf(request.params, config);
-      const before = previousRange(range, config.timezone);
+      const before = comparisonRange(range, config);
       const branch = await branchParam(request.params.branchId);
-      const [current, previous] = await Promise.all([
-        profitAndLoss(range.start, range.end, branch),
-        profitAndLoss(before.start, before.end, branch)
-      ]);
+      const rec = await load(range.end, branch);
       return {
+        basis: "accrual",
         range: { from: range.from, to: range.to },
         previousRange: { from: before.from, to: before.to },
-        current,
-        previous
+        current: plOf(rec, range.start, range.end),
+        previous: plOf(rec, before.start, before.end)
       };
     });
     Parse.Cloud.define("getBalanceSheet", async (request) => {
@@ -35492,78 +35544,139 @@ var require_accounting = __commonJS({
       const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
       const day = request.params.day || today;
       if (!isDay(day) || day > today) throw invalid("Choose a day up to today");
+      const compareDay = request.params.compareDay || `${Number(day.slice(0, 4)) - 1}${day.slice(4)}`;
+      if (!isDay(compareDay) || compareDay > today) throw invalid("Choose a day up to today");
       const branch = await branchParam(request.params.branchId);
-      const at = await cashAt(day, config, branch);
-      const profit = A.profitAndLoss({
-        orders: at.orders,
-        purchases: purchaseFacts(at.purchases),
-        expenses: expenseFacts(at.expenses),
-        tillExpenses: at.payouts.filter((p) => p.kind !== "rider")
-      }).netProfit;
-      const purchases = at.purchases.map((row) => ({
-        total: Number(row.get("total") || 0),
-        paid: (row.get("payments") || []).filter((payment) => payment.day <= day).reduce((n, payment) => n + Number(payment.amount || 0), 0)
-      }));
-      const owed = at.refunds.filter((row) => owedAt(row, at.end) > 0);
-      const cleared = at.refunds.filter(
-        (row) => owedAt(row, at.end) === 0 && (row.closedAt || row.usedAt) && at.end - (row.closedAt || row.usedAt) < 90 * 864e5
+      const end = startOfDay(addDays(day > compareDay ? day : compareDay, 1), config.timezone);
+      const rec = await load(end, branch);
+      const at = startOfDay(addDays(day, 1), config.timezone);
+      const vouchers = rec.vouchers.filter((row) => row.openedAt < at);
+      const owed = vouchers.filter((row) => owedAt(row, at) > 0);
+      const cleared = vouchers.filter(
+        (row) => owedAt(row, at) === 0 && (row.closedAt || row.usedAt) && at - (row.closedAt || row.usedAt) < 90 * 864e5
       ).sort((a, b) => (b.closedAt || b.usedAt) - (a.closedAt || a.usedAt));
+      const opening = openingOf(config, branch);
       return {
+        basis: "accrual",
         day,
-        openingBalance: openingOf(config, branch),
-        openingSet: config.openingBalance !== void 0 && config.openingBalance !== null,
-        sheet: A.balanceSheet({
-          openingBalance: openingOf(config, branch),
-          cash: at.cash,
-          orders: at.orders,
-          purchases,
-          payouts: at.payouts,
-          profit,
-          refundsOwed: owed.reduce((n, row) => n + owedAt(row, at.end), 0)
-        }),
+        compareDay,
+        fiscalYearStart: Number(config.fiscalYearStart) || 1,
+        yearStart: yearStartOf(day, config),
+        openingBalance: opening.cash + opening.bank,
+        opening,
+        openingSet: config.openingBalance !== void 0 && config.openingBalance !== null || config.openingCash !== void 0 && config.openingCash !== null,
+        sheet: positionOf(rec, day, config, branch),
+        compare: positionOf(rec, compareDay, config, branch),
         refunds: {
-          owed: owed.map((row) => refundView(row, at.end)),
-          cleared: cleared.map((row) => refundView(row, at.end))
+          owed: owed.map((row) => refundView(row, at)),
+          cleared: cleared.map((row) => refundView(row, at))
         }
       };
     });
+    function flowOf(rec, range, config, branch) {
+      return A.cashFlowStatement({
+        start: positionOf(rec, addDays(range.from, -1), config, branch),
+        end: positionOf(rec, range.to, config, branch),
+        netProfit: plOf(rec, range.start, range.end).netProfit
+      });
+    }
     Parse.Cloud.define("getCashFlow", async (request) => {
       await requireFinance(request);
       const { values: config } = await loadConfig();
       const range = rangeOf(request.params, config);
+      const before = comparisonRange(range, config);
       const branch = await branchParam(request.params.branchId);
-      const [opening, orders, purchases, expenses, payouts, refunds] = await Promise.all([
-        cashAt(addDays(range.from, -1), config, branch).then((at) => at.cash),
-        deliveredIn(range.start, range.end, branch),
-        spentIn("Purchase", null, range.end, branch),
-        spentIn("Expense", range.start, range.end, branch),
-        payoutsIn(range.start, range.end, branch),
-        voucherRows(range.end, branch)
-      ]);
-      const movements = A.cashMovements({
-        orders,
-        supplierPayments: supplierPayments(purchases, range.from, range.to),
-        expenses: expenseFacts(expenses),
-        payouts,
-        ...voucherCash(refunds, range.start, range.end)
-      });
+      const rec = await load(range.end, branch);
       return {
         range: { from: range.from, to: range.to },
-        ...A.cashFlow({ opening, movements })
+        previousRange: { from: before.from, to: before.to },
+        current: flowOf(rec, range, config, branch),
+        previous: flowOf(rec, before, config, branch)
+      };
+    });
+    Parse.Cloud.define("getPerformanceRatios", async (request) => {
+      await requireFinance(request);
+      const { values: config } = await loadConfig();
+      const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
+      const to = request.params.to || today;
+      if (!isDay(to) || to > today) throw invalid("Choose a month up to this one");
+      const count = Math.min(24, Math.max(1, Math.round(Number(request.params.months) || 12)));
+      const branch = await branchParam(request.params.branchId);
+      const monthStart = (day, back) => {
+        const date = /* @__PURE__ */ new Date(`${day.slice(0, 7)}-01T00:00:00Z`);
+        date.setUTCMonth(date.getUTCMonth() - back);
+        return date.toISOString().slice(0, 10);
+      };
+      const months = Array.from({ length: count + 1 }, (_, i) => monthStart(to, count - i));
+      const lastDay = (first) => {
+        const next = monthStart(first, -1);
+        const day = addDays(next, -1);
+        return day > today ? today : day;
+      };
+      const end = startOfDay(addDays(lastDay(months.at(-1)), 1), config.timezone);
+      const rec = await load(end, branch);
+      const positions = months.map((first) => positionOf(rec, lastDay(first), config, branch));
+      return {
+        months: months.slice(1).map((first, i) => {
+          const pl = plOf(
+            rec,
+            startOfDay(first, config.timezone),
+            startOfDay(addDays(lastDay(first), 1), config.timezone)
+          );
+          const pos = positions[i + 1];
+          return {
+            month: first.slice(0, 7),
+            sales: pl.revenue.total,
+            grossProfit: pl.grossProfit,
+            netProfit: pl.netProfit,
+            operatingCost: pl.operating.total,
+            currentAssets: pos.assets.current,
+            currentLiabilities: pos.liabilities.current,
+            totalAssets: pos.assets.total,
+            totalLiabilities: pos.liabilities.total,
+            equity: pos.equity.total,
+            receivable: pos.assets.receivable,
+            ratios: A.ratios({
+              pl,
+              position: pos,
+              receivableBefore: positions[i].assets.receivable
+            })
+          };
+        })
       };
     });
     Parse.Cloud.define("saveOpeningBalance", async (request) => {
       const { user: actor } = await requireFinance(request);
-      const amount = Math.round(Number(request.params.amount));
-      if (!Number.isFinite(amount) || amount < 0 || amount > 1e11)
-        throw invalid("Enter the opening cash and bank balance");
-      const { object: config } = await loadConfig();
+      const p = request.params || {};
+      const money = (value, label) => {
+        const amount = Math.round(Number(value ?? 0));
+        if (!Number.isFinite(amount) || amount < 0 || amount > 1e11)
+          throw invalid(`Enter the opening ${label}`);
+        return amount;
+      };
+      const cash = money(p.cash ?? p.amount, "cash and bank balance");
+      const bank = money(p.bank, "mobile money and bank balance");
+      const { object: config, values } = await loadConfig();
       if (!config) throw invalid("Save the restaurant settings first");
-      const before = { openingBalance: config.get("openingBalance") ?? null };
-      config.set("openingBalance", amount);
+      const fiscalYearStart = p.fiscalYearStart === void 0 ? Number(values.fiscalYearStart) || 1 : Number(p.fiscalYearStart);
+      if (!Number.isInteger(fiscalYearStart) || fiscalYearStart < 1 || fiscalYearStart > 12)
+        throw invalid("Choose the month the financial year starts");
+      const before = {
+        openingBalance: config.get("openingBalance") ?? null,
+        openingCash: config.get("openingCash") ?? null,
+        openingBank: config.get("openingBank") ?? null,
+        fiscalYearStart: config.get("fiscalYearStart") ?? null
+      };
+      const next = {
+        openingBalance: cash + bank,
+        openingCash: cash,
+        openingBank: bank,
+        fiscalYearStart
+      };
+      config.set(next);
       await config.save(null, MASTER);
-      await audit(actor, "accounting.opening_balance", config, before, { openingBalance: amount });
-      return { openingBalance: amount };
+      await audit(actor, "accounting.opening_balance", config, before, next);
+      return next;
     });
   }
 });
@@ -37711,6 +37824,7 @@ var require_profile = __commonJS({
         currencySymbol: values.currencySymbol,
         currencyCode: values.currencyCode,
         timezone: values.timezone,
+        fiscalYearStart: Number(values.fiscalYearStart) || 1,
         defaultDeliveryFee: values.defaultDeliveryFee,
         maxRiderFloat: values.maxRiderFloat,
         allowBatching: values.allowBatching,
