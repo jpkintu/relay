@@ -8919,6 +8919,1232 @@ var require_mobileMoney = __commonJS({
   }
 });
 
+// cloud/lib/money.js
+var require_money = __commonJS({
+  "cloud/lib/money.js"(exports2, module2) {
+    "use strict";
+    var COMMISSION_TYPES = ["per_order", "percent", "hybrid"];
+    var ROUNDING_STEPS = { none: 0, up_100: 100, up_500: 500, up_1000: 1e3 };
+    function roundCommission(amount, rounding = "none") {
+      const whole = Math.round(Number(amount) || 0);
+      const step = ROUNDING_STEPS[rounding] || 0;
+      return step ? Math.ceil(whole / step) * step : whole;
+    }
+    function computeCommission({ type, perOrder, percent, subtotal, rounding }) {
+      const flat = Number(perOrder) || 0;
+      const share = (Number(subtotal) || 0) * (Number(percent) || 0) / 100;
+      const raw = type === "percent" ? share : type === "hybrid" ? flat + share : flat;
+      return roundCommission(raw, rounding);
+    }
+    function riderPay({ commissionAmount, deliveryPay, deliveryFee }) {
+      const commission = Number(commissionAmount) || 0;
+      if (deliveryPay !== void 0 && deliveryPay !== null) return commission;
+      return commission + (Number(deliveryFee) || 0);
+    }
+    var orderRiderPay = (order) => riderPay({
+      commissionAmount: order.get("commissionAmount"),
+      deliveryPay: order.get("deliveryPay"),
+      deliveryFee: order.get("deliveryFee")
+    });
+    function sumBy(rows, pick) {
+      return rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0);
+    }
+    module2.exports = {
+      COMMISSION_TYPES,
+      ROUNDING_STEPS,
+      roundCommission,
+      computeCommission,
+      riderPay,
+      orderRiderPay,
+      sumBy
+    };
+  }
+});
+
+// cloud/lib/accompaniments.js
+var require_accompaniments = __commonJS({
+  "cloud/lib/accompaniments.js"(exports2, module2) {
+    "use strict";
+    var MAX_GROUPS = 6;
+    var MAX_OPTIONS = 20;
+    function normalizeGroups(raw, knownIds) {
+      if (raw === void 0 || raw === null) return [];
+      if (!Array.isArray(raw) || raw.length > MAX_GROUPS)
+        throw new Error(`Use at most ${MAX_GROUPS} accompaniment groups`);
+      return raw.map((group, index) => {
+        const label = String(group?.label || "").trim() || `Choice ${index + 1}`;
+        if (label.length > 40)
+          throw new Error("Accompaniment group names must be 40 characters or less");
+        const options = [...new Set((group?.options || []).map(String))];
+        if (!options.length) throw new Error(`"${label}" needs at least one accompaniment`);
+        if (options.length > MAX_OPTIONS)
+          throw new Error(`"${label}" can offer at most ${MAX_OPTIONS} accompaniments`);
+        const unknown = options.filter((id) => !knownIds.has(id));
+        if (unknown.length)
+          throw new Error(`"${label}" refers to an accompaniment that does not exist`);
+        const max = Number(group?.max ?? options.length);
+        const min = Number(group?.min ?? 0);
+        if (!Number.isInteger(max) || max < 1 || max > options.length)
+          throw new Error(`"${label}": "pick at most" must be between 1 and ${options.length}`);
+        if (!Number.isInteger(min) || min < 0 || min > max)
+          throw new Error(`"${label}": "pick at least" must be between 0 and ${max}`);
+        return { label, options, min, max };
+      });
+    }
+    function availableGroups(groups, isAvailable) {
+      return (groups || []).map((group) => {
+        const options = group.options.filter((id) => isAvailable(id));
+        return {
+          label: group.label,
+          options,
+          min: Math.min(group.min, options.length),
+          max: Math.min(group.max, options.length)
+        };
+      }).filter((group) => group.options.length > 0);
+    }
+    function selectionError(groups, selectedIds) {
+      const selected = (selectedIds || []).map(String);
+      if (new Set(selected).size !== selected.length) return "The same accompaniment was chosen twice";
+      const counts = groups.map(() => 0);
+      for (const id of selected) {
+        const index = groups.findIndex((group) => group.options.includes(id));
+        if (index === -1) return "An accompaniment is not available for this dish";
+        counts[index] += 1;
+      }
+      for (const [index, group] of groups.entries()) {
+        if (counts[index] > group.max)
+          return group.max === 1 ? `Choose only one ${group.label.toLowerCase()} option` : `Choose at most ${group.max} from ${group.label}`;
+        if (counts[index] < group.min) return `Choose at least ${group.min} from ${group.label}`;
+      }
+      return "";
+    }
+    module2.exports = { normalizeGroups, availableGroups, selectionError };
+  }
+});
+
+// cloud/customers.js
+var require_customers = __commonJS({
+  "cloud/customers.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, invalid, requireRole, readAcl, audit } = require_core();
+    var MAX_ADDRESSES = 5;
+    var customerKey = (name, phone) => phone ? `tel:${phone}` : `name:${name.toLowerCase()}`;
+    async function recordCustomerOrder(order) {
+      const name = order.get("customerName");
+      const phone = order.get("customerPhone") || "";
+      const key = customerKey(name, phone);
+      const query = new Parse.Query("Customer");
+      query.equalTo("key", key);
+      query.ascending("createdAt");
+      const customer = await query.first(MASTER) || new Parse.Object("Customer");
+      const saved = customer.get("addresses") || [];
+      const text = order.get("deliveryAddress");
+      const same = (entry) => entry.text.toLowerCase() === text.toLowerCase();
+      const pin = order.get("location");
+      const previous = saved.find(same);
+      const address = {
+        text,
+        notes: order.get("deliveryNotes") || "",
+        ...pin ? { lat: pin.latitude, lng: pin.longitude } : previous?.lat !== void 0 && { lat: previous.lat, lng: previous.lng }
+      };
+      const addresses = [address, ...saved.filter((entry) => !same(entry))].slice(0, MAX_ADDRESSES);
+      customer.set({
+        key,
+        name,
+        nameLower: name.toLowerCase(),
+        phone,
+        addresses,
+        orderCount: (customer.get("orderCount") || 0) + 1,
+        lastOrderAt: /* @__PURE__ */ new Date(),
+        lastOrder: order
+      });
+      customer.setACL(readAcl(null, ["admin"]));
+      await customer.save(null, MASTER);
+      return customer;
+    }
+    async function pinCustomerAddress(order, location) {
+      const pointer = order.get("customer");
+      if (!pointer) return;
+      const customer = await new Parse.Query("Customer").get(pointer.id, MASTER).catch(() => null);
+      if (!customer) return;
+      const text = String(order.get("deliveryAddress") || "").toLowerCase();
+      const addresses = (customer.get("addresses") || []).map(
+        (entry) => entry.text.toLowerCase() === text ? {
+          ...entry,
+          ...location ? { lat: location.lat, lng: location.lng } : { lat: void 0, lng: void 0 }
+        } : entry
+      );
+      customer.set(
+        "addresses",
+        addresses.map((entry) => JSON.parse(JSON.stringify(entry)))
+      );
+      await customer.save(null, MASTER);
+    }
+    var escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    Parse.Cloud.define("searchCustomers", async (request) => {
+      await requireRole(request, ["rider", "cashier", "admin"]);
+      const text = String(request.params.q || "").trim().toLowerCase().slice(0, 40);
+      if (text.length < 2) throw invalid("Type at least 2 characters");
+      const byName = new Parse.Query("Customer");
+      byName.matches("nameLower", escapeRegex(text));
+      const queries = [byName];
+      const digits = text.replace(/[^\d]/g, "");
+      if (digits.length >= 3) {
+        const byPhone = new Parse.Query("Customer");
+        byPhone.matches("phone", escapeRegex(digits));
+        queries.push(byPhone);
+      }
+      const query = Parse.Query.or(...queries);
+      query.descending("orderCount");
+      query.limit(5);
+      const customers = await query.find(MASTER);
+      const lastOrders = customers.map((c) => c.get("lastOrder")).filter(Boolean);
+      const itemQuery = new Parse.Query("OrderItem");
+      itemQuery.containedIn("order", lastOrders);
+      itemQuery.limit(1e3);
+      const items = lastOrders.length ? await itemQuery.find(MASTER) : [];
+      return customers.map((customer) => {
+        const lastId = customer.get("lastOrder")?.id;
+        return {
+          id: customer.id,
+          name: customer.get("name"),
+          phone: customer.get("phone") || "",
+          addresses: customer.get("addresses") || [],
+          orderCount: customer.get("orderCount") || 0,
+          lastOrderAt: customer.get("lastOrderAt") || null,
+          lastOrder: items.filter((item) => item.get("order")?.id === lastId && item.get("menuItem")).map((item) => ({
+            menuItemId: item.get("menuItem").id,
+            title: item.get("itemNameSnapshot"),
+            quantity: item.get("quantity"),
+            notes: item.get("notes") || "",
+            accompanimentIds: item.get("accompanimentIds") || [],
+            accompanimentNames: item.get("accompanimentNames") || []
+          }))
+        };
+      });
+    });
+    var customerView = (row) => ({
+      id: row.id,
+      name: row.get("name"),
+      phone: row.get("phone") || "",
+      email: row.get("email") || "",
+      notes: row.get("notes") || "",
+      addresses: row.get("addresses") || [],
+      orderCount: row.get("orderCount") || 0,
+      lastOrderAt: row.get("lastOrderAt") || null,
+      createdAt: row.get("restoredCreatedAt") || row.createdAt
+    });
+    var PAGE = 100;
+    Parse.Cloud.define("listCustomers", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      const p = request.params;
+      const text = String(p.q || "").trim().toLowerCase().slice(0, 40);
+      let query = new Parse.Query("Customer");
+      if (text) {
+        const byName = new Parse.Query("Customer");
+        byName.matches("nameLower", escapeRegex(text));
+        const queries = [byName];
+        const digits = text.replace(/[^\d]/g, "");
+        if (digits.length >= 3) {
+          const byPhone = new Parse.Query("Customer");
+          byPhone.matches("phone", escapeRegex(digits));
+          queries.push(byPhone);
+        }
+        query = Parse.Query.or(...queries);
+      }
+      const sort = ["orders", "recent", "name"].includes(p.sort) ? p.sort : "orders";
+      if (sort === "orders") query.descending("orderCount");
+      else if (sort === "recent") query.descending("lastOrderAt");
+      else query.ascending("nameLower");
+      const page = Math.max(0, Math.floor(Number(p.page) || 0));
+      query.skip(page * PAGE);
+      query.limit(PAGE + 1);
+      const [rows, total] = await Promise.all([
+        query.find(MASTER),
+        // A condition makes Postgres count exactly instead of estimating.
+        new Parse.Query("Customer").exists("objectId").count(MASTER)
+      ]);
+      return {
+        customers: rows.slice(0, PAGE).map(customerView),
+        more: rows.length > PAGE,
+        total
+      };
+    });
+    Parse.Cloud.define("getCustomer", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      const row = await new Parse.Query("Customer").get(String(request.params.id || ""), MASTER).catch(() => null);
+      if (!row) throw invalid("Unknown customer");
+      const orders = await new Parse.Query("Order").equalTo("customer", row).descending("createdAt").limit(50).find(MASTER);
+      const delivered = orders.filter((o) => o.get("status") === "DELIVERED");
+      return {
+        ...customerView(row),
+        spent: delivered.reduce((n, o) => n + Number(o.get("total") || 0), 0),
+        orders: orders.map((o) => ({
+          id: o.id,
+          code: o.get("orderCode"),
+          status: o.get("status"),
+          total: Number(o.get("total") || 0),
+          at: o.get("restoredCreatedAt") || o.createdAt,
+          type: o.get("orderType") || "delivery"
+        }))
+      };
+    });
+    Parse.Cloud.define("saveCustomer", async (request) => {
+      const { user: actor } = await requireRole(request, ["admin", "finance"]);
+      const p = request.params;
+      const row = await new Parse.Query("Customer").get(String(p.id || ""), MASTER).catch(() => null);
+      if (!row) throw invalid("Unknown customer");
+      const before = customerView(row);
+      const name = String(p.name ?? row.get("name")).trim().slice(0, 80);
+      if (name.length < 2) throw invalid("Enter the customer name");
+      const phone = String(p.phone ?? row.get("phone") ?? "").replace(/[^\d+]/g, "").slice(0, 20);
+      const key = customerKey(name, phone);
+      const clash = await new Parse.Query("Customer").equalTo("key", key).notEqualTo("objectId", row.id).first(MASTER);
+      if (clash) throw invalid(`That phone number is already ${clash.get("name")}'s`);
+      row.set({
+        name,
+        nameLower: name.toLowerCase(),
+        phone,
+        key,
+        email: String(p.email ?? row.get("email") ?? "").trim().slice(0, 120),
+        notes: String(p.notes ?? row.get("notes") ?? "").trim().slice(0, 300)
+      });
+      await row.save(null, MASTER);
+      await audit(actor, "customer.updated", row, before, customerView(row));
+      return customerView(row);
+    });
+    module2.exports = { recordCustomerOrder, pinCustomerAddress };
+  }
+});
+
+// cloud/lib/geo.js
+var require_geo = __commonJS({
+  "cloud/lib/geo.js"(exports2, module2) {
+    "use strict";
+    function cleanLocation(value) {
+      if (value === void 0 || value === null || value === "") return { location: null };
+      const lat = Number(value?.lat);
+      const lng = Number(value?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
+        return { error: "That map pin is not a valid location" };
+      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
+      const round = (n) => Math.round(n * 1e6) / 1e6;
+      return { location: { lat: round(lat), lng: round(lng) } };
+    }
+    function distanceKm(a, b) {
+      const rad = (d) => d * Math.PI / 180;
+      const dLat = rad(b.lat - a.lat);
+      const dLng = rad(b.lng - a.lng);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+      return 2 * 6371 * Math.asin(Math.sqrt(h));
+    }
+    function feeByDistance(origin, to, perKm) {
+      const km = Math.round(distanceKm(origin, to) * 10) / 10;
+      return { km, fee: Math.round(km * perKm) };
+    }
+    function pinOf(lat, lng) {
+      const a = Number(lat);
+      const b = Number(lng);
+      return Number.isFinite(a) && Number.isFinite(b) && (a !== 0 || b !== 0) ? { lat: a, lng: b } : null;
+    }
+    module2.exports = { cleanLocation, distanceKm, feeByDistance, pinOf };
+  }
+});
+
+// cloud/branches.js
+var require_branches = __commonJS({
+  "cloud/branches.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireRole,
+      adminOnly,
+      audit,
+      findAll,
+      claimOnce,
+      readAcl
+    } = require_core();
+    var { cleanLocation, pinOf } = require_geo();
+    var CLASS = "Branch";
+    var TAGGED = ["Order", "Shift", "CashHandover", "TillPayout"];
+    var ROLES = ["admin", "finance", "cashier", "rider"];
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    async function allBranches() {
+      const rows = await findAll(new Parse.Query(CLASS));
+      return rows.sort(
+        (a, b) => Number(a.get("sortOrder") || 0) - Number(b.get("sortOrder") || 0) || a.createdAt - b.createdAt
+      );
+    }
+    async function mainBranch() {
+      return new Parse.Query(CLASS).equalTo("main", true).first(MASTER);
+    }
+    async function ensureColumns() {
+      const existing = new Map((await Parse.Schema.all()).map((s) => [s.className, s]));
+      for (const className of [...TAGGED, "_User"]) {
+        const current = existing.get(className);
+        if (!current || current.fields?.branch) continue;
+        const schema = new Parse.Schema(className);
+        schema.addPointer("branch", CLASS);
+        await schema.update().catch(() => void 0);
+      }
+    }
+    async function backfill(branch) {
+      const counts = {};
+      for (const className of [...TAGGED, "_User"]) {
+        const query = new Parse.Query(className);
+        query.doesNotExist("branch");
+        let count = 0;
+        await query.each(
+          async (row) => {
+            row.set("branch", branch);
+            await row.save(null, MASTER);
+            count += 1;
+          },
+          { ...MASTER, batchSize: 200 }
+        );
+        counts[className] = count;
+      }
+      return counts;
+    }
+    async function ensureMainBranch(actor) {
+      let main = await mainBranch();
+      if (main) return main;
+      if (await claimOnce("branch:main")) {
+        main = new Parse.Object(CLASS);
+        main.set({
+          name: "Main branch",
+          address: "",
+          phone: "",
+          active: true,
+          main: true,
+          sortOrder: 0
+        });
+        main.setACL(readAcl(null, ROLES));
+        await main.save(null, MASTER);
+        await ensureColumns();
+        const moved = await backfill(main);
+        await audit(actor, "branch.created", main, null, { name: "Main branch", main: true, moved });
+        return main;
+      }
+      for (let i = 0; i < 50 && !main; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        main = await mainBranch();
+      }
+      if (!main) throw invalid("Branches are being set up. Try again in a moment");
+      return main;
+    }
+    async function branchFor(user) {
+      if (!user) return mainBranch();
+      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER).catch(() => null);
+      const own = fresh?.get("branch");
+      if (own) return own;
+      return mainBranch();
+    }
+    async function branchParam(id) {
+      if (id === void 0 || id === null || id === "" || id === "all") return null;
+      if (typeof id !== "string" || !ID.test(id)) throw invalid("Unknown branch");
+      const branch = await new Parse.Query(CLASS).get(id, MASTER).catch(() => null);
+      if (!branch) throw invalid("Unknown branch");
+      return branch;
+    }
+    function inBranch(query, branch) {
+      if (branch) query.equalTo("branch", branch);
+      return query;
+    }
+    var view = (row, members = {}) => ({
+      id: row.id,
+      name: row.get("name"),
+      address: row.get("address") || "",
+      phone: row.get("phone") || "",
+      active: row.get("active") !== false,
+      main: row.get("main") === true,
+      // Its pin on the map: maps for its staff open here, and online
+      // deliveries are priced from it (online.js).
+      location: pinOf(row.get("lat"), row.get("lng")),
+      members: members[row.id] || { riders: 0, cashiers: 0 }
+    });
+    Parse.Cloud.define("getBranches", async (request) => {
+      const { user, role } = await requireRole(request, ROLES);
+      if (role === "admin") await ensureMainBranch(user);
+      const rows = await allBranches();
+      if (["admin", "finance"].includes(role)) return { branches: rows.map((row) => view(row)) };
+      const own = (await branchFor(user))?.id;
+      return { branches: rows.filter((row) => row.id === own).map((row) => view(row)) };
+    });
+    Parse.Cloud.define("adminListBranches", async (request) => {
+      const actor = await adminOnly(request);
+      await ensureMainBranch(actor);
+      const rows = await allBranches();
+      const members = {};
+      for (const role of ["rider", "cashier"]) {
+        const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
+        if (!roleRow) continue;
+        for (const user of await findAll(roleRow.getUsers().query())) {
+          if (user.get("active") === false) continue;
+          const id = user.get("branch")?.id;
+          if (!id) continue;
+          members[id] ||= { riders: 0, cashiers: 0 };
+          members[id][role === "rider" ? "riders" : "cashiers"] += 1;
+        }
+      }
+      return { branches: rows.map((row) => view(row, members)) };
+    });
+    Parse.Cloud.define("adminSaveBranch", async (request) => {
+      const actor = await adminOnly(request);
+      const p = request.params;
+      await ensureMainBranch(actor);
+      const name = clean(p.name, 60);
+      if (name.length < 2) throw invalid("Give the branch a name");
+      const rows = await allBranches();
+      if (rows.some((row2) => row2.id !== p.id && row2.get("name").toLowerCase() === name.toLowerCase()))
+        throw invalid(`There is already a branch called "${name}"`);
+      const row = p.id ? rows.find((r) => r.id === p.id) : new Parse.Object(CLASS);
+      if (!row) throw invalid("Unknown branch");
+      const before = p.id ? view(row) : null;
+      const active = p.active === void 0 ? row.get("active") !== false : p.active === true;
+      if (!active && row.get("main")) throw forbidden("The main branch cannot be closed");
+      if (!active && row.get("active") !== false) {
+        const staff = await new Parse.Query(Parse.User).equalTo("branch", row).notEqualTo("active", false).count(MASTER);
+        if (staff) throw invalid(`Move its ${staff} team member(s) to another branch first`);
+      }
+      if (!p.id) await require_limits().checkBranchLimit(rows.length + 1);
+      if ("location" in p) {
+        const pin = cleanLocation(p.location);
+        if (pin.error) throw invalid(pin.error);
+        if (pin.location) row.set({ lat: pin.location.lat, lng: pin.location.lng });
+        else {
+          row.unset("lat");
+          row.unset("lng");
+        }
+      }
+      row.set({
+        name,
+        address: clean(p.address, 200),
+        phone: clean(p.phone, 30),
+        active,
+        main: row.get("main") === true,
+        sortOrder: p.id ? row.get("sortOrder") || 0 : rows.length
+      });
+      row.setACL(readAcl(null, ROLES));
+      await row.save(null, MASTER);
+      await audit(actor, p.id ? "branch.updated" : "branch.created", row, before, view(row));
+      return view(row);
+    });
+    async function assignableBranch(id, actor) {
+      const branch = id ? await branchParam(id) : await ensureMainBranch(actor);
+      if (branch.get("active") === false) throw invalid("That branch is closed");
+      return branch;
+    }
+    module2.exports = {
+      mainBranch,
+      ensureMainBranch,
+      branchFor,
+      branchParam,
+      inBranch,
+      assignableBranch,
+      backfill,
+      TAGGED
+    };
+  }
+});
+
+// cloud/orders.js
+var require_orders = __commonJS({
+  "cloud/orders.js"(exports2, module2) {
+    "use strict";
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireUser,
+      requireRole,
+      getRoleName,
+      readAcl,
+      audit,
+      loadConfig,
+      nextDailyCode,
+      riderFloat,
+      personName,
+      requireCashierShift,
+      takeOrder,
+      withRiderLimit,
+      findAll
+    } = require_core();
+    var { computeCommission, sumBy } = require_money();
+    var { availableGroups, selectionError } = require_accompaniments();
+    var { recordCustomerOrder, pinCustomerAddress } = require_customers();
+    var { cleanLocation } = require_geo();
+    var { checkMobileMoney, PENDING } = require_payments();
+    var { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require_notifications();
+    var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
+    var PINNED_ONLY = "Pinned on the map";
+    var PAYMENT_METHODS = ["cash", "mobile_money"];
+    var MAX_LINES = 30;
+    var MAX_SPLITS = 12;
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
+    var offeredAt = (row, branchId) => {
+      const ids = row.get("branchIds") || [];
+      return !branchId || !ids.length || ids.includes(branchId);
+    };
+    var inStockAt = (row, branchId) => !branchId || !(row.get("soldOutAt") || []).includes(branchId);
+    async function servableAccompaniments(branchId) {
+      const query = new Parse.Query("Accompaniment");
+      query.equalTo("active", true);
+      query.equalTo("available", true);
+      query.limit(1e3);
+      const rows = (await query.find(MASTER)).filter((row) => inStockAt(row, branchId));
+      return new Map(rows.map((row) => [row.id, row]));
+    }
+    async function saveLines(order, lines, rider) {
+      const children = lines.map((line) => {
+        const item = new Parse.Object("OrderItem");
+        item.set({
+          order,
+          menuItem: line.menuItem,
+          itemNameSnapshot: line.name,
+          unitPriceSnapshot: line.price,
+          quantity: line.qty,
+          lineTotal: line.lineTotal,
+          notes: line.notes,
+          accompanimentIds: line.accompanimentIds,
+          accompanimentNames: line.accompanimentNames,
+          accompanimentPrices: line.accompanimentPrices,
+          extrasPerUnit: line.extrasPerUnit,
+          ...line.split && { split: line.split }
+        });
+        item.setACL(readAcl(rider));
+        return item;
+      });
+      await Parse.Object.saveAll(children, MASTER);
+    }
+    async function priceLines(items, branchId) {
+      if (!Array.isArray(items) || !items.length) throw invalid("Add at least one item");
+      if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
+      const menuQuery = new Parse.Query("MenuItem");
+      menuQuery.containedIn(
+        "objectId",
+        items.map((line) => String(line.id))
+      );
+      const [menu, accompaniments] = await Promise.all([
+        menuQuery.find(MASTER),
+        servableAccompaniments(branchId)
+      ]);
+      const byId = new Map(menu.map((item) => [item.id, item]));
+      const splits = [...new Set(items.map((line) => clean(line.split, 30)))];
+      const split = splits.length > 1;
+      if (split && splits.includes("")) throw invalid("Put every item in a split");
+      if (splits.length > MAX_SPLITS) throw invalid(`An order can have at most ${MAX_SPLITS} splits`);
+      return items.map((line) => {
+        const saved = byId.get(String(line.id));
+        const qty = Number(line.quantity);
+        if (!saved || !saved.get("active") || !saved.get("availableToday") || !offeredAt(saved, branchId) || !inStockAt(saved, branchId))
+          throw invalid(`${saved?.get("title") || "An item"} is not available`);
+        if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw invalid("Invalid quantity");
+        const title = saved.get("title");
+        const groups = availableGroups(
+          saved.get("accompanimentGroups") || [],
+          (id) => accompaniments.has(id)
+        );
+        const chosen = (Array.isArray(line.accompaniments) ? line.accompaniments : []).map(String);
+        const problem = selectionError(groups, chosen);
+        if (problem) throw invalid(`${title}: ${problem}`);
+        const accompanimentPrices = chosen.map(
+          (id) => Number(accompaniments.get(id).get("price") || 0)
+        );
+        const extrasPerUnit = accompanimentPrices.reduce((n, price2) => n + price2, 0);
+        const price = Number(saved.get("price"));
+        return {
+          menuItem: saved,
+          name: title,
+          price,
+          prepMinutes: Number(saved.get("prepMinutes") || 0),
+          qty,
+          extrasPerUnit,
+          lineTotal: (price + extrasPerUnit) * qty,
+          notes: clean(line.notes, 140),
+          accompanimentIds: chosen,
+          accompanimentNames: chosen.map((id) => accompaniments.get(id).get("title")),
+          accompanimentPrices,
+          split: split ? clean(line.split, 30) : ""
+        };
+      });
+    }
+    function splitFields(lines) {
+      const splits = [...new Set(lines.map((line) => line.split).filter(Boolean))];
+      return splits.length > 1 ? { splits } : {};
+    }
+    Parse.Cloud.define("createOrder", async (request) => {
+      const { user: rider } = await requireRole(request, ["rider"]);
+      const p = request.params;
+      const clientId = clean(p.clientId, 64);
+      if (clientId) {
+        const existingQuery = new Parse.Query("Order");
+        existingQuery.equalTo("createdBy", rider);
+        existingQuery.equalTo("clientId", clientId);
+        const existing = await existingQuery.first(MASTER);
+        if (existing)
+          return {
+            id: existing.id,
+            orderCode: existing.get("orderCode"),
+            total: existing.get("total"),
+            duplicate: true
+          };
+      }
+      const pin = cleanLocation(p.location);
+      if (pin.error) throw invalid(pin.error);
+      const customerName = clean(p.customerName, 80);
+      if (!customerName) throw invalid("Customer name is required");
+      const deliveryAddress = clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : "");
+      if (!deliveryAddress) throw invalid("Add a delivery address or pin it on the map");
+      const channel = p.channel || "walkin";
+      const paymentMethod = p.paymentMethod || "cash";
+      if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
+      if (!PAYMENT_METHODS.includes(paymentMethod))
+        throw invalid(
+          paymentMethod === "card" ? "Card is taken at the counter only. Choose cash or mobile money" : "Invalid payment method"
+        );
+      const branch = await require_branches().branchFor(rider);
+      const activeQuery = new Parse.Query("Order");
+      activeQuery.equalTo("createdBy", rider);
+      activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
+      const [lines, { values: settings }, active, float, me] = await Promise.all([
+        priceLines(p.items, branch?.id),
+        loadConfig(),
+        findAll(activeQuery),
+        riderFloat(rider),
+        new Parse.Query(Parse.User).get(rider.id, MASTER)
+      ]);
+      if (settings.moduleRiderOrders === false)
+        throw forbidden("Riders do not take orders here: the counter creates them");
+      if (me.get("available") === false)
+        throw invalid("You are on a break. Switch to Available to take orders");
+      const config = withRiderLimit(settings, me);
+      if (!config.allowBatching && active.length)
+        throw invalid("Finish your current order before creating another");
+      const toCollect = cashToCollect(active);
+      if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
+        throw invalid(cashLimitMessage(config, float, toCollect));
+      const subtotal = sumBy(lines, (line) => line.lineTotal);
+      const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
+      const total = subtotal + fee;
+      const isCash = paymentMethod === "cash";
+      if (isCash && p.amountToCollect !== void 0 && Number(p.amountToCollect) !== total)
+        throw invalid("The customer must pay the full total");
+      const amountToCollect = isCash ? total : 0;
+      const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(
+        config,
+        p.paymentProvider,
+        p.paymentReference,
+        void 0,
+        p.payerPhone || p.customerPhone
+      ) : null;
+      const order = new Parse.Object("Order");
+      if (branch) order.set("branch", branch);
+      order.set({
+        orderCode: await nextDailyCode("ORD", 4, config.timezone, {
+          className: "Order",
+          field: "orderCode"
+        }),
+        clientId,
+        channel,
+        createdBy: rider,
+        customerName,
+        customerPhone: cleanPhone(p.customerPhone),
+        deliveryAddress,
+        deliveryNotes: clean(p.deliveryNotes, 200),
+        subtotal,
+        prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
+        ...splitFields(lines),
+        deliveryFee: fee,
+        total,
+        paymentMethod,
+        amountToCollect,
+        amountCollected: 0,
+        status: "PLACED",
+        restaurantStatus: "pending",
+        cashStatus: isCash ? "NOT_COLLECTED" : "NOT_APPLICABLE",
+        commissionAmount: 0,
+        commissionPaid: false,
+        disputeFlag: false,
+        ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
+        ...momo && {
+          ...momo.request,
+          paymentProvider: momo.provider,
+          paymentReference: momo.reference,
+          paymentStatus: PENDING
+        }
+      });
+      order.setACL(readAcl(rider));
+      await order.save(null, MASTER);
+      await saveLines(order, lines, rider);
+      const customer = await recordCustomerOrder(order);
+      if (customer) {
+        order.set("customer", customer);
+        await order.save(null, MASTER);
+      }
+      await audit(rider, "order.placed", order, null, { status: "PLACED", total });
+      await notifyStaff({
+        kind: "order.new",
+        tone: "new",
+        title: `New order ${order.get("orderCode")}`,
+        body: [
+          personName(rider),
+          customerName,
+          money(config, total),
+          momo ? "mobile money to check" : "cash"
+        ].join(" \xB7 "),
+        link: "/cashier",
+        order
+      });
+      const exposure = float + toCollect + (isCash ? amountToCollect : 0);
+      return {
+        id: order.id,
+        orderCode: order.get("orderCode"),
+        total,
+        // This order takes the rider to or over the limit: it goes ahead, but the
+        // next one is blocked until the cash is handed over.
+        cashLimitReached: config.maxRiderFloat > 0 && exposure >= config.maxRiderFloat
+      };
+    });
+    var cashToCollect = (orders) => sumBy(
+      orders.filter((order) => order.get("paymentMethod") === "cash"),
+      (order) => order.get("amountToCollect") ?? order.get("total")
+    );
+    function cashLimitMessage(config, held, toCollect) {
+      const parts = [];
+      if (held > 0) parts.push(`you hold ${money(config, held)}`);
+      if (toCollect > 0) parts.push(`${money(config, toCollect)} is still to collect on open orders`);
+      return `Cash limit reached: ${parts.join(" and ") || "no cash room left"} (limit ${money(config, config.maxRiderFloat)}). ${toCollect > 0 ? "Deliver and hand over" : "Hand over"} cash before taking new orders`;
+    }
+    var TRANSITIONS = {
+      accept: { from: ["PLACED"], to: "ACCEPTED", kitchen: "accepted", who: "staff" },
+      prepare: { from: ["ACCEPTED"], to: "PREPARING", kitchen: "preparing", who: "staff" },
+      ready: { from: ["ACCEPTED", "PREPARING"], to: "READY", kitchen: "ready", who: "staff" },
+      pickup: { from: ["READY"], to: "PICKED_UP", kitchen: "picked_up", who: "owner" },
+      deliver: { from: ["PICKED_UP"], to: "DELIVERED", kitchen: "picked_up", who: "owner" },
+      reject: { from: ["PLACED"], to: "CANCELLED", kitchen: "rejected", who: "staff" },
+      cancel: {
+        from: ["PLACED", "ACCEPTED", "PREPARING", "READY"],
+        to: "CANCELLED",
+        kitchen: "cancelled",
+        who: "owner"
+      },
+      // Eat-in / pick-up: the guest has it (served at the table or collected).
+      complete: { from: ["READY"], to: "DELIVERED", kitchen: "served", who: "staff" }
+    };
+    var COUNTER_TYPES = ["eat_in", "pickup"];
+    var counterPaid = (order) => !order.get("billOpen") && (order.get("paymentMethod") === "cash" ? order.get("cashStatus") === "IN_TILL" : order.get("paymentStatus") === "VERIFIED");
+    async function applyDelivery(order, {
+      method: wanted,
+      provider,
+      reference,
+      payerPhone,
+      amount: given,
+      actor,
+      config,
+      now = /* @__PURE__ */ new Date()
+    }) {
+      const method = wanted || order.get("paymentMethod");
+      if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
+      const paidByMomo = order.get("paymentMethod") === "mobile_money";
+      if (paidByMomo && method !== "mobile_money") throw invalid("This order was paid by mobile money");
+      if (!paidByMomo && method === "mobile_money") {
+        const momo = await checkMobileMoney(
+          config,
+          provider,
+          reference,
+          order.id,
+          payerPhone || order.get("customerPhone")
+        );
+        order.set({
+          ...momo.request,
+          paymentProvider: momo.provider,
+          paymentReference: momo.reference,
+          paymentStatus: PENDING,
+          // Paid at the door: until the cashier confirms it, the order stays on
+          // the rider's list; if it is not received, the rider owes it as cash.
+          paidAtDoor: true
+        });
+      }
+      const isCash = method === "cash";
+      const due = Number(order.get("amountToCollect") || order.get("total"));
+      const amount = isCash ? Number(given ?? due) : 0;
+      if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
+      const rider = await order.get("createdBy").fetch(MASTER);
+      const commission = order.get("source") === "counter" ? 0 : computeCommission({
+        type: rider.get("commissionType") || "per_order",
+        perOrder: rider.get("commissionPerOrder"),
+        percent: rider.get("commissionPercent"),
+        subtotal: order.get("subtotal"),
+        rounding: config.commissionRounding
+      });
+      const deliveryPay = Number(order.get("deliveryFee") || 0);
+      order.set({
+        paymentMethod: method,
+        deliveredAt: now,
+        amountCollected: Math.round(amount),
+        paymentCollectedBy: actor,
+        commissionBase: commission,
+        deliveryPay,
+        commissionAmount: commission + deliveryPay,
+        commissionPaid: false,
+        cashStatus: isCash ? "WITH_RIDER" : "NOT_APPLICABLE"
+      });
+    }
+    Parse.Cloud.define("transitionOrder", async (request) => {
+      const actor = requireUser(request);
+      const p = request.params;
+      const rule = TRANSITIONS[p.action];
+      const order = await new Parse.Query("Order").get(p.orderId, MASTER);
+      if (!rule || !rule.from.includes(order.get("status"))) throw invalid("Invalid status transition");
+      const role = await getRoleName(actor);
+      const staff = ["cashier", "admin"].includes(role);
+      const owner = order.get("createdBy")?.id === actor.id;
+      if (rule.who === "staff" && !staff) throw forbidden("Staff access required");
+      if (rule.who === "owner" && !owner && !staff) throw forbidden("Not allowed");
+      if (staff && !owner) await requireCashierShift(actor, role);
+      const { values: config } = await loadConfig();
+      if (p.action === "pickup" && !staff && config.requireCashierConfirmForPickup)
+        throw forbidden("The cashier confirms pickup when handing over the bag");
+      if (p.action === "accept" && [PENDING, "REJECTED"].includes(order.get("paymentStatus")))
+        throw invalid("Confirm the mobile money payment before accepting this order");
+      if (p.action === "cancel" && !staff && order.get("status") !== "PLACED")
+        throw forbidden("The kitchen has accepted this order. Ask the cashier to cancel it");
+      const atCounter = COUNTER_TYPES.includes(order.get("orderType"));
+      if (p.action === "complete" && !atCounter)
+        throw invalid("Only eat-in and pick-up orders are served or collected");
+      if (["pickup", "deliver"].includes(p.action) && atCounter)
+        throw invalid("Eat-in and pick-up orders are finished with Served / Collected");
+      if (p.action === "pickup" && !order.get("createdBy"))
+        throw invalid("Assign a rider before handing the order over");
+      const serveUnpaid = p.action === "complete" && order.get("orderType") === "eat_in" && !counterPaid(order);
+      if (serveUnpaid && order.get("servedAt")) throw invalid("Served: waiting for payment");
+      if (p.action === "complete" && !serveUnpaid && !counterPaid(order))
+        throw invalid("Take payment (or wait for the mobile money check) first");
+      if (serveUnpaid) {
+        const now2 = /* @__PURE__ */ new Date();
+        order.set({ servedAt: now2, restaurantStatus: "served" });
+        if (staff && !owner) await takeOrder(order, actor, role);
+        await order.save(null, MASTER);
+        await audit(actor, "order.served", order, { servedAt: null }, { servedAt: now2, paid: false });
+        return { status: order.get("status"), served: true };
+      }
+      const before = {
+        status: order.get("status"),
+        restaurantStatus: order.get("restaurantStatus"),
+        paymentMethod: order.get("paymentMethod")
+      };
+      order.set({ status: rule.to, restaurantStatus: rule.kitchen });
+      const now = /* @__PURE__ */ new Date();
+      if (p.action === "accept") order.set("acceptedAt", now);
+      if (p.action === "ready") order.set("readyAt", now);
+      if (p.action === "pickup") order.set("pickedUpAt", now);
+      if (p.action === "cancel" || p.action === "reject") {
+        const reason = clean(p.reason, 200);
+        if (reason.length < 3) throw invalid("Give a reason");
+        order.set({
+          cancelledReason: reason,
+          cancelledBy: actor,
+          cancelledAt: now,
+          // Cash already in a till goes back to the guest.
+          cashStatus: order.get("cashStatus") === "IN_TILL" ? "REFUNDED" : "NOT_APPLICABLE",
+          billOpen: false
+        });
+      }
+      if (p.action === "complete")
+        order.set({
+          restaurantStatus: order.get("orderType") === "pickup" ? "collected" : "served",
+          ...order.get("orderType") === "eat_in" && !order.get("servedAt") && { servedAt: now },
+          deliveredAt: now,
+          commissionBase: 0,
+          deliveryPay: 0,
+          commissionAmount: 0,
+          commissionPaid: true
+        });
+      if (p.action === "deliver")
+        await applyDelivery(order, {
+          method: p.paymentMethod,
+          provider: p.paymentProvider,
+          reference: p.paymentReference,
+          payerPhone: p.payerPhone,
+          amount: p.amountCollected,
+          actor,
+          config,
+          now
+        });
+      if (staff && !owner) await takeOrder(order, actor, role);
+      await order.save(null, MASTER);
+      await audit(actor, `order.${p.action}`, order, before, {
+        status: rule.to,
+        paymentMethod: order.get("paymentMethod"),
+        reason: order.get("cancelledReason")
+      });
+      await notifyTransition(order, p.action, { staff, owner, actor, config });
+      return { status: rule.to };
+    });
+    var RIDER_MESSAGES = {
+      accept: (code) => [`${code} accepted`, "The kitchen has started on it."],
+      prepare: (code) => [`${code} is being prepared`, ""],
+      ready: (code) => [`${code} is ready for pickup`, "Collect it from the counter."],
+      pickup: (code) => [`${code} handed to you`, "Deliver it and record the payment."],
+      deliver: (code) => [`${code} marked delivered`, ""],
+      reject: (code, reason) => [`${code} was rejected`, reason],
+      cancel: (code, reason) => [`${code} was cancelled`, reason]
+    };
+    async function notifyTransition(order, action, { staff, owner, actor, config }) {
+      const code = order.get("orderCode");
+      const rider = order.get("createdBy");
+      if (rider && staff && !owner && RIDER_MESSAGES[action]) {
+        const [title, detail] = RIDER_MESSAGES[action](code, order.get("cancelledReason") || "");
+        await notifyUser(rider, {
+          kind: `order.${action}`,
+          tone: ["ready", "reject", "cancel"].includes(action) ? "alert" : "update",
+          title,
+          body: [order.get("customerName"), detail].filter(Boolean).join(" \xB7 "),
+          link: `/rider/order/${order.id}`,
+          order
+        });
+      }
+      if (owner && action === "cancel")
+        await notifyStaff({
+          kind: "order.cancelled_by_rider",
+          tone: "update",
+          title: `${code} cancelled by the rider`,
+          body: order.get("cancelledReason") || "",
+          link: "/cashier",
+          order,
+          except: actor
+        });
+      if (action === "deliver" && order.get("paymentMethod") === "cash") {
+        const fresh = await rider.fetch(MASTER);
+        await cashLimitAlert(fresh, withRiderLimit(config, fresh));
+      }
+    }
+    Parse.Cloud.define("setOrderLocation", async (request) => {
+      const actor = requireUser(request);
+      const order = await new Parse.Query("Order").get(String(request.params.orderId || ""), MASTER);
+      const role = await getRoleName(actor);
+      const staff = ["cashier", "admin"].includes(role);
+      if (order.get("createdBy")?.id !== actor.id && !staff) throw forbidden("Not your order");
+      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
+      const pin = cleanLocation(request.params.location);
+      if (pin.error) throw invalid(pin.error);
+      const before = order.get("location");
+      if (pin.location) order.set("location", new Parse.GeoPoint(pin.location.lat, pin.location.lng));
+      else if (order.has("location")) order.unset("location");
+      await order.save(null, MASTER);
+      await pinCustomerAddress(order, pin.location);
+      await audit(
+        actor,
+        "order.location",
+        order,
+        { location: before ? { lat: before.latitude, lng: before.longitude } : null },
+        { location: pin.location }
+      );
+      return { location: pin.location };
+    });
+    Parse.Cloud.define("flagOrderIssue", async (request) => {
+      const actor = requireUser(request);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      const role = await getRoleName(actor);
+      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
+        throw forbidden("Not allowed");
+      const note = clean(request.params.note, 300);
+      if (note.length < 5) throw invalid("Describe the problem");
+      order.set({ disputeFlag: true, disputeNote: note, disputedBy: actor, disputedAt: /* @__PURE__ */ new Date() });
+      await order.save(null, MASTER);
+      await audit(actor, "order.issue_flagged", order, null, { note });
+      await notifyAdmins({
+        kind: "order.issue",
+        tone: "alert",
+        title: `Problem reported on ${order.get("orderCode")}`,
+        body: `${personName(await actor.fetch(MASTER))}: ${note}`,
+        link: "/admin/problems",
+        order,
+        except: actor
+      });
+      return { ok: true };
+    });
+    Parse.Cloud.define("resolveOrderIssue", async (request) => {
+      const { user: actor } = await requireRole(request, ["admin"]);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      if (!order.get("disputeFlag")) throw invalid("This order has no open issue");
+      const resolution = clean(request.params.resolution, 300);
+      if (resolution.length < 5) throw invalid("Describe how it was resolved");
+      order.set({
+        disputeFlag: false,
+        disputeResolution: resolution,
+        disputeResolvedBy: actor,
+        disputeResolvedAt: /* @__PURE__ */ new Date()
+      });
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        "order.issue_resolved",
+        order,
+        { note: order.get("disputeNote") },
+        { resolution }
+      );
+      const resolved = {
+        kind: "order.issue_resolved",
+        tone: "update",
+        title: `Problem on ${order.get("orderCode")} resolved`,
+        body: resolution,
+        order,
+        except: actor
+      };
+      const rider = order.get("createdBy");
+      const reporter = order.get("disputedBy");
+      await notifyUser(rider, { ...resolved, link: `/rider/order/${order.id}` });
+      if (reporter && reporter.id !== rider?.id) await notifyUser(reporter, { ...resolved, link: "" });
+      return { ok: true };
+    });
+    Parse.Cloud.define("adminListIssues", async (request) => {
+      await requireRole(request, ["admin"]);
+      const state = request.params.state || "open";
+      if (!["open", "resolved", "all"].includes(state)) throw invalid("Unknown issue filter");
+      const query = new Parse.Query("Order");
+      query.exists("disputeNote");
+      if (state === "open") query.equalTo("disputeFlag", true);
+      if (state === "resolved") query.notEqualTo("disputeFlag", true);
+      query.include(["createdBy", "disputedBy", "disputeResolvedBy"]);
+      query.descending("disputedAt");
+      query.limit(300);
+      const [rows, open] = await Promise.all([
+        query.find(MASTER),
+        new Parse.Query("Order").equalTo("disputeFlag", true).count(MASTER)
+      ]);
+      return {
+        open,
+        issues: rows.map((order) => ({
+          id: order.id,
+          code: order.get("orderCode"),
+          customer: order.get("customerName"),
+          customerPhone: order.get("customerPhone") || "",
+          rider: personName(order.get("createdBy")),
+          status: order.get("status"),
+          total: order.get("total"),
+          note: order.get("disputeNote"),
+          reportedBy: personName(order.get("disputedBy")),
+          reportedAt: order.get("disputedAt") || null,
+          open: order.get("disputeFlag") === true,
+          resolution: order.get("disputeResolution") || "",
+          resolvedBy: personName(order.get("disputeResolvedBy")),
+          resolvedAt: order.get("disputeResolvedAt") || null
+        }))
+      };
+    });
+    var KITCHEN_OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
+    async function onShiftCashiers() {
+      const query = new Parse.Query("Shift");
+      query.equalTo("kind", "cashier");
+      query.equalTo("status", "open");
+      query.include("operator");
+      query.limit(100);
+      const shifts = await query.find(MASTER);
+      const seen = /* @__PURE__ */ new Set();
+      const people = [];
+      for (const shift of shifts) {
+        const person = shift.get("operator");
+        if (!person || seen.has(person.id) || person.get("active") === false) continue;
+        if (await getRoleName(person) !== "cashier") continue;
+        seen.add(person.id);
+        people.push(person);
+      }
+      return people;
+    }
+    Parse.Cloud.define("getOnShiftCashiers", async (request) => {
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const branch = role === "cashier" ? (await user.fetch(MASTER)).get("branch")?.id : null;
+      return (await onShiftCashiers()).filter((person) => person.id !== user.id).filter((person) => !branch || person.get("branch")?.id === branch).map((person) => ({ id: person.id, name: personName(person) }));
+    });
+    Parse.Cloud.define("transferOrder", async (request) => {
+      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(actor, role);
+      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
+      if (!KITCHEN_OPEN.includes(order.get("status")))
+        throw invalid("Only orders still in the kitchen can be transferred");
+      const holder = order.get("cashier");
+      if (role === "cashier" && holder && holder.id !== actor.id)
+        throw forbidden(`${order.get("cashierName")} is handling this order`);
+      const toId = String(request.params.toUserId || "");
+      let target = null;
+      if (toId) {
+        target = (await onShiftCashiers()).find((person) => person.id === toId);
+        if (!target) throw invalid("That colleague is not on shift");
+        if (holder?.id === target.id) throw invalid(`${personName(target)} already has this order`);
+      }
+      const before = { cashier: order.get("cashierName") || "" };
+      order.set("cashierRound", Number(order.get("cashierRound") || 0) + 1);
+      if (target)
+        order.set({ cashier: target, cashierName: personName(target), assignedAt: /* @__PURE__ */ new Date() });
+      else order.set("cashierName", "");
+      if (!target && holder) order.unset("cashier");
+      await order.save(null, MASTER);
+      await audit(actor, "order.transferred", order, before, { cashier: order.get("cashierName") });
+      const code = order.get("orderCode");
+      const from = personName(await actor.fetch(MASTER));
+      if (target)
+        await notifyUser(target, {
+          kind: "order.transferred",
+          tone: "new",
+          title: `${code} passed to you`,
+          body: `${from} transferred it \xB7 ${order.get("customerName")}`,
+          link: "/cashier",
+          order
+        });
+      return { cashier: order.get("cashierName") || "" };
+    });
+    async function closeServed(order, actor) {
+      if (order.get("orderType") !== "eat_in" || order.get("status") !== "READY" || !order.get("servedAt") || !counterPaid(order))
+        return false;
+      order.set({
+        status: "DELIVERED",
+        restaurantStatus: "served",
+        deliveredAt: /* @__PURE__ */ new Date(),
+        commissionBase: 0,
+        deliveryPay: 0,
+        commissionAmount: 0,
+        commissionPaid: true
+      });
+      await order.save(null, MASTER);
+      await audit(
+        actor,
+        "order.complete",
+        order,
+        { status: "READY" },
+        {
+          status: "DELIVERED",
+          paidAfterServing: true
+        }
+      );
+      return true;
+    }
+    module2.exports = {
+      closeServed,
+      riderFloat,
+      PINNED_ONLY,
+      priceLines,
+      saveLines,
+      splitFields,
+      clean,
+      cleanPhone,
+      CHANNELS,
+      servableAccompaniments,
+      offeredAt,
+      inStockAt,
+      KITCHEN_OPEN,
+      PAYMENT_METHODS,
+      applyDelivery,
+      notifyTransition
+    };
+  }
+});
+
 // cloud/lib/placed.js
 var require_placed = __commonJS({
   "cloud/lib/placed.js"(exports2, module2) {
@@ -9024,6 +10250,7 @@ var require_payments = __commonJS({
           cashStatus: "WITH_RIDER"
         });
       await order.save(null, MASTER);
+      if (received) await require_orders().closeServed(order, actor || null);
       await audit(
         actor,
         received ? "payment.verified" : "payment.rejected",
@@ -27461,240 +28688,6 @@ var require_throttle = __commonJS({
   }
 });
 
-// cloud/lib/geo.js
-var require_geo = __commonJS({
-  "cloud/lib/geo.js"(exports2, module2) {
-    "use strict";
-    function cleanLocation(value) {
-      if (value === void 0 || value === null || value === "") return { location: null };
-      const lat = Number(value?.lat);
-      const lng = Number(value?.lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
-        return { error: "That map pin is not a valid location" };
-      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
-      const round = (n) => Math.round(n * 1e6) / 1e6;
-      return { location: { lat: round(lat), lng: round(lng) } };
-    }
-    function distanceKm(a, b) {
-      const rad = (d) => d * Math.PI / 180;
-      const dLat = rad(b.lat - a.lat);
-      const dLng = rad(b.lng - a.lng);
-      const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
-      return 2 * 6371 * Math.asin(Math.sqrt(h));
-    }
-    function feeByDistance(origin, to, perKm) {
-      const km = Math.round(distanceKm(origin, to) * 10) / 10;
-      return { km, fee: Math.round(km * perKm) };
-    }
-    function pinOf(lat, lng) {
-      const a = Number(lat);
-      const b = Number(lng);
-      return Number.isFinite(a) && Number.isFinite(b) && (a !== 0 || b !== 0) ? { lat: a, lng: b } : null;
-    }
-    module2.exports = { cleanLocation, distanceKm, feeByDistance, pinOf };
-  }
-});
-
-// cloud/branches.js
-var require_branches = __commonJS({
-  "cloud/branches.js"(exports2, module2) {
-    "use strict";
-    var {
-      MASTER,
-      invalid,
-      forbidden,
-      requireRole,
-      adminOnly,
-      audit,
-      findAll,
-      claimOnce,
-      readAcl
-    } = require_core();
-    var { cleanLocation, pinOf } = require_geo();
-    var CLASS = "Branch";
-    var TAGGED = ["Order", "Shift", "CashHandover", "TillPayout"];
-    var ROLES = ["admin", "finance", "cashier", "rider"];
-    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
-    var ID = /^[A-Za-z0-9]{1,32}$/;
-    async function allBranches() {
-      const rows = await findAll(new Parse.Query(CLASS));
-      return rows.sort(
-        (a, b) => Number(a.get("sortOrder") || 0) - Number(b.get("sortOrder") || 0) || a.createdAt - b.createdAt
-      );
-    }
-    async function mainBranch() {
-      return new Parse.Query(CLASS).equalTo("main", true).first(MASTER);
-    }
-    async function ensureColumns() {
-      const existing = new Map((await Parse.Schema.all()).map((s) => [s.className, s]));
-      for (const className of [...TAGGED, "_User"]) {
-        const current = existing.get(className);
-        if (!current || current.fields?.branch) continue;
-        const schema = new Parse.Schema(className);
-        schema.addPointer("branch", CLASS);
-        await schema.update().catch(() => void 0);
-      }
-    }
-    async function backfill(branch) {
-      const counts = {};
-      for (const className of [...TAGGED, "_User"]) {
-        const query = new Parse.Query(className);
-        query.doesNotExist("branch");
-        let count = 0;
-        await query.each(
-          async (row) => {
-            row.set("branch", branch);
-            await row.save(null, MASTER);
-            count += 1;
-          },
-          { ...MASTER, batchSize: 200 }
-        );
-        counts[className] = count;
-      }
-      return counts;
-    }
-    async function ensureMainBranch(actor) {
-      let main = await mainBranch();
-      if (main) return main;
-      if (await claimOnce("branch:main")) {
-        main = new Parse.Object(CLASS);
-        main.set({
-          name: "Main branch",
-          address: "",
-          phone: "",
-          active: true,
-          main: true,
-          sortOrder: 0
-        });
-        main.setACL(readAcl(null, ROLES));
-        await main.save(null, MASTER);
-        await ensureColumns();
-        const moved = await backfill(main);
-        await audit(actor, "branch.created", main, null, { name: "Main branch", main: true, moved });
-        return main;
-      }
-      for (let i = 0; i < 50 && !main; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        main = await mainBranch();
-      }
-      if (!main) throw invalid("Branches are being set up. Try again in a moment");
-      return main;
-    }
-    async function branchFor(user) {
-      if (!user) return mainBranch();
-      const fresh = await new Parse.Query(Parse.User).get(user.id, MASTER).catch(() => null);
-      const own = fresh?.get("branch");
-      if (own) return own;
-      return mainBranch();
-    }
-    async function branchParam(id) {
-      if (id === void 0 || id === null || id === "" || id === "all") return null;
-      if (typeof id !== "string" || !ID.test(id)) throw invalid("Unknown branch");
-      const branch = await new Parse.Query(CLASS).get(id, MASTER).catch(() => null);
-      if (!branch) throw invalid("Unknown branch");
-      return branch;
-    }
-    function inBranch(query, branch) {
-      if (branch) query.equalTo("branch", branch);
-      return query;
-    }
-    var view = (row, members = {}) => ({
-      id: row.id,
-      name: row.get("name"),
-      address: row.get("address") || "",
-      phone: row.get("phone") || "",
-      active: row.get("active") !== false,
-      main: row.get("main") === true,
-      // Its pin on the map: maps for its staff open here, and online
-      // deliveries are priced from it (online.js).
-      location: pinOf(row.get("lat"), row.get("lng")),
-      members: members[row.id] || { riders: 0, cashiers: 0 }
-    });
-    Parse.Cloud.define("getBranches", async (request) => {
-      const { user, role } = await requireRole(request, ROLES);
-      if (role === "admin") await ensureMainBranch(user);
-      const rows = await allBranches();
-      if (["admin", "finance"].includes(role)) return { branches: rows.map((row) => view(row)) };
-      const own = (await branchFor(user))?.id;
-      return { branches: rows.filter((row) => row.id === own).map((row) => view(row)) };
-    });
-    Parse.Cloud.define("adminListBranches", async (request) => {
-      const actor = await adminOnly(request);
-      await ensureMainBranch(actor);
-      const rows = await allBranches();
-      const members = {};
-      for (const role of ["rider", "cashier"]) {
-        const roleRow = await new Parse.Query(Parse.Role).equalTo("name", role).first(MASTER);
-        if (!roleRow) continue;
-        for (const user of await findAll(roleRow.getUsers().query())) {
-          if (user.get("active") === false) continue;
-          const id = user.get("branch")?.id;
-          if (!id) continue;
-          members[id] ||= { riders: 0, cashiers: 0 };
-          members[id][role === "rider" ? "riders" : "cashiers"] += 1;
-        }
-      }
-      return { branches: rows.map((row) => view(row, members)) };
-    });
-    Parse.Cloud.define("adminSaveBranch", async (request) => {
-      const actor = await adminOnly(request);
-      const p = request.params;
-      await ensureMainBranch(actor);
-      const name = clean(p.name, 60);
-      if (name.length < 2) throw invalid("Give the branch a name");
-      const rows = await allBranches();
-      if (rows.some((row2) => row2.id !== p.id && row2.get("name").toLowerCase() === name.toLowerCase()))
-        throw invalid(`There is already a branch called "${name}"`);
-      const row = p.id ? rows.find((r) => r.id === p.id) : new Parse.Object(CLASS);
-      if (!row) throw invalid("Unknown branch");
-      const before = p.id ? view(row) : null;
-      const active = p.active === void 0 ? row.get("active") !== false : p.active === true;
-      if (!active && row.get("main")) throw forbidden("The main branch cannot be closed");
-      if (!active && row.get("active") !== false) {
-        const staff = await new Parse.Query(Parse.User).equalTo("branch", row).notEqualTo("active", false).count(MASTER);
-        if (staff) throw invalid(`Move its ${staff} team member(s) to another branch first`);
-      }
-      if (!p.id) await require_limits().checkBranchLimit(rows.length + 1);
-      if ("location" in p) {
-        const pin = cleanLocation(p.location);
-        if (pin.error) throw invalid(pin.error);
-        if (pin.location) row.set({ lat: pin.location.lat, lng: pin.location.lng });
-        else {
-          row.unset("lat");
-          row.unset("lng");
-        }
-      }
-      row.set({
-        name,
-        address: clean(p.address, 200),
-        phone: clean(p.phone, 30),
-        active,
-        main: row.get("main") === true,
-        sortOrder: p.id ? row.get("sortOrder") || 0 : rows.length
-      });
-      row.setACL(readAcl(null, ROLES));
-      await row.save(null, MASTER);
-      await audit(actor, p.id ? "branch.updated" : "branch.created", row, before, view(row));
-      return view(row);
-    });
-    async function assignableBranch(id, actor) {
-      const branch = id ? await branchParam(id) : await ensureMainBranch(actor);
-      if (branch.get("active") === false) throw invalid("That branch is closed");
-      return branch;
-    }
-    module2.exports = {
-      mainBranch,
-      ensureMainBranch,
-      branchFor,
-      branchParam,
-      inBranch,
-      assignableBranch,
-      backfill,
-      TAGGED
-    };
-  }
-});
-
 // cloud/efris.js
 var require_efris = __commonJS({
   "cloud/efris.js"(exports2, module2) {
@@ -28596,48 +29589,6 @@ var require_collections = __commonJS({
       payRequestError: ""
     });
     module2.exports = { newRequest, sweepRequests, pollRequest, PROVIDERS };
-  }
-});
-
-// cloud/lib/money.js
-var require_money = __commonJS({
-  "cloud/lib/money.js"(exports2, module2) {
-    "use strict";
-    var COMMISSION_TYPES = ["per_order", "percent", "hybrid"];
-    var ROUNDING_STEPS = { none: 0, up_100: 100, up_500: 500, up_1000: 1e3 };
-    function roundCommission(amount, rounding = "none") {
-      const whole = Math.round(Number(amount) || 0);
-      const step = ROUNDING_STEPS[rounding] || 0;
-      return step ? Math.ceil(whole / step) * step : whole;
-    }
-    function computeCommission({ type, perOrder, percent, subtotal, rounding }) {
-      const flat = Number(perOrder) || 0;
-      const share = (Number(subtotal) || 0) * (Number(percent) || 0) / 100;
-      const raw = type === "percent" ? share : type === "hybrid" ? flat + share : flat;
-      return roundCommission(raw, rounding);
-    }
-    function riderPay({ commissionAmount, deliveryPay, deliveryFee }) {
-      const commission = Number(commissionAmount) || 0;
-      if (deliveryPay !== void 0 && deliveryPay !== null) return commission;
-      return commission + (Number(deliveryFee) || 0);
-    }
-    var orderRiderPay = (order) => riderPay({
-      commissionAmount: order.get("commissionAmount"),
-      deliveryPay: order.get("deliveryPay"),
-      deliveryFee: order.get("deliveryFee")
-    });
-    function sumBy(rows, pick) {
-      return rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0);
-    }
-    module2.exports = {
-      COMMISSION_TYPES,
-      ROUNDING_STEPS,
-      roundCommission,
-      computeCommission,
-      riderPay,
-      orderRiderPay,
-      sumBy
-    };
   }
 });
 
@@ -34527,67 +35478,6 @@ var require_seed = __commonJS({
   }
 });
 
-// cloud/lib/accompaniments.js
-var require_accompaniments = __commonJS({
-  "cloud/lib/accompaniments.js"(exports2, module2) {
-    "use strict";
-    var MAX_GROUPS = 6;
-    var MAX_OPTIONS = 20;
-    function normalizeGroups(raw, knownIds) {
-      if (raw === void 0 || raw === null) return [];
-      if (!Array.isArray(raw) || raw.length > MAX_GROUPS)
-        throw new Error(`Use at most ${MAX_GROUPS} accompaniment groups`);
-      return raw.map((group, index) => {
-        const label = String(group?.label || "").trim() || `Choice ${index + 1}`;
-        if (label.length > 40)
-          throw new Error("Accompaniment group names must be 40 characters or less");
-        const options = [...new Set((group?.options || []).map(String))];
-        if (!options.length) throw new Error(`"${label}" needs at least one accompaniment`);
-        if (options.length > MAX_OPTIONS)
-          throw new Error(`"${label}" can offer at most ${MAX_OPTIONS} accompaniments`);
-        const unknown = options.filter((id) => !knownIds.has(id));
-        if (unknown.length)
-          throw new Error(`"${label}" refers to an accompaniment that does not exist`);
-        const max = Number(group?.max ?? options.length);
-        const min = Number(group?.min ?? 0);
-        if (!Number.isInteger(max) || max < 1 || max > options.length)
-          throw new Error(`"${label}": "pick at most" must be between 1 and ${options.length}`);
-        if (!Number.isInteger(min) || min < 0 || min > max)
-          throw new Error(`"${label}": "pick at least" must be between 0 and ${max}`);
-        return { label, options, min, max };
-      });
-    }
-    function availableGroups(groups, isAvailable) {
-      return (groups || []).map((group) => {
-        const options = group.options.filter((id) => isAvailable(id));
-        return {
-          label: group.label,
-          options,
-          min: Math.min(group.min, options.length),
-          max: Math.min(group.max, options.length)
-        };
-      }).filter((group) => group.options.length > 0);
-    }
-    function selectionError(groups, selectedIds) {
-      const selected = (selectedIds || []).map(String);
-      if (new Set(selected).size !== selected.length) return "The same accompaniment was chosen twice";
-      const counts = groups.map(() => 0);
-      for (const id of selected) {
-        const index = groups.findIndex((group) => group.options.includes(id));
-        if (index === -1) return "An accompaniment is not available for this dish";
-        counts[index] += 1;
-      }
-      for (const [index, group] of groups.entries()) {
-        if (counts[index] > group.max)
-          return group.max === 1 ? `Choose only one ${group.label.toLowerCase()} option` : `Choose at most ${group.max} from ${group.label}`;
-        if (counts[index] < group.min) return `Choose at least ${group.min} from ${group.label}`;
-      }
-      return "";
-    }
-    module2.exports = { normalizeGroups, availableGroups, selectionError };
-  }
-});
-
 // cloud/security.js
 var require_security = __commonJS({
   "cloud/security.js"(exports2, module2) {
@@ -34759,8 +35649,13 @@ var require_security = __commonJS({
         deliveryKm: N,
         // Eat-in from a table's QR code (tables.js); tableLabel is its name.
         table: ["Pointer", "DiningTable"],
+        // Online orders: the phone they came from (online.js getMyOnlineOrders).
+        onlineDeviceKey: S,
+        onlineDevice: S,
         acceptedAt: D,
         readyAt: D,
+        // Eat in: served (maybe before the bill was paid).
+        servedAt: D,
         cancelledReason: S,
         cancelledBy: user,
         cancelledAt: D,
@@ -36353,6 +37248,7 @@ var require_restaurants = __commonJS({
     ]);
     var ONLINE_PUBLIC = /* @__PURE__ */ new Set([
       "getOnlineMenu",
+      "getMyOnlineOrders",
       "placeOnlineOrder",
       "getOnlineOrder",
       "cancelOnlineOrder"
@@ -37310,858 +38206,6 @@ var require_errors = __commonJS({
   }
 });
 
-// cloud/customers.js
-var require_customers = __commonJS({
-  "cloud/customers.js"(exports2, module2) {
-    "use strict";
-    var { MASTER, invalid, requireRole, readAcl, audit } = require_core();
-    var MAX_ADDRESSES = 5;
-    var customerKey = (name, phone) => phone ? `tel:${phone}` : `name:${name.toLowerCase()}`;
-    async function recordCustomerOrder(order) {
-      const name = order.get("customerName");
-      const phone = order.get("customerPhone") || "";
-      const key = customerKey(name, phone);
-      const query = new Parse.Query("Customer");
-      query.equalTo("key", key);
-      query.ascending("createdAt");
-      const customer = await query.first(MASTER) || new Parse.Object("Customer");
-      const saved = customer.get("addresses") || [];
-      const text = order.get("deliveryAddress");
-      const same = (entry) => entry.text.toLowerCase() === text.toLowerCase();
-      const pin = order.get("location");
-      const previous = saved.find(same);
-      const address = {
-        text,
-        notes: order.get("deliveryNotes") || "",
-        ...pin ? { lat: pin.latitude, lng: pin.longitude } : previous?.lat !== void 0 && { lat: previous.lat, lng: previous.lng }
-      };
-      const addresses = [address, ...saved.filter((entry) => !same(entry))].slice(0, MAX_ADDRESSES);
-      customer.set({
-        key,
-        name,
-        nameLower: name.toLowerCase(),
-        phone,
-        addresses,
-        orderCount: (customer.get("orderCount") || 0) + 1,
-        lastOrderAt: /* @__PURE__ */ new Date(),
-        lastOrder: order
-      });
-      customer.setACL(readAcl(null, ["admin"]));
-      await customer.save(null, MASTER);
-      return customer;
-    }
-    async function pinCustomerAddress(order, location) {
-      const pointer = order.get("customer");
-      if (!pointer) return;
-      const customer = await new Parse.Query("Customer").get(pointer.id, MASTER).catch(() => null);
-      if (!customer) return;
-      const text = String(order.get("deliveryAddress") || "").toLowerCase();
-      const addresses = (customer.get("addresses") || []).map(
-        (entry) => entry.text.toLowerCase() === text ? {
-          ...entry,
-          ...location ? { lat: location.lat, lng: location.lng } : { lat: void 0, lng: void 0 }
-        } : entry
-      );
-      customer.set(
-        "addresses",
-        addresses.map((entry) => JSON.parse(JSON.stringify(entry)))
-      );
-      await customer.save(null, MASTER);
-    }
-    var escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    Parse.Cloud.define("searchCustomers", async (request) => {
-      await requireRole(request, ["rider", "cashier", "admin"]);
-      const text = String(request.params.q || "").trim().toLowerCase().slice(0, 40);
-      if (text.length < 2) throw invalid("Type at least 2 characters");
-      const byName = new Parse.Query("Customer");
-      byName.matches("nameLower", escapeRegex(text));
-      const queries = [byName];
-      const digits = text.replace(/[^\d]/g, "");
-      if (digits.length >= 3) {
-        const byPhone = new Parse.Query("Customer");
-        byPhone.matches("phone", escapeRegex(digits));
-        queries.push(byPhone);
-      }
-      const query = Parse.Query.or(...queries);
-      query.descending("orderCount");
-      query.limit(5);
-      const customers = await query.find(MASTER);
-      const lastOrders = customers.map((c) => c.get("lastOrder")).filter(Boolean);
-      const itemQuery = new Parse.Query("OrderItem");
-      itemQuery.containedIn("order", lastOrders);
-      itemQuery.limit(1e3);
-      const items = lastOrders.length ? await itemQuery.find(MASTER) : [];
-      return customers.map((customer) => {
-        const lastId = customer.get("lastOrder")?.id;
-        return {
-          id: customer.id,
-          name: customer.get("name"),
-          phone: customer.get("phone") || "",
-          addresses: customer.get("addresses") || [],
-          orderCount: customer.get("orderCount") || 0,
-          lastOrderAt: customer.get("lastOrderAt") || null,
-          lastOrder: items.filter((item) => item.get("order")?.id === lastId && item.get("menuItem")).map((item) => ({
-            menuItemId: item.get("menuItem").id,
-            title: item.get("itemNameSnapshot"),
-            quantity: item.get("quantity"),
-            notes: item.get("notes") || "",
-            accompanimentIds: item.get("accompanimentIds") || [],
-            accompanimentNames: item.get("accompanimentNames") || []
-          }))
-        };
-      });
-    });
-    var customerView = (row) => ({
-      id: row.id,
-      name: row.get("name"),
-      phone: row.get("phone") || "",
-      email: row.get("email") || "",
-      notes: row.get("notes") || "",
-      addresses: row.get("addresses") || [],
-      orderCount: row.get("orderCount") || 0,
-      lastOrderAt: row.get("lastOrderAt") || null,
-      createdAt: row.get("restoredCreatedAt") || row.createdAt
-    });
-    var PAGE = 100;
-    Parse.Cloud.define("listCustomers", async (request) => {
-      await requireRole(request, ["admin", "finance"]);
-      const p = request.params;
-      const text = String(p.q || "").trim().toLowerCase().slice(0, 40);
-      let query = new Parse.Query("Customer");
-      if (text) {
-        const byName = new Parse.Query("Customer");
-        byName.matches("nameLower", escapeRegex(text));
-        const queries = [byName];
-        const digits = text.replace(/[^\d]/g, "");
-        if (digits.length >= 3) {
-          const byPhone = new Parse.Query("Customer");
-          byPhone.matches("phone", escapeRegex(digits));
-          queries.push(byPhone);
-        }
-        query = Parse.Query.or(...queries);
-      }
-      const sort = ["orders", "recent", "name"].includes(p.sort) ? p.sort : "orders";
-      if (sort === "orders") query.descending("orderCount");
-      else if (sort === "recent") query.descending("lastOrderAt");
-      else query.ascending("nameLower");
-      const page = Math.max(0, Math.floor(Number(p.page) || 0));
-      query.skip(page * PAGE);
-      query.limit(PAGE + 1);
-      const [rows, total] = await Promise.all([
-        query.find(MASTER),
-        // A condition makes Postgres count exactly instead of estimating.
-        new Parse.Query("Customer").exists("objectId").count(MASTER)
-      ]);
-      return {
-        customers: rows.slice(0, PAGE).map(customerView),
-        more: rows.length > PAGE,
-        total
-      };
-    });
-    Parse.Cloud.define("getCustomer", async (request) => {
-      await requireRole(request, ["admin", "finance"]);
-      const row = await new Parse.Query("Customer").get(String(request.params.id || ""), MASTER).catch(() => null);
-      if (!row) throw invalid("Unknown customer");
-      const orders = await new Parse.Query("Order").equalTo("customer", row).descending("createdAt").limit(50).find(MASTER);
-      const delivered = orders.filter((o) => o.get("status") === "DELIVERED");
-      return {
-        ...customerView(row),
-        spent: delivered.reduce((n, o) => n + Number(o.get("total") || 0), 0),
-        orders: orders.map((o) => ({
-          id: o.id,
-          code: o.get("orderCode"),
-          status: o.get("status"),
-          total: Number(o.get("total") || 0),
-          at: o.get("restoredCreatedAt") || o.createdAt,
-          type: o.get("orderType") || "delivery"
-        }))
-      };
-    });
-    Parse.Cloud.define("saveCustomer", async (request) => {
-      const { user: actor } = await requireRole(request, ["admin", "finance"]);
-      const p = request.params;
-      const row = await new Parse.Query("Customer").get(String(p.id || ""), MASTER).catch(() => null);
-      if (!row) throw invalid("Unknown customer");
-      const before = customerView(row);
-      const name = String(p.name ?? row.get("name")).trim().slice(0, 80);
-      if (name.length < 2) throw invalid("Enter the customer name");
-      const phone = String(p.phone ?? row.get("phone") ?? "").replace(/[^\d+]/g, "").slice(0, 20);
-      const key = customerKey(name, phone);
-      const clash = await new Parse.Query("Customer").equalTo("key", key).notEqualTo("objectId", row.id).first(MASTER);
-      if (clash) throw invalid(`That phone number is already ${clash.get("name")}'s`);
-      row.set({
-        name,
-        nameLower: name.toLowerCase(),
-        phone,
-        key,
-        email: String(p.email ?? row.get("email") ?? "").trim().slice(0, 120),
-        notes: String(p.notes ?? row.get("notes") ?? "").trim().slice(0, 300)
-      });
-      await row.save(null, MASTER);
-      await audit(actor, "customer.updated", row, before, customerView(row));
-      return customerView(row);
-    });
-    module2.exports = { recordCustomerOrder, pinCustomerAddress };
-  }
-});
-
-// cloud/orders.js
-var require_orders = __commonJS({
-  "cloud/orders.js"(exports2, module2) {
-    "use strict";
-    var {
-      MASTER,
-      invalid,
-      forbidden,
-      requireUser,
-      requireRole,
-      getRoleName,
-      readAcl,
-      audit,
-      loadConfig,
-      nextDailyCode,
-      riderFloat,
-      personName,
-      requireCashierShift,
-      takeOrder,
-      withRiderLimit,
-      findAll
-    } = require_core();
-    var { computeCommission, sumBy } = require_money();
-    var { availableGroups, selectionError } = require_accompaniments();
-    var { recordCustomerOrder, pinCustomerAddress } = require_customers();
-    var { cleanLocation } = require_geo();
-    var { checkMobileMoney, PENDING } = require_payments();
-    var { money, notifyUser, notifyStaff, notifyAdmins, cashLimitAlert } = require_notifications();
-    var CHANNELS = ["walkin", "phone", "whatsapp", "other"];
-    var PINNED_ONLY = "Pinned on the map";
-    var PAYMENT_METHODS = ["cash", "mobile_money"];
-    var MAX_LINES = 30;
-    var MAX_SPLITS = 12;
-    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
-    var cleanPhone = (value) => clean(value, 30).replace(/[^\d+]/g, "");
-    var offeredAt = (row, branchId) => {
-      const ids = row.get("branchIds") || [];
-      return !branchId || !ids.length || ids.includes(branchId);
-    };
-    var inStockAt = (row, branchId) => !branchId || !(row.get("soldOutAt") || []).includes(branchId);
-    async function servableAccompaniments(branchId) {
-      const query = new Parse.Query("Accompaniment");
-      query.equalTo("active", true);
-      query.equalTo("available", true);
-      query.limit(1e3);
-      const rows = (await query.find(MASTER)).filter((row) => inStockAt(row, branchId));
-      return new Map(rows.map((row) => [row.id, row]));
-    }
-    async function saveLines(order, lines, rider) {
-      const children = lines.map((line) => {
-        const item = new Parse.Object("OrderItem");
-        item.set({
-          order,
-          menuItem: line.menuItem,
-          itemNameSnapshot: line.name,
-          unitPriceSnapshot: line.price,
-          quantity: line.qty,
-          lineTotal: line.lineTotal,
-          notes: line.notes,
-          accompanimentIds: line.accompanimentIds,
-          accompanimentNames: line.accompanimentNames,
-          accompanimentPrices: line.accompanimentPrices,
-          extrasPerUnit: line.extrasPerUnit,
-          ...line.split && { split: line.split }
-        });
-        item.setACL(readAcl(rider));
-        return item;
-      });
-      await Parse.Object.saveAll(children, MASTER);
-    }
-    async function priceLines(items, branchId) {
-      if (!Array.isArray(items) || !items.length) throw invalid("Add at least one item");
-      if (items.length > MAX_LINES) throw invalid(`An order can have at most ${MAX_LINES} lines`);
-      const menuQuery = new Parse.Query("MenuItem");
-      menuQuery.containedIn(
-        "objectId",
-        items.map((line) => String(line.id))
-      );
-      const [menu, accompaniments] = await Promise.all([
-        menuQuery.find(MASTER),
-        servableAccompaniments(branchId)
-      ]);
-      const byId = new Map(menu.map((item) => [item.id, item]));
-      const splits = [...new Set(items.map((line) => clean(line.split, 30)))];
-      const split = splits.length > 1;
-      if (split && splits.includes("")) throw invalid("Put every item in a split");
-      if (splits.length > MAX_SPLITS) throw invalid(`An order can have at most ${MAX_SPLITS} splits`);
-      return items.map((line) => {
-        const saved = byId.get(String(line.id));
-        const qty = Number(line.quantity);
-        if (!saved || !saved.get("active") || !saved.get("availableToday") || !offeredAt(saved, branchId) || !inStockAt(saved, branchId))
-          throw invalid(`${saved?.get("title") || "An item"} is not available`);
-        if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw invalid("Invalid quantity");
-        const title = saved.get("title");
-        const groups = availableGroups(
-          saved.get("accompanimentGroups") || [],
-          (id) => accompaniments.has(id)
-        );
-        const chosen = (Array.isArray(line.accompaniments) ? line.accompaniments : []).map(String);
-        const problem = selectionError(groups, chosen);
-        if (problem) throw invalid(`${title}: ${problem}`);
-        const accompanimentPrices = chosen.map(
-          (id) => Number(accompaniments.get(id).get("price") || 0)
-        );
-        const extrasPerUnit = accompanimentPrices.reduce((n, price2) => n + price2, 0);
-        const price = Number(saved.get("price"));
-        return {
-          menuItem: saved,
-          name: title,
-          price,
-          prepMinutes: Number(saved.get("prepMinutes") || 0),
-          qty,
-          extrasPerUnit,
-          lineTotal: (price + extrasPerUnit) * qty,
-          notes: clean(line.notes, 140),
-          accompanimentIds: chosen,
-          accompanimentNames: chosen.map((id) => accompaniments.get(id).get("title")),
-          accompanimentPrices,
-          split: split ? clean(line.split, 30) : ""
-        };
-      });
-    }
-    function splitFields(lines) {
-      const splits = [...new Set(lines.map((line) => line.split).filter(Boolean))];
-      return splits.length > 1 ? { splits } : {};
-    }
-    Parse.Cloud.define("createOrder", async (request) => {
-      const { user: rider } = await requireRole(request, ["rider"]);
-      const p = request.params;
-      const clientId = clean(p.clientId, 64);
-      if (clientId) {
-        const existingQuery = new Parse.Query("Order");
-        existingQuery.equalTo("createdBy", rider);
-        existingQuery.equalTo("clientId", clientId);
-        const existing = await existingQuery.first(MASTER);
-        if (existing)
-          return {
-            id: existing.id,
-            orderCode: existing.get("orderCode"),
-            total: existing.get("total"),
-            duplicate: true
-          };
-      }
-      const pin = cleanLocation(p.location);
-      if (pin.error) throw invalid(pin.error);
-      const customerName = clean(p.customerName, 80);
-      if (!customerName) throw invalid("Customer name is required");
-      const deliveryAddress = clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : "");
-      if (!deliveryAddress) throw invalid("Add a delivery address or pin it on the map");
-      const channel = p.channel || "walkin";
-      const paymentMethod = p.paymentMethod || "cash";
-      if (!CHANNELS.includes(channel)) throw invalid("Invalid channel");
-      if (!PAYMENT_METHODS.includes(paymentMethod))
-        throw invalid(
-          paymentMethod === "card" ? "Card is taken at the counter only. Choose cash or mobile money" : "Invalid payment method"
-        );
-      const branch = await require_branches().branchFor(rider);
-      const activeQuery = new Parse.Query("Order");
-      activeQuery.equalTo("createdBy", rider);
-      activeQuery.notContainedIn("status", ["DELIVERED", "CANCELLED"]);
-      const [lines, { values: settings }, active, float, me] = await Promise.all([
-        priceLines(p.items, branch?.id),
-        loadConfig(),
-        findAll(activeQuery),
-        riderFloat(rider),
-        new Parse.Query(Parse.User).get(rider.id, MASTER)
-      ]);
-      if (settings.moduleRiderOrders === false)
-        throw forbidden("Riders do not take orders here: the counter creates them");
-      if (me.get("available") === false)
-        throw invalid("You are on a break. Switch to Available to take orders");
-      const config = withRiderLimit(settings, me);
-      if (!config.allowBatching && active.length)
-        throw invalid("Finish your current order before creating another");
-      const toCollect = cashToCollect(active);
-      if (config.maxRiderFloat > 0 && float + toCollect >= config.maxRiderFloat)
-        throw invalid(cashLimitMessage(config, float, toCollect));
-      const subtotal = sumBy(lines, (line) => line.lineTotal);
-      const fee = Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0));
-      const total = subtotal + fee;
-      const isCash = paymentMethod === "cash";
-      if (isCash && p.amountToCollect !== void 0 && Number(p.amountToCollect) !== total)
-        throw invalid("The customer must pay the full total");
-      const amountToCollect = isCash ? total : 0;
-      const momo = paymentMethod === "mobile_money" ? await checkMobileMoney(
-        config,
-        p.paymentProvider,
-        p.paymentReference,
-        void 0,
-        p.payerPhone || p.customerPhone
-      ) : null;
-      const order = new Parse.Object("Order");
-      if (branch) order.set("branch", branch);
-      order.set({
-        orderCode: await nextDailyCode("ORD", 4, config.timezone, {
-          className: "Order",
-          field: "orderCode"
-        }),
-        clientId,
-        channel,
-        createdBy: rider,
-        customerName,
-        customerPhone: cleanPhone(p.customerPhone),
-        deliveryAddress,
-        deliveryNotes: clean(p.deliveryNotes, 200),
-        subtotal,
-        prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
-        ...splitFields(lines),
-        deliveryFee: fee,
-        total,
-        paymentMethod,
-        amountToCollect,
-        amountCollected: 0,
-        status: "PLACED",
-        restaurantStatus: "pending",
-        cashStatus: isCash ? "NOT_COLLECTED" : "NOT_APPLICABLE",
-        commissionAmount: 0,
-        commissionPaid: false,
-        disputeFlag: false,
-        ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
-        ...momo && {
-          ...momo.request,
-          paymentProvider: momo.provider,
-          paymentReference: momo.reference,
-          paymentStatus: PENDING
-        }
-      });
-      order.setACL(readAcl(rider));
-      await order.save(null, MASTER);
-      await saveLines(order, lines, rider);
-      const customer = await recordCustomerOrder(order);
-      if (customer) {
-        order.set("customer", customer);
-        await order.save(null, MASTER);
-      }
-      await audit(rider, "order.placed", order, null, { status: "PLACED", total });
-      await notifyStaff({
-        kind: "order.new",
-        tone: "new",
-        title: `New order ${order.get("orderCode")}`,
-        body: [
-          personName(rider),
-          customerName,
-          money(config, total),
-          momo ? "mobile money to check" : "cash"
-        ].join(" \xB7 "),
-        link: "/cashier",
-        order
-      });
-      const exposure = float + toCollect + (isCash ? amountToCollect : 0);
-      return {
-        id: order.id,
-        orderCode: order.get("orderCode"),
-        total,
-        // This order takes the rider to or over the limit: it goes ahead, but the
-        // next one is blocked until the cash is handed over.
-        cashLimitReached: config.maxRiderFloat > 0 && exposure >= config.maxRiderFloat
-      };
-    });
-    var cashToCollect = (orders) => sumBy(
-      orders.filter((order) => order.get("paymentMethod") === "cash"),
-      (order) => order.get("amountToCollect") ?? order.get("total")
-    );
-    function cashLimitMessage(config, held, toCollect) {
-      const parts = [];
-      if (held > 0) parts.push(`you hold ${money(config, held)}`);
-      if (toCollect > 0) parts.push(`${money(config, toCollect)} is still to collect on open orders`);
-      return `Cash limit reached: ${parts.join(" and ") || "no cash room left"} (limit ${money(config, config.maxRiderFloat)}). ${toCollect > 0 ? "Deliver and hand over" : "Hand over"} cash before taking new orders`;
-    }
-    var TRANSITIONS = {
-      accept: { from: ["PLACED"], to: "ACCEPTED", kitchen: "accepted", who: "staff" },
-      prepare: { from: ["ACCEPTED"], to: "PREPARING", kitchen: "preparing", who: "staff" },
-      ready: { from: ["ACCEPTED", "PREPARING"], to: "READY", kitchen: "ready", who: "staff" },
-      pickup: { from: ["READY"], to: "PICKED_UP", kitchen: "picked_up", who: "owner" },
-      deliver: { from: ["PICKED_UP"], to: "DELIVERED", kitchen: "picked_up", who: "owner" },
-      reject: { from: ["PLACED"], to: "CANCELLED", kitchen: "rejected", who: "staff" },
-      cancel: {
-        from: ["PLACED", "ACCEPTED", "PREPARING", "READY"],
-        to: "CANCELLED",
-        kitchen: "cancelled",
-        who: "owner"
-      },
-      // Eat-in / pick-up: the guest has it (served at the table or collected).
-      complete: { from: ["READY"], to: "DELIVERED", kitchen: "served", who: "staff" }
-    };
-    var COUNTER_TYPES = ["eat_in", "pickup"];
-    var counterPaid = (order) => !order.get("billOpen") && (order.get("paymentMethod") === "cash" ? order.get("cashStatus") === "IN_TILL" : order.get("paymentStatus") === "VERIFIED");
-    async function applyDelivery(order, {
-      method: wanted,
-      provider,
-      reference,
-      payerPhone,
-      amount: given,
-      actor,
-      config,
-      now = /* @__PURE__ */ new Date()
-    }) {
-      const method = wanted || order.get("paymentMethod");
-      if (!PAYMENT_METHODS.includes(method)) throw invalid("Invalid payment method");
-      const paidByMomo = order.get("paymentMethod") === "mobile_money";
-      if (paidByMomo && method !== "mobile_money") throw invalid("This order was paid by mobile money");
-      if (!paidByMomo && method === "mobile_money") {
-        const momo = await checkMobileMoney(
-          config,
-          provider,
-          reference,
-          order.id,
-          payerPhone || order.get("customerPhone")
-        );
-        order.set({
-          ...momo.request,
-          paymentProvider: momo.provider,
-          paymentReference: momo.reference,
-          paymentStatus: PENDING,
-          // Paid at the door: until the cashier confirms it, the order stays on
-          // the rider's list; if it is not received, the rider owes it as cash.
-          paidAtDoor: true
-        });
-      }
-      const isCash = method === "cash";
-      const due = Number(order.get("amountToCollect") || order.get("total"));
-      const amount = isCash ? Number(given ?? due) : 0;
-      if (isCash && amount !== due) throw invalid(`Collect the full ${money(config, due)}`);
-      const rider = await order.get("createdBy").fetch(MASTER);
-      const commission = order.get("source") === "counter" ? 0 : computeCommission({
-        type: rider.get("commissionType") || "per_order",
-        perOrder: rider.get("commissionPerOrder"),
-        percent: rider.get("commissionPercent"),
-        subtotal: order.get("subtotal"),
-        rounding: config.commissionRounding
-      });
-      const deliveryPay = Number(order.get("deliveryFee") || 0);
-      order.set({
-        paymentMethod: method,
-        deliveredAt: now,
-        amountCollected: Math.round(amount),
-        paymentCollectedBy: actor,
-        commissionBase: commission,
-        deliveryPay,
-        commissionAmount: commission + deliveryPay,
-        commissionPaid: false,
-        cashStatus: isCash ? "WITH_RIDER" : "NOT_APPLICABLE"
-      });
-    }
-    Parse.Cloud.define("transitionOrder", async (request) => {
-      const actor = requireUser(request);
-      const p = request.params;
-      const rule = TRANSITIONS[p.action];
-      const order = await new Parse.Query("Order").get(p.orderId, MASTER);
-      if (!rule || !rule.from.includes(order.get("status"))) throw invalid("Invalid status transition");
-      const role = await getRoleName(actor);
-      const staff = ["cashier", "admin"].includes(role);
-      const owner = order.get("createdBy")?.id === actor.id;
-      if (rule.who === "staff" && !staff) throw forbidden("Staff access required");
-      if (rule.who === "owner" && !owner && !staff) throw forbidden("Not allowed");
-      if (staff && !owner) await requireCashierShift(actor, role);
-      const { values: config } = await loadConfig();
-      if (p.action === "pickup" && !staff && config.requireCashierConfirmForPickup)
-        throw forbidden("The cashier confirms pickup when handing over the bag");
-      if (p.action === "accept" && [PENDING, "REJECTED"].includes(order.get("paymentStatus")))
-        throw invalid("Confirm the mobile money payment before accepting this order");
-      if (p.action === "cancel" && !staff && order.get("status") !== "PLACED")
-        throw forbidden("The kitchen has accepted this order. Ask the cashier to cancel it");
-      const atCounter = COUNTER_TYPES.includes(order.get("orderType"));
-      if (p.action === "complete" && !atCounter)
-        throw invalid("Only eat-in and pick-up orders are served or collected");
-      if (["pickup", "deliver"].includes(p.action) && atCounter)
-        throw invalid("Eat-in and pick-up orders are finished with Served / Collected");
-      if (p.action === "pickup" && !order.get("createdBy"))
-        throw invalid("Assign a rider before handing the order over");
-      if (p.action === "complete" && !counterPaid(order))
-        throw invalid("Take payment (or wait for the mobile money check) first");
-      const before = {
-        status: order.get("status"),
-        restaurantStatus: order.get("restaurantStatus"),
-        paymentMethod: order.get("paymentMethod")
-      };
-      order.set({ status: rule.to, restaurantStatus: rule.kitchen });
-      const now = /* @__PURE__ */ new Date();
-      if (p.action === "accept") order.set("acceptedAt", now);
-      if (p.action === "ready") order.set("readyAt", now);
-      if (p.action === "pickup") order.set("pickedUpAt", now);
-      if (p.action === "cancel" || p.action === "reject") {
-        const reason = clean(p.reason, 200);
-        if (reason.length < 3) throw invalid("Give a reason");
-        order.set({
-          cancelledReason: reason,
-          cancelledBy: actor,
-          cancelledAt: now,
-          // Cash already in a till goes back to the guest.
-          cashStatus: order.get("cashStatus") === "IN_TILL" ? "REFUNDED" : "NOT_APPLICABLE",
-          billOpen: false
-        });
-      }
-      if (p.action === "complete")
-        order.set({
-          restaurantStatus: order.get("orderType") === "pickup" ? "collected" : "served",
-          deliveredAt: now,
-          commissionBase: 0,
-          deliveryPay: 0,
-          commissionAmount: 0,
-          commissionPaid: true
-        });
-      if (p.action === "deliver")
-        await applyDelivery(order, {
-          method: p.paymentMethod,
-          provider: p.paymentProvider,
-          reference: p.paymentReference,
-          payerPhone: p.payerPhone,
-          amount: p.amountCollected,
-          actor,
-          config,
-          now
-        });
-      if (staff && !owner) await takeOrder(order, actor, role);
-      await order.save(null, MASTER);
-      await audit(actor, `order.${p.action}`, order, before, {
-        status: rule.to,
-        paymentMethod: order.get("paymentMethod"),
-        reason: order.get("cancelledReason")
-      });
-      await notifyTransition(order, p.action, { staff, owner, actor, config });
-      return { status: rule.to };
-    });
-    var RIDER_MESSAGES = {
-      accept: (code) => [`${code} accepted`, "The kitchen has started on it."],
-      prepare: (code) => [`${code} is being prepared`, ""],
-      ready: (code) => [`${code} is ready for pickup`, "Collect it from the counter."],
-      pickup: (code) => [`${code} handed to you`, "Deliver it and record the payment."],
-      deliver: (code) => [`${code} marked delivered`, ""],
-      reject: (code, reason) => [`${code} was rejected`, reason],
-      cancel: (code, reason) => [`${code} was cancelled`, reason]
-    };
-    async function notifyTransition(order, action, { staff, owner, actor, config }) {
-      const code = order.get("orderCode");
-      const rider = order.get("createdBy");
-      if (rider && staff && !owner && RIDER_MESSAGES[action]) {
-        const [title, detail] = RIDER_MESSAGES[action](code, order.get("cancelledReason") || "");
-        await notifyUser(rider, {
-          kind: `order.${action}`,
-          tone: ["ready", "reject", "cancel"].includes(action) ? "alert" : "update",
-          title,
-          body: [order.get("customerName"), detail].filter(Boolean).join(" \xB7 "),
-          link: `/rider/order/${order.id}`,
-          order
-        });
-      }
-      if (owner && action === "cancel")
-        await notifyStaff({
-          kind: "order.cancelled_by_rider",
-          tone: "update",
-          title: `${code} cancelled by the rider`,
-          body: order.get("cancelledReason") || "",
-          link: "/cashier",
-          order,
-          except: actor
-        });
-      if (action === "deliver" && order.get("paymentMethod") === "cash") {
-        const fresh = await rider.fetch(MASTER);
-        await cashLimitAlert(fresh, withRiderLimit(config, fresh));
-      }
-    }
-    Parse.Cloud.define("setOrderLocation", async (request) => {
-      const actor = requireUser(request);
-      const order = await new Parse.Query("Order").get(String(request.params.orderId || ""), MASTER);
-      const role = await getRoleName(actor);
-      const staff = ["cashier", "admin"].includes(role);
-      if (order.get("createdBy")?.id !== actor.id && !staff) throw forbidden("Not your order");
-      if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
-      const pin = cleanLocation(request.params.location);
-      if (pin.error) throw invalid(pin.error);
-      const before = order.get("location");
-      if (pin.location) order.set("location", new Parse.GeoPoint(pin.location.lat, pin.location.lng));
-      else if (order.has("location")) order.unset("location");
-      await order.save(null, MASTER);
-      await pinCustomerAddress(order, pin.location);
-      await audit(
-        actor,
-        "order.location",
-        order,
-        { location: before ? { lat: before.latitude, lng: before.longitude } : null },
-        { location: pin.location }
-      );
-      return { location: pin.location };
-    });
-    Parse.Cloud.define("flagOrderIssue", async (request) => {
-      const actor = requireUser(request);
-      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
-      const role = await getRoleName(actor);
-      if (order.get("createdBy")?.id !== actor.id && !["cashier", "admin"].includes(role))
-        throw forbidden("Not allowed");
-      const note = clean(request.params.note, 300);
-      if (note.length < 5) throw invalid("Describe the problem");
-      order.set({ disputeFlag: true, disputeNote: note, disputedBy: actor, disputedAt: /* @__PURE__ */ new Date() });
-      await order.save(null, MASTER);
-      await audit(actor, "order.issue_flagged", order, null, { note });
-      await notifyAdmins({
-        kind: "order.issue",
-        tone: "alert",
-        title: `Problem reported on ${order.get("orderCode")}`,
-        body: `${personName(await actor.fetch(MASTER))}: ${note}`,
-        link: "/admin/problems",
-        order,
-        except: actor
-      });
-      return { ok: true };
-    });
-    Parse.Cloud.define("resolveOrderIssue", async (request) => {
-      const { user: actor } = await requireRole(request, ["admin"]);
-      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
-      if (!order.get("disputeFlag")) throw invalid("This order has no open issue");
-      const resolution = clean(request.params.resolution, 300);
-      if (resolution.length < 5) throw invalid("Describe how it was resolved");
-      order.set({
-        disputeFlag: false,
-        disputeResolution: resolution,
-        disputeResolvedBy: actor,
-        disputeResolvedAt: /* @__PURE__ */ new Date()
-      });
-      await order.save(null, MASTER);
-      await audit(
-        actor,
-        "order.issue_resolved",
-        order,
-        { note: order.get("disputeNote") },
-        { resolution }
-      );
-      const resolved = {
-        kind: "order.issue_resolved",
-        tone: "update",
-        title: `Problem on ${order.get("orderCode")} resolved`,
-        body: resolution,
-        order,
-        except: actor
-      };
-      const rider = order.get("createdBy");
-      const reporter = order.get("disputedBy");
-      await notifyUser(rider, { ...resolved, link: `/rider/order/${order.id}` });
-      if (reporter && reporter.id !== rider?.id) await notifyUser(reporter, { ...resolved, link: "" });
-      return { ok: true };
-    });
-    Parse.Cloud.define("adminListIssues", async (request) => {
-      await requireRole(request, ["admin"]);
-      const state = request.params.state || "open";
-      if (!["open", "resolved", "all"].includes(state)) throw invalid("Unknown issue filter");
-      const query = new Parse.Query("Order");
-      query.exists("disputeNote");
-      if (state === "open") query.equalTo("disputeFlag", true);
-      if (state === "resolved") query.notEqualTo("disputeFlag", true);
-      query.include(["createdBy", "disputedBy", "disputeResolvedBy"]);
-      query.descending("disputedAt");
-      query.limit(300);
-      const [rows, open] = await Promise.all([
-        query.find(MASTER),
-        new Parse.Query("Order").equalTo("disputeFlag", true).count(MASTER)
-      ]);
-      return {
-        open,
-        issues: rows.map((order) => ({
-          id: order.id,
-          code: order.get("orderCode"),
-          customer: order.get("customerName"),
-          customerPhone: order.get("customerPhone") || "",
-          rider: personName(order.get("createdBy")),
-          status: order.get("status"),
-          total: order.get("total"),
-          note: order.get("disputeNote"),
-          reportedBy: personName(order.get("disputedBy")),
-          reportedAt: order.get("disputedAt") || null,
-          open: order.get("disputeFlag") === true,
-          resolution: order.get("disputeResolution") || "",
-          resolvedBy: personName(order.get("disputeResolvedBy")),
-          resolvedAt: order.get("disputeResolvedAt") || null
-        }))
-      };
-    });
-    var KITCHEN_OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
-    async function onShiftCashiers() {
-      const query = new Parse.Query("Shift");
-      query.equalTo("kind", "cashier");
-      query.equalTo("status", "open");
-      query.include("operator");
-      query.limit(100);
-      const shifts = await query.find(MASTER);
-      const seen = /* @__PURE__ */ new Set();
-      const people = [];
-      for (const shift of shifts) {
-        const person = shift.get("operator");
-        if (!person || seen.has(person.id) || person.get("active") === false) continue;
-        if (await getRoleName(person) !== "cashier") continue;
-        seen.add(person.id);
-        people.push(person);
-      }
-      return people;
-    }
-    Parse.Cloud.define("getOnShiftCashiers", async (request) => {
-      const { user, role } = await requireRole(request, ["cashier", "admin"]);
-      const branch = role === "cashier" ? (await user.fetch(MASTER)).get("branch")?.id : null;
-      return (await onShiftCashiers()).filter((person) => person.id !== user.id).filter((person) => !branch || person.get("branch")?.id === branch).map((person) => ({ id: person.id, name: personName(person) }));
-    });
-    Parse.Cloud.define("transferOrder", async (request) => {
-      const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
-      await requireCashierShift(actor, role);
-      const order = await new Parse.Query("Order").get(request.params.orderId, MASTER);
-      if (!KITCHEN_OPEN.includes(order.get("status")))
-        throw invalid("Only orders still in the kitchen can be transferred");
-      const holder = order.get("cashier");
-      if (role === "cashier" && holder && holder.id !== actor.id)
-        throw forbidden(`${order.get("cashierName")} is handling this order`);
-      const toId = String(request.params.toUserId || "");
-      let target = null;
-      if (toId) {
-        target = (await onShiftCashiers()).find((person) => person.id === toId);
-        if (!target) throw invalid("That colleague is not on shift");
-        if (holder?.id === target.id) throw invalid(`${personName(target)} already has this order`);
-      }
-      const before = { cashier: order.get("cashierName") || "" };
-      order.set("cashierRound", Number(order.get("cashierRound") || 0) + 1);
-      if (target)
-        order.set({ cashier: target, cashierName: personName(target), assignedAt: /* @__PURE__ */ new Date() });
-      else order.set("cashierName", "");
-      if (!target && holder) order.unset("cashier");
-      await order.save(null, MASTER);
-      await audit(actor, "order.transferred", order, before, { cashier: order.get("cashierName") });
-      const code = order.get("orderCode");
-      const from = personName(await actor.fetch(MASTER));
-      if (target)
-        await notifyUser(target, {
-          kind: "order.transferred",
-          tone: "new",
-          title: `${code} passed to you`,
-          body: `${from} transferred it \xB7 ${order.get("customerName")}`,
-          link: "/cashier",
-          order
-        });
-      return { cashier: order.get("cashierName") || "" };
-    });
-    module2.exports = {
-      riderFloat,
-      PINNED_ONLY,
-      priceLines,
-      saveLines,
-      splitFields,
-      clean,
-      cleanPhone,
-      CHANNELS,
-      servableAccompaniments,
-      offeredAt,
-      inStockAt,
-      KITCHEN_OPEN,
-      PAYMENT_METHODS,
-      applyDelivery,
-      notifyTransition
-    };
-  }
-});
-
 // cloud/counter.js
 var require_counter = __commonJS({
   "cloud/counter.js"(exports2, module2) {
@@ -38454,6 +38498,7 @@ var require_counter = __commonJS({
         });
       } else throw invalid("Choose cash, mobile money or card");
       await order.save(null, MASTER);
+      await require_orders().closeServed(order, actor);
       await audit(
         actor,
         "payment.counter",
@@ -38812,6 +38857,16 @@ var require_online = __commonJS({
     function requireRestaurant() {
       if (!tenancy.current()) throw invalid("Open the restaurant\u2019s own link to order");
     }
+    var DEVICE = /^[a-z0-9-]{8,64}$/;
+    var RECOVER_MS = 6 * 36e5;
+    var TABLE_RECOVER_MS = 12 * 36e5;
+    function deviceKeyOf(request) {
+      const ip = String(request.ip || "");
+      const agent = String(request.headers?.["user-agent"] || "");
+      if (!ip && !agent) return "";
+      return crypto.createHash("sha256").update(`${ip}|${agent}`).digest("hex").slice(0, 40);
+    }
+    var deviceOf = (value) => DEVICE.test(String(value || "")) ? String(value) : "";
     var ID = /^[A-Za-z0-9]{1,32}$/;
     var TYPE_LABEL = { delivery: "Delivery", pickup: "Pick up", eat_in: "Eat in" };
     function onlineSettings(config) {
@@ -39007,6 +39062,8 @@ var require_online = __commonJS({
         }),
         clientId: requestId,
         onlineToken: crypto.randomBytes(16).toString("hex"),
+        ...deviceKeyOf(request) && { onlineDeviceKey: deviceKeyOf(request) },
+        ...deviceOf(p.device) && { onlineDevice: deviceOf(p.device) },
         channel: table ? "table" : "online",
         orderType: type,
         source: "counter",
@@ -39066,6 +39123,36 @@ var require_online = __commonJS({
       });
       return { token: order.get("onlineToken"), orderCode: order.get("orderCode"), total };
     });
+    var stillOpen = (order) => order.get("status") !== "CANCELLED" && (order.get("status") !== "DELIVERED" || order.get("billOpen") === true);
+    Parse.Cloud.define("getMyOnlineOrders", async (request) => {
+      requireRestaurant();
+      const p = request.params || {};
+      const now = Date.now();
+      const found = [];
+      const key = deviceKeyOf(request);
+      if (key) {
+        const device = deviceOf(p.device);
+        const rows = await new Parse.Query("Order").equalTo("onlineDeviceKey", key).greaterThan("createdAt", new Date(now - RECOVER_MS)).descending("createdAt").limit(10).find(MASTER);
+        found.push(
+          ...rows.filter((o) => !device || !o.get("onlineDevice") || o.get("onlineDevice") === device)
+        );
+      }
+      if (p.table) {
+        const table = await tableByToken(p.table).catch(() => null);
+        if (table)
+          found.push(
+            ...await new Parse.Query("Order").equalTo("table", table).greaterThan("createdAt", new Date(now - TABLE_RECOVER_MS)).descending("createdAt").limit(20).find(MASTER)
+          );
+      }
+      const seen = /* @__PURE__ */ new Set();
+      return {
+        orders: found.filter((o) => o.get("onlineToken") && stillOpen(o)).filter((o) => !seen.has(o.id) && seen.add(o.id)).map((o) => ({
+          token: o.get("onlineToken"),
+          orderCode: o.get("orderCode"),
+          placedAt: o.createdAt.toISOString()
+        }))
+      };
+    });
     async function orderByToken(token) {
       requireRestaurant();
       const value = String(token || "");
@@ -39090,6 +39177,7 @@ var require_online = __commonJS({
         deliveryAddress: order.get("orderType") === "delivery" ? order.get("deliveryAddress") : "",
         table: order.get("orderType") === "eat_in" ? order.get("tableLabel") || "" : "",
         billOpen: order.get("billOpen") === true,
+        served: !!order.get("servedAt"),
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
         deliveryKm: order.get("deliveryKm") ?? null,

@@ -49,6 +49,22 @@ const TOKEN = /^[a-f0-9]{32}$/;
 function requireRestaurant() {
   if (!tenancy.current()) throw invalid('Open the restaurant’s own link to order');
 }
+
+const DEVICE = /^[a-z0-9-]{8,64}$/;
+// How long a phone finds its orders again without their links.
+const RECOVER_MS = 6 * 3600000;
+const TABLE_RECOVER_MS = 12 * 3600000;
+
+// The phone an order came from, for finding it again when the browser lost
+// its saved links (QR scanner apps often open a fresh, private browser):
+// a hash of its network address and browser, never the address itself.
+function deviceKeyOf(request) {
+  const ip = String(request.ip || '');
+  const agent = String(request.headers?.['user-agent'] || '');
+  if (!ip && !agent) return '';
+  return crypto.createHash('sha256').update(`${ip}|${agent}`).digest('hex').slice(0, 40);
+}
+const deviceOf = (value) => (DEVICE.test(String(value || '')) ? String(value) : '');
 const ID = /^[A-Za-z0-9]{1,32}$/;
 const TYPE_LABEL = { delivery: 'Delivery', pickup: 'Pick up', eat_in: 'Eat in' };
 
@@ -303,6 +319,8 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
     }),
     clientId: requestId,
     onlineToken: crypto.randomBytes(16).toString('hex'),
+    ...(deviceKeyOf(request) && { onlineDeviceKey: deviceKeyOf(request) }),
+    ...(deviceOf(p.device) && { onlineDevice: deviceOf(p.device) }),
     channel: table ? 'table' : 'online',
     orderType: type,
     source: 'counter',
@@ -365,6 +383,59 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
   return { token: order.get('onlineToken'), orderCode: order.get('orderCode'), total };
 });
 
+// Still going: not cancelled, and not finished unless its bill is open.
+const stillOpen = (order) =>
+  order.get('status') !== 'CANCELLED' &&
+  (order.get('status') !== 'DELIVERED' || order.get('billOpen') === true);
+
+// Anyone: this phone's orders still going, found again after the browser
+// lost their links, and at a table, the orders still open at it. Only
+// orders of the last few hours. { device?, table? }
+// (device: the phone's own id, when it still has one: then orders from
+// other phones that look the same on the same network are left out)
+Parse.Cloud.define('getMyOnlineOrders', async (request) => {
+  requireRestaurant();
+  const p = request.params || {};
+  const now = Date.now();
+  const found = [];
+  const key = deviceKeyOf(request);
+  if (key) {
+    const device = deviceOf(p.device);
+    const rows = await new Parse.Query('Order')
+      .equalTo('onlineDeviceKey', key)
+      .greaterThan('createdAt', new Date(now - RECOVER_MS))
+      .descending('createdAt')
+      .limit(10)
+      .find(MASTER);
+    found.push(
+      ...rows.filter((o) => !device || !o.get('onlineDevice') || o.get('onlineDevice') === device),
+    );
+  }
+  if (p.table) {
+    const table = await tableByToken(p.table).catch(() => null);
+    if (table)
+      found.push(
+        ...(await new Parse.Query('Order')
+          .equalTo('table', table)
+          .greaterThan('createdAt', new Date(now - TABLE_RECOVER_MS))
+          .descending('createdAt')
+          .limit(20)
+          .find(MASTER)),
+      );
+  }
+  const seen = new Set();
+  return {
+    orders: found
+      .filter((o) => o.get('onlineToken') && stillOpen(o))
+      .filter((o) => !seen.has(o.id) && seen.add(o.id))
+      .map((o) => ({
+        token: o.get('onlineToken'),
+        orderCode: o.get('orderCode'),
+        placedAt: o.createdAt.toISOString(),
+      })),
+  };
+});
+
 async function orderByToken(token) {
   requireRestaurant();
   const value = String(token || '');
@@ -392,6 +463,7 @@ Parse.Cloud.define('getOnlineOrder', async (request) => {
     deliveryAddress: order.get('orderType') === 'delivery' ? order.get('deliveryAddress') : '',
     table: order.get('orderType') === 'eat_in' ? order.get('tableLabel') || '' : '',
     billOpen: order.get('billOpen') === true,
+    served: !!order.get('servedAt'),
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
     deliveryKm: order.get('deliveryKm') ?? null,
