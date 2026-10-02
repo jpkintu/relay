@@ -145,6 +145,8 @@ type Draft = {
   riderId?: string;
   table?: string;
   payLater?: boolean;
+  // A customer's voucher (vouchers.js) paying part or all of the bill.
+  voucherCode?: string;
   // Split order: the splits (guests or portions) and the one items go to.
   splits?: string[];
   splitAt?: number;
@@ -314,6 +316,28 @@ export function NewOrder({
   const fee = isDelivery ? (draft.fee ?? menuFee) : 0;
   const subtotal = cartSubtotal(draft.cart);
   const total = subtotal + fee;
+  // The customer's vouchers (counter orders): found by their phone number.
+  const [vouchers, setVouchers] = useState<{ code: string; amount: number }[]>([]);
+  const phoneDigits = draft.phone.replace(/\D/g, '');
+  useEffect(() => {
+    if (!counter || preview || phoneDigits.length < 9) return setVouchers([]);
+    let live = true;
+    const timer = window.setTimeout(() => {
+      Parse.Cloud.run('findVouchers', { phone: phoneDigits })
+        .then(
+          (r: { vouchers: { code: string; amount: number }[] }) => live && setVouchers(r.vouchers),
+        )
+        .catch(() => live && setVouchers([]));
+    }, 400);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [counter, preview, phoneDigits]);
+  const voucher = vouchers.find((v) => v.code === draft.voucherCode) || null;
+  // A voucher is used whole: it pays what it can; the rest is paid as chosen.
+  const covered = voucher ? Math.min(voucher.amount, total) : 0;
+  const due = total - covered;
   // Card is taken on the counter's card machine: eat-in / pick-up only.
   const cardOk = !!counter && !isDelivery && !!config.card;
   const payment = draft.payment === 'card' && !cardOk ? 'cash' : draft.payment;
@@ -335,13 +359,14 @@ export function NewOrder({
   // Counter orders can be paid later (eat-in / pick-up only).
   const payLater = !!counter && !isDelivery && !!draft.payLater;
   const payRequest = !isCard && usesRequest(config.mobileMoney, draft.provider, draft.manualPay);
+  const needsPay = !payLater && due > 0;
   const problems = [
     isDelivery && !draft.name.trim() && 'customer name',
     isDelivery && !draft.address.trim() && !draft.location && 'delivery address or map pin',
     !draft.cart.length && 'at least one item',
-    !payLater && isCard && referenceProblem(draft.cardRef || ''),
-    !payLater && !isCash && !isCard && !draft.provider && 'Airtel or MTN',
-    !payLater &&
+    needsPay && isCard && referenceProblem(draft.cardRef || ''),
+    needsPay && !isCash && !isCard && !draft.provider && 'Airtel or MTN',
+    needsPay &&
       !isCash &&
       !isCard &&
       draft.provider &&
@@ -419,6 +444,7 @@ export function NewOrder({
           ...(!isDelivery && { table: (draft.table || '').trim(), payLater }),
         }),
         deliveryFee: fee,
+        ...(voucher && { voucherCode: voucher.code }),
         paymentMethod: payment,
         paymentProvider: isCash || payLater ? undefined : isCard ? 'card' : draft.provider,
         paymentReference:
@@ -881,6 +907,31 @@ export function NewOrder({
               <span>Total</span>
               <b>{money(total)}</b>
             </div>
+            {vouchers.length > 0 && (
+              <div className="channel-row voucher-row">
+                <span>Voucher</span>
+                {vouchers.map((v) => (
+                  <button
+                    key={v.code}
+                    className={draft.voucherCode === v.code ? 'active' : ''}
+                    onClick={() =>
+                      update({ voucherCode: draft.voucherCode === v.code ? '' : v.code })
+                    }
+                  >
+                    {v.code} · {money(v.amount)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {voucher && (
+              <p className="collect-note full-row">
+                The voucher pays {money(covered)}
+                {voucher.amount > covered
+                  ? `; ${money(voucher.amount - covered)} left stays the customer’s as a new voucher`
+                  : ''}
+                . {due > 0 ? `To pay: ${money(due)}.` : 'Nothing more to pay.'}
+              </p>
+            )}
             <div className="channel-row">
               <span>Payment</span>
               {PAYMENTS.map(([value, label]) => (
@@ -921,7 +972,7 @@ export function NewOrder({
                     <CreditCard size={14} aria-hidden /> {config.card.label}
                     {config.card.code && ` · terminal ${config.card.code}`}
                   </small>
-                  <strong>{money(total)}</strong>
+                  <strong>{money(due)}</strong>
                   <span>
                     Charge this on the card machine
                     {config.card.name ? ` (${config.card.name})` : ''}.
@@ -961,15 +1012,15 @@ export function NewOrder({
               <p className="collect-note full-row">
                 {counter && !isDelivery ? (
                   <>
-                    Take <b>{money(total)}</b> in cash now; it goes into your till.
+                    Take <b>{money(due)}</b> in cash now; it goes into your till.
                   </>
                 ) : counter ? (
                   <>
-                    The rider collects the full <b>{money(total)}</b> in cash at the door.
+                    The rider collects the full <b>{money(due)}</b> in cash at the door.
                   </>
                 ) : (
                   <>
-                    Collect the full <b>{money(total)}</b> in cash at the door.
+                    Collect the full <b>{money(due)}</b> in cash at the door.
                   </>
                 )}
               </p>

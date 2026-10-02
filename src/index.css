@@ -8704,3 +8704,63 @@ tr.split-row td {
   color: #a11a1a;
   font-weight: 700;
 }
+.voucher-charges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 0;
+}
+.voucher-charges label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.voucher-charges input {
+  width: 110px;
+}
+.voucher-refund {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--line, #dde3ee);
+  border-radius: 10px;
+}
+.voucher-refund h4 {
+  margin: 0 0 8px;
+}
+.voucher-sums {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.voucher-sums div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.voucher-sums .strong {
+  font-weight: 800;
+}
+.voucher-sums input {
+  width: 120px;
+  text-align: right;
+}
+.voucher-find {
+  display: flex;
+  gap: 6px;
+}
+.voucher-find input {
+  flex: 1;
+  min-width: 0;
+}
+.om-voucher {
+  margin: 6px 0;
+}
+.om-voucher-row {
+  display: flex;
+  gap: 8px;
+}
+.om-voucher-row input {
+  flex: 1;
+  min-width: 0;
+}

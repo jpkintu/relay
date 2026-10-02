@@ -5558,7 +5558,7 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.ok(log.rows.some((r) => r.action === 'payment.after_cancel'));
     // The balance sheet: the money is in cash, and owed back (a liability).
     const owing = await run('getBalanceSheet', {}, s.owner);
-    const owed = owing.refunds.owed.find((r) => r.id === order.id);
+    const owed = owing.refunds.owed.find((r) => r.orderId === order.id);
     assert.equal(owed.amount, order.total);
     assert.ok(owing.sheet.liabilities.refunds >= order.total);
     assert.equal(
@@ -5580,10 +5580,10 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     // Cleared: off the liabilities, the cash gone back out.
     const after = await run('getBalanceSheet', {}, s.owner);
     assert.equal(
-      after.refunds.owed.some((r) => r.id === order.id),
+      after.refunds.owed.some((r) => r.orderId === order.id),
       false,
     );
-    const cleared = after.refunds.cleared.find((r) => r.id === order.id);
+    const cleared = after.refunds.cleared.find((r) => r.orderId === order.id);
     assert.ok(cleared.refundedAt);
     assert.match(cleared.note, /998877/);
     assert.equal(after.sheet.liabilities.refunds, owing.sheet.liabilities.refunds - order.total);
@@ -5599,6 +5599,128 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
       ),
       /No refund is due/,
     );
+  });
+
+  test('vouchers: a cancelled paid order is the customer’s to spend whole, or refunded less charges', async () => {
+    const phone = '0772 555 001';
+    const M = { useMasterKey: true };
+    const get = (id) => new Parse.Query('Order').get(id, M);
+    // Paid 2 dishes by MTN MoMo, then cancelled: a voucher for the money.
+    const first = await counterOrder({
+      items: [{ id: item.id, quantity: 2 }],
+      paymentMethod: 'mobile_money',
+      paymentProvider: 'mtn',
+      customerPhone: phone,
+    });
+    assert.equal((await settle(first.id)).paymentStatus, 'VERIFIED');
+    await run(
+      'transitionOrder',
+      { orderId: first.id, action: 'cancel', reason: 'customer left' },
+      s.owner,
+    );
+    const [voucher] = (await run('findVouchers', { phone: '+256772555001' }, s.owner)).vouchers;
+    assert.match(voucher.code, /^V[A-Z0-9]{7}$/);
+    assert.equal(voucher.amount, first.total);
+    assert.equal(voucher.kind, 'payment');
+
+    // Spent on a cheaper order by the same customer: used whole; the rest
+    // stays theirs as a new voucher.
+    await rejects(
+      counterOrder({ customerPhone: '0700 000 999', voucherCode: voucher.code }),
+      /belongs to another customer/,
+    );
+    const cheap = await counterOrder({
+      customerPhone: phone,
+      paymentMethod: 'cash',
+      voucherCode: voucher.code,
+    });
+    assert.equal(cheap.total, 0);
+    const cheapRow = await get(cheap.id);
+    assert.equal(cheapRow.get('paymentMethod'), 'voucher');
+    assert.equal(cheapRow.get('voucherAmount'), first.total / 2);
+    assert.equal(cheapRow.get('billOpen'), false);
+    await rejects(
+      counterOrder({ customerPhone: phone, voucherCode: voucher.code }),
+      /has been used/,
+    );
+    const left = (await run('findVouchers', { phone }, s.owner)).vouchers;
+    assert.equal(left.length, 1);
+    assert.equal(left[0].amount, first.total / 2);
+    assert.equal(left[0].kind, 'rest');
+    const receipt = await run('getReceipt', { orderId: cheap.id }, s.owner);
+    assert.equal(receipt.total, first.total / 2);
+    assert.deepEqual(receipt.voucher, { code: voucher.code, amount: first.total / 2, toPay: 0 });
+
+    // A bill bigger than the voucher: the voucher pays its part, cash the rest.
+    const bill = await counterOrder({
+      orderType: 'eat_in',
+      items: [{ id: item.id, quantity: 2 }],
+      payLater: true,
+      customerPhone: phone,
+    });
+    await run(
+      'takeCounterPayment',
+      { orderId: bill.id, paymentMethod: 'cash', voucherCode: left[0].code },
+      s.owner,
+    );
+    const paid = await get(bill.id);
+    assert.equal(paid.get('voucherAmount'), first.total / 2);
+    assert.equal(paid.get('total'), first.total / 2);
+    assert.equal(paid.get('amountCollected'), first.total / 2);
+    assert.equal(paid.get('cashStatus'), 'IN_TILL');
+    assert.equal((await run('findVouchers', { phone }, s.owner)).vouchers.length, 0);
+
+    // The order paid by voucher is cancelled: the voucher comes back.
+    await run(
+      'transitionOrder',
+      { orderId: cheap.id, action: 'cancel', reason: 'changed mind' },
+      s.owner,
+    );
+    const [back] = (await run('findVouchers', { phone }, s.owner)).vouchers;
+    assert.equal(back.kind, 'restore');
+    assert.equal(back.amount, first.total / 2);
+    // The online checkout checks it with the customer's number.
+    assert.deepEqual(await run('checkVoucher', { code: back.code, phone: '0772555001' }), {
+      code: back.code,
+      amount: back.amount,
+    });
+    await rejects(
+      run('checkVoucher', { code: back.code, phone: '0700000999' }),
+      /another customer/,
+    );
+
+    // Refunded instead: less the charges for sending it.
+    await rejects(run('adminSaveRefundCharges', { flat: -1 }, s.owner), /0 or more/);
+    await run('adminSaveRefundCharges', { flat: 500, percent: 1 }, s.owner);
+    const listed = (await run('adminListVouchers', {}, s.owner)).vouchers.find(
+      (v) => v.id === back.id,
+    );
+    const charges = Math.round(500 + back.amount / 100);
+    assert.equal(listed.charges, charges);
+    assert.equal(listed.toSend, back.amount - charges);
+    const owing = await run('getBalanceSheet', {}, s.owner);
+    assert.ok(owing.refunds.owed.some((r) => r.id === back.id));
+    await rejects(
+      run('adminRefundVoucher', { id: back.id, note: 'x' }, s.owner),
+      /how it was sent/,
+    );
+    const refunded = await run(
+      'adminRefundVoucher',
+      { id: back.id, note: 'MTN MoMo to 0772555001' },
+      s.owner,
+    );
+    assert.equal(refunded.status, 'refunded');
+    assert.equal(refunded.charges, charges);
+    assert.equal(refunded.toSend, back.amount - charges);
+    const after = await run('getBalanceSheet', {}, s.owner);
+    const cleared = after.refunds.cleared.find((r) => r.id === back.id);
+    assert.equal(cleared.sent, back.amount - charges);
+    assert.equal(cleared.charges, charges);
+    assert.equal(after.sheet.liabilities.refunds, owing.sheet.liabilities.refunds - back.amount);
+    assert.equal(after.sheet.assets.cash, owing.sheet.assets.cash - back.amount);
+    const flow = await run('getCashFlow', {}, s.owner);
+    assert.ok(flow.outflows.some((r) => r.key === 'refund_charges' && r.amount >= charges));
+    await run('adminSaveRefundCharges', { flat: 0, percent: 0 }, s.owner);
   });
 
   test('MTN: a declined request leaves the payment not received, and the bill open again', async () => {
@@ -5761,6 +5883,7 @@ const ACCESS = {
     'getOnlineOrder',
     'cancelOnlineOrder',
     'getMyOnlineOrders',
+    'checkVoucher',
   ],
   nobody: [
     'bootstrapOwner',
@@ -5813,8 +5936,15 @@ const ACCESS = {
     'getRiderPay',
     'payRider',
   ],
-  staffOrFinance: ['getTillPayouts', 'getReportOptions', 'getPaymentsLedger', 'issueEfrisReceipt'],
+  staffOrFinance: [
+    'getTillPayouts',
+    'getReportOptions',
+    'getPaymentsLedger',
+    'issueEfrisReceipt',
+    'findVouchers',
+  ],
   reports: [
+    'adminListVouchers',
     'getDrawerOpenings',
     'getProfitAndLoss',
     'getBalanceSheet',
@@ -5843,6 +5973,8 @@ const ACCESS = {
     'getShiftReport',
   ],
   admin: [
+    'adminSaveRefundCharges',
+    'adminRefundVoucher',
     'adminListTables',
     'adminSaveTable',
     'adminSaveOnlineOrdering',

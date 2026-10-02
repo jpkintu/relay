@@ -50,6 +50,7 @@ const PROTECTED_CLASSES = [
   'Purchase',
   'Expense',
   'DiningTable',
+  'Voucher',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -63,6 +64,7 @@ const PRIVATE_CLASSES = [
   'AdminUnlock',
   // Their QR codes are secret (tables.js).
   'DiningTable',
+  'Voucher',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -129,6 +131,32 @@ const SCHEMAS = {
   Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N, lat: N, lng: N },
   // Tables guests order from with a QR code (tables.js).
   DiningTable: { name: S, branch, token: S, active: B, sortOrder: N },
+  // Money owed back for a cancelled order: spent on a new order or refunded
+  // (vouchers.js).
+  Voucher: {
+    code: S,
+    kind: S,
+    amount: N,
+    cashIn: N,
+    phone: S,
+    customerName: S,
+    status: S,
+    sourceOrder: ['Pointer', 'Order'],
+    sourceCode: S,
+    parent: ['Pointer', 'Voucher'],
+    parentCode: S,
+    openedAt: D,
+    branch,
+    usedOrder: ['Pointer', 'Order'],
+    usedCode: S,
+    usedAt: D,
+    usedAmount: N,
+    refundedAt: D,
+    refundedBy: ['Pointer', '_User'],
+    refundCharges: N,
+    refundSent: N,
+    refundNote: S,
+  },
   Order: {
     branch,
     // Split orders: the splits in the order entered (lines carry `split`).
@@ -197,6 +225,9 @@ const SCHEMAS = {
     refundedAt: D,
     refundedBy: ['Pointer', '_User'],
     refundNote: S,
+    // Paid in part or whole by a voucher (vouchers.js): total is what is left.
+    voucherAmount: N,
+    voucherCode: S,
     cancelledReason: S,
     cancelledBy: user,
     cancelledAt: D,
@@ -388,6 +419,8 @@ const SCHEMAS = {
     onlineNote: S,
     onlineDeliveryPerKm: N,
     onlineTables: B,
+    refundChargeFlat: N,
+    refundChargePercent: N,
   },
   MenuItem: {
     title: S,

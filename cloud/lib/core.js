@@ -64,6 +64,9 @@ const DEFAULT_CONFIG = {
   onlineDeliveryPerKm: 0,
   // Guests order from a QR code on their table (tables.js).
   onlineTables: false,
+  // What sending a refund back costs (vouchers.js): flat + % of it.
+  refundChargeFlat: 0,
+  refundChargePercent: 0,
   // Branding: theme colours (#rrggbb); '' keeps Relay's own.
   themeInk: '',
   themeAccent: '',

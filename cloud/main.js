@@ -42,6 +42,7 @@ require('./serverAddress');
 require('./orders');
 require('./counter');
 require('./menu');
+require('./vouchers');
 require('./tables');
 require('./online');
 require('./cash');

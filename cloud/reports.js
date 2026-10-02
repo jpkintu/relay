@@ -92,7 +92,10 @@ function factOf(order) {
     riderId: rider?.id || '',
     rider: nameOf(rider),
     branchId: order.get('branch')?.id || '',
-    total: Number(order.get('total') || 0),
+    // The sale: what the customer paid plus any voucher they paid with
+    // (vouchers.js); `voucher` is that part, no new money.
+    total: Number(order.get('total') || 0) + Number(order.get('voucherAmount') || 0),
+    voucher: Number(order.get('voucherAmount') || 0),
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
     deliveryPay: Number(order.get('deliveryPay') ?? order.get('deliveryFee') ?? 0),

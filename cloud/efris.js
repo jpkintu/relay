@@ -681,7 +681,8 @@ Parse.Cloud.define('listEfrisReceipts', async (request) => {
       id: order.id,
       code: order.get('orderCode'),
       at: require('./lib/placed').placedAt(order),
-      total: Number(order.get('total') || 0),
+      // The sale (a voucher paid part of it: vouchers.js).
+      total: Number(order.get('total') || 0) + Number(order.get('voucherAmount') || 0),
       customer: order.get('customerName') || '',
       status: statusOf(order),
       fdn: order.get('efrisFdn') || '',
