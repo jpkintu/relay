@@ -1750,7 +1750,9 @@ var require_security = __commonJS({
       "Purchase",
       "Expense",
       "StockItem",
-      "StockCount"
+      "StockCount",
+      "DiningTable",
+      "Voucher"
     ])
       Object.assign(SCHEMAS[className], {
         restoredFrom: S,
@@ -37378,6 +37380,10 @@ var require_data = __commonJS({
       "Expense",
       "StockItem",
       "StockCount",
+      // Table QR codes (tables.js: each table's secret token, so printed cards
+      // keep working) and customers' vouchers (vouchers.js).
+      "DiningTable",
+      "Voucher",
       "AuditLog"
     ];
     var PAGE = 500;
@@ -37461,11 +37467,13 @@ var require_restore = __commonJS({
       "Accompaniment",
       "MenuItem",
       "Customer",
+      "DiningTable",
       "Shift",
       "TillPayout",
       "Order",
       "OrderItem",
       "CashHandover",
+      "Voucher",
       "ZReport",
       "Supplier",
       "Purchase",
