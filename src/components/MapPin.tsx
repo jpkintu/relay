@@ -48,6 +48,7 @@ export function MapView({
   // Create the map once.
   useEffect(() => {
     let cancelled = false;
+    let resize = 0;
     loadLeaflet()
       .then((L) => {
         if (cancelled || !box.current) return;
@@ -72,12 +73,18 @@ export function MapView({
             pick.current?.({ lat: event.latlng.lat, lng: event.latlng.lng }),
           );
         map.current = created;
-        // Sized inside a sheet that may still be animating.
-        window.setTimeout(() => created.invalidateSize(), 150);
+        // Sized inside a sheet that may still be animating (not once it has
+        // closed: a removed map has no panes to move).
+        resize = window.setTimeout(() => {
+          if (map.current === created) created.invalidateSize();
+        }, 150);
       })
       .catch(() => !cancelled && setFailed(true));
     return () => {
       cancelled = true;
+      window.clearTimeout(resize);
+      // Stop a pan still running before the map goes.
+      map.current?.stop();
       map.current?.remove();
       map.current = null;
       marker.current = null;
