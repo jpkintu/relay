@@ -1293,6 +1293,11 @@ var require_security = __commonJS({
         readyAt: D,
         // Eat in: served (maybe before the bill was paid).
         servedAt: D,
+        // Paid for a cancelled order: owed back, and how it was refunded.
+        refundDue: B,
+        refundedAt: D,
+        refundedBy: ["Pointer", "_User"],
+        refundNote: S,
         cancelledReason: S,
         cancelledBy: user,
         cancelledAt: D,
@@ -10417,7 +10422,9 @@ var require_orders = __commonJS({
           cancelledAt: now,
           // Cash already in a till goes back to the guest.
           cashStatus: order.get("cashStatus") === "IN_TILL" ? "REFUNDED" : "NOT_APPLICABLE",
-          billOpen: false
+          billOpen: false,
+          // Mobile money / card already confirmed: owed back to the customer.
+          ...order.get("paymentStatus") === "VERIFIED" && { refundDue: true }
         });
       }
       if (p.action === "complete")
@@ -10806,7 +10813,10 @@ var require_payments = __commonJS({
       if (actor) order.set("paymentCheckedBy", actor);
       else if (order.has("paymentCheckedBy")) order.unset("paymentCheckedBy");
       const owedByRider = !received && order.get("status") === "DELIVERED" && !!order.get("createdBy");
-      if (!received && ["eat_in", "pickup"].includes(order.get("orderType")))
+      const cancelled = order.get("status") === "CANCELLED";
+      const refundDue = received && cancelled;
+      if (refundDue) order.set("refundDue", true);
+      if (!received && !cancelled && ["eat_in", "pickup"].includes(order.get("orderType")))
         order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: order.get("total") });
       if (owedByRider)
         order.set({
@@ -10818,7 +10828,7 @@ var require_payments = __commonJS({
       if (received) await require_orders().closeServed(order, actor || null);
       await audit(
         actor,
-        received ? "payment.verified" : "payment.rejected",
+        refundDue ? "payment.after_cancel" : received ? "payment.verified" : "payment.rejected",
         order,
         { paymentStatus: PENDING },
         {
@@ -10830,6 +10840,18 @@ var require_payments = __commonJS({
           ...!actor && { auto: true }
         }
       );
+      if (refundDue) {
+        const { values: config2 } = await loadConfig();
+        await notifyStaff({
+          kind: "payment.refund_due",
+          tone: "alert",
+          title: `Payment arrived for cancelled order ${order.get("orderCode")}`,
+          body: `${money(config2, order.get("total"))} by ${order.get("paymentProvider") || "mobile money"} (${order.get("paymentReference") || "no reference"}) from ${order.get("payRequestPhone") || order.get("customerPhone") || "the customer"}: refund it, then mark it refunded on the order.`,
+          link: `/admin/orders/${order.id}`,
+          order
+        });
+        return;
+      }
       const code = order.get("orderCode");
       const { values: config } = await loadConfig();
       if (order.get("createdBy"))
@@ -36767,7 +36789,7 @@ var require_overrides = __commonJS({
     var { checkMobileMoney, PENDING } = require_payments();
     var { money, notifyUser, notifyStaff } = require_notifications();
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
-    var ACTIONS = ["cancel", "payment", "deliver", "reopen", "move"];
+    var ACTIONS = ["refunded", "cancel", "payment", "deliver", "reopen", "move"];
     var clean = (value, max) => String(value ?? "").trim().slice(0, max);
     var unsetIfSet = (object, ...keys) => keys.forEach((key) => object.has(key) && object.unset(key));
     var snapshot = (order) => ({
@@ -36875,7 +36897,11 @@ var require_overrides = __commonJS({
           requestStatus: order.get("payRequestStatus") || "",
           requestReference: requestReference(order),
           requestPhone: order.get("payRequestPhone") || "",
-          requestError: order.get("payRequestError") || ""
+          requestError: order.get("payRequestError") || "",
+          // Money owed back (paid for a cancelled order), and its refund.
+          refundDue: order.get("refundDue") === true,
+          refundedAt: order.get("refundedAt") || null,
+          refundNote: order.get("refundNote") || ""
         },
         riderPay: status === "DELIVERED" ? {
           total: orderRiderPay(order),
@@ -36922,7 +36948,9 @@ var require_overrides = __commonJS({
         move: withRider && OPEN.includes(status),
         reopen: delivered && !riderPaid && (cashWithRider || momoUnverified),
         paymentToMobileMoney: delivered && cashWithRider,
-        paymentToCash: delivered && momoUnverified
+        paymentToCash: delivered && momoUnverified,
+        // Paid after (or before) it was cancelled: refunded to the customer.
+        refunded: order.get("refundDue") === true
       };
     }
     Parse.Cloud.define("adminOverrideOrder", async (request) => {
@@ -36952,8 +36980,14 @@ var require_overrides = __commonJS({
           cashStatus: "NOT_APPLICABLE"
         });
         notices.push([rider, `${code} was cancelled by the owner`, reason, "alert"]);
-        if (order.get("paymentStatus") === "VERIFIED")
+        if (order.get("paymentStatus") === "VERIFIED") {
+          order.set("refundDue", true);
           notices.push(["staff", `${code} was cancelled after payment`, "Refund the customer."]);
+        }
+      }
+      if (p.action === "refunded") {
+        if (!can.refunded) throw invalid("No refund is due on this order");
+        order.set({ refundDue: false, refundedAt: now, refundedBy: actor, refundNote: reason });
       }
       if (p.action === "payment") {
         if (p.method === "mobile_money") {
