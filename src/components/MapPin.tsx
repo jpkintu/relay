@@ -161,15 +161,20 @@ export function PinSheet({
   onSave,
   onClose,
   startWithMyLocation = false,
+  around,
+  hint = 'Tap the map where the customer is, or drag the pin.',
 }: {
   title: string;
   initial: LatLng | null;
   onSave: (pin: LatLng | null) => Promise<void> | void;
   onClose: () => void;
   startWithMyLocation?: boolean;
+  // Where the map opens without a pin (default: the restaurant or branch).
+  around?: LatLng | null;
+  hint?: string;
 }) {
   const config = useConfig();
-  const home = config.mapCenter ?? FALLBACK_CENTER;
+  const home = around ?? config.mapCenter ?? FALLBACK_CENTER;
   const [pin, setPin] = useState<LatLng | null>(initial);
   const [center, setCenter] = useState<LatLng>(initial ?? home);
   const [busy, setBusy] = useState(false);
@@ -219,7 +224,7 @@ export function PinSheet({
         <div className="sheet-head">
           <div>
             <h2>{title}</h2>
-            <p>Tap the map where the customer is, or drag the pin.</p>
+            <p>{hint}</p>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">
             <X />

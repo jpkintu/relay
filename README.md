@@ -158,7 +158,14 @@ sides, and order for **pick-up or delivery without signing in**. They pay
 **cash on pick-up / delivery** or **mobile money** (a payment request to their
 phone with automatic collection, or the merchant code and the transaction ID),
 then follow the order live: received, being prepared, ready / on the way,
-done. They can cancel until the kitchen starts.
+done. They can cancel until the kitchen starts. The phone remembers its
+orders for two days: closing the page is fine, and reopening the menu shows
+**Your orders** with the ones still on their way.
+
+Deliveries can be priced **per km** (Admin → Online orders → Delivery charge
+per km): the straight-line distance from the branch's map pin (Admin →
+Branches) to the customer's location, which they share or pin on a map. Each
+branch's pin is also where its team's maps open.
 
 Orders arrive on the kitchen board as Incoming, tagged **Online**, with the
 customer's number to call; deliveries are given a rider like call-in orders.

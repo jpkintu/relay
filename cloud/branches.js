@@ -19,6 +19,7 @@ const {
   claimOnce,
   readAcl,
 } = require('./lib/core');
+const { cleanLocation, pinOf } = require('./lib/geo');
 
 const CLASS = 'Branch';
 // Records that belong to a branch.
@@ -141,6 +142,9 @@ const view = (row, members = {}) => ({
   phone: row.get('phone') || '',
   active: row.get('active') !== false,
   main: row.get('main') === true,
+  // Its pin on the map: maps for its staff open here, and online
+  // deliveries are priced from it (online.js).
+  location: pinOf(row.get('lat'), row.get('lng')),
   members: members[row.id] || { riders: 0, cashiers: 0 },
 });
 
@@ -177,7 +181,8 @@ Parse.Cloud.define('adminListBranches', async (request) => {
   return { branches: rows.map((row) => view(row, members)) };
 });
 
-// Owner: add or edit a branch. { id?, name, address, phone, active }
+// Owner: add or edit a branch. { id?, name, address, phone, active, location? }
+// (location: { lat, lng }, or null to remove the pin)
 Parse.Cloud.define('adminSaveBranch', async (request) => {
   const actor = await adminOnly(request);
   const p = request.params;
@@ -200,6 +205,15 @@ Parse.Cloud.define('adminSaveBranch', async (request) => {
     if (staff) throw invalid(`Move its ${staff} team member(s) to another branch first`);
   }
   if (!p.id) await require('./lib/limits').checkBranchLimit(rows.length + 1);
+  if ('location' in p) {
+    const pin = cleanLocation(p.location);
+    if (pin.error) throw invalid(pin.error);
+    if (pin.location) row.set({ lat: pin.location.lat, lng: pin.location.lng });
+    else {
+      row.unset('lat');
+      row.unset('lng');
+    }
+  }
   row.set({
     name,
     address: clean(p.address, 200),

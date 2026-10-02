@@ -30,7 +30,7 @@ const {
   findAll,
 } = require('./lib/core');
 const { sumBy } = require('./lib/money');
-const { cleanLocation } = require('./lib/geo');
+const { cleanLocation, feeByDistance, pinOf } = require('./lib/geo');
 const { merchantAccounts } = require('./lib/mobileMoney');
 const { recordCustomerOrder } = require('./customers');
 const { checkMobileMoney, PENDING } = require('./payments');
@@ -54,6 +54,8 @@ function onlineSettings(config) {
     cash: config.onlineCash !== false,
     mobileMoney: config.onlineMobileMoney !== false && accounts.length > 0,
     note: config.onlineNote || '',
+    // Deliveries priced by distance (a rate per km), else the flat fee.
+    perKm: Math.max(0, Math.round(Number(config.onlineDeliveryPerKm) || 0)),
     accounts,
   };
 }
@@ -69,7 +71,23 @@ async function openBranches() {
       address: row.get('address') || '',
       phone: row.get('phone') || '',
       main: row.get('main') === true,
+      location: pinOf(row.get('lat'), row.get('lng')),
     }));
+}
+
+// Where deliveries leave from: the branch's pin, else the restaurant's.
+function originOf(branch, branches, config) {
+  const row = branch && branches.find((b) => b.id === branch.id);
+  return row?.location || pinOf(config.restaurantLat, config.restaurantLng);
+}
+
+// The delivery charge: by distance when a rate per km is set (the customer's
+// pin is then needed), else the flat fee from Settings.
+function deliveryCharge(s, config, origin, to) {
+  if (!s.perKm || !origin)
+    return { fee: Math.max(0, Math.round(Number(config.defaultDeliveryFee) || 0)), km: null };
+  if (!to) throw invalid('Pin your location on the map, so we can work out the delivery charge');
+  return feeByDistance(origin, to, s.perKm);
 }
 
 async function branchOf(id, branches) {
@@ -112,8 +130,18 @@ Parse.Cloud.define('getOnlineMenu', async (request) => {
         }))
       : [],
     deliveryFee: Number(config.defaultDeliveryFee) || 0,
+    // By distance: the rate and where the branch is (the fee is shown as the
+    // customer pins their location; placeOnlineOrder works it out again).
+    deliveryPerKm: s.perKm,
+    origin: s.perKm ? originOf(branch, branches, config) : null,
     restaurant,
-    branches: branches.length > 1 ? branches : [],
+    branches: (branches.length > 1 ? branches : []).map((b) => ({
+      id: b.id,
+      name: b.name,
+      address: b.address,
+      phone: b.phone,
+      main: b.main,
+    })),
     branchId: branch?.id || '',
     categories: menu.categories,
     items: menu.items,
@@ -193,16 +221,23 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
         : 'No way to pay is switched on',
     );
 
+  // Where it leaves from and the delivery charge (a missing pin is a
+  // mistake to fix, not an order to count against the limits below).
+  const branches = await openBranches();
+  const branch = await branchOf(p.branchId, branches);
+  const delivery = isDelivery
+    ? deliveryCharge(s, config, originOf(branch, branches, config), pin.location)
+    : { fee: 0, km: null };
+  const fee = delivery.fee;
+
   const ip = String(request.ip || '');
   if (!allow(`ip:${ip}`, 8) || !allow(`phone:${customerPhone}`, 4))
     throw forbidden(
       'Too many orders in a short time. Call the restaurant, or try again in a few minutes',
     );
 
-  const branch = await branchOf(p.branchId, await openBranches());
   const lines = await priceLines(p.items, branch?.id);
   const subtotal = sumBy(lines, (line) => line.lineTotal);
-  const fee = isDelivery ? Math.max(0, Math.round(Number(config.defaultDeliveryFee) || 0)) : 0;
   const total = subtotal + fee;
   const momo =
     method === 'mobile_money'
@@ -236,6 +271,7 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
     prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
     ...splitFields(lines),
     deliveryFee: fee,
+    ...(delivery.km !== null && { deliveryKm: delivery.km }),
     total,
     paymentMethod: method,
     amountToCollect: method === 'cash' ? total : 0,
@@ -307,6 +343,7 @@ Parse.Cloud.define('getOnlineOrder', async (request) => {
     deliveryAddress: order.get('orderType') === 'delivery' ? order.get('deliveryAddress') : '',
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
+    deliveryKm: order.get('deliveryKm') ?? null,
     total: Number(order.get('total') || 0),
     paymentMethod: order.get('paymentMethod'),
     paymentStatus: order.get('paymentStatus') || '',
@@ -381,6 +418,7 @@ Parse.Cloud.define('adminSaveOnlineOrdering', async (request) => {
       'onlineCash',
       'onlineMobileMoney',
       'onlineNote',
+      'onlineDeliveryPerKm',
     ].map((key) => [key, current[key]]),
   );
   const flag = (key, fallback) => (key in p ? p[key] === true : fallback);
@@ -392,7 +430,18 @@ Parse.Cloud.define('adminSaveOnlineOrdering', async (request) => {
     onlineCash: flag('onlineCash', current.onlineCash !== false),
     onlineMobileMoney: flag('onlineMobileMoney', current.onlineMobileMoney !== false),
     onlineNote: clean('onlineNote' in p ? p.onlineNote : current.onlineNote, 200),
+    onlineDeliveryPerKm:
+      'onlineDeliveryPerKm' in p
+        ? Number(p.onlineDeliveryPerKm)
+        : Number(current.onlineDeliveryPerKm) || 0,
   };
+  if (
+    !Number.isFinite(next.onlineDeliveryPerKm) ||
+    next.onlineDeliveryPerKm < 0 ||
+    next.onlineDeliveryPerKm > 1e7
+  )
+    throw invalid('The delivery charge per km must be 0 or more');
+  next.onlineDeliveryPerKm = Math.round(next.onlineDeliveryPerKm);
   if (next.onlineOrders && !next.onlinePickup && !next.onlineDelivery)
     throw invalid('Offer pick-up, delivery or both');
   if (
@@ -433,6 +482,7 @@ function onlineView(config) {
     onlineMobileMoney: config.onlineMobileMoney !== false,
     mobileMoneyReady: s.accounts.length > 0,
     onlineNote: s.note,
+    onlineDeliveryPerKm: s.perKm,
   };
 }
 

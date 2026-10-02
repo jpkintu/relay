@@ -60,6 +60,8 @@ const DEFAULT_CONFIG = {
   onlineCash: true,
   onlineMobileMoney: true,
   onlineNote: '',
+  // Online deliveries priced by distance from the branch's pin; 0 = the flat fee.
+  onlineDeliveryPerKm: 0,
   // Branding: theme colours (#rrggbb); '' keeps Relay's own.
   themeInk: '',
   themeAccent: '',

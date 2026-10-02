@@ -3,6 +3,7 @@ import { MapPin, Plus } from 'lucide-react';
 import Parse from '../parse';
 import { useSession } from '../lib/session';
 import { useCloud } from './reports/common';
+import { PinSheet, type LatLng } from './MapPin';
 
 type Branch = {
   id: string;
@@ -11,12 +12,20 @@ type Branch = {
   phone: string;
   active: boolean;
   main: boolean;
+  location: LatLng | null;
   members: { riders: number; cashiers: number };
 };
 
-type Draft = { id?: string; name: string; address: string; phone: string; active: boolean };
+type Draft = {
+  id?: string;
+  name: string;
+  address: string;
+  phone: string;
+  active: boolean;
+  location: LatLng | null;
+};
 
-const EMPTY: Draft = { name: '', address: '', phone: '', active: true };
+const EMPTY: Draft = { name: '', address: '', phone: '', active: true, location: null };
 
 // Owner: the restaurant's branches. Riders and cashiers are given a branch on
 // their page (Team); dishes are offered per branch in the menu; reports
@@ -29,6 +38,7 @@ export function AdminBranches() {
   );
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pinning, setPinning] = useState(false);
   const [saveError, setSaveError] = useState('');
   const branches = data?.branches ?? [];
 
@@ -109,6 +119,30 @@ export function AdminBranches() {
                 maxLength={30}
               />
             </label>
+            <div className="setup-field">
+              On the map
+              <div className="pin-row">
+                <button type="button" className="pin-button" onClick={() => setPinning(true)}>
+                  <MapPin />
+                  {draft.location
+                    ? `${draft.location.lat.toFixed(5)}, ${draft.location.lng.toFixed(5)} · change`
+                    : 'Pin the branch'}
+                </button>
+              </div>
+              <small className="muted">
+                Maps for this branch&apos;s team open here, and online deliveries are priced by
+                distance from this pin.
+              </small>
+            </div>
+            {pinning && (
+              <PinSheet
+                title={`Where is ${draft.name || 'the branch'}?`}
+                hint="Tap the map where the branch is, or drag the pin."
+                initial={draft.location}
+                onSave={(pin) => setDraft({ ...draft, location: pin })}
+                onClose={() => setPinning(false)}
+              />
+            )}
             {draft.id && (
               <label className="setup-checkbox">
                 <input
@@ -156,7 +190,9 @@ export function AdminBranches() {
                       </small>
                     )}
                     {b.phone && <small>{b.phone}</small>}
-                    {!b.address && !b.phone && <small className="muted">—</small>}
+                    <small className={b.location ? '' : 'muted'}>
+                      {b.location ? 'Pinned on the map' : 'Not pinned on the map'}
+                    </small>
                   </td>
                   <td data-label="Riders" className="num">
                     {b.members.riders}
@@ -180,6 +216,7 @@ export function AdminBranches() {
                           address: b.address,
                           phone: b.phone,
                           active: b.active,
+                          location: b.location,
                         });
                       }}
                     >

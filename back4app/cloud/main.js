@@ -194,6 +194,8 @@ var require_core = __commonJS({
       onlineCash: true,
       onlineMobileMoney: true,
       onlineNote: "",
+      // Online deliveries priced by distance from the branch's pin; 0 = the flat fee.
+      onlineDeliveryPerKm: 0,
       // Branding: theme colours (#rrggbb); '' keeps Relay's own.
       themeInk: "",
       themeAccent: "",
@@ -863,6 +865,40 @@ var require_errors = __commonJS({
   }
 });
 
+// cloud/lib/geo.js
+var require_geo = __commonJS({
+  "cloud/lib/geo.js"(exports2, module2) {
+    "use strict";
+    function cleanLocation(value) {
+      if (value === void 0 || value === null || value === "") return { location: null };
+      const lat = Number(value?.lat);
+      const lng = Number(value?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
+        return { error: "That map pin is not a valid location" };
+      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
+      const round = (n) => Math.round(n * 1e6) / 1e6;
+      return { location: { lat: round(lat), lng: round(lng) } };
+    }
+    function distanceKm(a, b) {
+      const rad = (d) => d * Math.PI / 180;
+      const dLat = rad(b.lat - a.lat);
+      const dLng = rad(b.lng - a.lng);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+      return 2 * 6371 * Math.asin(Math.sqrt(h));
+    }
+    function feeByDistance(origin, to, perKm) {
+      const km = Math.round(distanceKm(origin, to) * 10) / 10;
+      return { km, fee: Math.round(km * perKm) };
+    }
+    function pinOf(lat, lng) {
+      const a = Number(lat);
+      const b = Number(lng);
+      return Number.isFinite(a) && Number.isFinite(b) && (a !== 0 || b !== 0) ? { lat: a, lng: b } : null;
+    }
+    module2.exports = { cleanLocation, distanceKm, feeByDistance, pinOf };
+  }
+});
+
 // cloud/lib/limits.js
 var require_limits = __commonJS({
   "cloud/lib/limits.js"(exports2, module2) {
@@ -900,6 +936,7 @@ var require_branches = __commonJS({
       claimOnce,
       readAcl
     } = require_core();
+    var { cleanLocation, pinOf } = require_geo();
     var CLASS = "Branch";
     var TAGGED = ["Order", "Shift", "CashHandover", "TillPayout"];
     var ROLES = ["admin", "finance", "cashier", "rider"];
@@ -994,6 +1031,9 @@ var require_branches = __commonJS({
       phone: row.get("phone") || "",
       active: row.get("active") !== false,
       main: row.get("main") === true,
+      // Its pin on the map: maps for its staff open here, and online
+      // deliveries are priced from it (online.js).
+      location: pinOf(row.get("lat"), row.get("lng")),
       members: members[row.id] || { riders: 0, cashiers: 0 }
     });
     Parse.Cloud.define("getBranches", async (request) => {
@@ -1041,6 +1081,15 @@ var require_branches = __commonJS({
         if (staff) throw invalid(`Move its ${staff} team member(s) to another branch first`);
       }
       if (!p.id) await require_limits().checkBranchLimit(rows.length + 1);
+      if ("location" in p) {
+        const pin = cleanLocation(p.location);
+        if (pin.error) throw invalid(pin.error);
+        if (pin.location) row.set({ lat: pin.location.lat, lng: pin.location.lng });
+        else {
+          row.unset("lat");
+          row.unset("lng");
+        }
+      }
       row.set({
         name,
         address: clean(p.address, 200),
@@ -1173,7 +1222,7 @@ var require_security = __commonJS({
     var branch = ["Pointer", "Branch"];
     var SCHEMAS = {
       // Outlets of the restaurant (branches.js).
-      Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N },
+      Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N, lat: N, lng: N },
       Order: {
         branch,
         // Split orders: the splits in the order entered (lines carry `split`).
@@ -1226,6 +1275,8 @@ var require_security = __commonJS({
         clientId: S,
         // Online orders (online.js): the customer's private tracking link.
         onlineToken: S,
+        // Online deliveries priced by distance: the km charged for.
+        deliveryKm: N,
         acceptedAt: D,
         readyAt: D,
         cancelledReason: S,
@@ -1416,7 +1467,8 @@ var require_security = __commonJS({
         onlineDelivery: B,
         onlineCash: B,
         onlineMobileMoney: B,
-        onlineNote: S
+        onlineNote: S,
+        onlineDeliveryPerKm: N
       },
       MenuItem: {
         title: S,
@@ -32059,24 +32111,6 @@ var require_accompaniments = __commonJS({
   }
 });
 
-// cloud/lib/geo.js
-var require_geo = __commonJS({
-  "cloud/lib/geo.js"(exports2, module2) {
-    "use strict";
-    function cleanLocation(value) {
-      if (value === void 0 || value === null || value === "") return { location: null };
-      const lat = Number(value?.lat);
-      const lng = Number(value?.lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
-        return { error: "That map pin is not a valid location" };
-      if (lat === 0 && lng === 0) return { error: "Drop the pin on the delivery address" };
-      const round = (n) => Math.round(n * 1e6) / 1e6;
-      return { location: { lat: round(lat), lng: round(lng) } };
-    }
-    module2.exports = { cleanLocation };
-  }
-});
-
 // cloud/orders.js
 var require_orders = __commonJS({
   "cloud/orders.js"(exports2, module2) {
@@ -33270,7 +33304,7 @@ var require_online = __commonJS({
       findAll
     } = require_core();
     var { sumBy } = require_money();
-    var { cleanLocation } = require_geo();
+    var { cleanLocation, feeByDistance, pinOf } = require_geo();
     var { merchantAccounts } = require_mobileMoney();
     var { recordCustomerOrder } = require_customers();
     var { checkMobileMoney, PENDING } = require_payments();
@@ -33291,6 +33325,8 @@ var require_online = __commonJS({
         cash: config.onlineCash !== false,
         mobileMoney: config.onlineMobileMoney !== false && accounts.length > 0,
         note: config.onlineNote || "",
+        // Deliveries priced by distance (a rate per km), else the flat fee.
+        perKm: Math.max(0, Math.round(Number(config.onlineDeliveryPerKm) || 0)),
         accounts
       };
     }
@@ -33301,8 +33337,19 @@ var require_online = __commonJS({
         name: row.get("name") || "",
         address: row.get("address") || "",
         phone: row.get("phone") || "",
-        main: row.get("main") === true
+        main: row.get("main") === true,
+        location: pinOf(row.get("lat"), row.get("lng"))
       }));
+    }
+    function originOf(branch, branches, config) {
+      const row = branch && branches.find((b) => b.id === branch.id);
+      return row?.location || pinOf(config.restaurantLat, config.restaurantLng);
+    }
+    function deliveryCharge(s, config, origin, to) {
+      if (!s.perKm || !origin)
+        return { fee: Math.max(0, Math.round(Number(config.defaultDeliveryFee) || 0)), km: null };
+      if (!to) throw invalid("Pin your location on the map, so we can work out the delivery charge");
+      return feeByDistance(origin, to, s.perKm);
     }
     async function branchOf(id, branches) {
       if (!branches.length) return null;
@@ -33340,8 +33387,18 @@ var require_online = __commonJS({
           auto: a.auto
         })) : [],
         deliveryFee: Number(config.defaultDeliveryFee) || 0,
+        // By distance: the rate and where the branch is (the fee is shown as the
+        // customer pins their location; placeOnlineOrder works it out again).
+        deliveryPerKm: s.perKm,
+        origin: s.perKm ? originOf(branch, branches, config) : null,
         restaurant,
-        branches: branches.length > 1 ? branches : [],
+        branches: (branches.length > 1 ? branches : []).map((b) => ({
+          id: b.id,
+          name: b.name,
+          address: b.address,
+          phone: b.phone,
+          main: b.main
+        })),
         branchId: branch?.id || "",
         categories: menu.categories,
         items: menu.items
@@ -33397,15 +33454,17 @@ var require_online = __commonJS({
         throw invalid(
           [s.cash && "cash", s.mobileMoney && "mobile money"].filter(Boolean).join(" or ") ? `Pay by ${[s.cash && (isDelivery ? "cash on delivery" : "cash on pick-up"), s.mobileMoney && "mobile money"].filter(Boolean).join(" or ")}` : "No way to pay is switched on"
         );
+      const branches = await openBranches();
+      const branch = await branchOf(p.branchId, branches);
+      const delivery = isDelivery ? deliveryCharge(s, config, originOf(branch, branches, config), pin.location) : { fee: 0, km: null };
+      const fee = delivery.fee;
       const ip = String(request.ip || "");
       if (!allow(`ip:${ip}`, 8) || !allow(`phone:${customerPhone}`, 4))
         throw forbidden(
           "Too many orders in a short time. Call the restaurant, or try again in a few minutes"
         );
-      const branch = await branchOf(p.branchId, await openBranches());
       const lines = await priceLines(p.items, branch?.id);
       const subtotal = sumBy(lines, (line) => line.lineTotal);
-      const fee = isDelivery ? Math.max(0, Math.round(Number(config.defaultDeliveryFee) || 0)) : 0;
       const total = subtotal + fee;
       const momo = method === "mobile_money" ? await checkMobileMoney(
         config,
@@ -33435,6 +33494,7 @@ var require_online = __commonJS({
         prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
         ...splitFields(lines),
         deliveryFee: fee,
+        ...delivery.km !== null && { deliveryKm: delivery.km },
         total,
         paymentMethod: method,
         amountToCollect: method === "cash" ? total : 0,
@@ -33502,6 +33562,7 @@ var require_online = __commonJS({
         deliveryAddress: order.get("orderType") === "delivery" ? order.get("deliveryAddress") : "",
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
+        deliveryKm: order.get("deliveryKm") ?? null,
         total: Number(order.get("total") || 0),
         paymentMethod: order.get("paymentMethod"),
         paymentStatus: order.get("paymentStatus") || "",
@@ -33568,7 +33629,8 @@ var require_online = __commonJS({
           "onlineDelivery",
           "onlineCash",
           "onlineMobileMoney",
-          "onlineNote"
+          "onlineNote",
+          "onlineDeliveryPerKm"
         ].map((key) => [key, current[key]])
       );
       const flag = (key, fallback) => key in p ? p[key] === true : fallback;
@@ -33579,8 +33641,12 @@ var require_online = __commonJS({
         onlineDelivery: flag("onlineDelivery", current.onlineDelivery !== false),
         onlineCash: flag("onlineCash", current.onlineCash !== false),
         onlineMobileMoney: flag("onlineMobileMoney", current.onlineMobileMoney !== false),
-        onlineNote: clean("onlineNote" in p ? p.onlineNote : current.onlineNote, 200)
+        onlineNote: clean("onlineNote" in p ? p.onlineNote : current.onlineNote, 200),
+        onlineDeliveryPerKm: "onlineDeliveryPerKm" in p ? Number(p.onlineDeliveryPerKm) : Number(current.onlineDeliveryPerKm) || 0
       };
+      if (!Number.isFinite(next.onlineDeliveryPerKm) || next.onlineDeliveryPerKm < 0 || next.onlineDeliveryPerKm > 1e7)
+        throw invalid("The delivery charge per km must be 0 or more");
+      next.onlineDeliveryPerKm = Math.round(next.onlineDeliveryPerKm);
       if (next.onlineOrders && !next.onlinePickup && !next.onlineDelivery)
         throw invalid("Offer pick-up, delivery or both");
       if (next.onlineOrders && !next.onlineCash && !(next.onlineMobileMoney && merchantAccounts(current).length))
@@ -33611,7 +33677,8 @@ var require_online = __commonJS({
         onlineCash: s.cash,
         onlineMobileMoney: config.onlineMobileMoney !== false,
         mobileMoneyReady: s.accounts.length > 0,
-        onlineNote: s.note
+        onlineNote: s.note,
+        onlineDeliveryPerKm: s.perKm
       };
     }
     Parse.Cloud.define("adminGetOnlineOrdering", async (request) => {
@@ -36816,6 +36883,7 @@ var require_profile = __commonJS({
     var { canBootstrapOwner } = require_admin();
     var { previewEnabled } = require_preview();
     var { merchantAccounts, cardAccount } = require_mobileMoney();
+    var { pinOf } = require_geo();
     function publicConfig(values) {
       return {
         restaurantName: values.restaurantName,
@@ -36909,7 +36977,11 @@ var require_profile = __commonJS({
         branchCount: branches.length,
         // Parts of the app this restaurant has (lib/limits.js).
         features,
-        config: publicConfig(role === "rider" ? withRiderLimit(values, user) : values)
+        config: {
+          ...publicConfig(role === "rider" ? withRiderLimit(values, user) : values),
+          // Maps open at their branch's pin when it has one.
+          ...own && pinOf(own.get("lat"), own.get("lng")) ? { mapCenter: pinOf(own.get("lat"), own.get("lng")) } : {}
+        }
       };
     });
   }
