@@ -34795,7 +34795,14 @@ var require_accounts = __commonJS({
         netMargin: revenue ? Math.round(netProfit / revenue * 1e3) / 10 : null
       };
     }
-    function cashMovements({ orders, supplierPayments, expenses, payouts }) {
+    function cashMovements({
+      orders,
+      supplierPayments,
+      expenses,
+      payouts,
+      refundReceipts = [],
+      refundsPaid = []
+    }) {
       const received = sum(
         orders.filter((o) => o.confirmed),
         (o) => o.total
@@ -34810,30 +34817,47 @@ var require_accounts = __commonJS({
         payouts.filter((p) => p.kind !== "rider"),
         (p) => p.amount
       );
+      const forRefund = sum(refundReceipts, (r) => r.amount);
+      const refunded = sum(refundsPaid, (r) => r.amount);
       return {
         received,
+        forRefund,
         toSuppliers,
         onExpenses,
         riderPay,
         fromTills,
-        net: received - toSuppliers - onExpenses - riderPay - fromTills
+        refunded,
+        net: received + forRefund - toSuppliers - onExpenses - riderPay - fromTills - refunded
       };
     }
     function cashFlow({ opening, movements }) {
       return {
         opening,
-        inflows: [{ key: "sales", amount: movements.received }],
+        inflows: [
+          { key: "sales", amount: movements.received },
+          // Shown only when there were any.
+          ...movements.forRefund ? [{ key: "refund_receipts", amount: movements.forRefund }] : []
+        ],
         outflows: [
           { key: "suppliers", amount: movements.toSuppliers },
           { key: "expenses", amount: movements.onExpenses },
           { key: "rider_pay", amount: movements.riderPay },
-          { key: "till_expenses", amount: movements.fromTills }
+          { key: "till_expenses", amount: movements.fromTills },
+          ...movements.refunded ? [{ key: "refunds", amount: movements.refunded }] : []
         ],
         net: movements.net,
         closing: opening + movements.net
       };
     }
-    function balanceSheet({ openingBalance, cash, orders, purchases, payouts, profit }) {
+    function balanceSheet({
+      openingBalance,
+      cash,
+      orders,
+      purchases,
+      payouts,
+      profit,
+      refundsOwed = 0
+    }) {
       const receivable = sum(
         orders.filter((o) => !o.confirmed),
         (o) => o.total
@@ -34846,11 +34870,16 @@ var require_accounts = __commonJS({
       );
       const owedToRiders = Math.max(0, riderPayEarned - riderPaySettled);
       const assets = cash + receivable;
-      const liabilities = owedToSuppliers + owedToRiders;
+      const liabilities = owedToSuppliers + owedToRiders + refundsOwed;
       const equity = assets - liabilities;
       return {
         assets: { cash, receivable, total: assets },
-        liabilities: { suppliers: owedToSuppliers, riders: owedToRiders, total: liabilities },
+        liabilities: {
+          suppliers: owedToSuppliers,
+          riders: owedToRiders,
+          refunds: refundsOwed,
+          total: liabilities
+        },
         equity: {
           opening: openingBalance,
           profit,
@@ -34894,6 +34923,25 @@ var require_accounting = __commonJS({
       query.lessThan("spentAt", end);
       return findAll(query);
     }
+    async function refundRows(end, branch) {
+      const query = inBranch(new Parse.Query("Order"), branch);
+      query.equalTo("status", "CANCELLED");
+      query.equalTo("paymentStatus", "VERIFIED");
+      return (await findAll(query)).map((order) => ({
+        id: order.id,
+        code: order.get("orderCode"),
+        amount: Math.round(Number(order.get("total") || 0)),
+        receivedAt: order.get("paymentCheckedAt") || order.get("cancelledAt") || order.updatedAt,
+        refundedAt: order.get("refundedAt") || null,
+        note: order.get("refundNote") || ""
+      })).filter((row) => row.receivedAt < end);
+    }
+    var refundedBy = (row, end) => !!row.refundedAt && row.refundedAt < end;
+    var refundView = (row) => ({
+      ...row,
+      receivedAt: row.receivedAt.toISOString(),
+      refundedAt: row.refundedAt ? row.refundedAt.toISOString() : null
+    });
     async function payoutsIn(start, end, branch) {
       const query = inBranch(new Parse.Query("TillPayout"), branch);
       if (start) query.greaterThanOrEqualTo("paidAt", start);
@@ -34935,19 +34983,30 @@ var require_accounting = __commonJS({
     var openingOf = (config, branch) => branch ? 0 : Math.round(Number(config.openingBalance) || 0);
     async function cashAt(toDay, config, branch) {
       const end = startOfDay(addDays(toDay, 1), config.timezone);
-      const [orders, purchases, expenses, payouts] = await Promise.all([
+      const [orders, purchases, expenses, payouts, refunds] = await Promise.all([
         deliveredIn(null, end, branch),
         spentIn("Purchase", null, end, branch),
         spentIn("Expense", null, end, branch),
-        payoutsIn(null, end, branch)
+        payoutsIn(null, end, branch),
+        refundRows(end, branch)
       ]);
       const movements = A.cashMovements({
         orders,
         supplierPayments: supplierPayments(purchases, null, toDay),
         expenses: expenseFacts(expenses),
-        payouts
+        payouts,
+        refundReceipts: refunds,
+        refundsPaid: refunds.filter((row) => refundedBy(row, end))
       });
-      return { cash: openingOf(config, branch) + movements.net, orders, purchases, expenses, payouts };
+      return {
+        cash: openingOf(config, branch) + movements.net,
+        orders,
+        purchases,
+        expenses,
+        payouts,
+        refunds,
+        end
+      };
     }
     function rangeOf(params, config) {
       const range = resolveRange(params, config.timezone, { defaultDays: 30 });
@@ -34989,6 +35048,8 @@ var require_accounting = __commonJS({
         total: Number(row.get("total") || 0),
         paid: (row.get("payments") || []).filter((payment) => payment.day <= day).reduce((n, payment) => n + Number(payment.amount || 0), 0)
       }));
+      const owed = at.refunds.filter((row) => !refundedBy(row, at.end));
+      const cleared = at.refunds.filter((row) => refundedBy(row, at.end) && at.end - row.refundedAt < 90 * 864e5).sort((a, b) => b.refundedAt - a.refundedAt);
       return {
         day,
         openingBalance: openingOf(config, branch),
@@ -34999,8 +35060,10 @@ var require_accounting = __commonJS({
           orders: at.orders,
           purchases,
           payouts: at.payouts,
-          profit
-        })
+          profit,
+          refundsOwed: owed.reduce((n, row) => n + row.amount, 0)
+        }),
+        refunds: { owed: owed.map(refundView), cleared: cleared.map(refundView) }
       };
     });
     Parse.Cloud.define("getCashFlow", async (request) => {
@@ -35008,18 +35071,23 @@ var require_accounting = __commonJS({
       const { values: config } = await loadConfig();
       const range = rangeOf(request.params, config);
       const branch = await branchParam(request.params.branchId);
-      const [opening, orders, purchases, expenses, payouts] = await Promise.all([
+      const [opening, orders, purchases, expenses, payouts, refunds] = await Promise.all([
         cashAt(addDays(range.from, -1), config, branch).then((at) => at.cash),
         deliveredIn(range.start, range.end, branch),
         spentIn("Purchase", null, range.end, branch),
         spentIn("Expense", range.start, range.end, branch),
-        payoutsIn(range.start, range.end, branch)
+        payoutsIn(range.start, range.end, branch),
+        refundRows(range.end, branch)
       ]);
       const movements = A.cashMovements({
         orders,
         supplierPayments: supplierPayments(purchases, range.from, range.to),
         expenses: expenseFacts(expenses),
-        payouts
+        payouts,
+        refundReceipts: refunds.filter((row) => row.receivedAt >= range.start),
+        refundsPaid: refunds.filter(
+          (row) => refundedBy(row, range.end) && row.refundedAt >= range.start
+        )
       });
       return {
         range: { from: range.from, to: range.to },
@@ -36899,7 +36967,7 @@ var require_overrides = __commonJS({
           requestPhone: order.get("payRequestPhone") || "",
           requestError: order.get("payRequestError") || "",
           // Money owed back (paid for a cancelled order), and its refund.
-          refundDue: order.get("refundDue") === true,
+          refundDue: refundOwed(order),
           refundedAt: order.get("refundedAt") || null,
           refundNote: order.get("refundNote") || ""
         },
@@ -36934,6 +37002,7 @@ var require_overrides = __commonJS({
         efris: await require_efris().receiptView(order, (await loadConfig()).values)
       };
     });
+    var refundOwed = (order) => order.get("status") === "CANCELLED" && order.get("paymentStatus") === "VERIFIED" && !order.get("refundedAt");
     function overrideOptions(order) {
       const status = order.get("status");
       const method = order.get("paymentMethod");
@@ -36950,7 +37019,7 @@ var require_overrides = __commonJS({
         paymentToMobileMoney: delivered && cashWithRider,
         paymentToCash: delivered && momoUnverified,
         // Paid after (or before) it was cancelled: refunded to the customer.
-        refunded: order.get("refundDue") === true
+        refunded: refundOwed(order)
       };
     }
     Parse.Cloud.define("adminOverrideOrder", async (request) => {

@@ -91,9 +91,42 @@ test('the balance sheet balances, with differences shown', () => {
     profit,
   });
   expect(sheet.assets).toEqual({ cash: 93500, receivable: 28000, total: 121500 });
-  expect(sheet.liabilities).toEqual({ suppliers: 6000, riders: 4000, total: 10000 });
+  expect(sheet.liabilities).toEqual({ suppliers: 6000, riders: 4000, refunds: 0, total: 10000 });
   expect(sheet.equity.total).toBe(sheet.assets.total - sheet.liabilities.total);
   // The 1,000 shortage taken off the rider's pay is the only difference.
   expect(sheet.equity.other).toBe(1000);
   expect(sheet.equity.opening + sheet.equity.profit + sheet.equity.other).toBe(sheet.equity.total);
+});
+
+test('money paid for a cancelled order is cash owed back until it is refunded', () => {
+  const base = { orders: [], supplierPayments: [], expenses: [], payouts: [] };
+  // 18,500 came in for a cancelled order; not yet sent back.
+  const owed = cashMovements({ ...base, refundReceipts: [{ amount: 18500 }] });
+  expect(owed.net).toBe(18500);
+  const sheet = balanceSheet({
+    openingBalance: 0,
+    cash: owed.net,
+    orders: [],
+    purchases: [],
+    payouts: [],
+    profit: 0,
+    refundsOwed: 18500,
+  });
+  expect(sheet.liabilities.refunds).toBe(18500);
+  expect(sheet.equity.total).toBe(0);
+  // Sent back: cash and the liability both cleared.
+  const cleared = cashMovements({
+    ...base,
+    refundReceipts: [{ amount: 18500 }],
+    refundsPaid: [{ amount: 18500 }],
+  });
+  expect(cleared.net).toBe(0);
+  const flow = cashFlow({ opening: 0, movements: owed });
+  expect(flow.inflows.map((r) => r.key)).toEqual(['sales', 'refund_receipts']);
+  expect(cashFlow({ opening: 0, movements: cleared }).outflows.at(-1)).toEqual({
+    key: 'refunds',
+    amount: 18500,
+  });
+  // Nothing refunded: no refund lines.
+  expect(cashFlow({ opening: 0, movements: cashMovements(base) }).inflows).toHaveLength(1);
 });
