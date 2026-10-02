@@ -6682,6 +6682,8 @@ describe('restore from a backup file', () => {
     assert.ok(
       (await run('adminListVouchers', {}, s.owner)).vouchers.some((v) => v.code === voucher.code),
     );
+    // The eat-in tests below start with no tables.
+    await Parse.Object.destroyAll(await new Parse.Query('DiningTable').find(M), M);
   });
 
   test('a lost team member comes back with a new PIN and their role', async () => {

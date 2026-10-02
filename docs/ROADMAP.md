@@ -820,6 +820,14 @@ Everything not built yet, in suggested order. All earlier phases are done.
 
 - Stock is counted, not deducted per dish sold: on hand between counts is the latest count plus purchases naming the item (no recipes)
 
+**Pre-launch audit (2026-10-03): for a later version**
+
+All checks passed. The automated checks: every class protected; every function the app calls exists and is in the access matrix; no client writes; no hard-coded currency; no sorted `findAll`; a browser crawl of every screen for owner, finance, cashier, rider and the public pages with no errors. Found, not affecting performance, left for a later version:
+
+- EFRIS receipts never send the restaurant's location: `efris.js` `withLocation` reads `values.mapCenter`, which the server's config does not have (use `restaurantLat` / `restaurantLng`).
+- A rider handing over more than 100 orders at once is refused: `createHandover` looks the orders up without a limit (Parse returns 100). Set the query limit to the number of orders.
+- Dependencies: `npm audit fix` for react-router-dom (open redirect advisories) and nanoid. node-forge's advisory is about signature verification, which Relay does not use; the Parse SDK's `ws` advisory is for Node, not the browser bundle.
+
 **Later (needs decisions)**
 
 - Budgets and targets (e.g. food cost under 35%) shown on the ratios
