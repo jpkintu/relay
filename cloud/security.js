@@ -49,6 +49,7 @@ const PROTECTED_CLASSES = [
   'Supplier',
   'Purchase',
   'Expense',
+  'DiningTable',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -60,6 +61,8 @@ const PRIVATE_CLASSES = [
   'ZReport',
   'ErrorLog',
   'AdminUnlock',
+  // Their QR codes are secret (tables.js).
+  'DiningTable',
 ];
 // Fields a signed-in user may change on their own _User record. The PIN
 // (password) is changed through changeMyPin, which checks the old one.
@@ -124,6 +127,8 @@ const branch = ['Pointer', 'Branch'];
 const SCHEMAS = {
   // Outlets of the restaurant (branches.js).
   Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N, lat: N, lng: N },
+  // Tables guests order from with a QR code (tables.js).
+  DiningTable: { name: S, branch, token: S, active: B, sortOrder: N },
   Order: {
     branch,
     // Split orders: the splits in the order entered (lines carry `split`).
@@ -178,6 +183,8 @@ const SCHEMAS = {
     onlineToken: S,
     // Online deliveries priced by distance: the km charged for.
     deliveryKm: N,
+    // Eat-in from a table's QR code (tables.js); tableLabel is its name.
+    table: ['Pointer', 'DiningTable'],
     acceptedAt: D,
     readyAt: D,
     cancelledReason: S,
@@ -370,6 +377,7 @@ const SCHEMAS = {
     onlineMobileMoney: B,
     onlineNote: S,
     onlineDeliveryPerKm: N,
+    onlineTables: B,
   },
   MenuItem: {
     title: S,

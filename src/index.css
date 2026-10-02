@@ -8651,3 +8651,21 @@ tr.split-row td {
   color: var(--muted);
   font-weight: 500;
 }
+.om-table-note {
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface, #fff));
+  font-weight: 600;
+}
+.tables-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.tables-add .setup-field {
+  flex: 1 1 180px;
+  margin: 0;
+}

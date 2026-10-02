@@ -62,6 +62,8 @@ const DEFAULT_CONFIG = {
   onlineNote: '',
   // Online deliveries priced by distance from the branch's pin; 0 = the flat fee.
   onlineDeliveryPerKm: 0,
+  // Guests order from a QR code on their table (tables.js).
+  onlineTables: false,
   // Branding: theme colours (#rrggbb); '' keeps Relay's own.
   themeInk: '',
   themeAccent: '',

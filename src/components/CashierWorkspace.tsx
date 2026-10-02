@@ -88,6 +88,7 @@ const CHANNEL: Record<string, string> = {
   whatsapp: 'WhatsApp',
   other: 'Other',
   online: 'Online',
+  table: 'Table QR',
 };
 const PAYMENT: Record<string, string> = {
   cash: 'Cash',
@@ -474,6 +475,10 @@ function KitchenBoard() {
     { id: string; name: string; onShift: boolean; available: boolean }[] | null
   >(null);
   const [riderPick, setRiderPick] = useState('');
+  // Moving an eat-in order to another table (tables.js).
+  const [moving, setMoving] = useState<string | null>(null);
+  const [tables, setTables] = useState<{ id: string; name: string }[] | null>(null);
+  const [tablePick, setTablePick] = useState('');
   const [paying, setPaying] = useState<string | null>(null);
   const [payMethod, setPayMethod] = useState<'cash' | 'mobile_money' | 'card'>('cash');
   const [payProvider, setPayProvider] = useState('');
@@ -591,6 +596,30 @@ function KitchenBoard() {
       setError(e instanceof Error ? e.message : 'Could not load riders');
       setRiders([]);
     }
+  };
+
+  const openMove = async (ticket: Ticket) => {
+    setMoving(ticket.id);
+    setTablePick('');
+    try {
+      const result: { tables: { id: string; name: string }[] } = await Parse.Cloud.run('getTables');
+      setTables(result.tables);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load the tables');
+      setTables([]);
+    }
+  };
+
+  const moveTable = async (ticket: Ticket) => {
+    try {
+      await Parse.Cloud.run('moveOrderTable', { orderId: ticket.id, tableId: tablePick });
+      setMoving(null);
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not move the order');
+      return;
+    }
+    await load();
   };
 
   const assignRider = async (ticket: Ticket) => {
@@ -720,7 +749,7 @@ function KitchenBoard() {
                       )}
                     </div>
                     <h3>{ticket.customer}</h3>
-                    {ticket.channel === 'online' && ticket.phone && (
+                    {['online', 'table'].includes(ticket.channel) && ticket.phone && (
                       <a className="ticket-phone" href={`tel:${ticket.phone.replace(/\s+/g, '')}`}>
                         {ticket.phone}
                       </a>
@@ -772,7 +801,35 @@ function KitchenBoard() {
                             : 'Not taken yet'}
                       </p>
                     )}
-                    {assigning === ticket.id ? (
+                    {moving === ticket.id ? (
+                      <div className="ticket-close">
+                        <select
+                          aria-label="Move to table"
+                          value={tablePick}
+                          onChange={(e) => setTablePick(e.target.value)}
+                        >
+                          <option value="">
+                            {tables === null ? 'Loading tables…' : 'Choose the new table'}
+                          </option>
+                          {(tables || [])
+                            .filter((t) => t.name !== ticket.table)
+                            .map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                              </option>
+                            ))}
+                        </select>
+                        {tables && !tables.length && (
+                          <small>Add tables in Admin → Online orders first.</small>
+                        )}
+                        <div className="ticket-actions">
+                          <button onClick={() => setMoving(null)}>Back</button>
+                          <button disabled={!tablePick} onClick={() => void moveTable(ticket)}>
+                            Move
+                          </button>
+                        </div>
+                      </div>
+                    ) : assigning === ticket.id ? (
                       <div className="ticket-close">
                         <select
                           aria-label="Rider"
@@ -1050,6 +1107,7 @@ function KitchenBoard() {
                     {!isClosing &&
                       passing !== ticket.id &&
                       assigning !== ticket.id &&
+                      moving !== ticket.id &&
                       paying !== ticket.id &&
                       !heldByOther &&
                       !preview && (
@@ -1075,6 +1133,11 @@ function KitchenBoard() {
                                 {ticket.riderId ? 'Change rider' : 'Assign rider'}
                               </button>
                             )}
+                          {ticket.orderType === 'eat_in' && (
+                            <button className="link-button" onClick={() => void openMove(ticket)}>
+                              {ticket.table ? 'Move table' : 'Set table'}
+                            </button>
+                          )}
                           <button
                             className="link-button"
                             onClick={() => void print(ticket.id, 'kitchen')}
