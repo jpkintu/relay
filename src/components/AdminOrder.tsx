@@ -52,6 +52,9 @@ type OrderPage = {
     requestReference?: string;
     requestPhone?: string;
     requestError?: string;
+    refundDue?: boolean;
+    refundedAt?: string | null;
+    refundNote?: string;
   };
   riderPay: {
     total: number;
@@ -87,10 +90,11 @@ type OrderPage = {
     reopen: boolean;
     paymentToMobileMoney: boolean;
     paymentToCash: boolean;
+    refunded?: boolean;
   };
 };
 
-type Action = 'cancel' | 'deliver' | 'move' | 'reopen' | 'toMomo' | 'toCash';
+type Action = 'cancel' | 'deliver' | 'move' | 'reopen' | 'toMomo' | 'toCash' | 'refunded';
 
 const ACTIONS: { id: Action; label: string; help: string; danger?: boolean }[] = [
   {
@@ -117,6 +121,11 @@ const ACTIONS: { id: Action; label: string; help: string; danger?: boolean }[] =
     id: 'reopen',
     label: 'Undo the delivery',
     help: 'Opens the order again as out for delivery. Only while the money is still with the rider and their pay is unpaid.',
+  },
+  {
+    id: 'refunded',
+    label: 'Mark refunded',
+    help: 'The customer paid for a cancelled order. Once you have sent the money back, say how (e.g. MTN MoMo to 0772…, ID 123…).',
   },
   {
     id: 'cancel',
@@ -186,6 +195,7 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
     reopen: o.can.reopen,
     toMomo: o.can.paymentToMobileMoney,
     toCash: o.can.paymentToCash,
+    refunded: !!o.can.refunded,
   };
   const choices = ACTIONS.filter((a) => available[a.id]);
   const chosen = ACTIONS.find((a) => a.id === action);
@@ -212,7 +222,11 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
                 ? { ...base, action, method: 'mobile_money', provider, reference }
                 : { ...base, action };
       await Parse.Cloud.run('adminOverrideOrder', params);
-      setNotice(`${chosen?.label}: done. The rider has been told.`);
+      setNotice(
+        action === 'refunded'
+          ? 'Marked refunded.'
+          : `${chosen?.label}: done. The rider has been told.`,
+      );
       setAction(null);
       setReason('');
       setRiderId('');
@@ -394,6 +408,24 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
               <dt>Status</dt>
               <dd>{paymentState}</dd>
             </div>
+            {p.refundDue && (
+              <div>
+                <dt>Refund</dt>
+                <dd className="refund-due">
+                  Due: {money(o.total)} was paid for this cancelled order. Send it back, then use
+                  Mark refunded below.
+                </dd>
+              </div>
+            )}
+            {p.refundedAt && (
+              <div>
+                <dt>Refund</dt>
+                <dd>
+                  Refunded {new Date(p.refundedAt).toLocaleString()}
+                  {p.refundNote && <small className="muted block">{p.refundNote}</small>}
+                </dd>
+              </div>
+            )}
             {p.method === 'cash' && (
               <div>
                 <dt>Collected</dt>

@@ -101,9 +101,14 @@ async function settlePayment(order, { received, reason = '', actor }) {
   // nothing we can see, so they owe the total as cash (it goes back on their
   // cash list) until they hand it over or send a correct transaction ID.
   const owedByRider = !received && order.get('status') === 'DELIVERED' && !!order.get('createdBy');
+  // Cancelled meanwhile (a payment request still on the customer's phone
+  // when the order was cancelled): money that arrives is owed back.
+  const cancelled = order.get('status') === 'CANCELLED';
+  const refundDue = received && cancelled;
+  if (refundDue) order.set('refundDue', true);
   // Eat-in / pick-up paid by mobile money that did not arrive: the bill is
   // open again; the cashier takes payment another way.
-  if (!received && ['eat_in', 'pickup'].includes(order.get('orderType')))
+  if (!received && !cancelled && ['eat_in', 'pickup'].includes(order.get('orderType')))
     order.set({ billOpen: true, cashStatus: 'UNPAID', amountToCollect: order.get('total') });
   if (owedByRider)
     order.set({
@@ -116,7 +121,7 @@ async function settlePayment(order, { received, reason = '', actor }) {
   if (received) await require('./orders').closeServed(order, actor || null);
   await audit(
     actor,
-    received ? 'payment.verified' : 'payment.rejected',
+    refundDue ? 'payment.after_cancel' : received ? 'payment.verified' : 'payment.rejected',
     order,
     { paymentStatus: PENDING },
     {
@@ -128,6 +133,18 @@ async function settlePayment(order, { received, reason = '', actor }) {
       ...(!actor && { auto: true }),
     },
   );
+  if (refundDue) {
+    const { values: config } = await loadConfig();
+    await notifyStaff({
+      kind: 'payment.refund_due',
+      tone: 'alert',
+      title: `Payment arrived for cancelled order ${order.get('orderCode')}`,
+      body: `${money(config, order.get('total'))} by ${order.get('paymentProvider') || 'mobile money'} (${order.get('paymentReference') || 'no reference'}) from ${order.get('payRequestPhone') || order.get('customerPhone') || 'the customer'}: refund it, then mark it refunded on the order.`,
+      link: `/admin/orders/${order.id}`,
+      order,
+    });
+    return;
+  }
   const code = order.get('orderCode');
   const { values: config } = await loadConfig();
   if (order.get('createdBy'))
