@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import type { Data, Layout } from 'plotly.js';
 import { useNavigate } from 'react-router-dom';
 import { Printer } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { bucketLabel, rangeLabel, todayIn } from '../lib/range';
+import { useDevice } from '../lib/device';
+import { Chart, SERIES } from './reports/Chart';
 import {
   BranchSelect,
   FilterBar,
@@ -779,6 +782,34 @@ export function PerformanceRatios() {
     return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
   };
   const last = rows.at(-1);
+  const narrow = useDevice() === 'phone';
+  // The ratio month by month: one line, so no legend (the title names it);
+  // the table below is its table view. Months with no denominator are gaps.
+  const chart = useMemo(() => {
+    const values = rows.map((m) => {
+      const v = m.ratios[key];
+      return v === null ? null : ratio.percent ? Math.round(v * 1000) / 10 : v;
+    });
+    const data: Data[] = [
+      {
+        type: 'scatter',
+        mode: 'lines+markers',
+        x: rows.map((m) => bucketLabel(m.month, 'month', narrow)),
+        y: values,
+        connectgaps: false,
+        line: { color: SERIES[0], width: 2, shape: 'linear' },
+        marker: { color: SERIES[0], size: 8, line: { color: '#ffffff', width: 2 } },
+        customdata: rows.map((m) => [show(m.ratios[key]), bucketLabel(m.month, 'month')]),
+        hovertemplate: '<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>',
+      },
+    ];
+    const layout: Partial<Layout> = {
+      hovermode: 'x',
+      yaxis: ratio.percent ? { tickformat: '~r', ticksuffix: '%' } : { tickformat: '.2~f' },
+    };
+    return { data, layout };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, key, narrow]);
   return (
     <div className={loading ? 'busy' : ''}>
       <div className="filter-bar no-print">
@@ -831,6 +862,12 @@ export function PerformanceRatios() {
                 </div>
               ))}
           </div>
+          <Chart
+            data={chart.data}
+            layout={chart.layout}
+            label={`${ratio.label} by month`}
+            busy={loading}
+          />
           <div className="table-scroll">
             <table className="data">
               <thead>
