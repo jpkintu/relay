@@ -3,6 +3,8 @@ import { Plus, Trash2 } from 'lucide-react';
 import Parse from '../parse';
 import { useConfig, useMoney } from '../lib/session';
 import { todayIn } from '../lib/range';
+import { PURCHASE_CATEGORY_NAMES } from '../lib/spendingNames';
+import { AdminStock, useStockItems } from './AdminStock';
 import {
   FilterBar,
   Stat,
@@ -13,8 +15,8 @@ import {
   type BranchOption,
 } from './reports/common';
 
-// Owner and finance: purchases from suppliers, running expenses, and the
-// suppliers themselves (cloud/spending.js).
+// Owner and finance: purchases from suppliers, running expenses, the
+// suppliers themselves (cloud/spending.js), and stock (AdminStock).
 
 export const METHOD_NAMES: Record<string, string> = {
   cash: 'Cash',
@@ -23,14 +25,7 @@ export const METHOD_NAMES: Record<string, string> = {
   card: 'Card',
   cheque: 'Cheque',
 };
-export const PURCHASE_CATEGORY_NAMES: Record<string, string> = {
-  food: 'Food ingredients',
-  drinks: 'Drinks',
-  packaging: 'Packaging',
-  cleaning: 'Cleaning supplies',
-  gas_fuel: 'Gas & fuel',
-  other: 'Other stock',
-};
+export { PURCHASE_CATEGORY_NAMES };
 export const EXPENSE_CATEGORY_NAMES: Record<string, string> = {
   rent: 'Rent',
   salaries: 'Salaries & wages',
@@ -100,6 +95,7 @@ type Expense = {
 const TABS = [
   ['purchases', 'Purchases'],
   ['expenses', 'Expenses'],
+  ['stock', 'Stock'],
   ['suppliers', 'Suppliers'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
@@ -125,7 +121,11 @@ async function call<T>(name: string, params: Record<string, unknown>): Promise<T
 }
 
 export function AdminSpending() {
-  const [tab, setTab] = useState<Tab>('purchases');
+  // ?tab=stock opens a tab (the low stock notification links there).
+  const [tab, setTab] = useState<Tab>(() => {
+    const asked = new URLSearchParams(window.location.search).get('tab');
+    return TABS.some(([id]) => id === asked) ? (asked as Tab) : 'purchases';
+  });
   return (
     <div className="report spending">
       <div
@@ -147,6 +147,7 @@ export function AdminSpending() {
       </div>
       {tab === 'purchases' && <Purchases />}
       {tab === 'expenses' && <Expenses />}
+      {tab === 'stock' && <AdminStock />}
       {tab === 'suppliers' && <Suppliers />}
     </div>
   );
@@ -453,7 +454,7 @@ function BranchField({
   );
 }
 
-const emptyLine = () => ({ description: '', quantity: '1', unit: '', unitCost: '' });
+const emptyLine = () => ({ description: '', quantity: '1', unit: '', unitCost: '', itemId: '' });
 
 function PurchaseForm({
   suppliers,
@@ -479,6 +480,26 @@ function PurchaseForm({
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // A line whose description is a stock item's name is linked to it.
+  const stock = (useStockItems().data?.items ?? []).filter((i) => i.active);
+  const describe = (i: number, description: string) => {
+    const item = stock.find((x) => x.name.toLowerCase() === description.trim().toLowerCase());
+    setLines((all) =>
+      all.map((l, j) =>
+        j !== i
+          ? l
+          : item
+            ? {
+                ...l,
+                description,
+                itemId: item.id,
+                unit: l.unit || item.unit,
+                unitCost: l.unitCost || (item.unitCost ? String(item.unitCost) : ''),
+              }
+            : { ...l, description, itemId: '' },
+      ),
+    );
+  };
   const lineTotal = (l: ReturnType<typeof emptyLine>) =>
     Math.round((Number(l.quantity) || 0) * (Number(l.unitCost) || 0));
   const total = lines.reduce((n, l) => n + lineTotal(l), 0);
@@ -501,6 +522,7 @@ function PurchaseForm({
             quantity: Number(l.quantity),
             unit: l.unit,
             unitCost: Number(l.unitCost) || 0,
+            ...(l.itemId && { itemId: l.itemId }),
           })),
         paid: paid === '' ? 0 : Number(paid),
         method,
@@ -581,8 +603,11 @@ function PurchaseForm({
             <input
               aria-label="What"
               placeholder="e.g. Tomatoes"
+              list="stock-item-names"
+              className={l.itemId ? 'stock-linked' : ''}
+              title={l.itemId ? 'A stock item: counts towards what is on hand' : undefined}
               value={l.description}
-              onChange={(e) => setLine(i, { description: e.target.value })}
+              onChange={(e) => describe(i, e.target.value)}
             />
             <input
               aria-label="Quantity"
@@ -619,6 +644,14 @@ function PurchaseForm({
             </button>
           </div>
         ))}
+        <datalist id="stock-item-names">
+          {stock.map((x) => (
+            <option key={x.id} value={x.name} />
+          ))}
+        </datalist>
+        {lines.some((l) => l.itemId) && (
+          <p className="muted small">Lines in blue are stock items: they add to what is on hand.</p>
+        )}
         <button
           type="button"
           className="setup-secondary"

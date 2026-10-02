@@ -8,6 +8,7 @@ const { MASTER, invalid, audit, loadConfig, findAll } = require('./lib/core');
 const { resolveRange, previousRange, isDay, isoDay, startOfDay, addDays } = require('./lib/dates');
 const { isConfirmed } = require('./lib/reports');
 const A = require('./lib/accounts');
+const { stockValueAt } = require('./lib/stock');
 const { factOf } = require('./reports');
 const { branchParam } = require('./branches');
 const { requireFinance } = require('./spending');
@@ -101,12 +102,13 @@ async function load(end, branch) {
   };
   const payoutQuery = inBranch(new Parse.Query('TillPayout'), branch);
   payoutQuery.lessThan('paidAt', end);
-  const [orders, purchases, expenses, payouts, vouchers] = await Promise.all([
+  const [orders, purchases, expenses, payouts, vouchers, counts] = await Promise.all([
     findAll(orderQuery),
     spent('Purchase'),
     spent('Expense'),
     findAll(payoutQuery),
     voucherRows(end, branch),
+    require('./stock').countsFor(branch, end),
   ]);
   return {
     orders: orders.map((order) => {
@@ -136,10 +138,15 @@ async function load(end, branch) {
       deductions: num(row.get('deductions')),
     })),
     vouchers,
+    // Stock counts (stock.js): the stock on hand at any moment.
+    counts,
   };
 }
 
 const within = (rows, start, end) => rows.filter((r) => r.at < end && (!start || r.at >= start));
+
+// Stock on hand at a moment (nothing before the first count).
+const stockAt = (rec, at) => (at ? stockValueAt(rec.counts, at) : 0);
 
 // Profit and loss for [start, end).
 function plOf(rec, start, end) {
@@ -149,6 +156,8 @@ function plOf(rec, start, end) {
     purchases: within(rec.purchases, start, end),
     expenses: within(rec.expenses, start, end),
     tillExpenses: payouts.filter((p) => p.kind !== 'rider'),
+    stockStart: stockAt(rec, start),
+    stockEnd: stockAt(rec, end),
   });
 }
 
@@ -191,6 +200,7 @@ function positionOf(rec, toDay, config, branch) {
       charges: v.charges,
     })),
     opening: openingOf(config, branch),
+    inventory: stockAt(rec, end),
     profit: {
       toDate: plOf(rec, null, end).netProfit,
       beforeYear: plOf(rec, null, yearStart).netProfit,
@@ -367,6 +377,7 @@ Parse.Cloud.define('getPerformanceRatios', async (request) => {
         totalLiabilities: pos.liabilities.total,
         equity: pos.equity.total,
         receivable: pos.assets.receivable,
+        inventory: pos.assets.inventory,
         ratios: A.ratios({
           pl,
           position: pos,

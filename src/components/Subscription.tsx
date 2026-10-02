@@ -43,7 +43,7 @@ const LIMIT_LABELS: Record<string, string> = {
 };
 const FEATURE_WORDS: Record<string, string> = {
   finance: 'Finance role',
-  accounting: 'Purchases, expenses & accounting',
+  accounting: 'Purchases, expenses, stock & accounting',
   reports: 'Reports & analytics',
   efris: 'EFRIS tax receipts',
   whatsapp: 'WhatsApp daily summaries',

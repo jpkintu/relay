@@ -5160,6 +5160,185 @@ describe('accounting statements', () => {
     await run('voidExpense', { id: bought.id, reason: 'Test' }, farida);
   });
 
+  test('stock: items, a purchase naming one, a count; stock in cost of goods sold, the balance sheet, cash flow and acid test', async () => {
+    const rice = await run(
+      'saveStockItem',
+      { name: 'Rice', unit: 'kg', category: 'food', unitCost: 4000, reorderLevel: 5 },
+      farida,
+    );
+    await rejects(run('saveStockItem', { name: 'rice' }, s.owner), /already a stock item/);
+    await rejects(run('saveStockItem', { name: 'Oil' }, s.dina), /admin or finance role required/);
+    await rejects(run('listStock', {}, s.dina), /admin or finance role required/);
+    const supplier = (await run('listSuppliers', {}, farida)).suppliers[0];
+    const bought = await run(
+      'recordPurchase',
+      {
+        supplierId: supplier.id,
+        category: 'food',
+        lines: [{ description: 'Rice', quantity: 10, unitCost: 4200, itemId: rice.id }],
+        paid: 42000,
+        method: 'cash',
+      },
+      farida,
+    );
+    assert.equal(bought.lines[0].itemId, rice.id);
+    assert.equal(bought.lines[0].unit, 'kg', 'the item’s unit');
+    await rejects(
+      run(
+        'recordPurchase',
+        {
+          supplierId: supplier.id,
+          lines: [{ description: 'Ghost', quantity: 1, unitCost: 1, itemId: 'nope' }],
+        },
+        farida,
+      ),
+      /unknown stock item/,
+    );
+    let stock = await run('listStock', {}, farida);
+    let item = stock.items.find((i) => i.id === rice.id);
+    assert.equal(item.unitCost, 4200, 'the cost follows the latest purchase');
+    assert.equal(item.onHand, 10);
+    assert.equal(item.counted, false);
+
+    const before = await statements();
+    assert.equal(before.sheet.assets.inventory, 0);
+    await rejects(run('recordStockCount', { lines: [] }, farida), /at least one item/);
+    await rejects(
+      run('recordStockCount', { lines: [{ itemId: rice.id, quantity: -1 }] }, farida),
+      /quantity/,
+    );
+    const count = await run(
+      'recordStockCount',
+      { lines: [{ itemId: rice.id, quantity: 3 }], notes: 'End of day' },
+      farida,
+    );
+    assert.equal(count.total, 12600);
+    assert.deepEqual(count.low, [rice.id], 'under the reorder level');
+    await rejects(
+      run('recordStockCount', { lines: [{ itemId: rice.id, quantity: 4 }] }, farida),
+      /already a count for that day/,
+    );
+    const after = await statements();
+    assert.equal(after.pl.costOfSales.closingStock, 12600);
+    assert.equal(after.pl.costOfSales.total, before.pl.costOfSales.total - 12600);
+    assert.equal(after.pl.grossProfit, after.pl.revenue.total - after.pl.costOfSales.total);
+    assert.equal(after.sheet.assets.inventory, 12600);
+    assert.equal(after.sheet.assets.current - before.sheet.assets.current, 12600);
+    assert.equal(
+      after.sheet.equity.total,
+      after.sheet.assets.total - after.sheet.liabilities.total,
+    );
+    const line = (flow) => flow.operating.lines.find((l) => l.key === 'inventory').amount;
+    assert.equal(line(after.flow) - line(before.flow), -12600);
+    assert.equal(after.flow.ending, after.sheet.assets.cash, 'cash is unchanged by a count');
+    const now = (await run('getPerformanceRatios', { months: 1 }, farida)).months.at(-1);
+    assert.equal(now.inventory, 12600);
+    if (now.currentLiabilities)
+      assert.equal(
+        now.ratios.acidTest,
+        Math.round(((now.currentAssets - 12600) / now.currentLiabilities) * 100) / 100,
+      );
+    stock = await run('listStock', {}, farida);
+    item = stock.items.find((i) => i.id === rice.id);
+    assert.equal(item.onHand, 3, 'the count, nothing bought since');
+    assert.equal(item.low, true);
+    assert.equal(stock.summary.counted, 12600);
+    assert.equal(stock.counts[0].countedBy, 'Farida Finance');
+
+    await rejects(run('voidStockCount', { id: count.id, reason: '' }, farida), /Say why/);
+    await run('voidStockCount', { id: count.id, reason: 'Test count' }, farida);
+    assert.equal((await statements()).sheet.assets.inventory, 0);
+    await run('voidPurchase', { id: bought.id, reason: 'Test' }, farida);
+    const archived = await run(
+      'saveStockItem',
+      { id: rice.id, name: 'Rice', unit: 'kg', unitCost: 4200, active: false },
+      farida,
+    );
+    assert.equal(archived.active, false);
+  });
+
+  test('stock is kept by branch: own counts, quantities, reorder levels and low alerts', async () => {
+    const { branches } = await run('getBranches', {}, s.owner);
+    const main = branches.find((b) => b.main);
+    const other = branches.find((b) => !b.main);
+    const oil = await run(
+      'saveStockItem',
+      { name: 'Cooking oil', unit: 'litre', unitCost: 9000, reorderLevel: 4 },
+      farida,
+    );
+    // The other branch only needs 1 litre in reserve.
+    await run(
+      'saveStockItem',
+      {
+        id: oil.id,
+        name: 'Cooking oil',
+        unit: 'litre',
+        unitCost: 9000,
+        reorderLevel: 1,
+        branchId: other.id,
+      },
+      farida,
+    );
+    const atMain = await run(
+      'recordStockCount',
+      { branchId: main.id, lines: [{ itemId: oil.id, quantity: 3 }] },
+      farida,
+    );
+    // Counted at the end of yesterday: today's purchase comes after it (a
+    // purchase on the day of a count is in that count).
+    const today = (await run('getBalanceSheet', {}, farida)).day;
+    const yesterday = new Date(Date.parse(`${today}T12:00:00Z`) - 86400000)
+      .toISOString()
+      .slice(0, 10);
+    const atOther = await run(
+      'recordStockCount',
+      { branchId: other.id, day: yesterday, lines: [{ itemId: oil.id, quantity: 3 }] },
+      farida,
+    );
+    assert.deepEqual(atMain.low, [oil.id], 'under the main branch’s level of 4');
+    assert.deepEqual(atOther.low, [], 'over the other branch’s level of 1');
+    const supplier = (await run('listSuppliers', {}, farida)).suppliers[0];
+    const bought = await run(
+      'recordPurchase',
+      {
+        supplierId: supplier.id,
+        branchId: other.id,
+        lines: [{ description: 'Cooking oil', quantity: 5, unitCost: 9000, itemId: oil.id }],
+        paid: 45000,
+      },
+      farida,
+    );
+    const view = async (branchId) =>
+      (await run('listStock', branchId ? { branchId } : {}, farida)).items.find(
+        (i) => i.id === oil.id,
+      );
+    const mainView = await view(main.id);
+    assert.equal(mainView.onHand, 3, 'the other branch’s purchase is not here');
+    assert.equal(mainView.reorderLevel, 4);
+    assert.equal(mainView.low, true);
+    const otherView = await view(other.id);
+    assert.equal(otherView.onHand, 8, 'its count plus its purchase since');
+    assert.equal(otherView.reorderLevel, 1);
+    assert.equal(otherView.low, false);
+    const whole = await view(null);
+    assert.equal(whole.onHand, 11);
+    assert.equal(whole.low, true, 'low in a branch');
+    assert.deepEqual(
+      whole.branches.map((b) => [b.branchId, b.onHand, b.low]).sort(),
+      [
+        [main.id, 3, true],
+        [other.id, 8, false],
+      ].sort(),
+    );
+    const sheet = async (branchId) =>
+      (await run('getBalanceSheet', { branchId }, farida)).sheet.assets.inventory;
+    assert.equal(await sheet(main.id), 27000);
+    assert.equal(await sheet(other.id), 27000, 'the count; purchases are not counted stock');
+    for (const count of [atMain, atOther])
+      await run('voidStockCount', { id: count.id, reason: 'Test count' }, farida);
+    await run('voidPurchase', { id: bought.id, reason: 'Test' }, farida);
+  });
+
   test('tax receipts list the sales for EFRIS follow-up', async () => {
     const list = await run('listEfrisReceipts', {}, farida);
     assert.equal(typeof list.enabled, 'boolean');
@@ -6331,6 +6510,10 @@ const ACCESS = {
     'getBalanceSheet',
     'getCashFlow',
     'saveOpeningBalance',
+    'listStock',
+    'saveStockItem',
+    'recordStockCount',
+    'voidStockCount',
     'listEfrisReceipts',
     'listSuppliers',
     'saveSupplier',

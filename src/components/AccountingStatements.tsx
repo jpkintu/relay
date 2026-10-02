@@ -25,7 +25,13 @@ import { EXPENSE_CATEGORY_NAMES, PURCHASE_CATEGORY_NAMES } from './AdminSpending
 
 type PL = {
   revenue: { food: number; delivery: number; total: number; orders: number };
-  costOfSales: { byCategory: { key: string; amount: number }[]; total: number };
+  costOfSales: {
+    byCategory: { key: string; amount: number }[];
+    purchases: number;
+    openingStock: number;
+    closingStock: number;
+    total: number;
+  };
   grossProfit: number;
   operating: {
     riderCommission: number;
@@ -43,6 +49,7 @@ type Position = {
     bank: number;
     cash: number;
     receivable: number;
+    inventory: number;
     current: number;
     equipment: number;
     fixed: number;
@@ -180,11 +187,31 @@ export function ProfitAndLoss() {
         { label: 'Total for Sales', values: v((p) => p.revenue.total), kind: 'total', depth: 1 },
         { label: 'Total for Operating Income', values: v((p) => p.revenue.total), kind: 'total' },
         { label: 'Cost of Goods Sold', kind: 'section' },
-        ...byKeyRows(
-          cols.map((p) => p.costOfSales.byCategory),
-          PURCHASE_CATEGORY_NAMES,
-          1,
-        ),
+        // With stock counted (Stock): opening stock + purchases − closing stock.
+        ...(cols.some((p) => p.costOfSales.openingStock || p.costOfSales.closingStock)
+          ? [
+              {
+                label: 'Opening stock',
+                values: v((p) => p.costOfSales.openingStock),
+                depth: 1,
+              },
+              { label: 'Purchases', depth: 1 },
+              ...byKeyRows(
+                cols.map((p) => p.costOfSales.byCategory),
+                PURCHASE_CATEGORY_NAMES,
+                2,
+              ),
+              {
+                label: 'Less: closing stock',
+                values: v((p) => -p.costOfSales.closingStock),
+                depth: 1,
+              },
+            ]
+          : byKeyRows(
+              cols.map((p) => p.costOfSales.byCategory),
+              PURCHASE_CATEGORY_NAMES,
+              1,
+            )),
         {
           label: 'Total for Cost of Goods Sold',
           values: v((p) => p.costOfSales.total),
@@ -237,7 +264,7 @@ export function ProfitAndLoss() {
           subtitle="Basis: Accrual"
           columns={[rangeLabel(data.previousRange), rangeLabel(data.range)]}
           lines={lines}
-          note="Sales count orders delivered or served in the period. Stock bought is a cost of goods sold when bought; rider pay is an expense when the order is delivered; equipment is a fixed asset (Balance Sheet), not an expense."
+          note="Sales count orders delivered or served in the period. Cost of goods sold is opening stock + purchases − closing stock (the stock counts; with no counts, stock bought is a cost when bought); rider pay is an expense when the order is delivered; equipment is a fixed asset (Balance Sheet), not an expense."
         />
       )}
     </div>
@@ -327,6 +354,11 @@ export function BalanceSheet() {
         {
           label: 'Accounts Receivable (sales not yet received)',
           values: v((p) => p.assets.receivable),
+          depth: 2,
+        },
+        {
+          label: 'Inventory (stock at its latest count)',
+          values: v((p) => p.assets.inventory ?? 0),
           depth: 2,
         },
         {
@@ -591,6 +623,7 @@ export function BalanceSheet() {
 
 const FLOW_LINES: Record<string, string> = {
   receivable: 'Accounts Receivable',
+  inventory: 'Inventory (stock)',
   payable: 'Accounts Payable',
   riders: 'Rider pay owed',
   vouchers: 'Customer vouchers (refunds owed)',
@@ -659,7 +692,7 @@ export function CashFlowStatement() {
           subtitle="Indirect method · cash and mobile money / bank"
           columns={[rangeLabel(data.previousRange), rangeLabel(data.range)]}
           lines={lines}
-          note="Net income adjusted for what changed in what is owed to and by the restaurant. A rise in receivables uses cash (shown negative); a rise in payables, rider pay or vouchers owed keeps cash. Ending cash equals cash and cash equivalents on the Balance Sheet."
+          note="Net income adjusted for what changed in what is owed to and by the restaurant. A rise in receivables or stock uses cash (shown negative); a rise in payables, rider pay or vouchers owed keeps cash. Ending cash equals cash and cash equivalents on the Balance Sheet."
         />
       )}
     </div>
@@ -678,6 +711,7 @@ type RatioMonth = {
   totalLiabilities: number;
   equity: number;
   receivable: number;
+  inventory: number;
   ratios: Record<RatioKey, number | null>;
 };
 type RatioKey =
@@ -734,9 +768,9 @@ const RATIOS: Ratio[] = [
   {
     key: 'acidTest',
     label: 'Acid Test Ratio',
-    num: ['Quick assets', (m) => m.currentAssets],
+    num: ['Quick assets', (m) => m.currentAssets - (m.inventory || 0)],
     den: ['Current liabilities', (m) => m.currentLiabilities],
-    help: 'Quick assets ÷ current liabilities. No stock is counted, so it is the current ratio.',
+    help: 'Quick assets (current assets less stock) ÷ current liabilities: what the restaurant can pay soon without selling its stock. With no stock counted it equals the current ratio.',
   },
   {
     key: 'debt',
@@ -766,9 +800,9 @@ const showRatio = (ratio: Ratio, value: number | null) =>
 
 // Compared, every ratio is on one chart and one axis as its plain value:
 // a percentage ratio is plotted as a fraction of 1 (14% at 0.14), the hover
-// still gives it as a percentage. The acid test is left off the chart: with
-// no stock counted it is the current ratio and its line would hide under it
-// (the table still has it).
+// still gives it as a percentage. The acid test comes last (keeping the
+// others' colours) and only once stock is counted: before that it is the
+// current ratio and its line would hide under it (the table still has it).
 const COMPARE: RatioKey[] = [
   'grossProfit',
   'netProfit',
@@ -777,6 +811,7 @@ const COMPARE: RatioKey[] = [
   'debt',
   'debtToEquity',
   'receivableTurnover',
+  'acidTest',
 ];
 
 // One line per ratio, month by month. Months with no denominator are gaps.
@@ -845,7 +880,9 @@ export function PerformanceRatios() {
         ? ratioChart(rows, [ratio], !!ratio.percent, narrow)
         : ratioChart(
             rows,
-            COMPARE.map((k) => RATIOS.find((r) => r.key === k)!),
+            COMPARE.filter((k) => k !== 'acidTest' || rows.some((m) => m.inventory > 0)).map((k) =>
+              RATIOS.find((r) => r.key === k)!,
+            ),
             false,
             narrow,
           ),

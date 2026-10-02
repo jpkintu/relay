@@ -806,55 +806,38 @@ Owner's decisions 2026-09-27: the cashier picks the rider for call-in deliveries
 
 ---
 
-### Still open (reviewed 2026-09-27)
+### Still open (reviewed 2026-10-03)
 
-Everything not built yet, from the sections above, in suggested order.
+Everything not built yet, in suggested order. All earlier phases are done.
 
 **Owner actions on Back4App (no code)**
 
-- S5 account lockout and S7 session length (server settings, §2)
+- S5 account lockout and S7 session length (server settings, §2); to be set when the Back4App plan is upgraded
 - Optional: schedule the Cloud Jobs `cashCheck` nightly and `dailyZReport` hourly (the same work also runs on normal app use)
+- Accounting set-up per restaurant: the financial year's first month and the opening cash and bank balances (Accounting → Balance Sheet)
 
 **Small gaps in built features**
 
-**Release readiness (Phase 6)**
+- Backups / restore leave out `DiningTable` (table QR codes) and `Voucher` (customer vouchers); stock items and counts are included
+- Stock is counted, not deducted per dish sold: on hand between counts is the latest count plus purchases naming the item (no recipes)
 
-**Later / postponed (phase 2, needs decisions or credentials)**
+**Later (needs decisions)**
 
-- ~~Customer QR menu, live rider GPS, native app wrapper~~ Dropped 2026-09-28 (owner's decision). Email reports: not planned (in-app + phone).
+- Budgets and targets (e.g. food cost under 35%) shown on the ratios
+- Stock deducted per dish sold (recipes: what each dish uses), for a running stock level between counts
+- Live rider GPS and a native app wrapper: dropped 2026-09-28 (owner's decision). Email reports: not planned (in-app + phone). The customer QR menu, dropped on the same day, was later built as online ordering (2026-10-01) and ordering from the table's QR code (2026-10-02).
 - **Two editions** (owner's decision 2026-09-28): (1) **Self-hosted**: one Back4App app per restaurant, sold once with optional maintenance; this is `main`. (2) **Hosted, multi-tenant**: many smaller restaurants on one system with monthly subscriptions; built on its own long-lived branch from `main`, taking `main`'s fixes by regular merges. **Branch rule:** `hosted` is permanent and is **never merged into `main`**; fixes land on `main` (PR, green CI) and `main` is then merged into `hosted`. CI runs on every push to both branches; there is no open PR from `hosted` to `main`.
 
 **Open questions for the owner (§9)**: none open (Q2 and Q5 answered 2026-09-28).
 
-### Next up (reviewed 2026-09-26)
+### Batches (reviewed 2026-09-26; all done)
 
-Open items above, grouped into release-sized batches in recommended order.
-
-1. **Cash integrity & security (before selling to more restaurants).**
-   S5 account lockout + S7 session length (Back4App server settings, owner action);
-   S6 PIN re-entry for handover, shift end and PIN change; B4/B5 atomic, idempotent
-   handovers; partial handover acceptance; admin dispute paths (edit amount, write-off,
-   force handover); pending handovers on the rider cash screen (B8); stale-handover
-   (> 4 h) highlight + admin alert; till payouts so expected till is right; nightly
-   invariant check.
-2. ~~**People.**~~ Done 2026-09-27. Change PIN (rider/cashier), cashier profile, admin rider detail (float,
-   lifetime stats, per-rider cash limit override, open orders, cash and commission
-   history, deactivate, reset PIN), rider availability toggle.
-3. ~~**Owner reporting & control.**~~ Done 2026-09-27. Server `getDashboard` (fixes B7), audit viewer,
-   commission payouts (paid/owed, rider payout request), daily Z-report + emailed job,
-   order detail with audited admin override, complete Settings form, menu
-   description/image/sort/archive.
-4. ~~**Real-time & app feel.**~~ Done 2026-09-27. LiveQuery instead of 10 s polling (instant badges),
-   PWA install prompt + offline shell, map pin (needs a Maps/Leaflet decision).
-5. **Release readiness.** Error reporting, backups + staging app, onboarding wizard
-   with menu CSV import, privacy notice / terms, white-label (name, logo, colours from
-   Configuration), admin code-splitting, low-end Android pass, full role/permission
-   e2e matrix.
-6. **Phase 2.** MTN MoMo / Airtel API auto-confirmation, customer QR menu, rider GPS,
-   priced add-ons, native wrapper.
-
-Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions are paid
-(from the till or separately); which Back4App plan limits apply (LiveQuery, email).
+1. ~~**Cash integrity & security.**~~ Done 2026-09-27 (S5 / S7 are the owner's Back4App settings above).
+2. ~~**People.**~~ Done 2026-09-27.
+3. ~~**Owner reporting & control.**~~ Done 2026-09-27.
+4. ~~**Real-time & app feel.**~~ Done 2026-09-27.
+5. ~~**Release readiness.**~~ Done 2026-09-28 (Phase 6 above).
+6. ~~**Phase 2.**~~ Done or decided: MTN MoMo / Airtel auto-confirmation (2026-09-28), priced add-ons (accompaniments, 2026-09-25), customer QR menu (online and table ordering, 2026-10-01/02); rider GPS and native wrapper dropped.
 
 ## 8. Non-functional requirements (checklist for every change)
 
@@ -1017,3 +1000,4 @@ Decisions needed from the owner: §9 questions 1, 2, 3, 4, 6; how commissions ar
 | 2026-10-03 | **Ratios line chart.** Accounting → Business Performance Ratios shows the chosen ratio month by month as a line (one series, no legend; percentages on a % axis, other ratios to 2 decimals; hover gives the month and value; months with no denominator are gaps), between the tiles and the table, which stays as the table view.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 2026-10-03 | **Ratios compared.** Business Performance Ratios opens on _All ratios (compare)_: every ratio month by month as lines with a legend (tap a name to hide or show its line). One axis per chart, so two charts: profitability in % of net sales (gross profit, net profit, operating cost) and liquidity, debt and collection in times (current, debt, debt to equity, receivable turnover; acid test equals the current ratio, so it is in the table only). Below, a month × ratio table. Picking one ratio still gives its tiles, line and numbers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 2026-10-03 | **Ratios on one chart.** _All ratios (compare)_ is now a single chart on one axis: every ratio as its plain value (a percentage ratio drawn as a fraction, 14% at 0.14; the hover gives each in its usual form), seven lines with a legend (tap to hide or show). The chart palette gains two validated slots (green, violet) for seven series.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 2026-10-03 | **Stock.** Purchases & expenses → **Stock** (`cloud/stock.js`, maths in `lib/stock.js`): stock items (name, unit, kind, cost per unit, reorder level; archived, never deleted) and **stock counts** (what is on the shelves at the end of a day, at cost; one per branch and day, voided with a reason). **Stock is kept by branch**: each branch counts its own shelves and has its own quantities and reorder levels (`reorderLevels` by branch, the item's level the default; `saveStockItem` `branchId`); the page opens on the main branch, _Whole restaurant_ shows each branch's quantity and which branches are low; low-stock notifications name the branch. A purchase line can name its item (`itemId`; the purchase form links a line whose description is an item's name): the item's cost follows the latest purchase, and _on hand_ is the latest count plus what was bought since. Low stock (at or under the reorder level) is shown and notified to the owner after a count. Accounting uses the periodic method: cost of goods sold = opening stock + purchases − closing stock (each branch's latest count before the moment; with no counts, purchases as before); Balance Sheet **Inventory** under current assets; Cash Flow **Inventory (stock)** line; **acid test** = (current assets − stock) ÷ current liabilities, and it joins the ratios chart once stock is counted (eighth chart colour, red). `StockItem` / `StockCount` protected, in backups and restore. `listStock`, `saveStockItem`, `recordStockCount`, `voidStockCount`. Roadmap _Still open_ brought up to date. e2e 206.                                                                                                                                                                                                                                                                                                         |

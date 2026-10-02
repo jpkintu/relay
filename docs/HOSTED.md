@@ -75,7 +75,7 @@ Plans are set by platform staff in the console (Plans), stored in the `Plan`
 class (Relay's own, not any restaurant's; `cloud/lib/plans.js`). Each has a
 price a month, limits (branches, cashiers, riders, finance staff; empty = no
 limit) and the parts of the app it includes (several branches, finance role,
-purchases/expenses/accounting, reports & analytics, EFRIS, WhatsApp
+purchases/expenses/stock/accounting, reports & analytics, EFRIS, WhatsApp
 summaries). Staff can create new plans and change any plan; a change applies
 to its restaurants at once. A plan is never deleted: taken off offer, it is
 no longer offered at sign-up or when owners change plan, and its restaurants
@@ -83,10 +83,10 @@ stay on it.
 
 The first time plans are needed, two are made (owner's decision 2026-09-30):
 
-| Plan       | Price a month | Limits and parts                                                                                  |
-| ---------- | ------------- | ------------------------------------------------------------------------------------------------- |
-| Basic      | 100,000       | 1 branch, 2 cashiers, 5 riders, no finance; no purchases/expenses/accounting or Reports analytics |
-| Enterprise | 200,000       | no limits, everything                                                                             |
+| Plan       | Price a month | Limits and parts                                                                                        |
+| ---------- | ------------- | ------------------------------------------------------------------------------------------------------- |
+| Basic      | 100,000       | 1 branch, 2 cashiers, 5 riders, no finance; no purchases/expenses/stock/accounting or Reports analytics |
+| Enterprise | 200,000       | no limits, everything                                                                                   |
 
 - A restaurant chooses a plan at sign-up (the first on offer by default) and
   the owner switches under Subscription → Plans (`changePlan`; to a smaller

@@ -56,6 +56,7 @@ require('./cashcheck');
 require('./shifts');
 require('./branches');
 require('./spending');
+require('./stock');
 require('./accounting');
 require('./whatsapp');
 require('./platformWhatsapp');

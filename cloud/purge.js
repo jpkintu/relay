@@ -69,6 +69,8 @@ const ORDER = [
   'ZReport',
   'Purchase',
   'Expense',
+  'StockCount',
+  'StockItem',
   'Supplier',
   'Customer',
   'Accompaniment',

@@ -28,7 +28,7 @@ export type Plan = {
 export const FEATURE_NAMES: Record<string, string> = {
   branches: 'Several branches',
   finance: 'Finance role',
-  accounting: 'Purchases, expenses & accounting',
+  accounting: 'Purchases, expenses, stock & accounting',
   reports: 'Reports & analytics',
   efris: 'EFRIS tax receipts',
   whatsapp: 'WhatsApp daily summaries',
