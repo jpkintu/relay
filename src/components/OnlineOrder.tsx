@@ -210,6 +210,34 @@ function YourOrders({
   onTrack: (token: string) => void;
 }) {
   const [active, setActive] = useState<(Tracked & { token: string })[]>([]);
+  // Found with the phone number when the browser kept nothing (Safari
+  // private tabs, a scanner app's own browser).
+  const [finding, setFinding] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [note, setNote] = useState('');
+  const [round, setRound] = useState(0);
+  const find = async (event: FormEvent) => {
+    event.preventDefault();
+    setNote('');
+    try {
+      const r: { orders: { token: string; placedAt: string }[] } = await Parse.Cloud.run(
+        'getMyOnlineOrders',
+        { ...params, phone },
+      );
+      if (!r.orders.length) return setNote('No order in progress with that number today.');
+      const local = savedOrders(code);
+      storeOrders(code, [
+        ...local,
+        ...r.orders
+          .filter((o) => !local.some((l) => l.token === o.token))
+          .map((o) => ({ token: o.token, at: Date.parse(o.placedAt) || Date.now() })),
+      ]);
+      setFinding(false);
+      setRound((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : 'Could not search');
+    }
+  };
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -262,8 +290,29 @@ function YourOrders({
     return () => {
       live = false;
     };
-  }, [params, code]);
-  if (!active.length) return null;
+  }, [params, code, round]);
+  const finder = finding ? (
+    <form className="om-find" onSubmit={(e) => void find(e)}>
+      <label className="om-field">
+        The phone number you ordered with
+        <input
+          type="tel"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          autoComplete="tel"
+          placeholder="e.g. 0772 123456"
+          autoFocus
+        />
+      </label>
+      <button className="om-secondary">Find my order</button>
+      {note && <small className="muted">{note}</small>}
+    </form>
+  ) : (
+    <button className="om-findlink" onClick={() => setFinding(true)}>
+      Ordered already? Find your order
+    </button>
+  );
+  if (!active.length) return finder;
   return (
     <section className="om-yours" aria-label="Your orders">
       <h2>Your order{active.length > 1 ? 's' : ''}</h2>
@@ -278,8 +327,47 @@ function YourOrders({
           </span>
         </button>
       ))}
+      {finder}
     </section>
   );
+}
+
+// When the phone will not share its location: why, and the steps for this
+// phone (a web page cannot open the phone's settings itself).
+type LocationProblem = 'blocked' | 'off' | 'browser';
+function locationSteps(problem: LocationProblem) {
+  const ua = navigator.userAgent;
+  if (problem === 'browser' || /FBAN|FBAV|Instagram|WhatsApp|Line\//i.test(ua))
+    return [
+      'This app’s built-in browser cannot share your location.',
+      'Tap ⋮ or ··· and choose Open in Chrome (or Open in Safari), then tap Use my location.',
+    ];
+  if (/iPhone|iPad|iPod/.test(ua))
+    return problem === 'off'
+      ? [
+          'Open the Settings app → Privacy & Security → Location Services, and turn it on.',
+          'Come back here and tap Use my location.',
+        ]
+      : [
+          'Open the Settings app → Privacy & Security → Location Services: turn it on, then tap Safari Websites (or your browser) → While Using the App.',
+          'Back here, tap aA in the address bar → Website Settings → Location → Allow.',
+          'Then tap Use my location again.',
+        ];
+  if (/Android/.test(ua))
+    return problem === 'off'
+      ? [
+          'Swipe down from the top of the screen and turn on Location.',
+          'Then tap Use my location again.',
+        ]
+      : [
+          'Tap the icon left of the web address (a lock or sliders) → Permissions → Location → Allow.',
+          'Make sure Location is on (swipe down from the top of the screen).',
+          'Then tap Use my location again.',
+        ];
+  return [
+    'Allow location for this site in your browser settings and turn on location services.',
+    'Then tap Use my location again.',
+  ];
 }
 
 function useMoneyOf(symbol: string) {
@@ -617,6 +705,7 @@ function Checkout({
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [pinning, setPinning] = useState(false);
+  const [problem, setProblem] = useState<LocationProblem | null>(null);
   const [notes, setNotes] = useState('');
   const [method, setMethod] = useState<'cash' | 'mobile_money'>(
     menu.cash ? 'cash' : 'mobile_money',
@@ -644,11 +733,9 @@ function Checkout({
 
   const locate = () => {
     setError('');
+    setProblem(null);
     // Browsers share the location only with https pages.
-    if (!window.isSecureContext || !navigator.geolocation)
-      return setError(
-        'This browser cannot share your location here. Open the link in Chrome or Safari, or pin your place on the map.',
-      );
+    if (!window.isSecureContext || !navigator.geolocation) return setProblem('browser');
     setLocating(true);
     const found = (pos: GeolocationPosition) => {
       setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
@@ -656,11 +743,7 @@ function Checkout({
     };
     const failed = (e: GeolocationPositionError) => {
       setLocating(false);
-      setError(
-        e.code === e.PERMISSION_DENIED
-          ? 'Location is blocked for this page. Allow location for this site in the browser settings (in WhatsApp or Facebook, open the link in Chrome or Safari first), or pin your place on the map.'
-          : 'Could not find your location. Turn on location (GPS) on the phone and try again, or pin your place on the map.',
-      );
+      setProblem(e.code === e.PERMISSION_DENIED ? 'blocked' : 'off');
     };
     // GPS first; indoors it often times out, so then the network's position.
     navigator.geolocation.getCurrentPosition(
@@ -676,6 +759,23 @@ function Checkout({
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
     );
   };
+  // Choosing delivery asks for the location straight away (the browser shows
+  // its "allow location" prompt); already blocked: the steps to allow it.
+  const askLocation = async () => {
+    if (location || locating) return;
+    try {
+      const status = await navigator.permissions?.query({ name: 'geolocation' as PermissionName });
+      if (status?.state === 'denied') return setProblem('blocked');
+    } catch {
+      // Older browsers: just ask.
+    }
+    locate();
+  };
+  useEffect(() => {
+    if (type === 'delivery') void askLocation();
+    // Only when the checkout opens on delivery; the toggle asks on its own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const place = async (event: FormEvent) => {
     event.preventDefault();
@@ -776,7 +876,10 @@ function Checkout({
                   key={t}
                   className={type === t ? 'active' : ''}
                   aria-pressed={type === t}
-                  onClick={() => setType(t)}
+                  onClick={() => {
+                    setType(t);
+                    if (t === 'delivery') void askLocation();
+                  }}
                 >
                   {t === 'pickup' ? 'Pick-up' : 'Delivery'}
                 </button>
@@ -823,6 +926,23 @@ function Checkout({
                   {location ? 'Move the pin' : 'Pin it on the map'}
                 </button>
               </div>
+              {problem && !location && (
+                <div className="om-lochelp" role="alert">
+                  <b>
+                    {problem === 'blocked'
+                      ? 'Location is not allowed for this page'
+                      : problem === 'off'
+                        ? 'Your phone’s location is off'
+                        : 'This browser cannot share your location'}
+                  </b>
+                  <ol>
+                    {locationSteps(problem).map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ol>
+                  <small>Or tap Pin it on the map and drop the pin on your place.</small>
+                </div>
+              )}
               {location ? (
                 <small className="om-located">
                   <CheckCircle2 aria-hidden /> Location added
