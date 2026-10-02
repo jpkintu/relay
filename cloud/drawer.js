@@ -86,7 +86,7 @@ Parse.Cloud.define('logDrawerOpen', async (request) => {
 // Owner and finance: drawer openings in a period, newest first, with the
 // count per cashier. { range?, from?, to? } as the reports take them.
 Parse.Cloud.define('getDrawerOpenings', async (request) => {
-  await requireRole(request, ['admin', 'finance']);
+  const { branch } = await requireRole(request, ['admin', 'finance']);
   const { values: config } = await loadConfig();
   const range = resolveRange(request.params || {}, config.timezone);
   if (range.error) throw invalid(range.error);
@@ -96,8 +96,11 @@ Parse.Cloud.define('getDrawerOpenings', async (request) => {
   query.greaterThanOrEqualTo('createdAt', start);
   query.lessThan('createdAt', end);
   query.include('actor');
-  // Newest first (findAll cannot sort).
-  const rows = (await findAll(query)).sort((a, b) => b.createdAt - a.createdAt);
+  // Newest first (findAll cannot sort). A branch finance officer sees the
+  // drawers opened by that branch's cashiers.
+  const rows = (await findAll(query))
+    .filter((row) => !branch || row.get('actor')?.get('branch')?.id === branch.id)
+    .sort((a, b) => b.createdAt - a.createdAt);
   const people = {};
   const items = rows.map((row) => {
     const after = JSON.parse(row.get('afterJson') || '{}');

@@ -4,7 +4,7 @@ import type { Data, Layout } from 'plotly.js';
 import { useNavigate } from 'react-router-dom';
 import { Printer } from 'lucide-react';
 import Parse from '../parse';
-import { useConfig, useMoney } from '../lib/session';
+import { useConfig, useMoney, useSession } from '../lib/session';
 import { formatDate } from '../lib/format';
 import { bucketLabel, rangeLabel, todayIn } from '../lib/range';
 import { useDevice } from '../lib/device';
@@ -304,6 +304,9 @@ const MONTHS = [
 export function BalanceSheet() {
   const money = useMoney();
   const { timezone } = useConfig();
+  // A branch finance officer's sheet is their branch's (no opening balances).
+  const { profile } = useSession();
+  const ownBranch = profile?.role === 'finance' && !!profile.branch;
   const navigate = useNavigate();
   const today = todayIn(timezone);
   const [day, setDay] = useState(today);
@@ -477,7 +480,7 @@ export function BalanceSheet() {
         <PrintButton />
       </div>
       {error && <p className="ops-error">{error}</p>}
-      {data && !branchId && (
+      {data && !branchId && !ownBranch && (
         <details className="admin-panel opening-panel no-print" open={!data.openingSet}>
           <summary>Opening balances and financial year</summary>
           <p className="muted small">

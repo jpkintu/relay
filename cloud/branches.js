@@ -151,11 +151,13 @@ const view = (row, members = {}) => ({
 // Staff: the branches, for filters and pickers. Riders and cashiers only see
 // their own.
 Parse.Cloud.define('getBranches', async (request) => {
-  const { user, role } = await requireRole(request, ROLES);
+  const { user, role, branch } = await requireRole(request, ROLES);
   // The owner may give team members a branch before ever opening Branches.
   if (role === 'admin') await ensureMainBranch(user);
   const rows = await allBranches();
-  if (['admin', 'finance'].includes(role)) return { branches: rows.map((row) => view(row)) };
+  // Finance for all branches sees them all; a branch finance officer, theirs.
+  if (role === 'admin' || (role === 'finance' && !branch))
+    return { branches: rows.map((row) => view(row)) };
   const own = (await branchFor(user))?.id;
   return { branches: rows.filter((row) => row.id === own).map((row) => view(row)) };
 });

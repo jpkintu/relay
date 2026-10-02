@@ -245,12 +245,17 @@ Parse.Cloud.define('adminCreateTeamMember', async (request) => {
   const { values: config } = await loadConfig();
   await require('./lib/limits').checkMemberLimit(roleName);
   // Riders and cashiers work at one branch (the main one unless chosen);
-  // finance sees every branch. Only once the restaurant has branches.
+  // finance works on every branch unless given one. Only once the
+  // restaurant has branches.
   const branches = require('./branches');
   const branch =
-    roleName !== 'finance' && (p.branchId || (await branches.mainBranch()))
-      ? await branches.assignableBranch(p.branchId, actor)
-      : null;
+    roleName === 'finance'
+      ? p.branchId && p.branchId !== 'all'
+        ? await branches.assignableBranch(p.branchId, actor)
+        : null
+      : p.branchId || (await branches.mainBranch())
+        ? await branches.assignableBranch(p.branchId, actor)
+        : null;
   const user = new Parse.User();
   if (branch) user.set('branch', branch);
   user.set({
@@ -317,8 +322,14 @@ Parse.Cloud.define('adminUpdateMember', async (request) => {
     }
   }
   if (p.branchId !== undefined) {
-    const branch = await require('./branches').assignableBranch(p.branchId, actor);
-    user.set('branch', branch);
+    // Finance: '' or 'all' = every branch.
+    const finance = (await require('./lib/core').getRoleName(user)) === 'finance';
+    if (finance && (!p.branchId || p.branchId === 'all')) {
+      if (user.has('branch')) user.unset('branch');
+    } else {
+      const branch = await require('./branches').assignableBranch(p.branchId, actor);
+      user.set('branch', branch);
+    }
   }
   if (p.active === true && user.get('active') === false) {
     const role = await require('./lib/core').getRoleName(user);
@@ -378,6 +389,8 @@ Parse.Cloud.define('adminChangeRole', async (request) => {
   destination.getUsers().add(user);
   await destination.save(null, MASTER);
   if (!user.get(codeField(next))) user.set(codeField(next), await nextStaffCode(next));
+  // A new finance officer works on every branch until the owner gives one.
+  if (next === 'finance' && before !== 'finance' && user.has('branch')) user.unset('branch');
   user.setACL(userAcl(user, next));
   await user.save(null, MASTER);
   await audit(actor, 'team.role_changed', user, { role: before }, { role: next });

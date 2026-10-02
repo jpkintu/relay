@@ -568,16 +568,18 @@ Parse.Cloud.define('adminGetZReport', async (request) => {
 
 // Owner: saved Z-reports, newest first.
 Parse.Cloud.define('adminListZReports', async (request) => {
-  await requireRole(request, ['admin', 'finance']);
+  // The saved reports are the whole restaurant's: a branch finance officer
+  // gets the days (each opens for their branch, adminGetZReport) without them.
+  const { branch } = await requireRole(request, ['admin', 'finance']);
   const query = new Parse.Query('ZReport');
   query.descending('day');
   query.limit(62);
   return (await query.find(MASTER)).map((row) => ({
     day: row.get('day'),
     savedAt: row.get('generatedAt'),
-    delivered: row.get('data')?.orders?.delivered ?? 0,
-    sales: row.get('data')?.sales?.total ?? 0,
-    kept: row.get('data')?.sales?.kept ?? 0,
+    delivered: branch ? null : (row.get('data')?.orders?.delivered ?? 0),
+    sales: branch ? null : (row.get('data')?.sales?.total ?? 0),
+    kept: branch ? null : (row.get('data')?.sales?.kept ?? 0),
   }));
 });
 

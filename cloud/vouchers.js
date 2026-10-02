@@ -282,10 +282,12 @@ Parse.Cloud.define('findVouchers', async (request) => {
 
 // Owner / finance: every voucher (open first), and the refund charges.
 Parse.Cloud.define('adminListVouchers', async (request) => {
-  await requireRole(request, ['admin', 'finance']);
+  const { branch } = await requireRole(request, ['admin', 'finance']);
   await backfill();
   const { values: config } = await loadConfig();
-  const rows = await findAll(new Parse.Query(CLASS));
+  const query = new Parse.Query(CLASS);
+  if (branch) query.equalTo('branch', branch);
+  const rows = await findAll(query);
   const order = { open: 0, used: 1, refunded: 2 };
   return {
     // Open first, newest first.

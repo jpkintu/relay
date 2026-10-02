@@ -78,12 +78,14 @@ const requestReference = (order) => {
 
 Parse.Cloud.define('adminGetOrder', async (request) => {
   // Finance reads orders; only the owner changes them (adminOverrideOrder).
-  const { role } = await requireRole(request, ['admin', 'finance']);
+  const who = await requireRole(request, ['admin', 'finance']);
+  const { role } = who;
   const id = idOf(request.params.id);
   if (!id) throw invalid('Unknown order');
   const query = new Parse.Query('Order');
   query.include(['createdBy', 'cashier', 'cancelledBy', 'paymentCheckedBy', 'customer']);
   const order = await query.get(id, MASTER);
+  require('./lib/core').sameBranch(who, order.get('branch'));
   const itemQuery = new Parse.Query('OrderItem');
   itemQuery.equalTo('order', order);
   itemQuery.limit(200);
