@@ -198,6 +198,9 @@ var require_core = __commonJS({
       onlineDeliveryPerKm: 0,
       // Guests order from a QR code on their table (tables.js).
       onlineTables: false,
+      // What sending a refund back costs (vouchers.js): flat + % of it.
+      refundChargeFlat: 0,
+      refundChargePercent: 0,
       // Branding: theme colours (#rrggbb); '' keeps Relay's own.
       themeInk: "",
       themeAccent: "",
@@ -1165,7 +1168,8 @@ var require_security = __commonJS({
       "Supplier",
       "Purchase",
       "Expense",
-      "DiningTable"
+      "DiningTable",
+      "Voucher"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -1177,7 +1181,8 @@ var require_security = __commonJS({
       "ErrorLog",
       "AdminUnlock",
       // Their QR codes are secret (tables.js).
-      "DiningTable"
+      "DiningTable",
+      "Voucher"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -1230,6 +1235,32 @@ var require_security = __commonJS({
       Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N, lat: N, lng: N },
       // Tables guests order from with a QR code (tables.js).
       DiningTable: { name: S, branch, token: S, active: B, sortOrder: N },
+      // Money owed back for a cancelled order: spent on a new order or refunded
+      // (vouchers.js).
+      Voucher: {
+        code: S,
+        kind: S,
+        amount: N,
+        cashIn: N,
+        phone: S,
+        customerName: S,
+        status: S,
+        sourceOrder: ["Pointer", "Order"],
+        sourceCode: S,
+        parent: ["Pointer", "Voucher"],
+        parentCode: S,
+        openedAt: D,
+        branch,
+        usedOrder: ["Pointer", "Order"],
+        usedCode: S,
+        usedAt: D,
+        usedAmount: N,
+        refundedAt: D,
+        refundedBy: ["Pointer", "_User"],
+        refundCharges: N,
+        refundSent: N,
+        refundNote: S
+      },
       Order: {
         branch,
         // Split orders: the splits in the order entered (lines carry `split`).
@@ -1298,6 +1329,9 @@ var require_security = __commonJS({
         refundedAt: D,
         refundedBy: ["Pointer", "_User"],
         refundNote: S,
+        // Paid in part or whole by a voucher (vouchers.js): total is what is left.
+        voucherAmount: N,
+        voucherCode: S,
         cancelledReason: S,
         cancelledBy: user,
         cancelledAt: D,
@@ -1488,7 +1522,9 @@ var require_security = __commonJS({
         onlineMobileMoney: B,
         onlineNote: S,
         onlineDeliveryPerKm: N,
-        onlineTables: B
+        onlineTables: B,
+        refundChargeFlat: N,
+        refundChargePercent: N
       },
       MenuItem: {
         title: S,
@@ -10021,6 +10057,324 @@ var require_customers = __commonJS({
   }
 });
 
+// cloud/vouchers.js
+var require_vouchers = __commonJS({
+  "cloud/vouchers.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var {
+      MASTER,
+      invalid,
+      forbidden,
+      requireRole,
+      audit,
+      loadConfig,
+      findAll,
+      claimOnce,
+      personName
+    } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var CLASS = "Voucher";
+    var CODE = /^V[A-Z0-9]{7}$/;
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    var ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    var newCode = () => `V${Array.from(crypto.randomBytes(7), (b) => ALPHABET[b % ALPHABET.length]).join("")}`;
+    var digitsOf = (phone) => String(phone || "").replace(/\D/g, "");
+    var samePhone = (a, b) => {
+      const x = digitsOf(a);
+      const y = digitsOf(b);
+      return x.length >= 9 && y.length >= 9 && x.slice(-9) === y.slice(-9);
+    };
+    var round = (n) => Math.round(Number(n) || 0);
+    function refundCharge(config, amount) {
+      const flat = Math.max(0, round(config.refundChargeFlat));
+      const percent = Math.max(0, Number(config.refundChargePercent) || 0);
+      return Math.min(round(amount), round(flat + amount * percent / 100));
+    }
+    var view = (row, config) => {
+      const amount = round(row.get("amount"));
+      const charges = row.get("status") === "refunded" ? round(row.get("refundCharges")) : refundCharge(config, amount);
+      return {
+        id: row.id,
+        code: row.get("code"),
+        amount,
+        phone: row.get("phone") || "",
+        customerName: row.get("customerName") || "",
+        status: row.get("status"),
+        kind: row.get("kind") || "payment",
+        openedAt: row.get("openedAt")?.toISOString() || null,
+        sourceOrder: row.get("sourceOrder") ? { id: row.get("sourceOrder").id, code: row.get("sourceCode") || "" } : null,
+        fromVoucher: row.get("parentCode") || "",
+        usedOn: row.get("usedOrder") ? { id: row.get("usedOrder").id, code: row.get("usedCode") || "" } : null,
+        usedAt: row.get("usedAt")?.toISOString() || null,
+        usedAmount: round(row.get("usedAmount")),
+        // Refund: sent back less the charges.
+        charges,
+        toSend: amount - charges,
+        refundedAt: row.get("refundedAt")?.toISOString() || null,
+        refundNote: row.get("refundNote") || ""
+      };
+    };
+    var KINDS = ["payment", "restore"];
+    function amountOf(order, kind) {
+      if (kind === "restore") return round(order.get("voucherAmount"));
+      return order.get("paymentStatus") === "VERIFIED" && ["mobile_money", "card"].includes(order.get("paymentMethod")) ? round(order.get("total")) : 0;
+    }
+    async function openForOrder(order, { refunded = false } = {}) {
+      if (order.get("status") !== "CANCELLED") return [];
+      const made = [];
+      for (const kind of KINDS) {
+        const amount = amountOf(order, kind);
+        if (amount <= 0) continue;
+        const existing = await new Parse.Query(CLASS).equalTo("sourceOrder", order).equalTo("kind", kind).first(MASTER);
+        if (existing || !await claimOnce(`voucher:${order.id}:${kind}`)) continue;
+        const refundedAt = refunded && kind === "payment" ? order.get("refundedAt") : null;
+        const row = new Parse.Object(CLASS);
+        row.set({
+          code: newCode(),
+          kind,
+          amount,
+          cashIn: kind === "payment" ? amount : 0,
+          phone: order.get("customerPhone") || order.get("payRequestPhone") || "",
+          customerName: order.get("customerName") || "",
+          status: refundedAt ? "refunded" : "open",
+          sourceOrder: order,
+          sourceCode: order.get("orderCode"),
+          openedAt: kind === "payment" && order.get("paymentCheckedAt") || order.get("cancelledAt") || /* @__PURE__ */ new Date(),
+          ...order.get("branch") && { branch: order.get("branch") },
+          ...refundedAt && {
+            refundedAt,
+            refundCharges: 0,
+            refundSent: amount,
+            refundNote: order.get("refundNote") || ""
+          }
+        });
+        row.setACL(new Parse.ACL());
+        await row.save(null, MASTER);
+        await audit(null, "voucher.opened", row, null, {
+          order: order.get("orderCode"),
+          kind,
+          amount,
+          code: row.get("code")
+        });
+        made.push(row);
+      }
+      return made;
+    }
+    async function backfill() {
+      const orders = await findAll(new Parse.Query("Order").equalTo("status", "CANCELLED"));
+      const due = orders.filter((o) => KINDS.some((kind) => amountOf(o, kind) > 0));
+      if (!due.length) return;
+      const have = new Set(
+        (await findAll(new Parse.Query(CLASS).exists("sourceOrder"))).map(
+          (row) => `${row.get("sourceOrder").id}:${row.get("kind") || "payment"}`
+        )
+      );
+      for (const order of due)
+        if (KINDS.some((kind) => amountOf(order, kind) > 0 && !have.has(`${order.id}:${kind}`)))
+          await openForOrder(order, { refunded: !!order.get("refundedAt") });
+    }
+    async function find(code, phone) {
+      const value = String(code || "").trim().toUpperCase();
+      if (!CODE.test(value)) throw invalid("That voucher code is not right");
+      const row = await new Parse.Query(CLASS).equalTo("code", value).first(MASTER);
+      if (!row) throw invalid("That voucher code is not right");
+      if (row.get("status") !== "open")
+        throw invalid(
+          row.get("status") === "used" ? "This voucher has been used" : "This voucher was refunded to the customer"
+        );
+      if (!samePhone(row.get("phone"), phone))
+        throw forbidden("This voucher belongs to another customer: use their phone number");
+      return row;
+    }
+    async function peek(code, phone, bill) {
+      const row = await find(code, phone);
+      return Math.min(round(row.get("amount")), round(bill));
+    }
+    async function spend(order, code, phone, actor) {
+      const row = await find(code, phone);
+      const value = row.get("code");
+      if (order.get("voucherAmount")) throw invalid("A voucher is already on this order");
+      const amount = round(row.get("amount"));
+      const bill = round(order.get("total"));
+      const used = Math.min(amount, bill);
+      const now = /* @__PURE__ */ new Date();
+      order.set({ voucherAmount: used, voucherCode: value, total: bill - used });
+      row.set({ status: "used", usedAt: now, usedAmount: used, usedCode: order.get("orderCode") });
+      let rest = null;
+      if (amount > used) {
+        rest = new Parse.Object(CLASS);
+        rest.set({
+          code: newCode(),
+          amount: amount - used,
+          phone: row.get("phone"),
+          customerName: row.get("customerName") || "",
+          status: "open",
+          kind: "rest",
+          cashIn: 0,
+          parent: row,
+          parentCode: value,
+          openedAt: now,
+          ...row.get("branch") && { branch: row.get("branch") }
+        });
+        rest.setACL(new Parse.ACL());
+      }
+      return {
+        voucher: row,
+        rest,
+        used,
+        // Saved with the order (it needs the order's id).
+        async save(saved) {
+          const fresh = await new Parse.Query(CLASS).get(row.id, MASTER);
+          if (fresh.get("status") !== "open") throw invalid("This voucher has been used");
+          row.set("usedOrder", saved);
+          await row.save(null, MASTER);
+          if (rest) await rest.save(null, MASTER);
+          await audit(
+            actor || null,
+            "voucher.used",
+            row,
+            { status: "open" },
+            {
+              order: saved.get("orderCode"),
+              used,
+              left: rest ? round(rest.get("amount")) : 0,
+              ...rest && { newVoucher: rest.get("code") }
+            }
+          );
+        }
+      };
+    }
+    function paidByVoucher(order) {
+      order.set({
+        paymentMethod: "voucher",
+        paymentStatus: "VERIFIED",
+        cashStatus: "NOT_APPLICABLE",
+        amountToCollect: 0,
+        billOpen: false,
+        paidAt: /* @__PURE__ */ new Date()
+      });
+    }
+    var checks = /* @__PURE__ */ new Map();
+    Parse.Cloud.define("checkVoucher", async (request) => {
+      const key = String(request.ip || "");
+      const now = Date.now();
+      const recent = (checks.get(key) || []).filter((t) => now - t < 15 * 6e4);
+      if (recent.length >= 10) throw forbidden("Too many tries. Try again in a few minutes");
+      recent.push(now);
+      checks.set(key, recent);
+      if (checks.size > 5e3) checks.clear();
+      const row = await find(request.params?.code, request.params?.phone);
+      return { code: row.get("code"), amount: round(row.get("amount")) };
+    });
+    Parse.Cloud.define("findVouchers", async (request) => {
+      await requireRole(request, ["cashier", "admin", "finance"]);
+      const digits = digitsOf(request.params?.phone);
+      if (digits.length < 9) throw invalid("Enter the customer\u2019s phone number");
+      const { values: config } = await loadConfig();
+      const rows = await findAll(new Parse.Query(CLASS).equalTo("status", "open"));
+      return {
+        vouchers: rows.filter((row) => samePhone(row.get("phone"), digits)).map((r) => view(r, config))
+      };
+    });
+    Parse.Cloud.define("adminListVouchers", async (request) => {
+      await requireRole(request, ["admin", "finance"]);
+      await backfill();
+      const { values: config } = await loadConfig();
+      const rows = await findAll(new Parse.Query(CLASS));
+      const order = { open: 0, used: 1, refunded: 2 };
+      return {
+        // Open first, newest first.
+        vouchers: rows.sort((a, b) => order[a.get("status")] - order[b.get("status")] || b.createdAt - a.createdAt).map((row) => view(row, config)),
+        charges: {
+          flat: round(config.refundChargeFlat),
+          percent: Number(config.refundChargePercent) || 0
+        }
+      };
+    });
+    Parse.Cloud.define("adminSaveRefundCharges", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const flat = Number(request.params?.flat ?? 0);
+      const percent = Number(request.params?.percent ?? 0);
+      if (!Number.isFinite(flat) || flat < 0 || flat > 1e7)
+        throw invalid("The charge must be 0 or more");
+      if (!Number.isFinite(percent) || percent < 0 || percent > 50)
+        throw invalid("The share must be between 0 and 50%");
+      const { object: config, values } = await loadConfig();
+      if (!config) throw invalid("Save the restaurant settings first");
+      const before = {
+        refundChargeFlat: values.refundChargeFlat,
+        refundChargePercent: values.refundChargePercent
+      };
+      const next = { refundChargeFlat: Math.round(flat), refundChargePercent: percent };
+      config.set(next);
+      await config.save(null, MASTER);
+      await audit(actor, "voucher.charges_saved", config, before, next);
+      return { flat: next.refundChargeFlat, percent };
+    });
+    async function refund(row, actor, params) {
+      if (row.get("status") !== "open") throw invalid("Only an open voucher can be refunded");
+      const note = String(params.note || "").trim().slice(0, 300);
+      if (note.length < 5) throw invalid("Say how it was sent back (at least 5 characters)");
+      const { values: config } = await loadConfig();
+      const amount = round(row.get("amount"));
+      const charges = params.charges === void 0 || params.charges === null || params.charges === "" ? refundCharge(config, amount) : round(params.charges);
+      if (charges < 0 || charges > amount) throw invalid("The charges cannot be more than the refund");
+      const now = /* @__PURE__ */ new Date();
+      row.set({
+        status: "refunded",
+        refundedAt: now,
+        refundedBy: actor,
+        refundCharges: charges,
+        refundSent: amount - charges,
+        refundNote: note
+      });
+      await row.save(null, MASTER);
+      await audit(
+        actor,
+        "voucher.refunded",
+        row,
+        { status: "open" },
+        {
+          amount,
+          charges,
+          sent: amount - charges,
+          note
+        }
+      );
+      const source = row.get("sourceOrder");
+      if (source) {
+        const order = await new Parse.Query("Order").get(source.id, MASTER).catch(() => null);
+        if (order) {
+          order.set({ refundDue: false, refundedAt: now, refundedBy: actor, refundNote: note });
+          await order.save(null, MASTER);
+        }
+      }
+      return { ...view(row, config), by: personName(actor) };
+    }
+    Parse.Cloud.define("adminRefundVoucher", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const id = String(request.params?.id || "");
+      const row = ID.test(id) ? await new Parse.Query(CLASS).get(id, MASTER).catch(() => null) : null;
+      if (!row) throw invalid("Voucher not found");
+      return refund(row, actor, request.params || {});
+    });
+    module2.exports = {
+      openForOrder,
+      backfill,
+      find,
+      peek,
+      spend,
+      paidByVoucher,
+      refund,
+      refundCharge,
+      samePhone,
+      view,
+      CLASS
+    };
+  }
+});
+
 // cloud/orders.js
 var require_orders = __commonJS({
   "cloud/orders.js"(exports2, module2) {
@@ -10450,6 +10804,7 @@ var require_orders = __commonJS({
         });
       if (staff && !owner) await takeOrder(order, actor, role);
       await order.save(null, MASTER);
+      if (rule.to === "CANCELLED") await require_vouchers().openForOrder(order);
       await audit(actor, `order.${p.action}`, order, before, {
         status: rule.to,
         paymentMethod: order.get("paymentMethod"),
@@ -10842,11 +11197,12 @@ var require_payments = __commonJS({
       );
       if (refundDue) {
         const { values: config2 } = await loadConfig();
+        const [voucher] = await require_vouchers().openForOrder(order);
         await notifyStaff({
           kind: "payment.refund_due",
           tone: "alert",
           title: `Payment arrived for cancelled order ${order.get("orderCode")}`,
-          body: `${money(config2, order.get("total"))} by ${order.get("paymentProvider") || "mobile money"} (${order.get("paymentReference") || "no reference"}) from ${order.get("payRequestPhone") || order.get("customerPhone") || "the customer"}: refund it, then mark it refunded on the order.`,
+          body: `${money(config2, order.get("total"))} by ${order.get("paymentProvider") || "mobile money"} (${order.get("paymentReference") || "no reference"}) from ${order.get("payRequestPhone") || order.get("customerPhone") || "the customer"}. It is the customer's voucher${voucher ? ` ${voucher.get("code")}` : ""}: they can spend it on a new order, or you refund it (Accounting \u2192 Refunds).`,
           link: `/admin/orders/${order.id}`,
           order
         });
@@ -29835,7 +30191,8 @@ var require_efris = __commonJS({
         id: order.id,
         code: order.get("orderCode"),
         at: require_placed().placedAt(order),
-        total: Number(order.get("total") || 0),
+        // The sale (a voucher paid part of it: vouchers.js).
+        total: Number(order.get("total") || 0) + Number(order.get("voucherAmount") || 0),
         customer: order.get("customerName") || "",
         status: statusOf(order),
         fdn: order.get("efrisFdn") || "",
@@ -30875,6 +31232,7 @@ var require_reports = __commonJS({
     var isDelivered = (fact) => fact.status === "DELIVERED";
     var isConfirmed = (fact) => fact.method === "cash" ? ["RECONCILED", "IN_TILL"].includes(fact.cashStatus) : ["mobile_money", "card"].includes(fact.method) ? fact.paymentStatus === "VERIFIED" : true;
     var OPEN = ["PLACED", "ACCEPTED", "PREPARING", "READY", "PICKED_UP"];
+    var paidOf = (fact) => round(fact.total) - round(fact.voucher || 0);
     function growth(current, previous) {
       if (!previous) return null;
       return Math.round((current - previous) / previous * 1e3) / 10;
@@ -30909,10 +31267,12 @@ var require_reports = __commonJS({
         net: revenue - commission,
         avgOrder: delivered.length ? Math.round(revenue / delivered.length) : 0,
         // Confirmed money only; the rest is still with riders or waiting for a check.
-        cashSales: confirmed.filter((f) => f.method === "cash").reduce((n, f) => n + round(f.total), 0),
-        mobileMoneySales: confirmed.filter((f) => f.method === "mobile_money").reduce((n, f) => n + round(f.total), 0),
-        cardSales: confirmed.filter((f) => f.method === "card").reduce((n, f) => n + round(f.total), 0),
-        unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + round(f.total), 0),
+        cashSales: confirmed.filter((f) => f.method === "cash").reduce((n, f) => n + paidOf(f), 0),
+        mobileMoneySales: confirmed.filter((f) => f.method === "mobile_money").reduce((n, f) => n + paidOf(f), 0),
+        // Paid with customers' vouchers (money received earlier).
+        voucherSales: delivered.reduce((n, f) => n + round(f.voucher || 0), 0),
+        cardSales: confirmed.filter((f) => f.method === "card").reduce((n, f) => n + paidOf(f), 0),
+        unconfirmedSales: delivered.filter((f) => !isConfirmed(f)).reduce((n, f) => n + paidOf(f), 0),
         customers: perCustomer.size,
         repeatCustomers: [...perCustomer.values()].filter((count) => count > 1).length,
         avgDeliveryMinutes: average(minutes),
@@ -31023,11 +31383,16 @@ var require_reports = __commonJS({
     function paymentMix(facts) {
       const byKey = /* @__PURE__ */ new Map();
       for (const fact of facts.filter(isDelivered).filter(isConfirmed)) {
-        const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : fact.method === "card" ? "card" : "cash";
-        const row = byKey.get(key) || { key, orders: 0, amount: 0 };
-        row.orders += 1;
-        row.amount += round(fact.total);
-        byKey.set(key, row);
+        const key = fact.method === "mobile_money" ? fact.provider || "mobile_money" : fact.method === "card" ? "card" : fact.method === "voucher" ? "voucher" : "cash";
+        const add = (part, amount) => {
+          const row = byKey.get(part) || { key: part, orders: 0, amount: 0 };
+          row.orders += 1;
+          row.amount += amount;
+          byKey.set(part, row);
+        };
+        const voucher = round(fact.voucher || 0);
+        if (key !== "voucher" && (paidOf(fact) > 0 || !voucher)) add(key, paidOf(fact));
+        if (voucher) add("voucher", voucher);
       }
       return [...byKey.values()].sort((a, b) => b.amount - a.amount);
     }
@@ -31185,7 +31550,10 @@ var require_reports2 = __commonJS({
         riderId: rider?.id || "",
         rider: nameOf(rider),
         branchId: order.get("branch")?.id || "",
-        total: Number(order.get("total") || 0),
+        // The sale: what the customer paid plus any voucher they paid with
+        // (vouchers.js); `voucher` is that part, no new money.
+        total: Number(order.get("total") || 0) + Number(order.get("voucherAmount") || 0),
+        voucher: Number(order.get("voucherAmount") || 0),
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
         deliveryPay: Number(order.get("deliveryPay") ?? order.get("deliveryFee") ?? 0),
@@ -32979,13 +33347,17 @@ var require_counter = __commonJS({
       const subtotal = sumBy(lines, (line) => line.lineTotal);
       const fee = isDelivery ? Math.max(0, Math.round(Number(p.deliveryFee ?? config.defaultDeliveryFee) || 0)) : 0;
       const total = subtotal + fee;
-      const momo = method === "mobile_money" && !payLater ? await checkMobileMoney(
+      const vouchers = require_vouchers();
+      const voucherPhone = p.voucherPhone || p.customerPhone;
+      const covered = p.voucherCode ? await vouchers.peek(p.voucherCode, voucherPhone, total) : 0;
+      const due = total - covered;
+      const momo = method === "mobile_money" && !payLater && due > 0 ? await checkMobileMoney(
         config,
         p.paymentProvider,
         p.paymentReference,
         void 0,
         p.payerPhone || p.customerPhone
-      ) : method === "card" && !payLater ? await checkCard(config, p.paymentReference) : null;
+      ) : method === "card" && !payLater && due > 0 ? await checkCard(config, p.paymentReference) : null;
       const me = await actor.fetch(MASTER);
       const order = new Parse.Object("Order");
       if (branch) order.set("branch", branch);
@@ -33031,10 +33403,14 @@ var require_counter = __commonJS({
           paymentStatus: PENDING
         }
       });
-      if (payLater) order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: total });
+      const spent = p.voucherCode ? await vouchers.spend(order, p.voucherCode, voucherPhone, actor) : null;
+      if (spent && isDelivery && method === "cash") order.set("amountToCollect", due);
+      if (spent && !due) vouchers.paidByVoucher(order);
+      else if (payLater) order.set({ billOpen: true, cashStatus: "UNPAID", amountToCollect: due });
       else if (!isDelivery && method === "cash") await cashIntoTill(order, actor, role);
       order.setACL(readAcl(rider));
       await order.save(null, MASTER);
+      if (spent) await spent.save(order);
       await saveLines(order, lines, rider);
       if (isDelivery || order.get("customerPhone")) {
         const customer = await recordCustomerOrder(order);
@@ -33061,7 +33437,12 @@ var require_counter = __commonJS({
         except: actor
       });
       if (rider) await tellRider(rider, order, config);
-      return { id: order.id, orderCode: order.get("orderCode"), total };
+      return {
+        id: order.id,
+        orderCode: order.get("orderCode"),
+        total: order.get("total"),
+        ...spent && { voucher: spent.used }
+      };
     });
     Parse.Cloud.define("assignOrderRider", async (request) => {
       const { user: actor, role } = await requireRole(request, ["cashier", "admin"]);
@@ -33103,7 +33484,16 @@ var require_counter = __commonJS({
       if (!order.get("billOpen")) throw invalid("This bill is already paid");
       if (order.get("status") === "CANCELLED") throw invalid("This order was cancelled");
       const { values: config } = await loadConfig();
-      if (p.paymentMethod === "cash") await cashIntoTill(order, actor, role);
+      const vouchers = require_vouchers();
+      const spent = p.voucherCode ? await vouchers.spend(
+        order,
+        p.voucherCode,
+        p.voucherPhone || order.get("customerPhone"),
+        actor
+      ) : null;
+      if (spent) order.set("amountToCollect", Number(order.get("total") || 0));
+      if (spent && !order.get("total")) vouchers.paidByVoucher(order);
+      else if (p.paymentMethod === "cash") await cashIntoTill(order, actor, role);
       else if (p.paymentMethod === "mobile_money") {
         const momo = await checkMobileMoney(
           config,
@@ -33135,6 +33525,7 @@ var require_counter = __commonJS({
         });
       } else throw invalid("Choose cash, mobile money or card");
       await order.save(null, MASTER);
+      if (spent) await spent.save(order);
       await require_orders().closeServed(order, actor);
       await audit(
         actor,
@@ -33212,7 +33603,13 @@ var require_counter = __commonJS({
         splits: order.get("splits") || [],
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
-        total: Number(order.get("total") || 0),
+        // The full bill; a voucher paid part of it (vouchers.js).
+        total: Number(order.get("total") || 0) + Number(order.get("voucherAmount") || 0),
+        voucher: order.get("voucherAmount") ? {
+          code: order.get("voucherCode") || "",
+          amount: Number(order.get("voucherAmount")),
+          toPay: Number(order.get("total") || 0)
+        } : null,
         payment: {
           method,
           provider: order.get("paymentProvider") || "",
@@ -33676,7 +34073,12 @@ var require_online = __commonJS({
       const lines = await priceLines(p.items, branch?.id);
       const subtotal = sumBy(lines, (line) => line.lineTotal);
       const total = subtotal + fee;
-      const momo = method === "mobile_money" ? await checkMobileMoney(
+      const vouchers = require_vouchers();
+      if (p.voucherCode && String(customerPhone).replace(/\D/g, "").length < 9)
+        throw invalid("Enter your phone number to use a voucher");
+      const covered = p.voucherCode ? await vouchers.peek(p.voucherCode, customerPhone, total) : 0;
+      const due = total - covered;
+      const momo = method === "mobile_money" && due > 0 ? await checkMobileMoney(
         config,
         p.paymentProvider,
         p.paymentReference,
@@ -33727,8 +34129,12 @@ var require_online = __commonJS({
           paymentStatus: PENDING
         }
       });
+      const spent = p.voucherCode ? await vouchers.spend(order, p.voucherCode, customerPhone, null) : null;
+      if (spent && method === "cash") order.set("amountToCollect", due);
+      if (spent && !due) vouchers.paidByVoucher(order);
       order.setACL(readAcl(null));
       await order.save(null, MASTER);
+      if (spent) await spent.save(order);
       await saveLines(order, lines, null);
       const customer = await recordCustomerOrder(order);
       if (customer) {
@@ -33751,7 +34157,12 @@ var require_online = __commonJS({
         link: "/cashier",
         order
       });
-      return { token: order.get("onlineToken"), orderCode: order.get("orderCode"), total };
+      return {
+        token: order.get("onlineToken"),
+        orderCode: order.get("orderCode"),
+        total: order.get("total"),
+        ...spent && { voucher: spent.used }
+      };
     });
     var stillOpen = (order) => order.get("status") !== "CANCELLED" && (order.get("status") !== "DELIVERED" || order.get("billOpen") === true);
     Parse.Cloud.define("getMyOnlineOrders", async (request) => {
@@ -33815,6 +34226,9 @@ var require_online = __commonJS({
         table: order.get("orderType") === "eat_in" ? order.get("tableLabel") || "" : "",
         billOpen: order.get("billOpen") === true,
         served: !!order.get("servedAt"),
+        voucherAmount: Number(order.get("voucherAmount") || 0),
+        // Cancelled after paying: the customer's voucher(s) for a new order.
+        vouchers: order.get("status") === "CANCELLED" ? (await new Parse.Query("Voucher").equalTo("sourceOrder", order).equalTo("status", "open").find(MASTER)).map((v) => ({ code: v.get("code"), amount: Number(v.get("amount") || 0) })) : [],
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
         deliveryKm: order.get("deliveryKm") ?? null,
@@ -33854,8 +34268,8 @@ var require_online = __commonJS({
         amountToCollect: 0,
         cashStatus: "NOT_APPLICABLE"
       });
-      if (order.get("payRequestStatus") === "pending") order.set("payRequestStatus", "closed");
       await order.save(null, MASTER);
+      await require_vouchers().openForOrder(order);
       await audit(null, "order.cancelled", order, before, {
         status: "CANCELLED",
         by: "customer"
@@ -34805,7 +35219,7 @@ var require_accounts = __commonJS({
     }) {
       const received = sum(
         orders.filter((o) => o.confirmed),
-        (o) => o.total
+        (o) => round(o.total) - round(o.voucher || 0)
       );
       const toSuppliers = sum(supplierPayments, (p) => p.amount);
       const onExpenses = sum(expenses, (e) => e.amount);
@@ -34819,6 +35233,7 @@ var require_accounts = __commonJS({
       );
       const forRefund = sum(refundReceipts, (r) => r.amount);
       const refunded = sum(refundsPaid, (r) => r.amount);
+      const refundCharges = sum(refundsPaid, (r) => r.charges || 0);
       return {
         received,
         forRefund,
@@ -34827,7 +35242,8 @@ var require_accounts = __commonJS({
         riderPay,
         fromTills,
         refunded,
-        net: received + forRefund - toSuppliers - onExpenses - riderPay - fromTills - refunded
+        refundCharges,
+        net: received + forRefund - toSuppliers - onExpenses - riderPay - fromTills - refunded - refundCharges
       };
     }
     function cashFlow({ opening, movements }) {
@@ -34843,7 +35259,8 @@ var require_accounts = __commonJS({
           { key: "expenses", amount: movements.onExpenses },
           { key: "rider_pay", amount: movements.riderPay },
           { key: "till_expenses", amount: movements.fromTills },
-          ...movements.refunded ? [{ key: "refunds", amount: movements.refunded }] : []
+          ...movements.refunded ? [{ key: "refunds", amount: movements.refunded }] : [],
+          ...movements.refundCharges ? [{ key: "refund_charges", amount: movements.refundCharges }] : []
         ],
         net: movements.net,
         closing: opening + movements.net
@@ -34860,7 +35277,7 @@ var require_accounts = __commonJS({
     }) {
       const receivable = sum(
         orders.filter((o) => !o.confirmed),
-        (o) => o.total
+        (o) => round(o.total) - round(o.voucher || 0)
       );
       const owedToSuppliers = sum(purchases, (p) => Math.max(0, round(p.total) - round(p.paid)));
       const riderPayEarned = sum(orders, (o) => o.commission);
@@ -34923,24 +35340,64 @@ var require_accounting = __commonJS({
       query.lessThan("spentAt", end);
       return findAll(query);
     }
-    async function refundRows(end, branch) {
-      const query = inBranch(new Parse.Query("Order"), branch);
-      query.equalTo("status", "CANCELLED");
-      query.equalTo("paymentStatus", "VERIFIED");
-      return (await findAll(query)).map((order) => ({
-        id: order.id,
-        code: order.get("orderCode"),
-        amount: Math.round(Number(order.get("total") || 0)),
-        receivedAt: order.get("paymentCheckedAt") || order.get("cancelledAt") || order.updatedAt,
-        refundedAt: order.get("refundedAt") || null,
-        note: order.get("refundNote") || ""
-      })).filter((row) => row.receivedAt < end);
+    async function voucherRows(end, branch) {
+      const vouchers = require_vouchers();
+      await vouchers.backfill();
+      const query = inBranch(new Parse.Query(vouchers.CLASS), branch);
+      query.include("usedOrder");
+      const rows = await findAll(query);
+      return rows.map((row) => {
+        const used = row.get("usedOrder");
+        const usedEnd = row.get("status") === "used" ? used?.get("status") === "DELIVERED" ? used.get("deliveredAt") : used?.get("status") === "CANCELLED" ? used.get("cancelledAt") || used.updatedAt : null : null;
+        return {
+          id: row.id,
+          code: row.get("code"),
+          kind: row.get("kind") || "payment",
+          status: row.get("status"),
+          amount: Math.round(Number(row.get("amount") || 0)),
+          usedAmount: Math.round(Number(row.get("usedAmount") || 0)),
+          cashIn: Math.round(Number(row.get("cashIn") ?? row.get("amount") ?? 0)),
+          openedAt: row.get("openedAt") || row.createdAt,
+          usedAt: row.get("usedAt") || null,
+          closedAt: row.get("refundedAt") || usedEnd || null,
+          refundedAt: row.get("refundedAt") || null,
+          sent: Math.round(Number(row.get("refundSent") || 0)),
+          charges: Math.round(Number(row.get("refundCharges") || 0)),
+          note: row.get("refundNote") || "",
+          orderId: row.get("sourceOrder")?.id || used?.id || "",
+          orderCode: row.get("sourceCode") || row.get("usedCode") || "",
+          usedCode: row.get("usedCode") || "",
+          phone: row.get("phone") || ""
+        };
+      }).filter((row) => row.openedAt < end);
     }
-    var refundedBy = (row, end) => !!row.refundedAt && row.refundedAt < end;
-    var refundView = (row) => ({
-      ...row,
-      receivedAt: row.receivedAt.toISOString(),
-      refundedAt: row.refundedAt ? row.refundedAt.toISOString() : null
+    function owedAt(row, end) {
+      if (row.closedAt && row.closedAt < end) return 0;
+      if (row.usedAt && row.usedAt < end) return row.usedAmount;
+      return row.amount;
+    }
+    var refundView = (row, end) => ({
+      id: row.id,
+      code: row.code,
+      kind: row.kind,
+      amount: row.amount,
+      owed: owedAt(row, end),
+      status: row.refundedAt && row.refundedAt < end ? "refunded" : row.status,
+      orderId: row.orderId,
+      orderCode: row.orderCode,
+      usedCode: row.usedCode,
+      phone: row.phone,
+      receivedAt: row.openedAt.toISOString(),
+      refundedAt: row.refundedAt && row.refundedAt < end ? row.refundedAt.toISOString() : null,
+      usedAt: row.usedAt && row.usedAt < end ? row.usedAt.toISOString() : null,
+      sent: row.sent,
+      charges: row.charges,
+      note: row.note
+    });
+    var inWindow = (date, start, end) => !!date && date < end && (!start || date >= start);
+    var voucherCash = (rows, start, end) => ({
+      refundReceipts: rows.filter((r) => r.cashIn > 0 && inWindow(r.openedAt, start, end)).map((r) => ({ amount: r.cashIn })),
+      refundsPaid: rows.filter((r) => inWindow(r.refundedAt, start, end)).map((r) => ({ amount: r.sent, charges: r.charges }))
     });
     async function payoutsIn(start, end, branch) {
       const query = inBranch(new Parse.Query("TillPayout"), branch);
@@ -34988,15 +35445,14 @@ var require_accounting = __commonJS({
         spentIn("Purchase", null, end, branch),
         spentIn("Expense", null, end, branch),
         payoutsIn(null, end, branch),
-        refundRows(end, branch)
+        voucherRows(end, branch)
       ]);
       const movements = A.cashMovements({
         orders,
         supplierPayments: supplierPayments(purchases, null, toDay),
         expenses: expenseFacts(expenses),
         payouts,
-        refundReceipts: refunds,
-        refundsPaid: refunds.filter((row) => refundedBy(row, end))
+        ...voucherCash(refunds, null, end)
       });
       return {
         cash: openingOf(config, branch) + movements.net,
@@ -35048,8 +35504,10 @@ var require_accounting = __commonJS({
         total: Number(row.get("total") || 0),
         paid: (row.get("payments") || []).filter((payment) => payment.day <= day).reduce((n, payment) => n + Number(payment.amount || 0), 0)
       }));
-      const owed = at.refunds.filter((row) => !refundedBy(row, at.end));
-      const cleared = at.refunds.filter((row) => refundedBy(row, at.end) && at.end - row.refundedAt < 90 * 864e5).sort((a, b) => b.refundedAt - a.refundedAt);
+      const owed = at.refunds.filter((row) => owedAt(row, at.end) > 0);
+      const cleared = at.refunds.filter(
+        (row) => owedAt(row, at.end) === 0 && (row.closedAt || row.usedAt) && at.end - (row.closedAt || row.usedAt) < 90 * 864e5
+      ).sort((a, b) => (b.closedAt || b.usedAt) - (a.closedAt || a.usedAt));
       return {
         day,
         openingBalance: openingOf(config, branch),
@@ -35061,9 +35519,12 @@ var require_accounting = __commonJS({
           purchases,
           payouts: at.payouts,
           profit,
-          refundsOwed: owed.reduce((n, row) => n + row.amount, 0)
+          refundsOwed: owed.reduce((n, row) => n + owedAt(row, at.end), 0)
         }),
-        refunds: { owed: owed.map(refundView), cleared: cleared.map(refundView) }
+        refunds: {
+          owed: owed.map((row) => refundView(row, at.end)),
+          cleared: cleared.map((row) => refundView(row, at.end))
+        }
       };
     });
     Parse.Cloud.define("getCashFlow", async (request) => {
@@ -35077,17 +35538,14 @@ var require_accounting = __commonJS({
         spentIn("Purchase", null, range.end, branch),
         spentIn("Expense", range.start, range.end, branch),
         payoutsIn(range.start, range.end, branch),
-        refundRows(range.end, branch)
+        voucherRows(range.end, branch)
       ]);
       const movements = A.cashMovements({
         orders,
         supplierPayments: supplierPayments(purchases, range.from, range.to),
         expenses: expenseFacts(expenses),
         payouts,
-        refundReceipts: refunds.filter((row) => row.receivedAt >= range.start),
-        refundsPaid: refunds.filter(
-          (row) => refundedBy(row, range.end) && row.refundedAt >= range.start
-        )
+        ...voucherCash(refunds, range.start, range.end)
       });
       return {
         range: { from: range.from, to: range.to },
@@ -36911,11 +37369,13 @@ var require_overrides = __commonJS({
       handoverQuery.equalTo("orders", order);
       handoverQuery.include("cashier");
       handoverQuery.descending("createdAt");
-      const [items, history, handovers] = await Promise.all([
+      const [items, history, handovers, vouchers] = await Promise.all([
         itemQuery.find(MASTER),
         orderAudit(order),
-        handoverQuery.find(MASTER)
+        handoverQuery.find(MASTER),
+        vouchersOf(order)
       ]);
+      const { values: voucherConfig } = await loadConfig();
       const rider = order.get("createdBy");
       const status = order.get("status");
       const at = (key) => order.get(key) || null;
@@ -36967,7 +37427,11 @@ var require_overrides = __commonJS({
           requestPhone: order.get("payRequestPhone") || "",
           requestError: order.get("payRequestError") || "",
           // Money owed back (paid for a cancelled order), and its refund.
-          refundDue: refundOwed(order),
+          refundDue: refundOwed(vouchers),
+          // The vouchers it left (cancelled), and one it was paid with.
+          vouchers: vouchers.map((row) => require_vouchers().view(row, voucherConfig)),
+          voucherAmount: Number(order.get("voucherAmount") || 0),
+          voucherCode: order.get("voucherCode") || "",
           refundedAt: order.get("refundedAt") || null,
           refundNote: order.get("refundNote") || ""
         },
@@ -36997,13 +37461,18 @@ var require_overrides = __commonJS({
         })),
         history,
         // What the owner may do now (see adminOverrideOrder).
-        can: role === "admin" ? overrideOptions(order) : {},
+        can: role === "admin" ? overrideOptions(order, vouchers) : {},
         // Tax (EFRIS): the sale's fiscal receipt, if EFRIS is on.
         efris: await require_efris().receiptView(order, (await loadConfig()).values)
       };
     });
-    var refundOwed = (order) => order.get("status") === "CANCELLED" && order.get("paymentStatus") === "VERIFIED" && !order.get("refundedAt");
-    function overrideOptions(order) {
+    async function vouchersOf(order) {
+      const vouchers = require_vouchers();
+      await vouchers.openForOrder(order);
+      return new Parse.Query(vouchers.CLASS).equalTo("sourceOrder", order).find(MASTER);
+    }
+    var refundOwed = (rows) => rows.some((row) => row.get("status") === "open");
+    function overrideOptions(order, vouchers = []) {
       const status = order.get("status");
       const method = order.get("paymentMethod");
       const delivered = status === "DELIVERED";
@@ -37019,7 +37488,7 @@ var require_overrides = __commonJS({
         paymentToMobileMoney: delivered && cashWithRider,
         paymentToCash: delivered && momoUnverified,
         // Paid after (or before) it was cancelled: refunded to the customer.
-        refunded: refundOwed(order)
+        refunded: refundOwed(vouchers)
       };
     }
     Parse.Cloud.define("adminOverrideOrder", async (request) => {
@@ -37031,7 +37500,7 @@ var require_overrides = __commonJS({
       const id = idOf(p.id);
       if (!id) throw invalid("Unknown order");
       const order = await new Parse.Query("Order").get(id, MASTER);
-      const can = overrideOptions(order);
+      const can = overrideOptions(order, await vouchersOf(order));
       const before = snapshot(order);
       const { values: config } = await loadConfig();
       const code = order.get("orderCode");
@@ -37056,6 +37525,15 @@ var require_overrides = __commonJS({
       }
       if (p.action === "refunded") {
         if (!can.refunded) throw invalid("No refund is due on this order");
+        const vouchers = require_vouchers();
+        await vouchers.openForOrder(order);
+        const open = await new Parse.Query(vouchers.CLASS).equalTo("sourceOrder", order).equalTo("status", "open").find(MASTER);
+        if (!open.length) throw invalid("No refund is due on this order");
+        for (const row of open)
+          await vouchers.refund(row, actor, {
+            note: reason,
+            ...open.length === 1 && { charges: p.charges }
+          });
         order.set({ refundDue: false, refundedAt: now, refundedBy: actor, refundNote: reason });
       }
       if (p.action === "payment") {
@@ -37186,6 +37664,7 @@ var require_overrides = __commonJS({
         ]);
       }
       await order.save(null, MASTER);
+      if (p.action === "cancel") await require_vouchers().openForOrder(order);
       const after = { ...snapshot(order), reason };
       if (p.method) after.method = p.method;
       await audit(actor, `order.override_${p.action}`, order, before, after);
@@ -37339,6 +37818,7 @@ require_serverAddress();
 require_orders();
 require_counter();
 require_menu();
+require_vouchers();
 require_tables();
 require_online();
 require_cash();

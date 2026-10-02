@@ -55,6 +55,18 @@ type OrderPage = {
     refundDue?: boolean;
     refundedAt?: string | null;
     refundNote?: string;
+    // Vouchers it left (cancelled after paying), and one it was paid with.
+    vouchers?: {
+      id: string;
+      code: string;
+      amount: number;
+      status: 'open' | 'used' | 'refunded';
+      charges: number;
+      toSend: number;
+      usedOn: { id: string; code: string } | null;
+    }[];
+    voucherAmount?: number;
+    voucherCode?: string;
   };
   riderPay: {
     total: number;
@@ -125,7 +137,7 @@ const ACTIONS: { id: Action; label: string; help: string; danger?: boolean }[] =
   {
     id: 'refunded',
     label: 'Mark refunded',
-    help: 'The customer paid for a cancelled order. Once you have sent the money back, say how (e.g. MTN MoMo to 0772…, ID 123…).',
+    help: 'The customer paid for a cancelled order and wants the money back rather than a voucher. Send it less the refund charges (Accounting → Refunds & vouchers), then say how (e.g. MTN MoMo to 0772…, ID 123…).',
   },
   {
     id: 'cancel',
@@ -408,15 +420,28 @@ export function AdminOrder({ id, onChanged }: { id: string; onChanged: () => voi
               <dt>Status</dt>
               <dd>{paymentState}</dd>
             </div>
-            {p.refundDue && (
+            {!!p.voucherAmount && (
               <div>
-                <dt>Refund</dt>
-                <dd className="refund-due">
-                  Due: {money(o.total)} was paid for this cancelled order. Send it back, then use
-                  Mark refunded below.
+                <dt>Voucher</dt>
+                <dd>
+                  {money(p.voucherAmount)} paid with the customer&apos;s voucher{' '}
+                  <span className="code">{p.voucherCode}</span>
                 </dd>
               </div>
             )}
+            {(p.vouchers || []).map((v) => (
+              <div key={v.id}>
+                <dt>Customer&apos;s voucher</dt>
+                <dd className={v.status === 'open' ? 'refund-due' : ''}>
+                  <span className="code">{v.code}</span> · {money(v.amount)} ·{' '}
+                  {v.status === 'open'
+                    ? `owed: they can spend it on a new order, or you refund ${money(v.toSend)} (after ${money(v.charges)} charges)`
+                    : v.status === 'used'
+                      ? `spent${v.usedOn ? ` on ${v.usedOn.code}` : ''}`
+                      : `refunded: ${money(v.toSend)} sent, ${money(v.charges)} charges`}
+                </dd>
+              </div>
+            ))}
             {p.refundedAt && (
               <div>
                 <dt>Refund</dt>

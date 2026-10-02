@@ -16,6 +16,7 @@ import {
   useFilters,
 } from './reports/common';
 import { EXPENSE_CATEGORY_NAMES, PURCHASE_CATEGORY_NAMES } from './AdminSpending';
+import { AdminVouchers } from './AdminVouchers';
 
 // Owner and finance: profit and loss, balance sheet and cash flow
 // (cloud/accounting.js, rules in cloud/lib/accounts.js), and the EFRIS
@@ -41,6 +42,7 @@ const TABS = [
   ['pl', 'Profit & loss'],
   ['balance', 'Balance sheet'],
   ['cash', 'Cash flow'],
+  ['vouchers', 'Refunds & vouchers'],
   ['tax', 'Tax receipts'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
@@ -65,6 +67,7 @@ export function AdminAccounting() {
       {tab === 'pl' && <ProfitAndLoss />}
       {tab === 'balance' && <BalanceSheet />}
       {tab === 'cash' && <CashFlow />}
+      {tab === 'vouchers' && <AdminVouchers />}
       {tab === 'tax' && <TaxReceipts />}
     </div>
   );
@@ -374,16 +377,17 @@ function BalanceSheet() {
         <article className="admin-panel statement">
           <h3>Refunds to customers</h3>
           <p className="muted small">
-            Money paid for orders that were then cancelled. It counts as owed until it is sent back
-            and marked refunded on the order; then it shows here as cleared.
+            Money paid for orders that were then cancelled, kept as the customer&apos;s vouchers.
+            Owed until refunded (less the charges for sending it) or spent on an order that was
+            delivered; then cleared. Manage them under Refunds &amp; vouchers.
           </p>
           <div className="table-scroll">
             <table className="data stack-on-phone">
               <thead>
                 <tr>
-                  <th>Order</th>
+                  <th>Voucher</th>
                   <th>Paid</th>
-                  <th className="num">Amount</th>
+                  <th className="num">Owed</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -391,26 +395,40 @@ function BalanceSheet() {
                 {[...data.refunds.owed, ...data.refunds.cleared].map((r) => (
                   <tr
                     key={r.id}
-                    className="clickable"
-                    tabIndex={0}
-                    onClick={() => navigate(`/admin/orders/${r.id}`)}
-                    onKeyDown={(e) => e.key === 'Enter' && navigate(`/admin/orders/${r.id}`)}
+                    className={r.orderId ? 'clickable' : ''}
+                    tabIndex={r.orderId ? 0 : undefined}
+                    onClick={() => r.orderId && navigate(`/admin/orders/${r.orderId}`)}
+                    onKeyDown={(e) =>
+                      e.key === 'Enter' && r.orderId && navigate(`/admin/orders/${r.orderId}`)
+                    }
                   >
-                    <td data-label="Order">
+                    <td data-label="Voucher">
                       <span className="code">{r.code}</span>
+                      {r.orderCode && <small className="block muted">{r.orderCode}</small>}
                     </td>
                     <td data-label="Paid">{formatDate(r.receivedAt, timezone)}</td>
-                    <td data-label="Amount" className="num">
-                      {money(r.amount)}
+                    <td data-label="Owed" className="num">
+                      {money(r.owed)}
                     </td>
                     <td data-label="Status">
                       {r.refundedAt ? (
                         <>
-                          <span className="status-pill good">Cleared</span>{' '}
+                          <span className="status-pill good">Cleared: refunded</span>{' '}
                           <small className="muted">
+                            {money(r.sent)} sent, {money(r.charges)} charges ·{' '}
                             {formatDate(r.refundedAt, timezone)}
                             {r.note ? ` · ${r.note}` : ''}
                           </small>
+                        </>
+                      ) : r.owed === 0 ? (
+                        <>
+                          <span className="status-pill good">Cleared: spent</span>{' '}
+                          <small className="muted">on {r.usedCode}</small>
+                        </>
+                      ) : r.usedAt ? (
+                        <>
+                          <span className="status-pill bad">Owed</span>{' '}
+                          <small className="muted">spent on {r.usedCode}, not yet served</small>
                         </>
                       ) : (
                         <span className="status-pill bad">Owed</span>
@@ -431,8 +449,15 @@ type RefundRow = {
   id: string;
   code: string;
   amount: number;
+  owed: number;
+  orderId: string;
+  orderCode: string;
+  usedCode: string;
   receivedAt: string;
+  usedAt: string | null;
   refundedAt: string | null;
+  sent: number;
+  charges: number;
   note: string;
 };
 
@@ -440,6 +465,7 @@ const FLOW_NAMES: Record<string, string> = {
   sales: 'Received for sales',
   refund_receipts: 'Received for cancelled orders (owed back)',
   refunds: 'Refunds sent to customers',
+  refund_charges: 'Charges for sending refunds',
   suppliers: 'Paid to suppliers',
   expenses: 'Expenses paid',
   rider_pay: 'Rider pay paid out',

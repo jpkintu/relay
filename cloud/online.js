@@ -287,8 +287,15 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
   const lines = await priceLines(p.items, branch?.id);
   const subtotal = sumBy(lines, (line) => line.lineTotal);
   const total = subtotal + fee;
+  // The customer's voucher (vouchers.js), for their own number: it pays as
+  // much of the bill as it can.
+  const vouchers = require('./vouchers');
+  if (p.voucherCode && String(customerPhone).replace(/\D/g, '').length < 9)
+    throw invalid('Enter your phone number to use a voucher');
+  const covered = p.voucherCode ? await vouchers.peek(p.voucherCode, customerPhone, total) : 0;
+  const due = total - covered;
   const momo =
-    method === 'mobile_money'
+    method === 'mobile_money' && due > 0
       ? await checkMobileMoney(
           config,
           p.paymentProvider,
@@ -342,8 +349,14 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
       paymentStatus: PENDING,
     }),
   });
+  const spent = p.voucherCode
+    ? await vouchers.spend(order, p.voucherCode, customerPhone, null)
+    : null;
+  if (spent && method === 'cash') order.set('amountToCollect', due);
+  if (spent && !due) vouchers.paidByVoucher(order);
   order.setACL(readAcl(null));
   await order.save(null, MASTER);
+  if (spent) await spent.save(order);
   await saveLines(order, lines, null);
   const customer = await recordCustomerOrder(order);
   if (customer) {
@@ -368,7 +381,12 @@ Parse.Cloud.define('placeOnlineOrder', async (request) => {
     link: '/cashier',
     order,
   });
-  return { token: order.get('onlineToken'), orderCode: order.get('orderCode'), total };
+  return {
+    token: order.get('onlineToken'),
+    orderCode: order.get('orderCode'),
+    total: order.get('total'),
+    ...(spent && { voucher: spent.used }),
+  };
 });
 
 // Still going: not cancelled, and not finished unless its bill is open.
@@ -468,6 +486,17 @@ Parse.Cloud.define('getOnlineOrder', async (request) => {
     table: order.get('orderType') === 'eat_in' ? order.get('tableLabel') || '' : '',
     billOpen: order.get('billOpen') === true,
     served: !!order.get('servedAt'),
+    voucherAmount: Number(order.get('voucherAmount') || 0),
+    // Cancelled after paying: the customer's voucher(s) for a new order.
+    vouchers:
+      order.get('status') === 'CANCELLED'
+        ? (
+            await new Parse.Query('Voucher')
+              .equalTo('sourceOrder', order)
+              .equalTo('status', 'open')
+              .find(MASTER)
+          ).map((v) => ({ code: v.get('code'), amount: Number(v.get('amount') || 0) }))
+        : [],
     subtotal: Number(order.get('subtotal') || 0),
     deliveryFee: Number(order.get('deliveryFee') || 0),
     deliveryKm: order.get('deliveryKm') ?? null,
@@ -510,8 +539,10 @@ Parse.Cloud.define('cancelOnlineOrder', async (request) => {
     amountToCollect: 0,
     cashStatus: 'NOT_APPLICABLE',
   });
-  if (order.get('payRequestStatus') === 'pending') order.set('payRequestStatus', 'closed');
+  // A payment request still on the phone stays watched: money that arrives
+  // after this becomes the customer's voucher (vouchers.js).
   await order.save(null, MASTER);
+  await require('./vouchers').openForOrder(order);
   await audit(null, 'order.cancelled', order, before, {
     status: 'CANCELLED',
     by: 'customer',

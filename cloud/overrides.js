@@ -91,11 +91,13 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
   handoverQuery.equalTo('orders', order);
   handoverQuery.include('cashier');
   handoverQuery.descending('createdAt');
-  const [items, history, handovers] = await Promise.all([
+  const [items, history, handovers, vouchers] = await Promise.all([
     itemQuery.find(MASTER),
     orderAudit(order),
     handoverQuery.find(MASTER),
+    vouchersOf(order),
   ]);
+  const { values: voucherConfig } = await loadConfig();
   const rider = order.get('createdBy');
   const status = order.get('status');
   const at = (key) => order.get(key) || null;
@@ -149,7 +151,11 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
       requestPhone: order.get('payRequestPhone') || '',
       requestError: order.get('payRequestError') || '',
       // Money owed back (paid for a cancelled order), and its refund.
-      refundDue: refundOwed(order),
+      refundDue: refundOwed(vouchers),
+      // The vouchers it left (cancelled), and one it was paid with.
+      vouchers: vouchers.map((row) => require('./vouchers').view(row, voucherConfig)),
+      voucherAmount: Number(order.get('voucherAmount') || 0),
+      voucherCode: order.get('voucherCode') || '',
       refundedAt: order.get('refundedAt') || null,
       refundNote: order.get('refundNote') || '',
     },
@@ -182,7 +188,7 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
     })),
     history,
     // What the owner may do now (see adminOverrideOrder).
-    can: role === 'admin' ? overrideOptions(order) : {},
+    can: role === 'admin' ? overrideOptions(order, vouchers) : {},
     // Tax (EFRIS): the sale's fiscal receipt, if EFRIS is on.
     efris: await require('./efris').receiptView(order, (await loadConfig()).values),
   };
@@ -190,12 +196,16 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
 
 // Money paid for a cancelled order (confirmed before or after the cancel)
 // not yet sent back. The balance sheet counts the same orders (accounting.js).
-const refundOwed = (order) =>
-  order.get('status') === 'CANCELLED' &&
-  order.get('paymentStatus') === 'VERIFIED' &&
-  !order.get('refundedAt');
+// What a cancelled order left as vouchers (vouchers.js), made now for one
+// paid before vouchers existed.
+async function vouchersOf(order) {
+  const vouchers = require('./vouchers');
+  await vouchers.openForOrder(order);
+  return new Parse.Query(vouchers.CLASS).equalTo('sourceOrder', order).find(MASTER);
+}
+const refundOwed = (rows) => rows.some((row) => row.get('status') === 'open');
 
-function overrideOptions(order) {
+function overrideOptions(order, vouchers = []) {
   const status = order.get('status');
   const method = order.get('paymentMethod');
   const delivered = status === 'DELIVERED';
@@ -213,7 +223,7 @@ function overrideOptions(order) {
     paymentToMobileMoney: delivered && cashWithRider,
     paymentToCash: delivered && momoUnverified,
     // Paid after (or before) it was cancelled: refunded to the customer.
-    refunded: refundOwed(order),
+    refunded: refundOwed(vouchers),
   };
 }
 
@@ -237,7 +247,7 @@ Parse.Cloud.define('adminOverrideOrder', async (request) => {
   const id = idOf(p.id);
   if (!id) throw invalid('Unknown order');
   const order = await new Parse.Query('Order').get(id, MASTER);
-  const can = overrideOptions(order);
+  const can = overrideOptions(order, await vouchersOf(order));
   const before = snapshot(order);
   const { values: config } = await loadConfig();
   const code = order.get('orderCode');
@@ -264,6 +274,19 @@ Parse.Cloud.define('adminOverrideOrder', async (request) => {
 
   if (p.action === 'refunded') {
     if (!can.refunded) throw invalid('No refund is due on this order');
+    // Each of its open vouchers, sent back less the charges.
+    const vouchers = require('./vouchers');
+    await vouchers.openForOrder(order);
+    const open = await new Parse.Query(vouchers.CLASS)
+      .equalTo('sourceOrder', order)
+      .equalTo('status', 'open')
+      .find(MASTER);
+    if (!open.length) throw invalid('No refund is due on this order');
+    for (const row of open)
+      await vouchers.refund(row, actor, {
+        note: reason,
+        ...(open.length === 1 && { charges: p.charges }),
+      });
     order.set({ refundDue: false, refundedAt: now, refundedBy: actor, refundNote: reason });
   }
 
@@ -407,6 +430,7 @@ Parse.Cloud.define('adminOverrideOrder', async (request) => {
   }
 
   await order.save(null, MASTER);
+  if (p.action === 'cancel') await require('./vouchers').openForOrder(order);
   const after = { ...snapshot(order), reason };
   if (p.method) after.method = p.method;
   await audit(actor, `order.override_${p.action}`, order, before, after);

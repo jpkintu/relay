@@ -33,29 +33,88 @@ async function spentIn(className, start, end, branch) {
   return findAll(query);
 }
 
-// Money paid for cancelled orders (mobile money / card confirmed, or arriving
-// after the cancel): owed back to the customer until refunded. Each with when
-// it came in and when it was sent back (null: still owed).
-async function refundRows(end, branch) {
-  const query = inBranch(new Parse.Query('Order'), branch);
-  query.equalTo('status', 'CANCELLED');
-  query.equalTo('paymentStatus', 'VERIFIED');
-  return (await findAll(query))
-    .map((order) => ({
-      id: order.id,
-      code: order.get('orderCode'),
-      amount: Math.round(Number(order.get('total') || 0)),
-      receivedAt: order.get('paymentCheckedAt') || order.get('cancelledAt') || order.updatedAt,
-      refundedAt: order.get('refundedAt') || null,
-      note: order.get('refundNote') || '',
-    }))
-    .filter((row) => row.receivedAt < end);
+// Vouchers (vouchers.js): money paid for cancelled orders, owed to the
+// customer until spent on a new order or refunded. Each with:
+// - cashIn: money that came in with it (none for what is left of a spent
+//   voucher, or a voucher given back from a cancelled order);
+// - when it stops being owed: refunded, or the order it paid was delivered
+//   (until then it is the customer's money paid in advance); a voucher spent
+//   on an order that was then cancelled is given back as a new one.
+async function voucherRows(end, branch) {
+  const vouchers = require('./vouchers');
+  await vouchers.backfill();
+  const query = inBranch(new Parse.Query(vouchers.CLASS), branch);
+  query.include('usedOrder');
+  const rows = await findAll(query);
+  return rows
+    .map((row) => {
+      const used = row.get('usedOrder');
+      const usedEnd =
+        row.get('status') === 'used'
+          ? used?.get('status') === 'DELIVERED'
+            ? used.get('deliveredAt')
+            : used?.get('status') === 'CANCELLED'
+              ? used.get('cancelledAt') || used.updatedAt
+              : null
+          : null;
+      return {
+        id: row.id,
+        code: row.get('code'),
+        kind: row.get('kind') || 'payment',
+        status: row.get('status'),
+        amount: Math.round(Number(row.get('amount') || 0)),
+        usedAmount: Math.round(Number(row.get('usedAmount') || 0)),
+        cashIn: Math.round(Number(row.get('cashIn') ?? row.get('amount') ?? 0)),
+        openedAt: row.get('openedAt') || row.createdAt,
+        usedAt: row.get('usedAt') || null,
+        closedAt: row.get('refundedAt') || usedEnd || null,
+        refundedAt: row.get('refundedAt') || null,
+        sent: Math.round(Number(row.get('refundSent') || 0)),
+        charges: Math.round(Number(row.get('refundCharges') || 0)),
+        note: row.get('refundNote') || '',
+        orderId: row.get('sourceOrder')?.id || used?.id || '',
+        orderCode: row.get('sourceCode') || row.get('usedCode') || '',
+        usedCode: row.get('usedCode') || '',
+        phone: row.get('phone') || '',
+      };
+    })
+    .filter((row) => row.openedAt < end);
 }
-const refundedBy = (row, end) => !!row.refundedAt && row.refundedAt < end;
-const refundView = (row) => ({
-  ...row,
-  receivedAt: row.receivedAt.toISOString(),
-  refundedAt: row.refundedAt ? row.refundedAt.toISOString() : null,
+// What a voucher owed the customer at `end`: all of it until spent; once
+// spent, what it paid until that order is delivered (the rest is a new
+// voucher); nothing once refunded or delivered.
+function owedAt(row, end) {
+  if (row.closedAt && row.closedAt < end) return 0;
+  if (row.usedAt && row.usedAt < end) return row.usedAmount;
+  return row.amount;
+}
+const refundView = (row, end) => ({
+  id: row.id,
+  code: row.code,
+  kind: row.kind,
+  amount: row.amount,
+  owed: owedAt(row, end),
+  status: row.refundedAt && row.refundedAt < end ? 'refunded' : row.status,
+  orderId: row.orderId,
+  orderCode: row.orderCode,
+  usedCode: row.usedCode,
+  phone: row.phone,
+  receivedAt: row.openedAt.toISOString(),
+  refundedAt: row.refundedAt && row.refundedAt < end ? row.refundedAt.toISOString() : null,
+  usedAt: row.usedAt && row.usedAt < end ? row.usedAt.toISOString() : null,
+  sent: row.sent,
+  charges: row.charges,
+  note: row.note,
+});
+const inWindow = (date, start, end) => !!date && date < end && (!start || date >= start);
+// Money in for vouchers, and refunds sent (with the charges for sending).
+const voucherCash = (rows, start, end) => ({
+  refundReceipts: rows
+    .filter((r) => r.cashIn > 0 && inWindow(r.openedAt, start, end))
+    .map((r) => ({ amount: r.cashIn })),
+  refundsPaid: rows
+    .filter((r) => inWindow(r.refundedAt, start, end))
+    .map((r) => ({ amount: r.sent, charges: r.charges })),
 });
 
 async function payoutsIn(start, end, branch) {
@@ -115,15 +174,14 @@ async function cashAt(toDay, config, branch) {
     spentIn('Purchase', null, end, branch),
     spentIn('Expense', null, end, branch),
     payoutsIn(null, end, branch),
-    refundRows(end, branch),
+    voucherRows(end, branch),
   ]);
   const movements = A.cashMovements({
     orders,
     supplierPayments: supplierPayments(purchases, null, toDay),
     expenses: expenseFacts(expenses),
     payouts,
-    refundReceipts: refunds,
-    refundsPaid: refunds.filter((row) => refundedBy(row, end)),
+    ...voucherCash(refunds, null, end),
   });
   return {
     cash: openingOf(config, branch) + movements.net,
@@ -184,12 +242,17 @@ Parse.Cloud.define('getBalanceSheet', async (request) => {
       .filter((payment) => payment.day <= day)
       .reduce((n, payment) => n + Number(payment.amount || 0), 0),
   }));
-  // Refunds still owed at that day (a liability), and those sent back in the
-  // 90 days before it (cleared).
-  const owed = at.refunds.filter((row) => !refundedBy(row, at.end));
+  // Vouchers still owed at that day (a liability), and those cleared
+  // (refunded, or spent on an order delivered) in the 90 days before it.
+  const owed = at.refunds.filter((row) => owedAt(row, at.end) > 0);
   const cleared = at.refunds
-    .filter((row) => refundedBy(row, at.end) && at.end - row.refundedAt < 90 * 86400000)
-    .sort((a, b) => b.refundedAt - a.refundedAt);
+    .filter(
+      (row) =>
+        owedAt(row, at.end) === 0 &&
+        (row.closedAt || row.usedAt) &&
+        at.end - (row.closedAt || row.usedAt) < 90 * 86400000,
+    )
+    .sort((a, b) => (b.closedAt || b.usedAt) - (a.closedAt || a.usedAt));
   return {
     day,
     openingBalance: openingOf(config, branch),
@@ -201,9 +264,12 @@ Parse.Cloud.define('getBalanceSheet', async (request) => {
       purchases,
       payouts: at.payouts,
       profit,
-      refundsOwed: owed.reduce((n, row) => n + row.amount, 0),
+      refundsOwed: owed.reduce((n, row) => n + owedAt(row, at.end), 0),
     }),
-    refunds: { owed: owed.map(refundView), cleared: cleared.map(refundView) },
+    refunds: {
+      owed: owed.map((row) => refundView(row, at.end)),
+      cleared: cleared.map((row) => refundView(row, at.end)),
+    },
   };
 });
 
@@ -219,17 +285,14 @@ Parse.Cloud.define('getCashFlow', async (request) => {
     spentIn('Purchase', null, range.end, branch),
     spentIn('Expense', range.start, range.end, branch),
     payoutsIn(range.start, range.end, branch),
-    refundRows(range.end, branch),
+    voucherRows(range.end, branch),
   ]);
   const movements = A.cashMovements({
     orders,
     supplierPayments: supplierPayments(purchases, range.from, range.to),
     expenses: expenseFacts(expenses),
     payouts,
-    refundReceipts: refunds.filter((row) => row.receivedAt >= range.start),
-    refundsPaid: refunds.filter(
-      (row) => refundedBy(row, range.end) && row.refundedAt >= range.start,
-    ),
+    ...voucherCash(refunds, range.start, range.end),
   });
   return {
     range: { from: range.from, to: range.to },

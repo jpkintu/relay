@@ -519,6 +519,9 @@ Parse.Cloud.define('transitionOrder', async (request) => {
   // leaves the order half-claimed.
   if (staff && !owner) await takeOrder(order, actor, role);
   await order.save(null, MASTER);
+  // Cancelled after payment (or paid with a voucher): what was paid is the
+  // customer's, as a voucher (vouchers.js).
+  if (rule.to === 'CANCELLED') await require('./vouchers').openForOrder(order);
   await audit(actor, `order.${p.action}`, order, before, {
     status: rule.to,
     paymentMethod: order.get('paymentMethod'),

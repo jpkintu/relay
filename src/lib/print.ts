@@ -49,6 +49,9 @@ type Receipt = {
   subtotal: number;
   deliveryFee: number;
   total: number;
+  // Paid in part or whole with a customer's voucher: what it paid, and what
+  // was left to pay.
+  voucher?: { code: string; amount: number; toPay: number } | null;
   payment: {
     method: string;
     provider: string;
@@ -237,6 +240,12 @@ function customerReceipt(r: Receipt, timezone: string, symbol: string, qr = '') 
       <tr><td>Subtotal</td><td class="num">${money(r.subtotal)}</td></tr>
       ${r.deliveryFee ? `<tr><td>Delivery</td><td class="num">${money(r.deliveryFee)}</td></tr>` : ''}
       <tr class="total"><td>TOTAL</td><td class="num">${money(r.total)}</td></tr>
+      ${
+        r.voucher
+          ? `<tr><td>Voucher ${escape(r.voucher.code)}</td><td class="num">-${money(r.voucher.amount)}</td></tr>
+      <tr><td>To pay</td><td class="num">${money(r.voucher.toPay)}</td></tr>`
+          : ''
+      }
     </table>
     <div class="stamp">${payment}</div>
     ${r.staff ? `<div class="muted">Served by ${escape(r.staff)}</div>` : ''}

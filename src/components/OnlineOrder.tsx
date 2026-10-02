@@ -729,6 +729,23 @@ function Checkout({
   const needsPin = byKm && !location;
   const fee = type !== 'delivery' ? 0 : byKm ? (distance?.fee ?? 0) : Number(menu.deliveryFee) || 0;
   const total = subtotal + fee;
+  // The customer's voucher (money from a cancelled order): used whole, it
+  // pays what it can; the rest is paid as usual.
+  const [voucherInput, setVoucherInput] = useState('');
+  const [voucher, setVoucher] = useState<{ code: string; amount: number } | null>(null);
+  const [voucherError, setVoucherError] = useState('');
+  const covered = voucher ? Math.min(voucher.amount, total) : 0;
+  const due = total - covered;
+  const applyVoucher = async () => {
+    setVoucherError('');
+    if (phone.replace(/\D/g, '').length < 9)
+      return setVoucherError('Enter your phone number first: the voucher is tied to it.');
+    try {
+      setVoucher(await Parse.Cloud.run('checkVoucher', { ...params, code: voucherInput, phone }));
+    } catch (e) {
+      setVoucherError(e instanceof Error ? e.message : 'That voucher code is not right');
+    }
+  };
   const account = accounts.find((a) => a.provider === provider);
 
   const locate = () => {
@@ -798,6 +815,7 @@ function Checkout({
         deliveryAddress: address,
         ...(location && { location }),
         notes,
+        ...(voucher && { voucherCode: voucher.code }),
         paymentMethod: method,
         ...(method === 'mobile_money' && {
           paymentProvider: provider,
@@ -966,7 +984,45 @@ function Checkout({
             />
           </label>
 
-          {atTable ? (
+          <div className="om-voucher">
+            {voucher ? (
+              <p>
+                Voucher <b>{voucher.code}</b> pays {money(covered)}
+                {voucher.amount > covered
+                  ? `; the other ${money(voucher.amount - covered)} stays yours as a new voucher`
+                  : ''}
+                .{' '}
+                <button type="button" className="om-findlink" onClick={() => setVoucher(null)}>
+                  Remove
+                </button>
+              </p>
+            ) : (
+              <label className="om-field">
+                Voucher code (optional)
+                <span className="om-voucher-row">
+                  <input
+                    value={voucherInput}
+                    onChange={(e) => setVoucherInput(e.target.value.toUpperCase())}
+                    autoCapitalize="characters"
+                    placeholder="e.g. V7K2Q9XM"
+                  />
+                  <button
+                    type="button"
+                    className="om-secondary"
+                    disabled={!voucherInput.trim()}
+                    onClick={() => void applyVoucher()}
+                  >
+                    Apply
+                  </button>
+                </span>
+              </label>
+            )}
+            {voucherError && <small className="om-error">{voucherError}</small>}
+          </div>
+
+          {!atTable && due === 0 && voucher ? (
+            <p className="om-note">Nothing more to pay: your voucher covers it.</p>
+          ) : atTable ? (
             <p className="om-note">
               Pay when you&apos;re done: ask for the bill. You can order more from this page.
             </p>
@@ -1023,14 +1079,14 @@ function Checkout({
                         />
                       </label>
                       <small className="muted">
-                        You get a request on this phone: approve {money(total)} with your mobile
-                        money PIN.
+                        You get a request on this phone: approve {money(due)} with your mobile money
+                        PIN.
                       </small>
                     </>
                   ) : account ? (
                     <>
                       <p className="om-paycode">
-                        Pay <b>{money(total)}</b> to {account.label} merchant code{' '}
+                        Pay <b>{money(due)}</b> to {account.label} merchant code{' '}
                         <b>{account.code}</b>
                         {account.name ? ` (${account.name})` : ''}, then type the transaction ID
                         from the SMS.
@@ -1074,6 +1130,18 @@ function Checkout({
               <dt>Total</dt>
               <dd>{money(total)}</dd>
             </div>
+            {voucher && (
+              <>
+                <div>
+                  <dt>Voucher {voucher.code}</dt>
+                  <dd>-{money(covered)}</dd>
+                </div>
+                <div className="om-total">
+                  <dt>To pay</dt>
+                  <dd>{money(due)}</dd>
+                </div>
+              </>
+            )}
           </dl>
           {error && <p className="om-error">{error}</p>}
           <button className="om-primary" disabled={busy || !lines.length || !menu.open || needsPin}>
@@ -1082,8 +1150,8 @@ function Checkout({
               : needsPin
                 ? 'Add your location to order'
                 : atTable
-                  ? `Send to the kitchen · ${money(total)}`
-                  : `Place order · ${money(total)}`}
+                  ? `Send to the kitchen · ${money(due)}`
+                  : `Place order · ${money(due)}`}
           </button>
         </form>
       </div>
@@ -1108,6 +1176,8 @@ type Tracked = {
   table: string;
   billOpen: boolean;
   served: boolean;
+  voucherAmount?: number;
+  vouchers?: { code: string; amount: number }[];
   lines: { name: string; quantity: number; sides: string[]; total: number }[];
   restaurant: { name: string; logo: string | null; currencySymbol: string };
 };
@@ -1231,7 +1301,19 @@ function Tracking({
           <p className="om-closed">
             This order was cancelled{order.cancelReason ? `: ${order.cancelReason}` : ''}.
           </p>
-        ) : (
+        ) : null}
+        {cancelled && !!order.vouchers?.length ? (
+          <div className="om-yours">
+            {order.vouchers.map((v) => (
+              <p key={v.code}>
+                What you paid is kept for you: voucher <b>{v.code}</b> worth{' '}
+                <b>{money(v.amount)}</b>. Enter it with your phone number on your next order, or ask
+                the restaurant to refund it (less the charges for sending it).
+              </p>
+            ))}
+          </div>
+        ) : null}
+        {cancelled ? null : (
           <ol className="om-steps">
             {steps.map((label, index) => (
               <li
