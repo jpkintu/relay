@@ -10,6 +10,7 @@ const {
 const { canBootstrapOwner } = require('./admin');
 const { previewEnabled } = require('./preview');
 const { merchantAccounts, cardAccount } = require('./lib/mobileMoney');
+const { pinOf } = require('./lib/geo');
 
 // Settings every signed-in screen needs. Configuration itself is not
 // client-readable; this is the public subset.
@@ -117,6 +118,12 @@ Parse.Cloud.define('getMyProfile', async (request) => {
     branchCount: branches.length,
     // Parts of the app this restaurant has (lib/limits.js).
     features,
-    config: publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
+    config: {
+      ...publicConfig(role === 'rider' ? withRiderLimit(values, user) : values),
+      // Maps open at their branch's pin when it has one.
+      ...(own && pinOf(own.get('lat'), own.get('lng'))
+        ? { mapCenter: pinOf(own.get('lat'), own.get('lng')) }
+        : {}),
+    },
   };
 });

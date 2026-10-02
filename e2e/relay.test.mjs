@@ -6327,6 +6327,55 @@ describe('online orders: the public menu, a QR code away (online.js)', () => {
     }
   });
 
+  test('deliveries are priced per km from the branch pin; staff maps open there', async () => {
+    const { branches } = await run('adminListBranches', {}, s.owner);
+    const main = branches.find((b) => b.main);
+    const edit = (extra) =>
+      run(
+        'adminSaveBranch',
+        { id: main.id, name: main.name, address: main.address, phone: main.phone, ...extra },
+        s.owner,
+      );
+    await rejects(edit({ location: { lat: 200, lng: 0 } }), /not a valid location/);
+    const pin = { lat: 0.3136, lng: 32.5811 };
+    assert.deepEqual((await edit({ location: pin })).location, pin);
+    // The main branch's team: their maps open at its pin.
+    assert.deepEqual((await run('getMyProfile', {}, s.dina)).config.mapCenter, pin);
+
+    await rejects(
+      run('adminSaveOnlineOrdering', { onlineDeliveryPerKm: -5 }, s.owner),
+      /0 or more/,
+    );
+    const saved = await run('adminSaveOnlineOrdering', { onlineDeliveryPerKm: 1000 }, s.owner);
+    assert.equal(saved.onlineDeliveryPerKm, 1000);
+    const menu = await run('getOnlineMenu', { branchId: main.id });
+    assert.equal(menu.deliveryPerKm, 1000);
+    assert.deepEqual(menu.origin, pin);
+    const delivery = order({
+      orderType: 'delivery',
+      deliveryAddress: 'Kololo',
+      customerPhone: '0772 888 111',
+      branchId: main.id,
+    });
+    await rejects(run('placeOnlineOrder', delivery), /Pin your location/);
+    // 0.027° north ≈ 3.0 km: 3,000 at 1,000 a km.
+    const placed = await run('placeOnlineOrder', {
+      ...delivery,
+      location: { lat: 0.3406, lng: 32.5811 },
+    });
+    const row = await byToken(placed.token);
+    assert.equal(row.get('deliveryKm'), 3);
+    assert.equal(row.get('deliveryFee'), 3000);
+    assert.equal(row.get('total'), row.get('subtotal') + 3000);
+    assert.equal(placed.total, row.get('total'));
+    assert.equal((await run('getOnlineOrder', { token: placed.token })).deliveryKm, 3);
+
+    // Back to the flat fee; the pin stays unless removed.
+    await run('adminSaveOnlineOrdering', { onlineDeliveryPerKm: 0 }, s.owner);
+    assert.equal((await run('getOnlineMenu', {})).origin, null);
+    assert.equal((await edit({ location: null })).location, null);
+  });
+
   test('mobile money by merchant code: the cashier checks the transaction ID', async () => {
     const menu = await run('getOnlineMenu', {});
     const account = menu.mobileMoney.find((a) => !a.auto);

@@ -8590,3 +8590,64 @@ tr.split-row td {
   font-weight: 700;
   color: var(--accent-ink, var(--ink));
 }
+.om-yours {
+  margin: 4px 0 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface, #fff));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.om-yours h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.om-yours-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.om-yours-row span:first-child {
+  display: grid;
+}
+.om-yours-row small {
+  color: var(--muted);
+}
+.om-yours-go {
+  color: var(--accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.om-locate {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.om-locate .om-secondary {
+  flex: 1 1 140px;
+}
+.om-located {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #17653a;
+  font-weight: 600;
+}
+.om-located svg {
+  width: 16px;
+  height: 16px;
+}
+.om-totals dt small {
+  color: var(--muted);
+  font-weight: 500;
+}
