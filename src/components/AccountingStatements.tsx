@@ -691,14 +691,15 @@ type RatioKey =
   | 'receivableTurnover';
 
 // Each ratio: what it is made of, and whether it reads as a percentage.
-const RATIOS: {
+type Ratio = {
   key: RatioKey;
   label: string;
   num: [string, (m: RatioMonth) => number];
   den: [string, (m: RatioMonth) => number];
   percent?: boolean;
   help: string;
-}[] = [
+};
+const RATIOS: Ratio[] = [
   {
     key: 'grossProfit',
     label: 'Gross Profit Ratio',
@@ -760,62 +761,108 @@ const RATIOS: {
   },
 ];
 
+const showRatio = (ratio: Ratio, value: number | null) =>
+  value === null ? '—' : ratio.percent ? `${Math.round(value * 100)}%` : value.toFixed(2);
+
+// For comparing, the ratios share a chart only with ratios of the same unit
+// (one axis per chart): percentages of sales, and "times" ratios. The acid
+// test is left off the chart: with no stock counted it is the current ratio
+// and its line would hide under it (the table still has it).
+const COMPARE: { title: string; percent: boolean; keys: RatioKey[] }[] = [
+  {
+    title: 'Profitability (% of net sales)',
+    percent: true,
+    keys: ['grossProfit', 'netProfit', 'operatingCost'],
+  },
+  {
+    title: 'Liquidity, debt and collection (times)',
+    percent: false,
+    keys: ['current', 'debt', 'debtToEquity', 'receivableTurnover'],
+  },
+];
+
+// One line per ratio, month by month. Months with no denominator are gaps.
+// Colours follow the ratio's place in its chart, never its value.
+function ratioChart(rows: RatioMonth[], list: Ratio[], percent: boolean, narrow: boolean) {
+  const x = rows.map((m) => bucketLabel(m.month, 'month', narrow));
+  const data: Data[] = list.map((ratio, i) => ({
+    type: 'scatter',
+    mode: 'lines+markers',
+    name: ratio.label.replace(/ Ratio$/, ''),
+    x,
+    y: rows.map((m) => {
+      const v = m.ratios[ratio.key];
+      return v === null ? null : percent ? Math.round(v * 1000) / 10 : v;
+    }),
+    connectgaps: false,
+    line: { color: SERIES[i], width: 2, shape: 'linear' },
+    marker: { color: SERIES[i], size: 8, line: { color: '#ffffff', width: 2 } },
+    customdata: rows.map((m) => [
+      showRatio(ratio, m.ratios[ratio.key]),
+      bucketLabel(m.month, 'month'),
+    ]),
+    hovertemplate:
+      list.length > 1
+        ? `${ratio.label.replace(/ Ratio$/, '')}: <b>%{customdata[0]}</b><extra></extra>`
+        : '<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>',
+  }));
+  const layout: Partial<Layout> = {
+    hovermode: list.length > 1 ? 'x unified' : 'x',
+    yaxis: percent ? { tickformat: '~r', ticksuffix: '%' } : { tickformat: '.2~f' },
+    // Two or more lines: a legend above the plot. Tapping a name hides or
+    // shows that line (e.g. a turnover far above the others).
+    ...(list.length > 1 && {
+      showlegend: true,
+      legend: { orientation: 'h', x: 0, y: 1.02, yanchor: 'bottom', font: { size: 12 } },
+      margin: { l: 8, r: 12, t: 36, b: 8 },
+    }),
+  };
+  return { data, layout };
+}
+
 export function PerformanceRatios() {
   const money = useMoney();
   const branches = useBranchOptions();
   const [branchId, setBranchId] = useState('');
   const [months, setMonths] = useState(12);
-  const [key, setKey] = useState<RatioKey>('grossProfit');
+  const [key, setKey] = useState<RatioKey | 'all'>('all');
   const { data, error, loading } = useCloud<{ months: RatioMonth[] }>('getPerformanceRatios', {
     months,
     ...(branchId && { branchId }),
   });
-  const ratio = RATIOS.find((r) => r.key === key)!;
-  const show = (value: number | null) =>
-    value === null ? '—' : ratio.percent ? `${Math.round(value * 100)}%` : value.toFixed(2);
-  const rows = data?.months ?? [];
-  const avg = (n: number) => {
+  const ratio = key === 'all' ? null : RATIOS.find((r) => r.key === key)!;
+  const rows = useMemo(() => data?.months ?? [], [data]);
+  const avg = (k: RatioKey, n: number) => {
     const values = rows
       .slice(-n)
-      .map((m) => m.ratios[key])
+      .map((m) => m.ratios[k])
       .filter((x): x is number => x !== null);
     return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
   };
   const last = rows.at(-1);
   const narrow = useDevice() === 'phone';
-  // The ratio month by month: one line, so no legend (the title names it);
-  // the table below is its table view. Months with no denominator are gaps.
-  const chart = useMemo(() => {
-    const values = rows.map((m) => {
-      const v = m.ratios[key];
-      return v === null ? null : ratio.percent ? Math.round(v * 1000) / 10 : v;
-    });
-    const data: Data[] = [
-      {
-        type: 'scatter',
-        mode: 'lines+markers',
-        x: rows.map((m) => bucketLabel(m.month, 'month', narrow)),
-        y: values,
-        connectgaps: false,
-        line: { color: SERIES[0], width: 2, shape: 'linear' },
-        marker: { color: SERIES[0], size: 8, line: { color: '#ffffff', width: 2 } },
-        customdata: rows.map((m) => [show(m.ratios[key]), bucketLabel(m.month, 'month')]),
-        hovertemplate: '<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>',
-      },
-    ];
-    const layout: Partial<Layout> = {
-      hovermode: 'x',
-      yaxis: ratio.percent ? { tickformat: '~r', ticksuffix: '%' } : { tickformat: '.2~f' },
-    };
-    return { data, layout };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, key, narrow]);
+  const charts = useMemo(
+    () =>
+      ratio
+        ? [{ title: '', ...ratioChart(rows, [ratio], !!ratio.percent, narrow) }]
+        : COMPARE.map((group) => ({
+            title: group.title,
+            ...ratioChart(
+              rows,
+              group.keys.map((k) => RATIOS.find((r) => r.key === k)!),
+              group.percent,
+              narrow,
+            ),
+          })),
+    [rows, ratio, narrow],
+  );
   return (
     <div className={loading ? 'busy' : ''}>
       <div className="filter-bar no-print">
         <label>
           <span>Ratio</span>
-          <select value={key} onChange={(e) => setKey(e.target.value as RatioKey)}>
+          <select value={key} onChange={(e) => setKey(e.target.value as RatioKey | 'all')}>
+            <option value="all">All ratios (compare)</option>
             {RATIOS.map((r) => (
               <option key={r.key} value={r.key}>
                 {r.label}
@@ -842,7 +889,51 @@ export function PerformanceRatios() {
         <PrintButton />
       </div>
       {error && <p className="ops-error">{error}</p>}
-      {data && last && (
+      {data && last && !ratio && (
+        <article className="admin-panel statement">
+          <header className="statement-head">
+            <h2>Business Performance Ratios</h2>
+            <p className="muted small">
+              Every ratio month by month. Ratios in % of sales and ratios in times are on separate
+              charts so each keeps its own scale; tap a name in a legend to hide or show its line.
+              Pick one ratio above for its numbers and averages.
+            </p>
+          </header>
+          {charts.map((c) => (
+            <section key={c.title} className="ratio-chart">
+              <h3>{c.title}</h3>
+              <Chart data={c.data} layout={c.layout} label={c.title} busy={loading} height={280} />
+            </section>
+          ))}
+          <div className="fin-scroll">
+            <table className="data ratio-compare">
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  {RATIOS.map((r) => (
+                    <th key={r.key} className="num">
+                      {r.label.replace(/ Ratio$/, '')}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((m) => (
+                  <tr key={m.month}>
+                    <td>{bucketLabel(m.month, 'month')}</td>
+                    {RATIOS.map((r) => (
+                      <td key={r.key} className="num">
+                        {showRatio(r, m.ratios[r.key])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+      )}
+      {data && last && ratio && (
         <article className="admin-panel statement">
           <header className="statement-head">
             <h2>{ratio.label}</h2>
@@ -851,20 +942,20 @@ export function PerformanceRatios() {
           <div className="ratio-tiles">
             <div>
               <small>For {bucketLabel(last.month, 'month')}</small>
-              <b>{show(last.ratios[key])}</b>
+              <b>{showRatio(ratio, last.ratios[ratio.key])}</b>
             </div>
             {[3, 6, 12]
               .filter((n) => n <= rows.length)
               .map((n) => (
                 <div key={n}>
                   <small>Average, last {n} months</small>
-                  <b>{show(avg(n))}</b>
+                  <b>{showRatio(ratio, avg(ratio.key, n))}</b>
                 </div>
               ))}
           </div>
           <Chart
-            data={chart.data}
-            layout={chart.layout}
+            data={charts[0].data}
+            layout={charts[0].layout}
             label={`${ratio.label} by month`}
             busy={loading}
           />
@@ -884,7 +975,7 @@ export function PerformanceRatios() {
                     <td>{bucketLabel(m.month, 'month')}</td>
                     <td className="num">{money(ratio.num[1](m))}</td>
                     <td className="num">{money(ratio.den[1](m))}</td>
-                    <td className="num strong">{show(m.ratios[key])}</td>
+                    <td className="num strong">{showRatio(ratio, m.ratios[ratio.key])}</td>
                   </tr>
                 ))}
               </tbody>
