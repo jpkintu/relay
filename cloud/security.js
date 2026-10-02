@@ -201,6 +201,11 @@ const SCHEMAS = {
     readyAt: D,
     // Eat in: served (maybe before the bill was paid).
     servedAt: D,
+    // Paid for a cancelled order: owed back, and how it was refunded.
+    refundDue: B,
+    refundedAt: D,
+    refundedBy: ['Pointer', '_User'],
+    refundNote: S,
     cancelledReason: S,
     cancelledBy: user,
     cancelledAt: D,

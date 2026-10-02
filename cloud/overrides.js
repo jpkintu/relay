@@ -21,7 +21,7 @@ const { checkMobileMoney, PENDING } = require('./payments');
 const { money, notifyUser, notifyStaff } = require('./notifications');
 
 const OPEN = ['PLACED', 'ACCEPTED', 'PREPARING', 'READY', 'PICKED_UP'];
-const ACTIONS = ['cancel', 'payment', 'deliver', 'reopen', 'move'];
+const ACTIONS = ['refunded', 'cancel', 'payment', 'deliver', 'reopen', 'move'];
 
 const clean = (value, max) =>
   String(value ?? '')
@@ -148,6 +148,10 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
       requestReference: requestReference(order),
       requestPhone: order.get('payRequestPhone') || '',
       requestError: order.get('payRequestError') || '',
+      // Money owed back (paid for a cancelled order), and its refund.
+      refundDue: order.get('refundDue') === true,
+      refundedAt: order.get('refundedAt') || null,
+      refundNote: order.get('refundNote') || '',
     },
     riderPay:
       status === 'DELIVERED'
@@ -201,6 +205,8 @@ function overrideOptions(order) {
     reopen: delivered && !riderPaid && (cashWithRider || momoUnverified),
     paymentToMobileMoney: delivered && cashWithRider,
     paymentToCash: delivered && momoUnverified,
+    // Paid after (or before) it was cancelled: refunded to the customer.
+    refunded: order.get('refundDue') === true,
   };
 }
 
@@ -213,6 +219,8 @@ function overrideOptions(order) {
 //   reopen                         undo a delivery: money not handed over or
 //                                  verified, rider not paid for it
 //   move     { riderId }           an open order to another active rider
+//   refunded                       money paid for a cancelled order was sent back
+//                                  (reason: how)
 Parse.Cloud.define('adminOverrideOrder', async (request) => {
   const actor = await adminOnly(request);
   const p = request.params;
@@ -241,8 +249,15 @@ Parse.Cloud.define('adminOverrideOrder', async (request) => {
       cashStatus: 'NOT_APPLICABLE',
     });
     notices.push([rider, `${code} was cancelled by the owner`, reason, 'alert']);
-    if (order.get('paymentStatus') === 'VERIFIED')
+    if (order.get('paymentStatus') === 'VERIFIED') {
+      order.set('refundDue', true);
       notices.push(['staff', `${code} was cancelled after payment`, 'Refund the customer.']);
+    }
+  }
+
+  if (p.action === 'refunded') {
+    if (!can.refunded) throw invalid('No refund is due on this order');
+    order.set({ refundDue: false, refundedAt: now, refundedBy: actor, refundNote: reason });
   }
 
   if (p.action === 'payment') {

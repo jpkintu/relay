@@ -5829,6 +5829,49 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.equal(detail.payment.requestPhone, '0772 123456');
   });
 
+  test('MTN: approved after the order was cancelled: recorded as a refund due', async () => {
+    const order = await counterOrder({
+      paymentMethod: 'mobile_money',
+      paymentProvider: 'mtn',
+      customerPhone: '0772 123457',
+    });
+    // Cancelled while the request is still on the customer's phone.
+    await run(
+      'transitionOrder',
+      { orderId: order.id, action: 'cancel', reason: 'payment failed' },
+      s.owner,
+    );
+    const state = await settle(order.id);
+    assert.equal(state.paymentStatus, 'VERIFIED');
+    const row = await new Parse.Query('Order').get(order.id, { useMasterKey: true });
+    assert.equal(row.get('status'), 'CANCELLED');
+    assert.equal(row.get('refundDue'), true);
+    assert.equal(row.get('billOpen'), false);
+    const detail = await run('adminGetOrder', { id: order.id }, s.owner);
+    assert.equal(detail.payment.refundDue, true);
+    assert.equal(detail.can.refunded, true);
+    const log = await run('adminGetAuditLog', { group: 'payment' }, s.owner);
+    assert.ok(log.rows.some((r) => r.action === 'payment.after_cancel'));
+    // Sent back: the owner records how.
+    await run(
+      'adminOverrideOrder',
+      { id: order.id, action: 'refunded', reason: 'MTN MoMo back to 0772123457, ID 998877' },
+      s.owner,
+    );
+    const done = await run('adminGetOrder', { id: order.id }, s.owner);
+    assert.equal(done.payment.refundDue, false);
+    assert.ok(done.payment.refundedAt);
+    assert.match(done.payment.refundNote, /998877/);
+    await rejects(
+      run(
+        'adminOverrideOrder',
+        { id: order.id, action: 'refunded', reason: 'again please' },
+        s.owner,
+      ),
+      /No refund is due/,
+    );
+  });
+
   test('MTN: a declined request leaves the payment not received, and the bill open again', async () => {
     const order = await counterOrder({
       orderType: 'eat_in',

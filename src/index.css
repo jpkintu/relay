@@ -9612,3 +9612,7 @@ tr.split-row td {
   gap: 8px;
   margin: 4px 0 12px;
 }
+.refund-due {
+  color: #a11a1a;
+  font-weight: 700;
+}

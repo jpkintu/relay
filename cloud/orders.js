@@ -490,6 +490,8 @@ Parse.Cloud.define('transitionOrder', async (request) => {
       // Cash already in a till goes back to the guest.
       cashStatus: order.get('cashStatus') === 'IN_TILL' ? 'REFUNDED' : 'NOT_APPLICABLE',
       billOpen: false,
+      // Mobile money / card already confirmed: owed back to the customer.
+      ...(order.get('paymentStatus') === 'VERIFIED' && { refundDue: true }),
     });
   }
   if (p.action === 'complete')
