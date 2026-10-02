@@ -149,7 +149,7 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
       requestPhone: order.get('payRequestPhone') || '',
       requestError: order.get('payRequestError') || '',
       // Money owed back (paid for a cancelled order), and its refund.
-      refundDue: order.get('refundDue') === true,
+      refundDue: refundOwed(order),
       refundedAt: order.get('refundedAt') || null,
       refundNote: order.get('refundNote') || '',
     },
@@ -188,6 +188,13 @@ Parse.Cloud.define('adminGetOrder', async (request) => {
   };
 });
 
+// Money paid for a cancelled order (confirmed before or after the cancel)
+// not yet sent back. The balance sheet counts the same orders (accounting.js).
+const refundOwed = (order) =>
+  order.get('status') === 'CANCELLED' &&
+  order.get('paymentStatus') === 'VERIFIED' &&
+  !order.get('refundedAt');
+
 function overrideOptions(order) {
   const status = order.get('status');
   const method = order.get('paymentMethod');
@@ -206,7 +213,7 @@ function overrideOptions(order) {
     paymentToMobileMoney: delivered && cashWithRider,
     paymentToCash: delivered && momoUnverified,
     // Paid after (or before) it was cancelled: refunded to the customer.
-    refunded: order.get('refundDue') === true,
+    refunded: refundOwed(order),
   };
 }
 

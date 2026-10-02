@@ -62,7 +62,16 @@ function profitAndLoss({ orders, purchases, expenses, tillExpenses }) {
 // `confirmed` (money in hand); supplierPayments: { amount }; expenses:
 // { amount }; payouts: till payouts { amount } (rider pay and till
 // expenses).
-function cashMovements({ orders, supplierPayments, expenses, payouts }) {
+// refundReceipts / refundsPaid: money paid for cancelled orders (owed back to
+// the customer) and the refunds sent, { amount }.
+function cashMovements({
+  orders,
+  supplierPayments,
+  expenses,
+  payouts,
+  refundReceipts = [],
+  refundsPaid = [],
+}) {
   const received = sum(
     orders.filter((o) => o.confirmed),
     (o) => o.total,
@@ -77,13 +86,17 @@ function cashMovements({ orders, supplierPayments, expenses, payouts }) {
     payouts.filter((p) => p.kind !== 'rider'),
     (p) => p.amount,
   );
+  const forRefund = sum(refundReceipts, (r) => r.amount);
+  const refunded = sum(refundsPaid, (r) => r.amount);
   return {
     received,
+    forRefund,
     toSuppliers,
     onExpenses,
     riderPay,
     fromTills,
-    net: received - toSuppliers - onExpenses - riderPay - fromTills,
+    refunded,
+    net: received + forRefund - toSuppliers - onExpenses - riderPay - fromTills - refunded,
   };
 }
 
@@ -92,12 +105,17 @@ function cashMovements({ orders, supplierPayments, expenses, payouts }) {
 function cashFlow({ opening, movements }) {
   return {
     opening,
-    inflows: [{ key: 'sales', amount: movements.received }],
+    inflows: [
+      { key: 'sales', amount: movements.received },
+      // Shown only when there were any.
+      ...(movements.forRefund ? [{ key: 'refund_receipts', amount: movements.forRefund }] : []),
+    ],
     outflows: [
       { key: 'suppliers', amount: movements.toSuppliers },
       { key: 'expenses', amount: movements.onExpenses },
       { key: 'rider_pay', amount: movements.riderPay },
       { key: 'till_expenses', amount: movements.fromTills },
+      ...(movements.refunded ? [{ key: 'refunds', amount: movements.refunded }] : []),
     ],
     net: movements.net,
     closing: opening + movements.net,
@@ -109,7 +127,16 @@ function cashFlow({ opening, movements }) {
 // payouts: till payouts { kind, amount, deductions }; profit: net profit to
 // date (profitAndLoss over the same records); openingBalance: the owner's
 // starting cash and bank.
-function balanceSheet({ openingBalance, cash, orders, purchases, payouts, profit }) {
+// refundsOwed: money received for cancelled orders not yet sent back.
+function balanceSheet({
+  openingBalance,
+  cash,
+  orders,
+  purchases,
+  payouts,
+  profit,
+  refundsOwed = 0,
+}) {
   const receivable = sum(
     orders.filter((o) => !o.confirmed),
     (o) => o.total,
@@ -124,11 +151,16 @@ function balanceSheet({ openingBalance, cash, orders, purchases, payouts, profit
   );
   const owedToRiders = Math.max(0, riderPayEarned - riderPaySettled);
   const assets = cash + receivable;
-  const liabilities = owedToSuppliers + owedToRiders;
+  const liabilities = owedToSuppliers + owedToRiders + refundsOwed;
   const equity = assets - liabilities;
   return {
     assets: { cash, receivable, total: assets },
-    liabilities: { suppliers: owedToSuppliers, riders: owedToRiders, total: liabilities },
+    liabilities: {
+      suppliers: owedToSuppliers,
+      riders: owedToRiders,
+      refunds: refundsOwed,
+      total: liabilities,
+    },
     equity: {
       opening: openingBalance,
       profit,

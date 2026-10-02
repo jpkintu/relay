@@ -33,6 +33,31 @@ async function spentIn(className, start, end, branch) {
   return findAll(query);
 }
 
+// Money paid for cancelled orders (mobile money / card confirmed, or arriving
+// after the cancel): owed back to the customer until refunded. Each with when
+// it came in and when it was sent back (null: still owed).
+async function refundRows(end, branch) {
+  const query = inBranch(new Parse.Query('Order'), branch);
+  query.equalTo('status', 'CANCELLED');
+  query.equalTo('paymentStatus', 'VERIFIED');
+  return (await findAll(query))
+    .map((order) => ({
+      id: order.id,
+      code: order.get('orderCode'),
+      amount: Math.round(Number(order.get('total') || 0)),
+      receivedAt: order.get('paymentCheckedAt') || order.get('cancelledAt') || order.updatedAt,
+      refundedAt: order.get('refundedAt') || null,
+      note: order.get('refundNote') || '',
+    }))
+    .filter((row) => row.receivedAt < end);
+}
+const refundedBy = (row, end) => !!row.refundedAt && row.refundedAt < end;
+const refundView = (row) => ({
+  ...row,
+  receivedAt: row.receivedAt.toISOString(),
+  refundedAt: row.refundedAt ? row.refundedAt.toISOString() : null,
+});
+
 async function payoutsIn(start, end, branch) {
   const query = inBranch(new Parse.Query('TillPayout'), branch);
   if (start) query.greaterThanOrEqualTo('paidAt', start);
@@ -85,19 +110,30 @@ const openingOf = (config, branch) => (branch ? 0 : Math.round(Number(config.ope
 // Cash and bank at the end of `toDay` (restaurant time).
 async function cashAt(toDay, config, branch) {
   const end = startOfDay(addDays(toDay, 1), config.timezone);
-  const [orders, purchases, expenses, payouts] = await Promise.all([
+  const [orders, purchases, expenses, payouts, refunds] = await Promise.all([
     deliveredIn(null, end, branch),
     spentIn('Purchase', null, end, branch),
     spentIn('Expense', null, end, branch),
     payoutsIn(null, end, branch),
+    refundRows(end, branch),
   ]);
   const movements = A.cashMovements({
     orders,
     supplierPayments: supplierPayments(purchases, null, toDay),
     expenses: expenseFacts(expenses),
     payouts,
+    refundReceipts: refunds,
+    refundsPaid: refunds.filter((row) => refundedBy(row, end)),
   });
-  return { cash: openingOf(config, branch) + movements.net, orders, purchases, expenses, payouts };
+  return {
+    cash: openingOf(config, branch) + movements.net,
+    orders,
+    purchases,
+    expenses,
+    payouts,
+    refunds,
+    end,
+  };
 }
 
 function rangeOf(params, config) {
@@ -148,6 +184,12 @@ Parse.Cloud.define('getBalanceSheet', async (request) => {
       .filter((payment) => payment.day <= day)
       .reduce((n, payment) => n + Number(payment.amount || 0), 0),
   }));
+  // Refunds still owed at that day (a liability), and those sent back in the
+  // 90 days before it (cleared).
+  const owed = at.refunds.filter((row) => !refundedBy(row, at.end));
+  const cleared = at.refunds
+    .filter((row) => refundedBy(row, at.end) && at.end - row.refundedAt < 90 * 86400000)
+    .sort((a, b) => b.refundedAt - a.refundedAt);
   return {
     day,
     openingBalance: openingOf(config, branch),
@@ -159,7 +201,9 @@ Parse.Cloud.define('getBalanceSheet', async (request) => {
       purchases,
       payouts: at.payouts,
       profit,
+      refundsOwed: owed.reduce((n, row) => n + row.amount, 0),
     }),
+    refunds: { owed: owed.map(refundView), cleared: cleared.map(refundView) },
   };
 });
 
@@ -169,18 +213,23 @@ Parse.Cloud.define('getCashFlow', async (request) => {
   const { values: config } = await loadConfig();
   const range = rangeOf(request.params, config);
   const branch = await branchParam(request.params.branchId);
-  const [opening, orders, purchases, expenses, payouts] = await Promise.all([
+  const [opening, orders, purchases, expenses, payouts, refunds] = await Promise.all([
     cashAt(addDays(range.from, -1), config, branch).then((at) => at.cash),
     deliveredIn(range.start, range.end, branch),
     spentIn('Purchase', null, range.end, branch),
     spentIn('Expense', range.start, range.end, branch),
     payoutsIn(range.start, range.end, branch),
+    refundRows(range.end, branch),
   ]);
   const movements = A.cashMovements({
     orders,
     supplierPayments: supplierPayments(purchases, range.from, range.to),
     expenses: expenseFacts(expenses),
     payouts,
+    refundReceipts: refunds.filter((row) => row.receivedAt >= range.start),
+    refundsPaid: refunds.filter(
+      (row) => refundedBy(row, range.end) && row.refundedAt >= range.start,
+    ),
   });
   return {
     range: { from: range.from, to: range.to },
