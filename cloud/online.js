@@ -390,7 +390,10 @@ const stillOpen = (order) =>
 
 // Anyone: this phone's orders still going, found again after the browser
 // lost their links, and at a table, the orders still open at it. Only
-// orders of the last few hours. { device?, table? }
+// orders of the last few hours. { device?, table?, phone? }
+// (phone: the number ordered with, when nothing else finds them: Safari
+// private tabs forget everything, and iCloud Private Relay changes the
+// network address)
 // (device: the phone's own id, when it still has one: then orders from
 // other phones that look the same on the same network are left out)
 Parse.Cloud.define('getMyOnlineOrders', async (request) => {
@@ -398,6 +401,21 @@ Parse.Cloud.define('getMyOnlineOrders', async (request) => {
   const p = request.params || {};
   const now = Date.now();
   const found = [];
+  if (p.phone !== undefined) {
+    const digits = String(p.phone || '').replace(/\D/g, '');
+    if (digits.length < 9) throw invalid('Enter the phone number you ordered with');
+    if (!allow(`find:${request.ip || ''}`, 6))
+      throw forbidden('Too many searches. Try again in a few minutes');
+    found.push(
+      ...(await new Parse.Query('Order')
+        .containedIn('channel', ['online', 'table'])
+        .endsWith('customerPhone', digits.slice(-9))
+        .greaterThan('createdAt', new Date(now - RECOVER_MS))
+        .descending('createdAt')
+        .limit(10)
+        .find(MASTER)),
+    );
+  }
   const key = deviceKeyOf(request);
   if (key) {
     const device = deviceOf(p.device);

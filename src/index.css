@@ -9581,3 +9581,34 @@ tr.split-row td {
   flex: 1 1 180px;
   margin: 0;
 }
+.om-lochelp {
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff6e5;
+  border: 1px solid #f3c56b;
+  color: #5b3d00;
+  font-size: 14px;
+}
+.om-lochelp ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.om-lochelp li + li {
+  margin-top: 4px;
+}
+.om-findlink {
+  border: 0;
+  background: none;
+  padding: 4px 0;
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.om-find {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 12px;
+}

@@ -8896,6 +8896,21 @@ describe('online orders: the public menu, a QR code away (online.js)', () => {
     assert.equal(row.get('amountToCollect'), 0);
   });
 
+  test('a customer finds their order again with the number they ordered with', async () => {
+    await rejects(pub('getMyOnlineOrders', { phone: '12' }), /number you ordered with/);
+    const placed = await pub(
+      'placeOnlineOrder',
+      order({ customerPhone: '+256 772 909 808', device: 'd-first-phone' }),
+    );
+    const tokens = async (phone) =>
+      (await pub('getMyOnlineOrders', { phone, device: 'd-other-phone' })).orders.map(
+        (o) => o.token,
+      );
+    // Another browser (Safari private tab): written another way, still found.
+    assert.ok((await tokens('0772 909808')).includes(placed.token));
+    assert.equal((await tokens('0772 000 111')).includes(placed.token), false);
+  });
+
   test('staff pause online orders when the kitchen is full', async () => {
     const cashier = await login('carl', PINS.carl);
     await run('setOnlineOpen', { open: false }, cashier);

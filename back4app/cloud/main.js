@@ -39129,6 +39129,15 @@ var require_online = __commonJS({
       const p = request.params || {};
       const now = Date.now();
       const found = [];
+      if (p.phone !== void 0) {
+        const digits = String(p.phone || "").replace(/\D/g, "");
+        if (digits.length < 9) throw invalid("Enter the phone number you ordered with");
+        if (!allow(`find:${request.ip || ""}`, 6))
+          throw forbidden("Too many searches. Try again in a few minutes");
+        found.push(
+          ...await new Parse.Query("Order").containedIn("channel", ["online", "table"]).endsWith("customerPhone", digits.slice(-9)).greaterThan("createdAt", new Date(now - RECOVER_MS)).descending("createdAt").limit(10).find(MASTER)
+        );
+      }
       const key = deviceKeyOf(request);
       if (key) {
         const device = deviceOf(p.device);
