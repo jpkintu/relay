@@ -9767,3 +9767,12 @@ tr.split-row td {
     font-size: 13px;
   }
 }
+/* Accounting → ratios compared: one chart per unit. */
+.ratio-chart h3 {
+  margin: 14px 0 4px;
+  font-size: 15px;
+}
+.ratio-compare th,
+.ratio-compare td {
+  white-space: nowrap;
+}
