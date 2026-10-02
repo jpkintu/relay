@@ -30,6 +30,8 @@ export type AppConfig = {
   floatWarningPercent?: number;
   // Where maps open: the restaurant (Settings).
   mapCenter?: { lat: number; lng: number };
+  // The month the financial year starts (accounting; 1 = January).
+  fiscalYearStart?: number;
   // Which kinds of order this restaurant takes (Settings → Modules).
   modules?: { riderOrders: boolean; callIn: boolean; counter: boolean };
   // Printed receipts (Settings → Receipts).

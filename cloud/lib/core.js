@@ -83,6 +83,11 @@ const DEFAULT_CONFIG = {
   efrisFrom: null,
   // Accounting: cash and bank when the books started (null: not entered).
   openingBalance: null,
+  // Split into cash (tills) and mobile money / bank (accounting.js).
+  openingCash: null,
+  openingBank: null,
+  // The month the financial year starts (1 = January; Uganda: 7, July).
+  fiscalYearStart: 1,
   airtelAutoCollect: false,
   momoDialCode: '256',
   // Card payments at the counter (Settings → Card payments).

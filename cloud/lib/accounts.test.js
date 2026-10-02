@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { balanceSheet, cashFlow, cashMovements, profitAndLoss } from './accounts.js';
+import { cashFlowStatement, position, profitAndLoss, ratios } from './accounts.js';
 
 // Two delivered orders: 25,000 food + 3,000 delivery each; rider pay 4,000
 // (1,000 commission + the 3,000 fee). One paid, one cash still with the rider.
@@ -50,83 +50,114 @@ test('profit and loss', () => {
   expect(pl.grossMargin).toBe(46.4);
 });
 
-test('cash flow: closing is opening plus what came in less what went out', () => {
-  const movements = cashMovements({
+test('equipment bought is a fixed asset, not an expense', () => {
+  const pl = profitAndLoss({
     orders,
-    supplierPayments: [{ amount: 20000 }, { amount: 4000 }],
-    expenses,
-    payouts,
+    purchases,
+    expenses: [...expenses, { amount: 40000, category: 'equipment' }],
+    tillExpenses: [],
   });
-  expect(movements).toMatchObject({
-    received: 28000,
-    toSuppliers: 24000,
-    onExpenses: 7000,
-    riderPay: 3000,
-    fromTills: 500,
-    net: 28000 - 24000 - 7000 - 3000 - 500,
-  });
-  const flow = cashFlow({ opening: 100000, movements });
-  expect(flow.closing).toBe(100000 - 6500);
+  expect(pl.operating.expenses.map((e) => e.key)).not.toContain('equipment');
+  expect(pl.netProfit).toBe(
+    profitAndLoss({ orders, purchases, expenses, tillExpenses: [] }).netProfit,
+  );
 });
 
-test('the balance sheet balances, with differences shown', () => {
-  const movements = cashMovements({
-    orders,
-    supplierPayments: [{ amount: 24000 }],
-    expenses,
-    payouts,
-  });
+// One restaurant's books: 100,000 opening (60,000 cash, 40,000 mobile money /
+// bank); the two orders above (one paid in cash, one still with the rider);
+// purchases with one supplier paid in cash and one part paid by mobile
+// money; expenses by cash and bank; a rider payout and a till expense; a
+// voucher (18,500 came in by mobile money, still owed).
+const books = {
+  orders: [
+    { ...orders[0], method: 'cash' },
+    { ...orders[1], method: 'cash' },
+  ],
+  purchases: [
+    { total: 20000, paid: 20000, payments: [{ amount: 20000, method: 'cash' }] },
+    { total: 10000, paid: 4000, payments: [{ amount: 4000, method: 'mobile_money' }] },
+  ],
+  expenses: [
+    { amount: 5000, category: 'utilities', method: 'bank' },
+    { amount: 2000, category: 'transport', method: 'cash' },
+    { amount: 30000, category: 'equipment', method: 'bank' },
+  ],
+  payouts,
+  vouchers: [{ cashIn: 18500, owed: 18500, refunded: false, sent: 0, charges: 0 }],
+  opening: { cash: 60000, bank: 40000 },
+};
+
+test('the balance sheet: cash and bank by how money moved, and it balances', () => {
   const profit = profitAndLoss({
     orders,
     purchases,
-    expenses,
+    expenses: books.expenses,
     tillExpenses: [{ amount: 500 }],
   }).netProfit;
-  const sheet = balanceSheet({
-    openingBalance: 100000,
-    cash: 100000 + movements.net,
-    orders,
-    purchases,
-    payouts,
-    profit,
+  const sheet = position({ ...books, profit: { toDate: profit, beforeYear: 5000 } });
+  // Cash: 60,000 + 28,000 sale − 20,000 supplier − 2,000 − 3,500 payouts.
+  expect(sheet.assets.tills).toBe(62500);
+  // Bank: 40,000 + 18,500 voucher − 4,000 supplier − 5,000 − 30,000 equipment.
+  expect(sheet.assets.bank).toBe(19500);
+  expect(sheet.assets.receivable).toBe(28000);
+  expect(sheet.assets.equipment).toBe(30000);
+  expect(sheet.assets.total).toBe(62500 + 19500 + 28000 + 30000);
+  expect(sheet.liabilities).toEqual({
+    suppliers: 6000,
+    riders: 4000,
+    refunds: 18500,
+    current: 28500,
+    total: 28500,
   });
-  expect(sheet.assets).toEqual({ cash: 93500, receivable: 28000, total: 121500 });
-  expect(sheet.liabilities).toEqual({ suppliers: 6000, riders: 4000, refunds: 0, total: 10000 });
-  expect(sheet.equity.total).toBe(sheet.assets.total - sheet.liabilities.total);
+  expect(sheet.equity.opening).toBe(100000);
+  expect(sheet.equity.retained).toBe(5000);
+  expect(sheet.equity.currentYear).toBe(profit - 5000);
   // The 1,000 shortage taken off the rider's pay is the only difference.
   expect(sheet.equity.other).toBe(1000);
-  expect(sheet.equity.opening + sheet.equity.profit + sheet.equity.other).toBe(sheet.equity.total);
+  expect(sheet.equity.total).toBe(sheet.assets.total - sheet.liabilities.total);
 });
 
-test('money paid for a cancelled order is cash owed back until it is refunded', () => {
-  const base = { orders: [], supplierPayments: [], expenses: [], payouts: [] };
-  // 18,500 came in for a cancelled order; not yet sent back.
-  const owed = cashMovements({ ...base, refundReceipts: [{ amount: 18500 }] });
-  expect(owed.net).toBe(18500);
-  const sheet = balanceSheet({
-    openingBalance: 0,
-    cash: owed.net,
+test('the cash flow statement (indirect) ties net income to the change in cash', () => {
+  const empty = position({
     orders: [],
     purchases: [],
+    expenses: [],
     payouts: [],
-    profit: 0,
-    refundsOwed: 18500,
+    vouchers: [],
+    opening: books.opening,
+    profit: { toDate: 0, beforeYear: 0 },
   });
-  expect(sheet.liabilities.refunds).toBe(18500);
-  expect(sheet.equity.total).toBe(0);
-  // Sent back: cash and the liability both cleared.
-  const cleared = cashMovements({
-    ...base,
-    refundReceipts: [{ amount: 18500 }],
-    refundsPaid: [{ amount: 18500 }],
+  const pl = profitAndLoss({
+    orders,
+    purchases,
+    expenses: books.expenses,
+    tillExpenses: [{ amount: 500 }],
   });
-  expect(cleared.net).toBe(0);
-  const flow = cashFlow({ opening: 0, movements: owed });
-  expect(flow.inflows.map((r) => r.key)).toEqual(['sales', 'refund_receipts']);
-  expect(cashFlow({ opening: 0, movements: cleared }).outflows.at(-1)).toEqual({
-    key: 'refunds',
-    amount: 18500,
-  });
-  // Nothing refunded: no refund lines.
-  expect(cashFlow({ opening: 0, movements: cashMovements(base) }).inflows).toHaveLength(1);
+  const end = position({ ...books, profit: { toDate: pl.netProfit, beforeYear: 0 } });
+  const flow = cashFlowStatement({ start: empty, end, netProfit: pl.netProfit });
+  expect(flow.beginning).toBe(100000);
+  expect(flow.operating.netIncome).toBe(pl.netProfit);
+  const line = (key) => flow.operating.lines.find((l) => l.key === key).amount;
+  expect(line('receivable')).toBe(-28000);
+  expect(line('payable')).toBe(6000);
+  expect(line('vouchers')).toBe(18500);
+  expect(flow.investing.total).toBe(-30000);
+  expect(flow.financing.total).toBe(0);
+  expect(flow.beginning + flow.netChange).toBe(flow.ending);
+  expect(flow.ending).toBe(end.assets.cash);
+});
+
+test('performance ratios', () => {
+  const pl = profitAndLoss({ orders, purchases, expenses, tillExpenses: [] });
+  const pos = position({ ...books, profit: { toDate: pl.netProfit, beforeYear: 0 } });
+  const r = ratios({ pl, position: pos, receivableBefore: 0 });
+  expect(r.grossProfit).toBe(Math.round((pl.grossProfit / pl.revenue.total) * 100) / 100);
+  expect(r.current).toBe(Math.round((pos.assets.current / pos.liabilities.current) * 100) / 100);
+  expect(r.receivableTurnover).toBe(Math.round((56000 / 14000) * 100) / 100);
+  expect(
+    ratios({
+      pl: profitAndLoss({ orders: [], purchases: [], expenses: [], tillExpenses: [] }),
+      position: pos,
+    }).grossProfit,
+  ).toBe(null);
 });

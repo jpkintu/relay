@@ -20,6 +20,8 @@ export const PRESETS = [
   ['last6months', 'Last 6 months'],
   ['last12months', 'Last 12 months'],
   ['thisYear', 'This year'],
+  ['thisFinancialYear', 'This financial year'],
+  ['lastFinancialYear', 'Last financial year'],
 ] as const;
 export type Preset = (typeof PRESETS)[number][0] | 'custom';
 
@@ -41,7 +43,19 @@ export function addMonths(day: string, count: number): string {
 
 export const monday = (day: string) => addDays(day, -((utc(day).getUTCDay() + 6) % 7));
 
-export function presetRange(preset: Exclude<Preset, 'custom'>, today: string): DateRange {
+// The first day of the financial year `day` falls in (`startMonth` 1–12).
+export function financialYearStart(day: string, startMonth = 1): string {
+  const m = Math.min(12, Math.max(1, Math.round(startMonth) || 1));
+  const year = Number(day.slice(0, 4)) - (Number(day.slice(5, 7)) < m ? 1 : 0);
+  return `${year}-${String(m).padStart(2, '0')}-01`;
+}
+
+export function presetRange(
+  preset: Exclude<Preset, 'custom'>,
+  today: string,
+  // The month the restaurant's financial year starts (1 = January).
+  yearStartMonth = 1,
+): DateRange {
   const month = `${today.slice(0, 7)}-01`;
   switch (preset) {
     case 'today':
@@ -70,6 +84,12 @@ export function presetRange(preset: Exclude<Preset, 'custom'>, today: string): D
       return { from: addMonths(today, -11), to: today };
     case 'thisYear':
       return { from: `${today.slice(0, 4)}-01-01`, to: today };
+    case 'thisFinancialYear':
+      return { from: financialYearStart(today, yearStartMonth), to: today };
+    case 'lastFinancialYear': {
+      const start = financialYearStart(today, yearStartMonth);
+      return { from: `${Number(start.slice(0, 4)) - 1}${start.slice(4)}`, to: addDays(start, -1) };
+    }
   }
 }
 

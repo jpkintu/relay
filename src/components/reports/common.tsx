@@ -16,10 +16,10 @@ export type Filters = {
 };
 
 export function useFilters(preset: Exclude<Preset, 'custom'>, riderId = '') {
-  const { timezone } = useConfig();
+  const { timezone, fiscalYearStart } = useConfig();
   return useState<Filters>(() => ({
     preset,
-    ...presetRange(preset, todayIn(timezone)),
+    ...presetRange(preset, todayIn(timezone), fiscalYearStart),
     riderId,
     method: '',
     branchId: '',
@@ -142,14 +142,14 @@ export function FilterBar({
   presets?: readonly Exclude<Preset, 'custom'>[];
   children?: ReactNode;
 }) {
-  const { timezone } = useConfig();
+  const { timezone, fiscalYearStart } = useConfig();
   const branches = useBranchOptions();
   const today = todayIn(timezone);
   const setPreset = (preset: Preset) =>
     onChange(
       preset === 'custom'
         ? { ...filters, preset }
-        : { ...filters, preset, ...presetRange(preset, today) },
+        : { ...filters, preset, ...presetRange(preset, today, fiscalYearStart) },
     );
   const setDay = (field: keyof DateRange, value: string) => {
     if (!value) return;

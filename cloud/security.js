@@ -369,6 +369,9 @@ const SCHEMAS = {
     restaurantName: S,
     // Accounting: cash and bank when the books started (accounting.js).
     openingBalance: N,
+    openingCash: N,
+    openingBank: N,
+    fiscalYearStart: N,
     efrisEnabled: B,
     efrisFrom: D,
     mtnAutoCollect: B,

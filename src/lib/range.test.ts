@@ -26,6 +26,16 @@ describe('presetRange', () => {
     expect(presetRange('last6months', today)).toEqual({ from: '2026-04-01', to: today });
     expect(presetRange('last12months', today)).toEqual({ from: '2025-10-01', to: today });
     expect(presetRange('thisYear', today)).toEqual({ from: '2026-01-01', to: today });
+    // A July–June financial year.
+    expect(presetRange('thisFinancialYear', today, 7)).toEqual({ from: '2026-07-01', to: today });
+    expect(presetRange('lastFinancialYear', today, 7)).toEqual({
+      from: '2025-07-01',
+      to: '2026-06-30',
+    });
+    expect(presetRange('thisFinancialYear', '2026-03-10', 7)).toEqual({
+      from: '2025-07-01',
+      to: '2026-03-10',
+    });
     expect(presetRange('lastMonth', '2026-03-31')).toEqual({
       from: '2026-02-01',
       to: '2026-02-28',
