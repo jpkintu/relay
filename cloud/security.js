@@ -185,8 +185,13 @@ const SCHEMAS = {
     deliveryKm: N,
     // Eat-in from a table's QR code (tables.js); tableLabel is its name.
     table: ['Pointer', 'DiningTable'],
+    // Online orders: the phone they came from (online.js getMyOnlineOrders).
+    onlineDeviceKey: S,
+    onlineDevice: S,
     acceptedAt: D,
     readyAt: D,
+    // Eat in: served (maybe before the bill was paid).
+    servedAt: D,
     cancelledReason: S,
     cancelledBy: user,
     cancelledAt: D,

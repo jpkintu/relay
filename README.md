@@ -174,7 +174,9 @@ signing in or giving a name, and the order reaches the kitchen board as eat
 in for that table (tagged **Table QR**). The bill stays open and is paid at
 the end like any open bill (Take payment on the board). If the guests move,
 **Move table** on the ticket moves the order and its bill. A lost or copied
-card is retired with **New code**.
+card is retired with **New code**. **Served** works before the bill is paid:
+the order stays on the board as _Served · waiting for payment_ and closes when
+it is paid. Rescanning the table shows the orders still open at it.
 
 Orders arrive on the kitchen board as Incoming, tagged **Online**, with the
 customer's number to call; deliveries are given a rider like call-in orders.

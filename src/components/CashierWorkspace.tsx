@@ -76,6 +76,8 @@ type Ticket = {
   riderId: string;
   billOpen: boolean;
   table: string;
+  // Eat in: served (perhaps before the bill was paid).
+  served: boolean;
 };
 
 const TYPE_LABEL: Record<string, string> = { eat_in: 'Eat in', pickup: 'Pick up' };
@@ -156,6 +158,7 @@ async function loadLiveTickets(branchId?: string | null): Promise<Ticket[]> {
     riderId: order.get('createdBy')?.id || '',
     billOpen: order.get('billOpen') === true,
     table: order.get('tableLabel') || '',
+    served: !!order.get('servedAt'),
     prepMinutes: Number(order.get('prepMinutes') || 0),
   }));
 }
@@ -519,6 +522,7 @@ function KitchenBoard() {
             riderId: '',
             billOpen: false,
             table: '',
+            served: false,
           })),
         );
       } else {
@@ -743,7 +747,9 @@ function KitchenBoard() {
                       )}
                       {ticket.channel && <span>{CHANNEL[ticket.channel] || ticket.channel}</span>}
                       {ticket.billOpen ? (
-                        <span className="ticket-unpaid">Not paid</span>
+                        <span className="ticket-unpaid">
+                          {ticket.served ? 'Served · waiting for payment' : 'Not paid'}
+                        </span>
                       ) : (
                         ticket.payment && <span>{PAYMENT[ticket.payment] || ticket.payment}</span>
                       )}
@@ -1080,12 +1086,19 @@ function KitchenBoard() {
                             <Banknote /> Take payment
                           </button>
                         )}
-                        {stage === 'Ready' && TYPE_LABEL[ticket.orderType] && (
+                        {stage === 'Ready' && TYPE_LABEL[ticket.orderType] && !ticket.served && (
                           <button
+                            // Eat in is served before paying; pick-up is
+                            // collected once paid.
                             disabled={
-                              ticket.billOpen || ticket.paymentStatus === 'PENDING_VERIFICATION'
+                              ticket.orderType !== 'eat_in' &&
+                              (ticket.billOpen || ticket.paymentStatus === 'PENDING_VERIFICATION')
                             }
-                            title={ticket.billOpen ? 'Take payment first' : undefined}
+                            title={
+                              ticket.orderType !== 'eat_in' && ticket.billOpen
+                                ? 'Take payment first'
+                                : undefined
+                            }
                             onClick={() => void run(ticket, 'complete')}
                           >
                             <ClipboardCheck />

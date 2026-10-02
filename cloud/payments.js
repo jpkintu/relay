@@ -112,6 +112,8 @@ async function settlePayment(order, { received, reason = '', actor }) {
       cashStatus: 'WITH_RIDER',
     });
   await order.save(null, MASTER);
+  // Served already (eat in) and now paid: it is finished.
+  if (received) await require('./orders').closeServed(order, actor || null);
   await audit(
     actor,
     received ? 'payment.verified' : 'payment.rejected',

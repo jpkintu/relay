@@ -454,8 +454,21 @@ Parse.Cloud.define('transitionOrder', async (request) => {
     throw invalid('Eat-in and pick-up orders are finished with Served / Collected');
   if (p.action === 'pickup' && !order.get('createdBy'))
     throw invalid('Assign a rider before handing the order over');
-  if (p.action === 'complete' && !counterPaid(order))
+  // Eat in: served before the bill is paid. The order stays on the board,
+  // waiting for payment, and closes when it is paid (closeServed).
+  const serveUnpaid =
+    p.action === 'complete' && order.get('orderType') === 'eat_in' && !counterPaid(order);
+  if (serveUnpaid && order.get('servedAt')) throw invalid('Served: waiting for payment');
+  if (p.action === 'complete' && !serveUnpaid && !counterPaid(order))
     throw invalid('Take payment (or wait for the mobile money check) first');
+  if (serveUnpaid) {
+    const now = new Date();
+    order.set({ servedAt: now, restaurantStatus: 'served' });
+    if (staff && !owner) await takeOrder(order, actor, role);
+    await order.save(null, MASTER);
+    await audit(actor, 'order.served', order, { servedAt: null }, { servedAt: now, paid: false });
+    return { status: order.get('status'), served: true };
+  }
 
   const before = {
     status: order.get('status'),
@@ -482,6 +495,7 @@ Parse.Cloud.define('transitionOrder', async (request) => {
   if (p.action === 'complete')
     order.set({
       restaurantStatus: order.get('orderType') === 'pickup' ? 'collected' : 'served',
+      ...(order.get('orderType') === 'eat_in' && !order.get('servedAt') && { servedAt: now }),
       deliveredAt: now,
       commissionBase: 0,
       deliveryPay: 0,
@@ -750,7 +764,42 @@ Parse.Cloud.define('transferOrder', async (request) => {
   return { cashier: order.get('cashierName') || '' };
 });
 
+// An eat-in order served before it was paid: finished once the bill is paid
+// (cash into a till, or the mobile money / card payment confirmed).
+// `actor` null when the payment was confirmed automatically.
+async function closeServed(order, actor) {
+  if (
+    order.get('orderType') !== 'eat_in' ||
+    order.get('status') !== 'READY' ||
+    !order.get('servedAt') ||
+    !counterPaid(order)
+  )
+    return false;
+  order.set({
+    status: 'DELIVERED',
+    restaurantStatus: 'served',
+    deliveredAt: new Date(),
+    commissionBase: 0,
+    deliveryPay: 0,
+    commissionAmount: 0,
+    commissionPaid: true,
+  });
+  await order.save(null, MASTER);
+  await audit(
+    actor,
+    'order.complete',
+    order,
+    { status: 'READY' },
+    {
+      status: 'DELIVERED',
+      paidAfterServing: true,
+    },
+  );
+  return true;
+}
+
 module.exports = {
+  closeServed,
   riderFloat,
   PINNED_ONLY,
   priceLines,
