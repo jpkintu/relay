@@ -51,6 +51,8 @@ const PROTECTED_CLASSES = [
   'Expense',
   'DiningTable',
   'Voucher',
+  'StockItem',
+  'StockCount',
 ];
 // Classes clients never read directly either.
 const PRIVATE_CLASSES = [
@@ -451,6 +453,31 @@ const SCHEMAS = {
     price: N,
     soldOutAt: 'Array',
   },
+  // Stock (stock.js).
+  StockItem: {
+    name: S,
+    unit: S,
+    category: S,
+    reorderLevel: N,
+    // Each branch's own reorder level, by branch id (stock.js).
+    reorderLevels: 'Object',
+    unitCost: N,
+    active: B,
+    lastBoughtDay: S,
+    lastBoughtAt: D,
+  },
+  StockCount: {
+    branch,
+    day: S,
+    countedAt: D,
+    lines: 'Array',
+    total: N,
+    notes: S,
+    countedBy: user,
+    voidedAt: D,
+    voidReason: S,
+    voidedBy: user,
+  },
   // Purchases and expenses (spending.js).
   Supplier: {
     name: S,
@@ -470,6 +497,8 @@ const SCHEMAS = {
     supplierName: S,
     category: S,
     lines: 'Array',
+    // Some line names a stock item (stock.js).
+    stockLinked: B,
     total: N,
     paid: N,
     status: S,
@@ -605,6 +634,8 @@ for (const className of [
   'Supplier',
   'Purchase',
   'Expense',
+  'StockItem',
+  'StockCount',
 ])
   Object.assign(SCHEMAS[className], {
     restoredFrom: S,
@@ -734,7 +765,7 @@ async function applySecurity() {
     'AuditLog',
   ])
     updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ['admin'])));
-  for (const className of ['Supplier', 'Purchase', 'Expense'])
+  for (const className of ['Supplier', 'Purchase', 'Expense', 'StockItem', 'StockCount'])
     updated[className] = await eachObject(className, (o) =>
       saveAcl(o, readAcl(null, ['admin', 'finance'])),
     );

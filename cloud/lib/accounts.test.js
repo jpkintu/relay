@@ -161,3 +161,36 @@ test('performance ratios', () => {
     }).grossProfit,
   ).toBe(null);
 });
+
+test('stock counted: cost of goods sold, an asset, a cash flow line and the acid test', () => {
+  // 30,000 bought; 8,000 on hand at the start (counted earlier), 12,000 at
+  // the end: 26,000 of it was used.
+  const pl = profitAndLoss({
+    orders,
+    purchases,
+    expenses,
+    tillExpenses: [],
+    stockStart: 8000,
+    stockEnd: 12000,
+  });
+  expect(pl.costOfSales).toMatchObject({
+    purchases: 30000,
+    openingStock: 8000,
+    closingStock: 12000,
+    total: 26000,
+  });
+  expect(pl.grossProfit).toBe(56000 - 26000);
+  const base = { profit: { toDate: 0, beforeYear: 0 } };
+  const before = position({ ...books, ...base, inventory: 8000 });
+  const after = position({ ...books, ...base, inventory: 12000 });
+  expect(after.assets.inventory).toBe(12000);
+  expect(after.assets.current - before.assets.current).toBe(4000);
+  expect(after.assets.total).toBe(position({ ...books, ...base }).assets.total + 12000);
+  const flow = cashFlowStatement({ start: before, end: after, netProfit: 0 });
+  expect(flow.operating.lines.find((l) => l.key === 'inventory').amount).toBe(-4000);
+  const r = ratios({ pl, position: after });
+  expect(r.acidTest).toBe(
+    Math.round(((after.assets.current - 12000) / after.liabilities.current) * 100) / 100,
+  );
+  expect(r.acidTest).toBeLessThan(r.current);
+});

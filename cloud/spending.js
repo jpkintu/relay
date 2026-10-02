@@ -229,7 +229,8 @@ function linesOf(value) {
   return { lines, total: lines.reduce((n, line) => n + line.total, 0) };
 }
 
-// Owner / finance: record a purchase.
+// Owner / finance: record a purchase. A line may name its stock item
+// (`itemId`, stock.js).
 // { day, supplierId, branchId?, category, lines, paid, method, invoice, notes }
 Parse.Cloud.define('recordPurchase', async (request) => {
   const { user: actor } = await requireFinance(request);
@@ -238,11 +239,13 @@ Parse.Cloud.define('recordPurchase', async (request) => {
   const supplier = await supplierParam(p.supplierId, { required: true });
   if (supplier.get('active') === false) throw invalid('That supplier is archived');
   const category = PURCHASE_CATEGORIES.includes(p.category) ? p.category : 'other';
-  const { lines, total } = linesOf(p.lines);
+  const priced = linesOf(p.lines);
+  const { total } = priced;
   if (!total) throw invalid('The purchase total is zero');
   const paid = amountOf(p.paid ?? 0, 'amount paid', { allowZero: true });
   if (paid > total) throw invalid('Paid more than the total');
   const day = dayOf(p.day, config);
+  const { lines, linked } = await require('./stock').linkPurchaseLines(priced.lines, p.lines, day);
   const branch = p.branchId ? await branchParam(p.branchId) : await branchFor(null);
   const method = methodOf(p.method);
   const row = new Parse.Object('Purchase');
@@ -257,6 +260,7 @@ Parse.Cloud.define('recordPurchase', async (request) => {
     supplierName: supplier.get('name'),
     category,
     lines,
+    stockLinked: linked,
     total,
     paid,
     status: statusOf(total, paid),

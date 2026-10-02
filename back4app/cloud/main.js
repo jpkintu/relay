@@ -1174,7 +1174,9 @@ var require_security = __commonJS({
       "Purchase",
       "Expense",
       "DiningTable",
-      "Voucher"
+      "Voucher",
+      "StockItem",
+      "StockCount"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -1560,6 +1562,31 @@ var require_security = __commonJS({
         price: N,
         soldOutAt: "Array"
       },
+      // Stock (stock.js).
+      StockItem: {
+        name: S,
+        unit: S,
+        category: S,
+        reorderLevel: N,
+        // Each branch's own reorder level, by branch id (stock.js).
+        reorderLevels: "Object",
+        unitCost: N,
+        active: B,
+        lastBoughtDay: S,
+        lastBoughtAt: D
+      },
+      StockCount: {
+        branch,
+        day: S,
+        countedAt: D,
+        lines: "Array",
+        total: N,
+        notes: S,
+        countedBy: user,
+        voidedAt: D,
+        voidReason: S,
+        voidedBy: user
+      },
       // Purchases and expenses (spending.js).
       Supplier: {
         name: S,
@@ -1579,6 +1606,8 @@ var require_security = __commonJS({
         supplierName: S,
         category: S,
         lines: "Array",
+        // Some line names a stock item (stock.js).
+        stockLinked: B,
         total: N,
         paid: N,
         status: S,
@@ -1707,7 +1736,9 @@ var require_security = __commonJS({
       "Branch",
       "Supplier",
       "Purchase",
-      "Expense"
+      "Expense",
+      "StockItem",
+      "StockCount"
     ])
       Object.assign(SCHEMAS[className], {
         restoredFrom: S,
@@ -1828,7 +1859,7 @@ var require_security = __commonJS({
         "AuditLog"
       ])
         updated[className] = await eachObject(className, (o) => saveAcl(o, readAcl(null, ["admin"])));
-      for (const className of ["Supplier", "Purchase", "Expense"])
+      for (const className of ["Supplier", "Purchase", "Expense", "StockItem", "StockCount"])
         updated[className] = await eachObject(
           className,
           (o) => saveAcl(o, readAcl(null, ["admin", "finance"]))
@@ -34774,6 +34805,386 @@ var require_shifts = __commonJS({
   }
 });
 
+// cloud/lib/stock.js
+var require_stock = __commonJS({
+  "cloud/lib/stock.js"(exports2, module2) {
+    "use strict";
+    var round = (value) => Math.round(Number(value) || 0);
+    var qty = (value) => Math.round((Number(value) || 0) * 1e3) / 1e3;
+    function latestByBranch(counts, end = null) {
+      const out = /* @__PURE__ */ new Map();
+      for (const count of counts) {
+        if (end && !(count.at < end)) continue;
+        const key = count.branch || "";
+        const seen = out.get(key);
+        if (!seen || count.at > seen.at) out.set(key, count);
+      }
+      return out;
+    }
+    function stockValueAt(counts, end) {
+      let total = 0;
+      for (const count of latestByBranch(counts, end).values()) total += round(count.total);
+      return total;
+    }
+    function onHandByBranch(counts, purchases, idOf = (id) => id) {
+      const out = /* @__PURE__ */ new Map();
+      const add = (id, branch, quantity, counted) => {
+        const key = idOf(id);
+        if (!key) return;
+        if (!out.has(key)) out.set(key, /* @__PURE__ */ new Map());
+        const row = out.get(key).get(branch) || { quantity: 0, counted: false };
+        row.quantity = qty(row.quantity + quantity);
+        row.counted = row.counted || counted;
+        out.get(key).set(branch, row);
+      };
+      const latest = latestByBranch(counts);
+      for (const [branch, count] of latest)
+        for (const line of count.lines || [])
+          add(line.itemId, branch, Number(line.quantity) || 0, true);
+      for (const purchase of purchases) {
+        const branch = purchase.branch || "";
+        const since = latest.get(branch);
+        if (since && !(purchase.at > since.at)) continue;
+        for (const line of purchase.lines || [])
+          if (line.itemId) add(line.itemId, branch, Number(line.quantity) || 0, false);
+      }
+      return out;
+    }
+    function onHand(counts, purchases, idOf = (id) => id) {
+      const out = /* @__PURE__ */ new Map();
+      for (const [id, branches] of onHandByBranch(counts, purchases, idOf)) {
+        let quantity = 0;
+        let counted = false;
+        for (const row of branches.values()) {
+          quantity = qty(quantity + row.quantity);
+          counted = counted || row.counted;
+        }
+        out.set(id, { quantity, counted });
+      }
+      return out;
+    }
+    var reorderLevelFor = (item, branch) => {
+      const own = item.reorderLevels?.[branch || ""];
+      return own === void 0 || own === null ? Number(item.reorderLevel) || 0 : Number(own) || 0;
+    };
+    function priceCount(lines) {
+      const priced = lines.map((line) => {
+        const quantity = qty(line.quantity);
+        const unitCost = round(line.unitCost);
+        return { ...line, quantity, unitCost, value: Math.round(quantity * unitCost) };
+      });
+      return { lines: priced, total: priced.reduce((n, line) => n + line.value, 0) };
+    }
+    var isLow = (item, quantity, branch) => {
+      const level = branch === void 0 ? Number(item.reorderLevel) || 0 : reorderLevelFor(item, branch);
+      return level > 0 && qty(quantity) <= level;
+    };
+    module2.exports = {
+      latestByBranch,
+      stockValueAt,
+      onHandByBranch,
+      onHand,
+      reorderLevelFor,
+      priceCount,
+      isLow
+    };
+  }
+});
+
+// cloud/stock.js
+var require_stock2 = __commonJS({
+  "cloud/stock.js"(exports2, module2) {
+    "use strict";
+    var { MASTER, invalid, audit, loadConfig, findAll, readAcl } = require_core();
+    var { isDay, isoDay, startOfDay, addDays } = require_dates();
+    var S = require_stock();
+    var { branchParam, branchFor } = require_branches();
+    var ITEM = "StockItem";
+    var COUNT = "StockCount";
+    var ACL_ROLES = ["admin", "finance"];
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    var MAX_QTY = 1e6;
+    var MAX_COST = 1e9;
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var nameOf = (user) => user ? user.get("name") || user.get("username") || "" : "";
+    var requireFinance = (request) => require_spending().requireFinance(request);
+    function quantityOf(value, label) {
+      const quantity = Number(value);
+      if (!Number.isFinite(quantity) || quantity < 0 || quantity > MAX_QTY)
+        throw invalid(`${label}: enter the quantity`);
+      return Math.round(quantity * 1e3) / 1e3;
+    }
+    function costOf(value, label) {
+      const cost = Math.round(Number(value ?? 0));
+      if (!Number.isFinite(cost) || cost < 0 || cost > MAX_COST)
+        throw invalid(`${label}: enter the cost per unit`);
+      return cost;
+    }
+    async function itemsById() {
+      const rows = await findAll(new Parse.Query(ITEM));
+      const byId = /* @__PURE__ */ new Map();
+      for (const row of rows) {
+        byId.set(row.id, row);
+        if (row.get("restoredFrom")) byId.set(row.get("restoredFrom"), row);
+      }
+      return { rows, byId };
+    }
+    async function countRows(branch, end) {
+      const query = new Parse.Query(COUNT);
+      query.doesNotExist("voidedAt");
+      if (branch) query.equalTo("branch", branch);
+      if (end) query.lessThan("countedAt", end);
+      return (await findAll(query)).map((row) => ({
+        id: row.id,
+        branch: row.get("branch")?.id || "",
+        at: row.get("countedAt"),
+        total: Math.round(Number(row.get("total") || 0)),
+        lines: row.get("lines") || []
+      }));
+    }
+    async function linkedPurchases(branch) {
+      const query = new Parse.Query("Purchase");
+      query.doesNotExist("voidedAt");
+      query.equalTo("stockLinked", true);
+      if (branch) query.equalTo("branch", branch);
+      return (await findAll(query)).map((row) => ({
+        branch: row.get("branch")?.id || "",
+        at: row.get("spentAt"),
+        lines: row.get("lines") || []
+      }));
+    }
+    var itemView = (row, byBranch = /* @__PURE__ */ new Map(), names = /* @__PURE__ */ new Map(), branch = null) => {
+      const item = {
+        id: row.id,
+        name: row.get("name"),
+        unit: row.get("unit") || "",
+        category: row.get("category") || "food",
+        reorderLevel: Number(row.get("reorderLevel") || 0),
+        reorderLevels: row.get("reorderLevels") || {},
+        unitCost: Number(row.get("unitCost") || 0),
+        active: row.get("active") !== false,
+        lastBoughtAt: row.get("lastBoughtAt")?.toISOString() || null
+      };
+      const branches = [...byBranch].map(([branchId, have]) => ({
+        branchId,
+        branch: names.get(branchId) || "",
+        onHand: have.quantity,
+        counted: have.counted,
+        reorderLevel: S.reorderLevelFor(item, branchId),
+        low: item.active && S.isLow(item, have.quantity, branchId)
+      })).sort((a, b) => a.branch.localeCompare(b.branch));
+      const shown = branch ? branches.filter((b) => b.branchId === branch.id) : branches;
+      const onHand = shown.reduce((n, b) => Math.round((n + b.onHand) * 1e3) / 1e3, 0);
+      const { reorderLevels, ...rest } = item;
+      return {
+        ...rest,
+        reorderLevel: branch ? S.reorderLevelFor(item, branch.id) : item.reorderLevel,
+        branchLevels: reorderLevels,
+        onHand,
+        counted: shown.some((b) => b.counted),
+        value: Math.round(onHand * item.unitCost),
+        low: shown.some((b) => b.low),
+        branches
+      };
+    };
+    var countView = (row) => ({
+      id: row.id,
+      day: row.get("day"),
+      branchId: row.get("branch")?.id || "",
+      lines: row.get("lines") || [],
+      total: Number(row.get("total") || 0),
+      notes: row.get("notes") || "",
+      countedBy: nameOf(row.get("countedBy")),
+      status: row.get("voidedAt") ? "void" : "counted",
+      voidReason: row.get("voidReason") || ""
+    });
+    Parse.Cloud.define("listStock", async (request) => {
+      await requireFinance(request);
+      const branch = await branchParam(request.params.branchId);
+      const [{ rows, byId }, counts, purchases] = await Promise.all([
+        itemsById(),
+        countRows(branch),
+        linkedPurchases(branch)
+      ]);
+      const [allCounts, allPurchases, branchRows] = branch ? await Promise.all([countRows(null), linkedPurchases(null), branchList()]) : [counts, purchases, await branchList()];
+      const have = S.onHandByBranch(allCounts, allPurchases, (id) => byId.get(id)?.id || null);
+      const names = new Map(branchRows.map((b) => [b.id, b.get("name") || ""]));
+      const items = rows.map((row) => itemView(row, have.get(row.id), names, branch)).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+      const recent = new Parse.Query(COUNT);
+      if (branch) recent.equalTo("branch", branch);
+      recent.descending("countedAt");
+      recent.include("countedBy");
+      recent.limit(60);
+      const latest = S.latestByBranch(counts);
+      return {
+        items,
+        counts: (await recent.find(MASTER)).map(countView),
+        summary: {
+          // The value in the accounts: each branch's latest count.
+          counted: S.stockValueAt(counts, null),
+          lastCounted: [...latest.values()].reduce((day, c) => !day || c.at > day ? c.at : day, null),
+          low: items.filter((item) => item.low).length
+        }
+      };
+    });
+    var branchList = () => findAll(new Parse.Query("Branch"));
+    Parse.Cloud.define("saveStockItem", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const p = request.params || {};
+      const { PURCHASE_CATEGORIES } = require_spending();
+      const name = clean(p.name, 80);
+      if (name.length < 2) throw invalid("Name the stock item");
+      let row;
+      if (p.id) {
+        if (!ID.test(String(p.id))) throw invalid("Unknown stock item");
+        row = await new Parse.Query(ITEM).get(String(p.id), MASTER).catch(() => null);
+        if (!row) throw invalid("Unknown stock item");
+      } else row = new Parse.Object(ITEM);
+      const same = new Parse.Query(ITEM);
+      same.matches("name", new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"));
+      const twin = await same.first(MASTER);
+      if (twin && twin.id !== row.id) throw invalid(`There is already a stock item called ${name}`);
+      const before = row.id ? {
+        name: row.get("name"),
+        unit: row.get("unit"),
+        category: row.get("category"),
+        reorderLevel: row.get("reorderLevel"),
+        reorderLevels: row.get("reorderLevels"),
+        unitCost: row.get("unitCost"),
+        active: row.get("active")
+      } : null;
+      const branch = await branchParam(p.branchId);
+      const level = quantityOf(p.reorderLevel ?? 0, name);
+      const next = {
+        name,
+        unit: clean(p.unit, 20) || "pcs",
+        category: PURCHASE_CATEGORIES.includes(p.category) ? p.category : "food",
+        ...branch ? {
+          reorderLevels: { ...row.get("reorderLevels") || {}, [branch.id]: level },
+          ...!row.id && { reorderLevel: level }
+        } : { reorderLevel: level },
+        unitCost: costOf(p.unitCost, name),
+        active: p.active !== false
+      };
+      row.set(next);
+      if (!row.id) row.setACL(readAcl(null, ACL_ROLES));
+      await row.save(null, MASTER);
+      await audit(actor, before ? "stock.item_updated" : "stock.item_added", row, before, next);
+      return itemView(row, /* @__PURE__ */ new Map(), /* @__PURE__ */ new Map(), branch);
+    });
+    var countedAtOf = (day, config) => new Date(startOfDay(addDays(day, 1), config.timezone).getTime() - 1e3);
+    Parse.Cloud.define("recordStockCount", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const p = request.params || {};
+      const { values: config } = await loadConfig();
+      const today = isoDay(/* @__PURE__ */ new Date(), config.timezone);
+      const day = p.day ? String(p.day) : today;
+      if (!isDay(day) || day > today) throw invalid("Choose a day up to today");
+      const branch = p.branchId ? await branchParam(p.branchId) : await branchFor(null);
+      if (!Array.isArray(p.lines) || !p.lines.length) throw invalid("Count at least one item");
+      if (p.lines.length > 500) throw invalid("A count can have at most 500 items");
+      const { byId } = await itemsById();
+      const seen = /* @__PURE__ */ new Set();
+      const lines = p.lines.map((line) => {
+        const item = byId.get(String(line?.itemId || ""));
+        if (!item) throw invalid("Unknown stock item");
+        if (seen.has(item.id)) throw invalid(`${item.get("name")} is in the count twice`);
+        seen.add(item.id);
+        return {
+          itemId: item.id,
+          name: item.get("name"),
+          unit: item.get("unit") || "",
+          quantity: quantityOf(line.quantity, item.get("name")),
+          unitCost: costOf(line.unitCost ?? item.get("unitCost"), item.get("name"))
+        };
+      });
+      const same = new Parse.Query(COUNT);
+      same.equalTo("day", day);
+      same.doesNotExist("voidedAt");
+      if (branch) same.equalTo("branch", branch);
+      else same.doesNotExist("branch");
+      if (await same.first(MASTER))
+        throw invalid("There is already a count for that day: void it to count again");
+      const priced = S.priceCount(lines);
+      const row = new Parse.Object(COUNT);
+      row.set({
+        day,
+        countedAt: countedAtOf(day, config),
+        lines: priced.lines,
+        total: priced.total,
+        notes: clean(p.notes, 300),
+        countedBy: actor,
+        ...branch && { branch }
+      });
+      row.setACL(readAcl(null, ACL_ROLES));
+      await row.save(null, MASTER);
+      await audit(actor, "stock.counted", row, null, {
+        day,
+        items: priced.lines.length,
+        total: priced.total
+      });
+      const low = priced.lines.filter((line) => {
+        const item = byId.get(line.itemId);
+        return S.isLow(
+          { reorderLevel: item.get("reorderLevel"), reorderLevels: item.get("reorderLevels") },
+          line.quantity,
+          branch?.id || ""
+        );
+      });
+      if (low.length) {
+        const { notifyAdmins } = require_notifications();
+        const where = branch?.get("name") && (await branchList()).length > 1 ? ` at ${branch.get("name")}` : "";
+        await notifyAdmins({
+          kind: "stock_low",
+          tone: "warning",
+          title: `${low.length} stock item${low.length === 1 ? "" : "s"} low${where}`,
+          body: low.slice(0, 6).map((line) => `${line.name}: ${line.quantity} ${line.unit}`.trim()).join(", "),
+          link: "/admin/spending?tab=stock",
+          key: `stock-low:${row.id}`
+        });
+      }
+      row.set("countedBy", await actor.fetch(MASTER));
+      return { ...countView(row), low: low.map((line) => line.itemId) };
+    });
+    Parse.Cloud.define("voidStockCount", async (request) => {
+      const { user: actor } = await requireFinance(request);
+      const reason = clean(request.params.reason, 200);
+      if (reason.length < 3) throw invalid("Say why it is being voided");
+      const row = await new Parse.Query(COUNT).get(String(request.params.id || ""), MASTER).catch(() => null);
+      if (!row) throw invalid("Not found");
+      if (row.get("voidedAt")) throw invalid("Already voided");
+      row.set({ voidedAt: /* @__PURE__ */ new Date(), voidReason: reason, voidedBy: actor });
+      await row.save(null, MASTER);
+      await audit(actor, "stock.count_voided", row, { voided: false }, { voided: true, reason });
+      return countView(row);
+    });
+    async function linkPurchaseLines(lines, raw, day) {
+      const ids = raw.map((line) => line && line.itemId ? String(line.itemId) : "");
+      if (!ids.some(Boolean)) return { lines, linked: false };
+      const { byId } = await itemsById();
+      const touched = /* @__PURE__ */ new Map();
+      const out = lines.map((line, i) => {
+        if (!ids[i]) return line;
+        const item = byId.get(ids[i]);
+        if (!item) throw invalid(`${line.description}: unknown stock item`);
+        touched.set(item.id, { item, unitCost: line.unitCost });
+        return { ...line, itemId: item.id, unit: line.unit || item.get("unit") || "" };
+      });
+      const changed = [];
+      for (const { item, unitCost } of touched.values()) {
+        const last = item.get("lastBoughtDay") || "";
+        if (day < last) continue;
+        item.set({ unitCost, lastBoughtDay: day, lastBoughtAt: /* @__PURE__ */ new Date() });
+        changed.push(item);
+      }
+      if (changed.length) await Parse.Object.saveAll(changed, MASTER);
+      return { lines: out, linked: true };
+    }
+    var countsFor = (branch, end) => countRows(branch, end);
+    module2.exports = { linkPurchaseLines, countsFor, ITEM, COUNT };
+  }
+});
+
 // cloud/spending.js
 var require_spending = __commonJS({
   "cloud/spending.js"(exports2, module2) {
@@ -34961,11 +35372,13 @@ var require_spending = __commonJS({
       const supplier = await supplierParam(p.supplierId, { required: true });
       if (supplier.get("active") === false) throw invalid("That supplier is archived");
       const category = PURCHASE_CATEGORIES.includes(p.category) ? p.category : "other";
-      const { lines, total } = linesOf(p.lines);
+      const priced = linesOf(p.lines);
+      const { total } = priced;
       if (!total) throw invalid("The purchase total is zero");
       const paid = amountOf(p.paid ?? 0, "amount paid", { allowZero: true });
       if (paid > total) throw invalid("Paid more than the total");
       const day = dayOf(p.day, config);
+      const { lines, linked } = await require_stock2().linkPurchaseLines(priced.lines, p.lines, day);
       const branch = p.branchId ? await branchParam(p.branchId) : await branchFor(null);
       const method = methodOf(p.method);
       const row = new Parse.Object("Purchase");
@@ -34980,6 +35393,7 @@ var require_spending = __commonJS({
         supplierName: supplier.get("name"),
         category,
         lines,
+        stockLinked: linked,
         total,
         paid,
         status: statusOf(total, paid),
@@ -35191,11 +35605,19 @@ var require_accounts = __commonJS({
     }
     var isAsset = (expense) => expense.category === "equipment";
     var inCash = (method) => !method || method === "cash";
-    function profitAndLoss({ orders, purchases, expenses, tillExpenses }) {
+    function profitAndLoss({
+      orders,
+      purchases,
+      expenses,
+      tillExpenses,
+      stockStart = 0,
+      stockEnd = 0
+    }) {
       const food = sum(orders, (o) => o.subtotal);
       const delivery = sum(orders, (o) => o.deliveryFee);
       const revenue = food + delivery;
-      const costOfSales = sum(purchases, (p) => p.total);
+      const bought = sum(purchases, (p) => p.total);
+      const costOfSales = round(stockStart) + bought - round(stockEnd);
       const grossProfit = revenue - costOfSales;
       const riderPay = sum(orders, (o) => o.commission);
       const riderDeliveryFees = sum(orders, (o) => o.deliveryPay ?? o.deliveryFee);
@@ -35206,7 +35628,13 @@ var require_accounts = __commonJS({
       const netProfit = grossProfit - operating;
       return {
         revenue: { food, delivery, total: revenue, orders: orders.length },
-        costOfSales: { byCategory: byKey(purchases, "category", (p) => p.total), total: costOfSales },
+        costOfSales: {
+          byCategory: byKey(purchases, "category", (p) => p.total),
+          purchases: bought,
+          openingStock: round(stockStart),
+          closingStock: round(stockEnd),
+          total: costOfSales
+        },
         grossProfit,
         operating: {
           riderCommission: riderPay - riderDeliveryFees,
@@ -35221,7 +35649,16 @@ var require_accounts = __commonJS({
       };
     }
     var paidOf = (o) => round(o.total) - round(o.voucher || 0);
-    function position({ orders, purchases, expenses, payouts, vouchers = [], opening, profit }) {
+    function position({
+      orders,
+      purchases,
+      expenses,
+      payouts,
+      vouchers = [],
+      opening,
+      profit,
+      inventory = 0
+    }) {
       const confirmed = orders.filter((o) => o.confirmed);
       const cashSales = sum(
         confirmed.filter((o) => inCash(o.method) && o.method !== "voucher"),
@@ -35256,7 +35693,8 @@ var require_accounts = __commonJS({
       );
       const refunds = sum(vouchers, (v) => v.owed);
       const cash = tills + bank;
-      const current = cash + receivable;
+      const stock = round(inventory);
+      const current = cash + receivable + stock;
       const assets = current + equipment;
       const liabilities = suppliers + riders + refunds;
       const equity = assets - liabilities;
@@ -35269,6 +35707,7 @@ var require_accounts = __commonJS({
           bank,
           cash,
           receivable,
+          inventory: stock,
           current,
           equipment,
           fixed: equipment,
@@ -35297,6 +35736,7 @@ var require_accounts = __commonJS({
       const change = (pick) => pick(end) - pick(start);
       const operatingLines = [
         { key: "receivable", amount: -change((p) => p.assets.receivable) },
+        { key: "inventory", amount: -change((p) => p.assets.inventory || 0) },
         { key: "payable", amount: change((p) => p.liabilities.suppliers) },
         { key: "riders", amount: change((p) => p.liabilities.riders) },
         { key: "vouchers", amount: change((p) => p.liabilities.refunds) },
@@ -35325,7 +35765,8 @@ var require_accounts = __commonJS({
         netProfit: div(pl.netProfit, sales),
         operatingCost: div(pl.operating.total, sales),
         current: div(pos.assets.current, pos.liabilities.current),
-        acidTest: div(pos.assets.current, pos.liabilities.current),
+        // Quick assets: current assets less stock.
+        acidTest: div(pos.assets.current - (pos.assets.inventory || 0), pos.liabilities.current),
         debt: div(pos.liabilities.total, pos.assets.total),
         debtToEquity: div(pos.liabilities.total, pos.equity.total),
         receivableTurnover: div(sales, averageReceivable)
@@ -35343,6 +35784,7 @@ var require_accounting = __commonJS({
     var { resolveRange, previousRange, isDay, isoDay, startOfDay, addDays } = require_dates();
     var { isConfirmed } = require_reports();
     var A = require_accounts();
+    var { stockValueAt } = require_stock();
     var { factOf } = require_reports2();
     var { branchParam } = require_branches();
     var { requireFinance } = require_spending();
@@ -35414,12 +35856,13 @@ var require_accounting = __commonJS({
       };
       const payoutQuery = inBranch(new Parse.Query("TillPayout"), branch);
       payoutQuery.lessThan("paidAt", end);
-      const [orders, purchases, expenses, payouts, vouchers] = await Promise.all([
+      const [orders, purchases, expenses, payouts, vouchers, counts] = await Promise.all([
         findAll(orderQuery),
         spent("Purchase"),
         spent("Expense"),
         findAll(payoutQuery),
-        voucherRows(end, branch)
+        voucherRows(end, branch),
+        require_stock2().countsFor(branch, end)
       ]);
       return {
         orders: orders.map((order) => {
@@ -35448,17 +35891,22 @@ var require_accounting = __commonJS({
           amount: num(row.get("amount")),
           deductions: num(row.get("deductions"))
         })),
-        vouchers
+        vouchers,
+        // Stock counts (stock.js): the stock on hand at any moment.
+        counts
       };
     }
     var within = (rows, start, end) => rows.filter((r) => r.at < end && (!start || r.at >= start));
+    var stockAt = (rec, at) => at ? stockValueAt(rec.counts, at) : 0;
     function plOf(rec, start, end) {
       const payouts = within(rec.payouts, start, end);
       return A.profitAndLoss({
         orders: within(rec.orders, start, end),
         purchases: within(rec.purchases, start, end),
         expenses: within(rec.expenses, start, end),
-        tillExpenses: payouts.filter((p) => p.kind !== "rider")
+        tillExpenses: payouts.filter((p) => p.kind !== "rider"),
+        stockStart: stockAt(rec, start),
+        stockEnd: stockAt(rec, end)
       });
     }
     function yearStartOf(day, config) {
@@ -35493,6 +35941,7 @@ var require_accounting = __commonJS({
           charges: v.charges
         })),
         opening: openingOf(config, branch),
+        inventory: stockAt(rec, end),
         profit: {
           toDate: plOf(rec, null, end).netProfit,
           beforeYear: plOf(rec, null, yearStart).netProfit
@@ -35636,6 +36085,7 @@ var require_accounting = __commonJS({
             totalLiabilities: pos.liabilities.total,
             equity: pos.equity.total,
             receivable: pos.assets.receivable,
+            inventory: pos.assets.inventory,
             ratios: A.ratios({
               pl,
               position: pos,
@@ -36880,6 +37330,8 @@ var require_data = __commonJS({
       "Supplier",
       "Purchase",
       "Expense",
+      "StockItem",
+      "StockCount",
       "AuditLog"
     ];
     var PAGE = 500;
@@ -36972,6 +37424,8 @@ var require_restore = __commonJS({
       "Supplier",
       "Purchase",
       "Expense",
+      "StockItem",
+      "StockCount",
       "AuditLog"
     ];
     var BATCH = 200;
@@ -37942,6 +38396,7 @@ require_cashcheck();
 require_shifts();
 require_branches();
 require_spending();
+require_stock2();
 require_accounting();
 require_whatsapp();
 require_people();

@@ -8859,3 +8859,24 @@ tr.split-row td {
 .ratio-compare td {
   white-space: nowrap;
 }
+/* Purchases: a line naming a stock item; Stock: the count form. */
+.purchase-line input.stock-linked {
+  border-color: var(--blue, #0751f0);
+  box-shadow: inset 3px 0 0 var(--blue, #0751f0);
+}
+.count-table input {
+  width: 110px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--line, #c9d1e0);
+  border-radius: 8px;
+  background: #fff;
+  text-align: right;
+}
+.detail-row > td {
+  background: var(--surface-2, #f6f8fc);
+}
+.stock-low {
+  color: var(--danger, #c0392b);
+  font-weight: 600;
+}
