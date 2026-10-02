@@ -167,6 +167,15 @@ per km): the straight-line distance from the branch's map pin (Admin →
 Branches) to the customer's location, which they share or pin on a map. Each
 branch's pin is also where its team's maps open.
 
+**Ordering from the table (eat in).** Switch on _Guests order from their
+table_ in Admin → Online orders, add the tables (per branch) and print their
+cards: each table has its own QR code. A guest scans the card, orders without
+signing in or giving a name, and the order reaches the kitchen board as eat
+in for that table (tagged **Table QR**). The bill stays open and is paid at
+the end like any open bill (Take payment on the board). If the guests move,
+**Move table** on the ticket moves the order and its bill. A lost or copied
+card is retired with **New code**.
+
 Orders arrive on the kitchen board as Incoming, tagged **Online**, with the
 customer's number to call; deliveries are given a rider like call-in orders.
 Cashiers can pause online orders when the kitchen is full. The owner switches

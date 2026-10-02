@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { flierCss, flierHtml, type Flier } from './flier';
+import { flierCss, flierHtml, tableCardsHtml, type Flier } from './flier';
 
 const base: Flier = {
   size: 'a4',
@@ -35,5 +35,18 @@ describe('QR fliers', () => {
     const css = flierCss(base);
     expect(css).toContain('#112233');
     expect(css).toContain('#f14c1d');
+  });
+
+  test('table cards: one per table with its own QR code, four to a page', () => {
+    const tables = Array.from({ length: 5 }, (_, i) => ({
+      name: `Table ${i + 1}`,
+      qr: `data:image/png;base64,T${i}`,
+    }));
+    const html = tableCardsHtml(base, tables);
+    expect(html.match(/class="sheet cards"/g)).toHaveLength(2);
+    expect(html.match(/class="flier"/g)).toHaveLength(5);
+    expect(html).toContain('Table 5');
+    expect(html).toContain('base64,T4');
+    expect(html).not.toContain('class="link"');
   });
 });

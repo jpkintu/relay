@@ -43,6 +43,7 @@ const SCOPED = new Set([
   'AdminUnlock',
   'SubscriptionPayment',
   'Branch',
+  'DiningTable',
   'Supplier',
   'Purchase',
   'Expense',

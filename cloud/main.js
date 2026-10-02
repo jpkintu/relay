@@ -46,6 +46,7 @@ require('./serverAddress');
 require('./orders');
 require('./counter');
 require('./menu');
+require('./tables');
 require('./online');
 require('./cash');
 require('./payouts');

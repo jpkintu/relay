@@ -166,6 +166,7 @@ var require_tenant = __commonJS({
       "AdminUnlock",
       "SubscriptionPayment",
       "Branch",
+      "DiningTable",
       "Supplier",
       "Purchase",
       "Expense"
@@ -360,6 +361,8 @@ var require_core = __commonJS({
       onlineNote: "",
       // Online deliveries priced by distance from the branch's pin; 0 = the flat fee.
       onlineDeliveryPerKm: 0,
+      // Guests order from a QR code on their table (tables.js).
+      onlineTables: false,
       // Branding: theme colours (#rrggbb); '' keeps Relay's own.
       themeInk: "",
       themeAccent: "",
@@ -33194,6 +33197,7 @@ var require_purge = __commonJS({
       "MenuItem",
       "MenuCategory",
       "Branch",
+      "DiningTable",
       "Notification",
       "PushSubscription",
       "Counter",
@@ -34633,7 +34637,8 @@ var require_security = __commonJS({
       "Plan",
       "PlatformBroadcast",
       "DiscountCode",
-      "AccountingPosting"
+      "AccountingPosting",
+      "DiningTable"
     ];
     var PRIVATE_CLASSES = [
       "Counter",
@@ -34650,7 +34655,9 @@ var require_security = __commonJS({
       "Plan",
       "PlatformBroadcast",
       "DiscountCode",
-      "AccountingPosting"
+      "AccountingPosting",
+      // Their QR codes are secret (tables.js).
+      "DiningTable"
     ];
     var SELF_EDITABLE_USER_FIELDS = ["email"];
     for (const className of PROTECTED_CLASSES) {
@@ -34694,6 +34701,8 @@ var require_security = __commonJS({
     var SCHEMAS = {
       // Outlets of the restaurant (branches.js).
       Branch: { name: S, address: S, phone: S, active: B, main: B, sortOrder: N, lat: N, lng: N },
+      // Tables guests order from with a QR code (tables.js).
+      DiningTable: { name: S, branch, token: S, active: B, sortOrder: N },
       Order: {
         branch,
         // Split orders: the splits in the order entered (lines carry `split`).
@@ -34748,6 +34757,8 @@ var require_security = __commonJS({
         onlineToken: S,
         // Online deliveries priced by distance: the km charged for.
         deliveryKm: N,
+        // Eat-in from a table's QR code (tables.js); tableLabel is its name.
+        table: ["Pointer", "DiningTable"],
         acceptedAt: D,
         readyAt: D,
         cancelledReason: S,
@@ -34939,7 +34950,8 @@ var require_security = __commonJS({
         onlineCash: B,
         onlineMobileMoney: B,
         onlineNote: S,
-        onlineDeliveryPerKm: N
+        onlineDeliveryPerKm: N,
+        onlineTables: B
       },
       MenuItem: {
         title: S,
@@ -38669,6 +38681,106 @@ var require_menu = __commonJS({
   }
 });
 
+// cloud/tables.js
+var require_tables = __commonJS({
+  "cloud/tables.js"(exports2, module2) {
+    "use strict";
+    var crypto = require("crypto");
+    var { MASTER, invalid, requireRole, requireCashierShift, audit, findAll } = require_core();
+    var { requireAdminUnlock } = require_adminLock();
+    var CLASS = "DiningTable";
+    var ID = /^[A-Za-z0-9]{1,32}$/;
+    var TOKEN = /^[a-f0-9]{24}$/;
+    var DONE = ["DELIVERED", "CANCELLED"];
+    var newToken = () => crypto.randomBytes(12).toString("hex");
+    var clean = (value, max) => String(value ?? "").trim().slice(0, max);
+    var view = (row, withToken) => ({
+      id: row.id,
+      name: row.get("name"),
+      branchId: row.get("branch")?.id || "",
+      active: row.get("active") !== false,
+      ...withToken && { token: row.get("token") }
+    });
+    async function allTables() {
+      const rows = await findAll(new Parse.Query(CLASS));
+      return rows.sort(
+        (a, b) => (a.get("sortOrder") || 0) - (b.get("sortOrder") || 0) || String(a.get("name")).localeCompare(String(b.get("name")), void 0, { numeric: true })
+      );
+    }
+    async function tableByToken(token) {
+      const value = String(token || "");
+      const row = TOKEN.test(value) ? await new Parse.Query(CLASS).equalTo("token", value).first(MASTER) : null;
+      if (!row || row.get("active") === false)
+        throw invalid("This table\u2019s QR code is no longer in use. Ask a member of staff");
+      return row;
+    }
+    Parse.Cloud.define("adminListTables", async (request) => {
+      await requireAdminUnlock(request);
+      return { tables: (await allTables()).map((row) => view(row, true)) };
+    });
+    Parse.Cloud.define("adminSaveTable", async (request) => {
+      const actor = await requireAdminUnlock(request);
+      const p = request.params || {};
+      const name = clean(p.name, 30);
+      if (!name) throw invalid("Give the table a name or number, e.g. Table 5");
+      const branches = require_branches();
+      const rows = await allTables();
+      const row = p.id ? rows.find((r) => r.id === p.id) : new Parse.Object(CLASS);
+      if (!row) throw invalid("Unknown table");
+      const branch = p.branchId !== void 0 ? await branches.branchParam(p.branchId) || await branches.mainBranch() : row.get("branch") || await branches.mainBranch();
+      if (rows.some(
+        (r) => r.id !== row.id && r.get("name").toLowerCase() === name.toLowerCase() && (r.get("branch")?.id || "") === (branch?.id || "")
+      ))
+        throw invalid(`There is already a table called "${name}"`);
+      const before = p.id ? view(row) : null;
+      row.set({
+        name,
+        active: p.active === void 0 ? row.get("active") !== false : p.active === true,
+        sortOrder: p.id ? row.get("sortOrder") || 0 : rows.length
+      });
+      if (branch) row.set("branch", branch);
+      if (!p.id || p.newCode === true) row.set("token", newToken());
+      row.setACL(new Parse.ACL());
+      await row.save(null, MASTER);
+      await audit(actor, p.id ? "table.updated" : "table.created", row, before, {
+        ...view(row),
+        ...p.newCode === true && { newCode: true }
+      });
+      return view(row, true);
+    });
+    Parse.Cloud.define("getTables", async (request) => {
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      const own = role === "cashier" ? (await require_branches().branchFor(user))?.id : null;
+      return {
+        tables: (await allTables()).filter((row) => row.get("active") !== false).filter((row) => !own || !row.get("branch") || row.get("branch").id === own).map((row) => view(row))
+      };
+    });
+    Parse.Cloud.define("moveOrderTable", async (request) => {
+      const { user, role } = await requireRole(request, ["cashier", "admin"]);
+      await requireCashierShift(user, role);
+      const p = request.params || {};
+      const order = ID.test(String(p.orderId || "")) ? await new Parse.Query("Order").get(p.orderId, MASTER).catch(() => null) : null;
+      if (!order) throw invalid("Order not found");
+      if (order.get("orderType") !== "eat_in") throw invalid("Only eat-in orders sit at a table");
+      if (DONE.includes(order.get("status")) && !order.get("billOpen"))
+        throw invalid("This order is finished");
+      const table = ID.test(String(p.tableId || "")) ? await new Parse.Query(CLASS).get(p.tableId, MASTER).catch(() => null) : null;
+      if (!table || table.get("active") === false) throw invalid("Choose an open table");
+      const branchId = order.get("branch")?.id;
+      if (branchId && table.get("branch") && table.get("branch").id !== branchId)
+        throw invalid("That table is at another branch");
+      if (order.get("table")?.id === table.id)
+        throw invalid(`The order is already at ${table.get("name")}`);
+      const before = { table: order.get("tableLabel") || "" };
+      order.set({ table, tableLabel: table.get("name") });
+      await order.save(null, MASTER);
+      await audit(user, "order.table_moved", order, before, { table: table.get("name") });
+      return { table: table.get("name") };
+    });
+    module2.exports = { tableByToken, TABLE_CLASS: CLASS };
+  }
+});
+
 // cloud/online.js
 var require_online = __commonJS({
   "cloud/online.js"(exports2, module2) {
@@ -38694,17 +38806,20 @@ var require_online = __commonJS({
     var { priceLines, saveLines, splitFields, clean, cleanPhone, PINNED_ONLY } = require_orders();
     var { operationalMenu } = require_menu();
     var { requireAdminUnlock } = require_adminLock();
+    var { tableByToken } = require_tables();
     var tenancy = require_tenant();
     var TOKEN = /^[a-f0-9]{32}$/;
     function requireRestaurant() {
       if (!tenancy.current()) throw invalid("Open the restaurant\u2019s own link to order");
     }
     var ID = /^[A-Za-z0-9]{1,32}$/;
-    var TYPE_LABEL = { delivery: "Delivery", pickup: "Pick up" };
+    var TYPE_LABEL = { delivery: "Delivery", pickup: "Pick up", eat_in: "Eat in" };
     function onlineSettings(config) {
       const accounts = merchantAccounts(config);
       return {
         enabled: config.onlineOrders === true,
+        // Guests at a table order from its QR code (tables.js), paying later.
+        tables: config.onlineTables === true,
         open: config.onlineOpen !== false,
         pickup: config.onlinePickup !== false,
         delivery: config.onlineDelivery !== false,
@@ -38754,6 +38869,24 @@ var require_online = __commonJS({
         currencySymbol: config.currencySymbol,
         currencyCode: config.currencyCode
       };
+      if (request.params?.table) {
+        if (!s.tables) return { enabled: false, restaurant, atTable: true };
+        const table = await tableByToken(request.params.table);
+        const branches2 = await openBranches();
+        const branch2 = table.get("branch") || await branchOf(null, branches2);
+        const menu2 = await operationalMenu(branch2?.id);
+        return {
+          enabled: true,
+          open: s.open,
+          table: { name: table.get("name") },
+          note: s.note,
+          restaurant,
+          branches: [],
+          branchId: branch2?.id || "",
+          categories: menu2.categories,
+          items: menu2.items
+        };
+      }
       if (!s.enabled) return { enabled: false, restaurant };
       const branches = await openBranches();
       const branch = await branchOf(request.params?.branchId, branches);
@@ -38808,7 +38941,9 @@ var require_online = __commonJS({
       const p = request.params || {};
       const { values: config } = await loadConfig();
       const s = onlineSettings(config);
-      if (!s.enabled) throw forbidden("This restaurant does not take online orders");
+      if (p.table && !s.tables) throw forbidden("This restaurant does not take orders from the table");
+      const table = p.table ? await tableByToken(p.table) : null;
+      if (!table && !s.enabled) throw forbidden("This restaurant does not take online orders");
       if (!s.open)
         throw forbidden("The restaurant is not taking online orders right now. Try again later");
       const requestId = clean(p.requestId, 64);
@@ -38822,33 +38957,34 @@ var require_online = __commonJS({
             duplicate: true
           };
       }
-      const type = p.orderType;
-      if (!["pickup", "delivery"].includes(type) || !s[type])
+      const type = table ? "eat_in" : p.orderType;
+      if (!table && (!["pickup", "delivery"].includes(type) || !s[type]))
         throw invalid(
           s.pickup && s.delivery ? "Choose pick-up or delivery" : s.pickup ? "Pick-up only" : "Delivery only"
         );
       const isDelivery = type === "delivery";
-      const customerName = clean(p.customerName, 80);
+      const customerName = clean(p.customerName, 80) || (table ? `${table.get("name")} guest` : "");
       if (!customerName) throw invalid("Enter your name");
       const customerPhone = cleanPhone(p.customerPhone);
-      if (String(customerPhone).replace(/\D/g, "").length < 9)
+      const digits = String(customerPhone).replace(/\D/g, "").length;
+      if (table ? digits > 0 && digits < 9 : digits < 9)
         throw invalid("Enter your phone number, so the restaurant can call you");
       const pin = isDelivery ? cleanLocation(p.location) : { location: null };
       if (pin.error) throw invalid(pin.error);
       const deliveryAddress = isDelivery ? clean(p.deliveryAddress, 200) || (pin.location ? PINNED_ONLY : "") : "";
       if (isDelivery && !deliveryAddress)
         throw invalid("Add your delivery address or pin it on the map");
-      const method = p.paymentMethod;
-      if (method === "cash" ? !s.cash : method === "mobile_money" ? !s.mobileMoney : true)
+      const method = table ? "cash" : p.paymentMethod;
+      if (!table && (method === "cash" ? !s.cash : method === "mobile_money" ? !s.mobileMoney : true))
         throw invalid(
           [s.cash && "cash", s.mobileMoney && "mobile money"].filter(Boolean).join(" or ") ? `Pay by ${[s.cash && (isDelivery ? "cash on delivery" : "cash on pick-up"), s.mobileMoney && "mobile money"].filter(Boolean).join(" or ")}` : "No way to pay is switched on"
         );
       const branches = await openBranches();
-      const branch = await branchOf(p.branchId, branches);
+      const branch = table?.get("branch") || await branchOf(p.branchId, branches);
       const delivery = isDelivery ? deliveryCharge(s, config, originOf(branch, branches, config), pin.location) : { fee: 0, km: null };
       const fee = delivery.fee;
       const ip = String(request.ip || "");
-      if (!allow(`ip:${ip}`, 8) || !allow(`phone:${customerPhone}`, 4))
+      if (table ? !allow(`table:${table.id}`, 10) : !allow(`ip:${ip}`, 8) || !allow(`phone:${customerPhone}`, 4))
         throw forbidden(
           "Too many orders in a short time. Call the restaurant, or try again in a few minutes"
         );
@@ -38871,13 +39007,14 @@ var require_online = __commonJS({
         }),
         clientId: requestId,
         onlineToken: crypto.randomBytes(16).toString("hex"),
-        channel: "online",
+        channel: table ? "table" : "online",
         orderType: type,
         source: "counter",
         customerName,
         customerPhone,
         deliveryAddress: isDelivery ? deliveryAddress : TYPE_LABEL[type],
         deliveryNotes: clean(p.notes, 200),
+        ...table && { table, tableLabel: table.get("name") },
         ...pin.location && { location: new Parse.GeoPoint(pin.location.lat, pin.location.lng) },
         subtotal,
         prepMinutes: Math.max(0, ...lines.map((line) => line.prepMinutes)),
@@ -38915,13 +39052,14 @@ var require_online = __commonJS({
         status: "PLACED",
         total,
         orderType: type,
-        source: "online",
-        payment: method
+        source: table ? "table" : "online",
+        payment: table ? "later" : method,
+        ...table && { table: table.get("name") }
       });
       await notifyStaff({
         kind: "order.new",
         tone: "new",
-        title: `New online ${type === "delivery" ? "delivery" : "pick-up"} ${order.get("orderCode")}`,
+        title: table ? `New order ${order.get("orderCode")} at ${table.get("name")}` : `New online ${type === "delivery" ? "delivery" : "pick-up"} ${order.get("orderCode")}`,
         body: [customerName, customerPhone, money(config, total)].join(" \xB7 "),
         link: "/cashier",
         order
@@ -38950,6 +39088,8 @@ var require_online = __commonJS({
         orderType: order.get("orderType"),
         customerName: order.get("customerName"),
         deliveryAddress: order.get("orderType") === "delivery" ? order.get("deliveryAddress") : "",
+        table: order.get("orderType") === "eat_in" ? order.get("tableLabel") || "" : "",
+        billOpen: order.get("billOpen") === true,
         subtotal: Number(order.get("subtotal") || 0),
         deliveryFee: Number(order.get("deliveryFee") || 0),
         deliveryKm: order.get("deliveryKm") ?? null,
@@ -39020,12 +39160,14 @@ var require_online = __commonJS({
           "onlineCash",
           "onlineMobileMoney",
           "onlineNote",
-          "onlineDeliveryPerKm"
+          "onlineDeliveryPerKm",
+          "onlineTables"
         ].map((key) => [key, current[key]])
       );
       const flag = (key, fallback) => key in p ? p[key] === true : fallback;
       const next = {
         onlineOrders: flag("onlineOrders", current.onlineOrders === true),
+        onlineTables: flag("onlineTables", current.onlineTables === true),
         onlineOpen: flag("onlineOpen", current.onlineOpen !== false),
         onlinePickup: flag("onlinePickup", current.onlinePickup !== false),
         onlineDelivery: flag("onlineDelivery", current.onlineDelivery !== false),
@@ -39049,7 +39191,7 @@ var require_online = __commonJS({
     Parse.Cloud.define("setOnlineOpen", async (request) => {
       const { user } = await requireRole(request, ["cashier", "admin"]);
       const { object: existing, values: current } = await loadConfig();
-      if (!existing || current.onlineOrders !== true)
+      if (!existing || current.onlineOrders !== true && current.onlineTables !== true)
         throw invalid("Online orders are not switched on");
       const open = request.params?.open === true;
       existing.set("onlineOpen", open);
@@ -39068,7 +39210,8 @@ var require_online = __commonJS({
         onlineMobileMoney: config.onlineMobileMoney !== false,
         mobileMoneyReady: s.accounts.length > 0,
         onlineNote: s.note,
-        onlineDeliveryPerKm: s.perKm
+        onlineDeliveryPerKm: s.perKm,
+        onlineTables: s.tables
       };
     }
     Parse.Cloud.define("adminGetOnlineOrdering", async (request) => {
@@ -41912,7 +42055,7 @@ var require_profile = __commonJS({
           onShift: values.drawerOnShift !== false
         } : null,
         // Online orders (online.js): on, and taking orders now (staff pause it).
-        online: values.onlineOrders === true ? { open: values.onlineOpen !== false } : null,
+        online: values.onlineOrders === true || values.onlineTables === true ? { open: values.onlineOpen !== false } : null,
         modules: {
           riderOrders: values.moduleRiderOrders !== false,
           callIn: values.moduleCallIn === true,
@@ -42036,6 +42179,7 @@ require_serverAddress();
 require_orders();
 require_counter();
 require_menu();
+require_tables();
 require_online();
 require_cash();
 require_payouts();

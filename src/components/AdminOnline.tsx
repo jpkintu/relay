@@ -5,6 +5,7 @@ import { useAdminRun } from '../lib/adminRun';
 import { useMoney, useSession } from '../lib/session';
 import { printDocument } from '../lib/print';
 import { flierCss, flierHtml, type FlierSize } from '../lib/flier';
+import { AdminTables } from './AdminTables';
 
 // Admin → Online orders: switch the public menu on, choose what customers
 // can do there, and share it: the link, its QR code, and printed fliers or
@@ -20,6 +21,7 @@ type Settings = {
   mobileMoneyReady: boolean;
   onlineNote: string;
   onlineDeliveryPerKm: number;
+  onlineTables: boolean;
 };
 
 // The public menu's address: the restaurant's own (RelayEats Hosted:
@@ -163,22 +165,37 @@ export function AdminOnline() {
             disabled={busy}
             onChange={(e) => void save({ onlineOrders: e.target.checked })}
           />{' '}
-          Take orders online
+          Take orders online <small className="muted">(pick-up and delivery)</small>
         </label>
+        <label className="setup-checkbox">
+          <input
+            type="checkbox"
+            checked={form.onlineTables}
+            disabled={busy}
+            onChange={(e) => void save({ onlineTables: e.target.checked })}
+          />{' '}
+          Guests order from their table{' '}
+          <small className="muted">
+            (a QR code on each table; the order goes to the kitchen for that table and is paid
+            later)
+          </small>
+        </label>
+        {(form.onlineOrders || form.onlineTables) && (
+          <label className="setup-checkbox">
+            <input
+              type="checkbox"
+              checked={form.onlineOpen}
+              disabled={busy}
+              onChange={(e) => void save({ onlineOpen: e.target.checked })}
+            />{' '}
+            Taking orders now{' '}
+            <small className="muted">
+              (cashiers can pause it from the kitchen board when it is busy)
+            </small>
+          </label>
+        )}
         {form.onlineOrders && (
           <>
-            <label className="setup-checkbox">
-              <input
-                type="checkbox"
-                checked={form.onlineOpen}
-                disabled={busy}
-                onChange={(e) => void save({ onlineOpen: e.target.checked })}
-              />{' '}
-              Taking orders now{' '}
-              <small className="muted">
-                (cashiers can pause it from the kitchen board when it is busy)
-              </small>
-            </label>
             <div className="online-options">
               <fieldset>
                 <legend>Customers can choose</legend>
@@ -263,6 +280,8 @@ export function AdminOnline() {
         {error && <p className="ops-error">{error}</p>}
         {done && <p className="form-success">{done}</p>}
       </section>
+
+      {form.onlineTables && <AdminTables link={link} />}
 
       {form.onlineOrders && (
         <section className="admin-panel">

@@ -491,6 +491,11 @@ orders right now”. The order throttles are counted per restaurant. Admin →
 Online orders shows the restaurant's own link and QR code, and prints A4 or
 A5 fliers and table cards carrying that QR code.
 
+Eat-in table cards carry `https://<code>.relayeats.app/order/table/<token>`
+(or `/order/<code>/table/<token>`). `DiningTable` rows belong to the
+restaurant like its other records (lib/tenant.js), and are erased with it
+(purge.js).
+
 ## Phases
 
 1. **Tenancy core** (done): context, scoped reads and writes, per-restaurant roles,
