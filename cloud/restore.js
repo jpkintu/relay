@@ -38,6 +38,8 @@ const ORDER = [
   'Supplier',
   'Purchase',
   'Expense',
+  'StockItem',
+  'StockCount',
   'AuditLog',
 ];
 const BATCH = 200;

@@ -259,7 +259,7 @@ board and cannot change staff, the menu or the Admin settings.
     <td width="50%"><img src="docs/screenshots/finance-balance-sheet.jpg" alt="Balance sheet"></td>
   </tr>
   <tr>
-    <td valign="top"><b>Profit &amp; loss.</b> Revenue from delivered and served orders; stock bought as cost of sales; rider commission, delivery fees, expenses and till payouts as operating costs. Compared with the previous period, by branch, printable.</td>
+    <td valign="top"><b>Profit &amp; loss.</b> Revenue from delivered and served orders; cost of goods sold from opening stock + purchases − closing stock (stock counts); rider commission, delivery fees, expenses and till payouts as operating costs. Compared with the previous period, by branch, printable.</td>
     <td valign="top"><b>Balance sheet.</b> As at any day: cash and bank (from the opening balance and every payment in and out), money still to receive, what is owed to suppliers and riders, and equity. It always balances.</td>
   </tr>
   <tr>
@@ -268,7 +268,7 @@ board and cannot change staff, the menu or the Admin settings.
   </tr>
   <tr>
     <td valign="top"><b>Cash flow.</b> Opening cash, money in, money out and closing cash, matching the balance sheet.</td>
-    <td valign="top"><b>Purchases &amp; expenses.</b> Purchases from suppliers (lines, invoice number, paid now, in part or on credit; later payments recorded against them) and expenses by kind (rent, salaries, utilities…). Mistakes are voided with a reason, never deleted. <b>Suppliers</b> shows what is owed to each.</td>
+    <td valign="top"><b>Purchases &amp; expenses.</b> Purchases from suppliers (lines, invoice number, paid now, in part or on credit; later payments recorded against them) and expenses by kind (rent, salaries, utilities…). Mistakes are voided with a reason, never deleted. <b>Suppliers</b> shows what is owed to each. <b>Stock</b>: stock items, what is on hand, low stock, and stock counts that feed the accounts.</td>
   </tr>
 </table>
 

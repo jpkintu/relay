@@ -23,6 +23,8 @@ const EXPORT_CLASSES = [
   'Supplier',
   'Purchase',
   'Expense',
+  'StockItem',
+  'StockCount',
   'AuditLog',
 ];
 const PAGE = 500;

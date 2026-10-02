@@ -5,7 +5,10 @@
 // app records, on these rules (accrual basis):
 // - Revenue is earned when an order is delivered or served: food sales plus
 //   delivery fees.
-// - Stock bought is a cost of goods sold when it is bought (no stock counts).
+// - Cost of goods sold is the stock bought, adjusted by the stock counted
+//   (periodic method, lib/stock.js): stock at the start of the period +
+//   purchases − stock at its end. With no counts, stock bought is a cost when
+//   it is bought. Stock on hand is a current asset.
 // - Rider pay (commission plus the delivery fees passed on) is an operating
 //   expense when the order is delivered; it is owed until paid out.
 // - Equipment (the expense kind) is a fixed asset at cost, not an expense
@@ -38,12 +41,21 @@ const inCash = (method) => !method || method === 'cash';
 
 // orders: delivered order facts ({ subtotal, deliveryFee, total, commission,
 //   deliveryPay }); purchases: { total, category }; expenses: { amount,
-//   category }; tillExpenses: { amount } (paid from a cashier's till).
-function profitAndLoss({ orders, purchases, expenses, tillExpenses }) {
+//   category }; tillExpenses: { amount } (paid from a cashier's till);
+//   stockStart / stockEnd: stock on hand at the start and end of the period.
+function profitAndLoss({
+  orders,
+  purchases,
+  expenses,
+  tillExpenses,
+  stockStart = 0,
+  stockEnd = 0,
+}) {
   const food = sum(orders, (o) => o.subtotal);
   const delivery = sum(orders, (o) => o.deliveryFee);
   const revenue = food + delivery;
-  const costOfSales = sum(purchases, (p) => p.total);
+  const bought = sum(purchases, (p) => p.total);
+  const costOfSales = round(stockStart) + bought - round(stockEnd);
   const grossProfit = revenue - costOfSales;
   const riderPay = sum(orders, (o) => o.commission);
   const riderDeliveryFees = sum(orders, (o) => o.deliveryPay ?? o.deliveryFee);
@@ -54,7 +66,13 @@ function profitAndLoss({ orders, purchases, expenses, tillExpenses }) {
   const netProfit = grossProfit - operating;
   return {
     revenue: { food, delivery, total: revenue, orders: orders.length },
-    costOfSales: { byCategory: byKey(purchases, 'category', (p) => p.total), total: costOfSales },
+    costOfSales: {
+      byCategory: byKey(purchases, 'category', (p) => p.total),
+      purchases: bought,
+      openingStock: round(stockStart),
+      closingStock: round(stockEnd),
+      total: costOfSales,
+    },
     grossProfit,
     operating: {
       riderCommission: riderPay - riderDeliveryFees,
@@ -79,8 +97,18 @@ const paidOf = (o) => round(o.total) - round(o.voucher || 0);
 // { kind, amount, deductions } (paid in cash); vouchers: { cashIn, owed,
 // sent, charges, refunded } (refunds sent by mobile money); opening:
 // { cash, bank }; profit: { toDate, beforeYear } (net profit up to the
-// moment, and up to the start of its financial year).
-function position({ orders, purchases, expenses, payouts, vouchers = [], opening, profit }) {
+// moment, and up to the start of its financial year); inventory: stock on
+// hand (its latest counts).
+function position({
+  orders,
+  purchases,
+  expenses,
+  payouts,
+  vouchers = [],
+  opening,
+  profit,
+  inventory = 0,
+}) {
   const confirmed = orders.filter((o) => o.confirmed);
   const cashSales = sum(
     confirmed.filter((o) => inCash(o.method) && o.method !== 'voucher'),
@@ -130,7 +158,8 @@ function position({ orders, purchases, expenses, payouts, vouchers = [], opening
   );
   const refunds = sum(vouchers, (v) => v.owed);
   const cash = tills + bank;
-  const current = cash + receivable;
+  const stock = round(inventory);
+  const current = cash + receivable + stock;
   const assets = current + equipment;
   const liabilities = suppliers + riders + refunds;
   const equity = assets - liabilities;
@@ -143,6 +172,7 @@ function position({ orders, purchases, expenses, payouts, vouchers = [], opening
       bank,
       cash,
       receivable,
+      inventory: stock,
       current,
       equipment,
       fixed: equipment,
@@ -176,6 +206,7 @@ function cashFlowStatement({ start, end, netProfit }) {
   const change = (pick) => pick(end) - pick(start);
   const operatingLines = [
     { key: 'receivable', amount: -change((p) => p.assets.receivable) },
+    { key: 'inventory', amount: -change((p) => p.assets.inventory || 0) },
     { key: 'payable', amount: change((p) => p.liabilities.suppliers) },
     { key: 'riders', amount: change((p) => p.liabilities.riders) },
     { key: 'vouchers', amount: change((p) => p.liabilities.refunds) },
@@ -208,7 +239,8 @@ function ratios({ pl, position: pos, receivableBefore = 0 }) {
     netProfit: div(pl.netProfit, sales),
     operatingCost: div(pl.operating.total, sales),
     current: div(pos.assets.current, pos.liabilities.current),
-    acidTest: div(pos.assets.current, pos.liabilities.current),
+    // Quick assets: current assets less stock.
+    acidTest: div(pos.assets.current - (pos.assets.inventory || 0), pos.liabilities.current),
     debt: div(pos.liabilities.total, pos.assets.total),
     debtToEquity: div(pos.liabilities.total, pos.equity.total),
     receivableTurnover: div(sales, averageReceivable),
