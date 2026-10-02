@@ -259,10 +259,12 @@ function BalanceSheet() {
     openingSet: boolean;
     sheet: {
       assets: { cash: number; receivable: number; total: number };
-      liabilities: { suppliers: number; riders: number; total: number };
+      liabilities: { suppliers: number; riders: number; refunds?: number; total: number };
       equity: { opening: number; profit: number; other: number; total: number };
     };
+    refunds?: { owed: RefundRow[]; cleared: RefundRow[] };
   }>('getBalanceSheet', { day, ...(branchId && { branchId }) });
+  const navigate = useNavigate();
   const [opening, setOpening] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -341,6 +343,13 @@ function BalanceSheet() {
           <h3>What it owes</h3>
           <Row label="To suppliers (unpaid purchases)" value={s.liabilities.suppliers} indent />
           <Row label="To riders (unpaid pay)" value={s.liabilities.riders} indent />
+          {(s.liabilities.refunds || 0) > 0 && (
+            <Row
+              label="Refunds owed to customers (paid for cancelled orders)"
+              value={s.liabilities.refunds || 0}
+              indent
+            />
+          )}
           <Row label="Total liabilities" value={s.liabilities.total} strong />
           <h3>Owner&apos;s equity</h3>
           <Row label="Opening balance" value={s.equity.opening} indent />
@@ -361,12 +370,76 @@ function BalanceSheet() {
           </p>
         </article>
       )}
+      {data?.refunds && (data.refunds.owed.length > 0 || data.refunds.cleared.length > 0) && (
+        <article className="admin-panel statement">
+          <h3>Refunds to customers</h3>
+          <p className="muted small">
+            Money paid for orders that were then cancelled. It counts as owed until it is sent back
+            and marked refunded on the order; then it shows here as cleared.
+          </p>
+          <div className="table-scroll">
+            <table className="data stack-on-phone">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>Paid</th>
+                  <th className="num">Amount</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...data.refunds.owed, ...data.refunds.cleared].map((r) => (
+                  <tr
+                    key={r.id}
+                    className="clickable"
+                    tabIndex={0}
+                    onClick={() => navigate(`/admin/orders/${r.id}`)}
+                    onKeyDown={(e) => e.key === 'Enter' && navigate(`/admin/orders/${r.id}`)}
+                  >
+                    <td data-label="Order">
+                      <span className="code">{r.code}</span>
+                    </td>
+                    <td data-label="Paid">{formatDate(r.receivedAt, timezone)}</td>
+                    <td data-label="Amount" className="num">
+                      {money(r.amount)}
+                    </td>
+                    <td data-label="Status">
+                      {r.refundedAt ? (
+                        <>
+                          <span className="status-pill good">Cleared</span>{' '}
+                          <small className="muted">
+                            {formatDate(r.refundedAt, timezone)}
+                            {r.note ? ` · ${r.note}` : ''}
+                          </small>
+                        </>
+                      ) : (
+                        <span className="status-pill bad">Owed</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+      )}
     </div>
   );
 }
 
+type RefundRow = {
+  id: string;
+  code: string;
+  amount: number;
+  receivedAt: string;
+  refundedAt: string | null;
+  note: string;
+};
+
 const FLOW_NAMES: Record<string, string> = {
   sales: 'Received for sales',
+  refund_receipts: 'Received for cancelled orders (owed back)',
+  refunds: 'Refunds sent to customers',
   suppliers: 'Paid to suppliers',
   expenses: 'Expenses paid',
   rider_pay: 'Rider pay paid out',

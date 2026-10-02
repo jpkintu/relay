@@ -5852,6 +5852,17 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.equal(detail.can.refunded, true);
     const log = await run('adminGetAuditLog', { group: 'payment' }, s.owner);
     assert.ok(log.rows.some((r) => r.action === 'payment.after_cancel'));
+    // The balance sheet: the money is in cash, and owed back (a liability).
+    const owing = await run('getBalanceSheet', {}, s.owner);
+    const owed = owing.refunds.owed.find((r) => r.id === order.id);
+    assert.equal(owed.amount, order.total);
+    assert.ok(owing.sheet.liabilities.refunds >= order.total);
+    assert.equal(
+      owing.sheet.liabilities.total,
+      owing.sheet.liabilities.suppliers +
+        owing.sheet.liabilities.riders +
+        owing.sheet.liabilities.refunds,
+    );
     // Sent back: the owner records how.
     await run(
       'adminOverrideOrder',
@@ -5862,6 +5873,20 @@ describe('automatic mobile money (MTN MoMo and Airtel Money)', () => {
     assert.equal(done.payment.refundDue, false);
     assert.ok(done.payment.refundedAt);
     assert.match(done.payment.refundNote, /998877/);
+    // Cleared: off the liabilities, the cash gone back out.
+    const after = await run('getBalanceSheet', {}, s.owner);
+    assert.equal(
+      after.refunds.owed.some((r) => r.id === order.id),
+      false,
+    );
+    const cleared = after.refunds.cleared.find((r) => r.id === order.id);
+    assert.ok(cleared.refundedAt);
+    assert.match(cleared.note, /998877/);
+    assert.equal(after.sheet.liabilities.refunds, owing.sheet.liabilities.refunds - order.total);
+    assert.equal(after.sheet.assets.cash, owing.sheet.assets.cash - order.total);
+    const flow = await run('getCashFlow', {}, s.owner);
+    assert.ok(flow.inflows.some((r) => r.key === 'refund_receipts' && r.amount >= order.total));
+    assert.ok(flow.outflows.some((r) => r.key === 'refunds' && r.amount >= order.total));
     await rejects(
       run(
         'adminOverrideOrder',
