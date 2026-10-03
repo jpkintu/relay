@@ -457,22 +457,36 @@ emails, the console's restaurant list and the sign-up form use the subdomain
 (`restaurantLink` in restaurants.js). Old `/r/<code>` links keep working;
 with the setting empty, links are `/r/<code>` as before.
 
-Setting it up (once):
+Setting it up (once). Back4App Containers take a custom domain but no
+wildcard, so the main site stays on Back4App and a Cloudflare Worker answers
+the restaurants' subdomains:
 
-1. **DNS:** an `A`/`CNAME` record for `relayeats.app` and a wildcard record
-   `*.relayeats.app`, both pointing at where the frontend is hosted.
-2. **Hosting:** the frontend host must accept the wildcard domain and serve
-   it with HTTPS (`.app` is HTTPS-only in every browser). If Back4App's web
-   hosting cannot take a wildcard custom domain, host the built frontend
-   (`npm run build`, the `dist/` folder) on a host that can, e.g. Cloudflare
-   (DNS + a Worker or Pages in front, wildcard certificate included) or
-   Vercel (wildcard domains with its nameservers). The Cloud Code stays on
-   Back4App; only the static files move.
+1. **DNS on Cloudflare** (the domain's nameservers point there):
+   - `relayeats.app` → CNAME to the Container's custom-domain target
+     (Back4App → Container → Settings → Domains → add `relayeats.app`, **No
+     Redirect**), **DNS only**, so Back4App issues its certificate.
+   - `*` → AAAA `100::`, **Proxied** (a placeholder: the Worker answers).
+2. **Worker:** Cloudflare → Workers & Pages → create a Worker with
+   `tools/cloudflare-worker/worker.js`, then Settings → Domains & Routes →
+   route `*.relayeats.app/*` on the `relayeats.app` zone. It fetches the same
+   path from `relayeats.app`; the browser keeps `aldea.relayeats.app`.
+   Redirects keep the restaurant's address and are never cached (by Cloudflare
+   or browsers), and the app's page is sent `no-cache`, so a stale response
+   can never send a restaurant elsewhere. Workers Free covers 100,000
+   requests a day; the app's data calls go straight to Back4App, not through
+   the Worker.
 3. **Platform console:** Settings & errors → Restaurant domain →
    `relayeats.app` → Save. Email → app address: `https://relayeats.app`.
-4. Optional: build with `VITE_RESTAURANT_DOMAIN=relayeats.app` so a
-   subdomain is recognised before the first server answer (otherwise it is
-   picked up a moment later and remembered on the device).
+4. Optional: build with `VITE_RESTAURANT_DOMAIN=relayeats.app` (Container →
+   Environment) so a subdomain is recognised before the first server answer
+   (otherwise it is picked up a moment later and remembered on the device).
+
+The device remembers the restaurant last chosen, the restaurant domain, and
+that restaurant's name and logo (shown before the server answers). The name
+and logo are kept with the restaurant's code and only shown for that
+restaurant, so a device that last opened another one never flashes the wrong
+name. A restaurant's own address always wins over the remembered restaurant.
+Testing in a private window avoids a browser's older data.
 
 Each origin keeps its own sign-in: someone signed in at
 `relayeats.app` signs in once more at `aldea.relayeats.app`.

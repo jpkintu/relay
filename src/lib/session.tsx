@@ -146,19 +146,24 @@ export type AppInfo = {
 };
 
 // The restaurant's name and logo from the last visit, so they show at once
-// (and the logo starts loading) before the server answers.
+// (and the logo starts loading) before the server answers. Kept with the
+// restaurant's code and only shown for that restaurant: a device that last
+// opened another restaurant (or none) never flashes the wrong name.
 const BRAND_KEY = 'relay.brand';
-function rememberedBrand(): Pick<AppInfo, 'restaurantName' | 'restaurantLogo'> | null {
+type Brand = Pick<AppInfo, 'restaurantName' | 'restaurantLogo'>;
+function rememberedBrand(code: string): Brand | null {
   try {
     const saved = JSON.parse(localStorage.getItem(BRAND_KEY) || 'null');
-    return saved && typeof saved.restaurantName === 'string' ? saved : null;
+    return saved && typeof saved.restaurantName === 'string' && (saved.code || '') === code
+      ? { restaurantName: saved.restaurantName, restaurantLogo: saved.restaurantLogo }
+      : null;
   } catch {
     return null;
   }
 }
-function rememberBrand({ restaurantName, restaurantLogo }: AppInfo) {
+function rememberBrand({ restaurantName, restaurantLogo }: AppInfo, code: string) {
   try {
-    localStorage.setItem(BRAND_KEY, JSON.stringify({ restaurantName, restaurantLogo }));
+    localStorage.setItem(BRAND_KEY, JSON.stringify({ code, restaurantName, restaurantLogo }));
   } catch {
     // Private mode: nothing to remember.
   }
@@ -172,7 +177,6 @@ export const restaurantTitle = (name?: string) =>
 // Only used until the server answers; real values come from Configuration.
 const FALLBACK_INFO: AppInfo = {
   restaurantName: 'RelayEats',
-  ...rememberedBrand(),
   currencySymbol: '',
   currencyCode: '',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -209,17 +213,20 @@ const SessionContext = createContext<Session | null>(null);
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<Parse.User | null>(() => Parse.User.current() ?? null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [appInfo, setAppInfo] = useState<AppInfo>(FALLBACK_INFO);
+  const [code, setCode] = useState(restaurantCode);
+  // Until the server answers: the defaults, with this restaurant's remembered
+  // name and logo.
+  const [startInfo] = useState<AppInfo>(() => ({ ...FALLBACK_INFO, ...rememberedBrand(code) }));
+  const [appInfo, setAppInfo] = useState<AppInfo>(startInfo);
   const [preview, setPreview] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(!!user);
   const [error, setError] = useState('');
   const [serverError, setServerError] = useState('');
-  const [code, setCode] = useState(restaurantCode);
 
   const loadInfo = useCallback(async (restaurant: string) => {
     const info: AppInfo = await Parse.Cloud.run('getAppInfo', restaurant ? { restaurant } : {});
     setAppInfo(info);
-    if (info.found !== false) rememberBrand(info);
+    if (info.found !== false) rememberBrand(info, restaurant);
     return info;
   }, []);
 
@@ -337,7 +344,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [profile, appInfo],
   );
   // The restaurant's colours, once the server has said what they are.
-  const themeKnown = !!profile || appInfo !== FALLBACK_INFO;
+  const themeKnown = !!profile || appInfo !== startInfo;
   const { ink = '', accent = '' } = config.theme || {};
   useEffect(() => {
     if (themeKnown) applyTheme({ ink, accent });
