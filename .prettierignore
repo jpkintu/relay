@@ -6,3 +6,5 @@ e2e/node_modules
 logs
 back4app
 docs/email-templates
+# Email HTML is laid out by hand for mail clients
+docs/marketing/*.html
