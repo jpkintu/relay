@@ -8924,14 +8924,44 @@ describe('deleting restaurants (Relay Hosted)', () => {
       false,
     );
     await rejects(login('owner', PINS.owner, row.code), /Invalid username\/password/);
-    // Its code is free again.
+    // Its code is free again, and a new restaurant can take it.
     assert.equal((await run('checkRestaurantCode', { code: row.code })).free, true);
+    const again = await signUp('del-test-cafe', 'again@del.example');
+    assert.equal(again.code, 'del-test-cafe');
+    await run(
+      'platformDeleteRestaurant',
+      { id: again.id, confirm: again.code, everything: true },
+      ops,
+    );
     // The console's history says who did it.
     const audit = await run('platformGetAudit', {}, ops);
     const entry = audit.rows.find(
       (r) => r.action === 'platform.restaurant_deleted' && r.entityId === row.id,
     );
     assert.equal(entry.after.reason, 'test');
+  });
+
+  test('a code left claimed with no restaurant is freed once the claim is old', async () => {
+    // A restaurant deleted before deleting cleared its code's claim.
+    const claim = new Parse.Object('Counter', { key: 'restaurant:stuck-cafe', value: 1 });
+    claim.setACL(new Parse.ACL());
+    await claim.save(null, M);
+    // A fresh claim may be a sign-up still running: the code stays taken.
+    await rejects(signUp('stuck-cafe', 'stuck@del.example'), /The code “stuck-cafe” is taken/);
+    process.env.RELAY_CODE_CLAIM_STALE_MS = '0';
+    try {
+      const row = await signUp('stuck-cafe', 'stuck@del.example');
+      assert.equal(row.code, 'stuck-cafe');
+      // Now held by a restaurant: still taken for anyone else.
+      await rejects(signUp('stuck-cafe', 'other@del.example'), /is taken/);
+      await run(
+        'platformDeleteRestaurant',
+        { id: row.id, confirm: row.code, everything: true },
+        ops,
+      );
+    } finally {
+      delete process.env.RELAY_CODE_CLAIM_STALE_MS;
+    }
   });
 
   test('an unpaid restaurant is warned by email, then deleted keeping its payments', async () => {

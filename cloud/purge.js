@@ -134,6 +134,14 @@ async function eraseRestaurant(row, { keepPayments }) {
     return query;
   }, files);
   if (markers) counts.markers = markers;
+  // Its code's sign-up claim (restaurants.js claimCode): the code is free again.
+  const claims = await destroyAllOf(() => {
+    const query = new Parse.Query('Counter');
+    query.doesNotExist('tenant');
+    query.equalTo('key', `restaurant:${row.get('code')}`);
+    return query;
+  }, files);
+  if (claims) counts.markers = (counts.markers || 0) + claims;
 
   if (!keepPayments) {
     const payments = await destroyAllOf(scoped('SubscriptionPayment'), files);

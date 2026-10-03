@@ -212,6 +212,24 @@ async function codeTaken(code) {
   return !!(await tenancy.withoutTenant(() => query.first(MASTER)));
 }
 
+// Sign-up claims a code once, so two sign-ups at the same moment cannot both
+// take it. A claim left with no restaurant behind it (one deleted before
+// deleting cleared its claim, or a sign-up that failed half-way) is cleared
+// once it is a few minutes old, and the code can be taken again.
+const claimStaleMs = () => Number(process.env.RELAY_CODE_CLAIM_STALE_MS ?? 5 * 60000);
+async function claimCode(code) {
+  const key = `restaurant:${code}`;
+  if (await claimOnce(key)) return true;
+  const query = new Parse.Query('Counter');
+  query.equalTo('key', key);
+  query.doesNotExist('tenant');
+  const claims = await query.find(MASTER);
+  const stale = claims.every((row) => Date.now() - row.createdAt.getTime() >= claimStaleMs());
+  if (!claims.length || !stale || (await codeTaken(code))) return false;
+  await Parse.Object.destroyAll(claims, MASTER);
+  return claimOnce(key);
+}
+
 // Sign-ups are limited per address so the page cannot be used to flood the
 // platform with restaurants.
 const recent = new Map();
@@ -274,10 +292,7 @@ Parse.Cloud.define('signUpRestaurant', async (request) => {
   // Only complete sign-ups count towards the limit.
   if (!request.master && !allowSignUp(request.ip || 'unknown'))
     throw forbidden('Too many sign-ups from here. Try again in an hour');
-  if (
-    (await codeTaken(code)) ||
-    !(await tenancy.withoutTenant(() => claimOnce(`restaurant:${code}`)))
-  )
+  if ((await codeTaken(code)) || !(await tenancy.withoutTenant(() => claimCode(code))))
     throw invalid(`The code “${code}” is taken. Choose another`);
 
   const { values: platform } = await platformSettings();

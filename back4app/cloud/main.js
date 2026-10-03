@@ -34590,6 +34590,13 @@ var require_purge = __commonJS({
         return query;
       }, files);
       if (markers) counts.markers = markers;
+      const claims = await destroyAllOf(() => {
+        const query = new Parse.Query("Counter");
+        query.doesNotExist("tenant");
+        query.equalTo("key", `restaurant:${row.get("code")}`);
+        return query;
+      }, files);
+      if (claims) counts.markers = (counts.markers || 0) + claims;
       if (!keepPayments) {
         const payments = await destroyAllOf(scoped("SubscriptionPayment"), files);
         if (payments) counts.SubscriptionPayment = payments;
@@ -37770,6 +37777,19 @@ var require_restaurants = __commonJS({
       query.equalTo("code", code);
       return !!await tenancy.withoutTenant(() => query.first(MASTER));
     }
+    var claimStaleMs = () => Number(process.env.RELAY_CODE_CLAIM_STALE_MS ?? 5 * 6e4);
+    async function claimCode(code) {
+      const key = `restaurant:${code}`;
+      if (await claimOnce(key)) return true;
+      const query = new Parse.Query("Counter");
+      query.equalTo("key", key);
+      query.doesNotExist("tenant");
+      const claims = await query.find(MASTER);
+      const stale = claims.every((row) => Date.now() - row.createdAt.getTime() >= claimStaleMs());
+      if (!claims.length || !stale || await codeTaken(code)) return false;
+      await Parse.Object.destroyAll(claims, MASTER);
+      return claimOnce(key);
+    }
     var recent = /* @__PURE__ */ new Map();
     function allowSignUp(key) {
       const now = Date.now();
@@ -37809,7 +37829,7 @@ var require_restaurants = __commonJS({
       const offer = offerCode ? await require_offers2().resolveCode(offerCode, (await platformSettings()).values) : null;
       if (!request.master && !allowSignUp(request.ip || "unknown"))
         throw forbidden("Too many sign-ups from here. Try again in an hour");
-      if (await codeTaken(code) || !await tenancy.withoutTenant(() => claimOnce(`restaurant:${code}`)))
+      if (await codeTaken(code) || !await tenancy.withoutTenant(() => claimCode(code)))
         throw invalid(`The code \u201C${code}\u201D is taken. Choose another`);
       const { values: platform } = await platformSettings();
       const restaurant = new Parse.Object("Restaurant");
