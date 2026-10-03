@@ -22,6 +22,7 @@ Kitchen, with two branches (Kololo and Ntinda).
 **Contents:**
 [Riders](#riders) ·
 [Kitchen and counter](#kitchen-and-counter) ·
+[Customers: order online](#customers-order-online) ·
 [Owners](#owners) ·
 [Finance](#finance) ·
 [RelayEats Hosted](#relayeats-hosted) ·
@@ -110,6 +111,11 @@ handling it.
 - **Print ticket** prints a kitchen ticket; **Receipt** prints the customer's
   receipt (58 mm or 80 mm, with the EFRIS fiscal code when it is on).
 - **Pass to a colleague** hands an order to another cashier on shift.
+- **Online and table QR orders** arrive tagged **Online** or **Table QR**; a
+  table order shows its table, and **Move table** moves it and its bill when
+  the guests move.
+
+<img src="docs/screenshots/cashier-board-online.jpg" alt="Online and table QR orders on the kitchen board">
 
 **Counter orders and split orders**
 
@@ -161,6 +167,21 @@ then follow the order live: received, being prepared, ready / on the way,
 done. They can cancel until the kitchen starts. The phone remembers its
 orders for two days: closing the page is fine, and reopening the menu shows
 **Your orders** with the ones still on their way.
+
+<table>
+  <tr>
+    <td width="25%"><img src="docs/screenshots/online-menu.jpg" alt="The online menu"></td>
+    <td width="25%"><img src="docs/screenshots/online-checkout.jpg" alt="Checkout with delivery by the km"></td>
+    <td width="25%"><img src="docs/screenshots/online-tracking.jpg" alt="Tracking the order"></td>
+    <td width="25%"><img src="docs/screenshots/online-table.jpg" alt="Ordering from the table's QR code"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>The menu.</b> The restaurant's dishes, sides and prices; sold-out dishes are hidden.</td>
+    <td valign="top"><b>Checkout.</b> Pick-up or delivery; the delivery fee is worked out from the customer's location before they pay.</td>
+    <td valign="top"><b>Tracking.</b> Received, being prepared, on the way, delivered; cancel until the kitchen starts.</td>
+    <td valign="top"><b>At the table.</b> Scanning the table's card orders for that table; the bill is paid at the end.</td>
+  </tr>
+</table>
 
 Deliveries can be priced **per km** (Admin → Online orders → Delivery charge
 per km): the straight-line distance from the branch's map pin (Admin →
@@ -220,7 +241,7 @@ latest orders. The **Branch** picker switches everything to one branch.
     <td width="50%"><img src="docs/screenshots/owner-branches.jpg" alt="Branches"></td>
   </tr>
   <tr>
-    <td valign="top"><b>Team.</b> Create riders, cashiers and finance staff with a username and PIN, and give riders and cashiers a branch. Open someone to see their cash, orders and history, change their commission or cash limit, reset a forgotten PIN, change their branch or role, or deactivate them.</td>
+    <td valign="top"><b>Team.</b> Create riders, cashiers and finance staff with a username and PIN, give riders and cashiers a branch, and give each finance officer one branch or all of them. Open someone to see their cash, orders and history, change their commission or cash limit, reset a forgotten PIN, change their branch or role, or deactivate them.</td>
     <td valign="top"><b>Branches.</b> Add branches with their address and phone, see how many riders and cashiers each has, and close a branch you no longer use. The first branch is made for you and keeps all existing orders.</td>
   </tr>
   <tr>
@@ -241,6 +262,13 @@ latest orders. The **Branch** picker switches everything to one branch.
   </tr>
 </table>
 
+<img src="docs/screenshots/owner-online.jpg" alt="Admin → Online orders">
+
+**Online orders** (Admin → Online orders). Switch on pick-up, delivery and
+ordering from the table, choose the ways to pay, set the delivery charge per
+km, copy or share the menu link, download the QR code, print A4 / A5 fliers,
+and add the tables with their QR cards (four to an A4 page).
+
 Also for the owner: **Problems** (issues riders reported, to resolve with a
 note), **Payments ledger** (every payment with its state, by method),
 **Commissions** (what each rider earned, paid and is owed),
@@ -251,24 +279,48 @@ note), **Payments ledger** (every payment with its state, by method),
 ## Finance
 
 The finance role sees the numbers and records spending. It has no kitchen
-board and cannot change staff, the menu or the Admin settings.
+board and cannot change staff, the menu or the Admin settings. With two or
+more branches, the owner gives each finance officer **all branches** or
+**one**: an officer for one branch sees and records only that branch, and the
+server refuses another branch's records.
+
+Accounting has the standard statements, each with a column to compare (the
+previous period, the previous financial year or a year earlier), by branch,
+printable. Set the financial year's first month and the opening cash and bank
+balances on the Balance Sheet.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/finance-profit-loss.jpg" alt="Profit and loss"></td>
-    <td width="50%"><img src="docs/screenshots/finance-balance-sheet.jpg" alt="Balance sheet"></td>
+    <td width="50%"><img src="docs/screenshots/finance-profit-loss.jpg" alt="Profit and Loss"></td>
+    <td width="50%"><img src="docs/screenshots/finance-balance-sheet.jpg" alt="Balance Sheet"></td>
   </tr>
   <tr>
-    <td valign="top"><b>Profit &amp; loss.</b> Revenue from delivered and served orders; cost of goods sold from opening stock + purchases − closing stock (stock counts); rider commission, delivery fees, expenses and till payouts as operating costs. Compared with the previous period, by branch, printable.</td>
-    <td valign="top"><b>Balance sheet.</b> As at any day: cash and bank (from the opening balance and every payment in and out), money still to receive, what is owed to suppliers and riders, and equity. It always balances.</td>
+    <td valign="top"><b>Profit and Loss.</b> Operating Income (sales and delivery fees), Cost of Goods Sold (opening stock + purchases − closing stock), Gross Profit, Operating Expense (rider commission and delivery fees, expenses by kind, petty cash), Operating Profit and Net Profit/Loss. Equipment is a fixed asset, not an expense.</td>
+    <td valign="top"><b>Balance Sheet.</b> As at any day: cash in the tills and in mobile money / bank, money still to receive, inventory (stock at its latest count), furniture and equipment; what is owed to suppliers, riders and customers (vouchers); and equity (opening balance, retained and current year earnings). It always balances.</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/finance-cash-flow.jpg" alt="Cash flow"></td>
+    <td width="50%"><img src="docs/screenshots/finance-cash-flow.jpg" alt="Cash Flow Statement"></td>
+    <td width="50%"><img src="docs/screenshots/finance-ratios.jpg" alt="Business Performance Ratios"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Cash Flow Statement.</b> The indirect method: net income adjusted for the changes in receivables, stock, payables, rider pay and vouchers; equipment as investing; the owner's capital as financing. Ending cash equals the Balance Sheet's.</td>
+    <td valign="top"><b>Business Performance Ratios.</b> Gross and net profit, operating cost, current, acid test, debt, debt to equity and receivable turnover, month by month on one chart (tap a name to hide or show its line), or one ratio with its averages and the numbers it is made of.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/finance-stock.jpg" alt="Stock"></td>
+    <td width="50%"><img src="docs/screenshots/finance-vouchers.jpg" alt="Refunds and vouchers"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Stock</b> (Purchases &amp; expenses → Stock). Stock items with their unit, cost and reorder level; each branch counts its own shelves at the end of a day. On hand is the latest count plus what purchases naming the item brought in since; low items are flagged and the owner is told after a count. The latest counts are the stock in the accounts.</td>
+    <td valign="top"><b>Refunds &amp; vouchers.</b> Money paid for a cancelled order is the customer's voucher: spent whole on a new order, or refunded less the charges for sending it. It is a liability until it is cleared.</td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/screenshots/finance-purchases.jpg" alt="Purchases"></td>
+    <td width="50%"><img src="docs/screenshots/finance-stock-branches.jpg" alt="Stock across branches"></td>
   </tr>
   <tr>
-    <td valign="top"><b>Cash flow.</b> Opening cash, money in, money out and closing cash, matching the balance sheet.</td>
-    <td valign="top"><b>Purchases &amp; expenses.</b> Purchases from suppliers (lines, invoice number, paid now, in part or on credit; later payments recorded against them) and expenses by kind (rent, salaries, utilities…). Mistakes are voided with a reason, never deleted. <b>Suppliers</b> shows what is owed to each. <b>Stock</b>: stock items, what is on hand, low stock, and stock counts that feed the accounts.</td>
+    <td valign="top"><b>Purchases &amp; expenses.</b> Purchases from suppliers (lines, invoice number, paid now, in part or on credit; later payments recorded against them; a line can name its stock item) and expenses by kind (rent, salaries, utilities…). Mistakes are voided with a reason, never deleted. <b>Suppliers</b> shows what is owed to each.</td>
+    <td valign="top"><b>Whole restaurant.</b> Each item's quantity at every branch, and which branches are low.</td>
   </tr>
 </table>
 
