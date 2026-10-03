@@ -32588,7 +32588,7 @@ var require_emailTemplates = __commonJS({
     var ACCENT = "#e8542f";
     var MUTED = "#5b6478";
     var LINE = "#e3e6ee";
-    var COMMON = ["OWNER_NAME", "RESTAURANT_NAME", "SUPPORT_LINE"];
+    var COMMON = ["OWNER_NAME", "RESTAURANT_NAME", "SUPPORT_LINE", "LOGO_URL"];
     var BILLING = [
       "PLAN_NAME",
       "AMOUNT",
@@ -32645,9 +32645,15 @@ var require_emailTemplates = __commonJS({
         <td align="center" style="padding:32px 12px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${LINE};border-radius:16px;">
           <tr>
-            <td style="padding:28px 32px 6px 32px;">
-              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">RelayEats</span>
-              <span style="font-size:13px;color:${MUTED};">&nbsp;\xB7&nbsp;{{{RESTAURANT_NAME}}}</span>
+            <td style="padding:26px 32px 6px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="vertical-align:middle;">
+                    <img src="{{{LOGO_URL}}}" width="125" height="36" alt="RelayEats" style="display:block;width:125px;height:36px;border:0;outline:none;text-decoration:none;font-size:18px;font-weight:800;color:${INK};" />
+                  </td>
+                  <td align="right" style="vertical-align:middle;font-size:13px;color:${MUTED};">{{{RESTAURANT_NAME}}}</td>
+                </tr>
+              </table>
             </td>
           </tr>
           <tr>
@@ -33026,6 +33032,7 @@ var require_emailTemplates = __commonJS({
       OWNER_NAME: "Sarah Achieng",
       RESTAURANT_NAME: "Kampala Grill House",
       SUPPORT_LINE: "Questions? Contact RelayEats support: 0700 123456.",
+      LOGO_URL: "https://relayeats.app/email/relayeats-logo.png",
       RESTAURANT_CODE: "kampala-grill-house",
       USERNAME: "sarah",
       PLAN_NAME: "Basic",
@@ -33160,8 +33167,12 @@ var require_email = __commonJS({
       }
     }
     var validTemplate = (provider, id) => provider === "brevo" ? /^[0-9]{1,9}$/.test(id) : /^[A-Za-z0-9_-]{1,100}$/.test(id);
+    var logoUrl = (appUrl) => `${String(appUrl || "https://relayeats.app").replace(/\/+$/, "")}/email/relayeats-logo.png`;
     function messageOf(email, kind, to, variables) {
-      const built = require_emailTemplates().render(kind, variables);
+      const built = require_emailTemplates().render(kind, {
+        LOGO_URL: logoUrl(email.appUrl),
+        ...variables
+      });
       const id = String(email.templates?.[kind] || "").trim();
       return {
         to,

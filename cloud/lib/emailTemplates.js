@@ -15,7 +15,9 @@ const MUTED = '#5b6478';
 const LINE = '#e3e6ee';
 
 // Variables every email gets.
-const COMMON = ['OWNER_NAME', 'RESTAURANT_NAME', 'SUPPORT_LINE'];
+// LOGO_URL: the RelayEats logo (public/email/relayeats-logo.png on the app's
+// address; lib/email.js fills it in).
+const COMMON = ['OWNER_NAME', 'RESTAURANT_NAME', 'SUPPORT_LINE', 'LOGO_URL'];
 const BILLING = [
   'PLAN_NAME',
   'AMOUNT',
@@ -75,9 +77,15 @@ function layout({ title, preheader, tag, heading, blocks }) {
         <td align="center" style="padding:32px 12px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${LINE};border-radius:16px;">
           <tr>
-            <td style="padding:28px 32px 6px 32px;">
-              <span style="font-size:18px;font-weight:800;color:${INK};letter-spacing:-0.2px;">RelayEats</span>
-              <span style="font-size:13px;color:${MUTED};">&nbsp;·&nbsp;{{{RESTAURANT_NAME}}}</span>
+            <td style="padding:26px 32px 6px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="vertical-align:middle;">
+                    <img src="{{{LOGO_URL}}}" width="125" height="36" alt="RelayEats" style="display:block;width:125px;height:36px;border:0;outline:none;text-decoration:none;font-size:18px;font-weight:800;color:${INK};" />
+                  </td>
+                  <td align="right" style="vertical-align:middle;font-size:13px;color:${MUTED};">{{{RESTAURANT_NAME}}}</td>
+                </tr>
+              </table>
             </td>
           </tr>
           <tr>
@@ -471,6 +479,7 @@ const SAMPLE = {
   OWNER_NAME: 'Sarah Achieng',
   RESTAURANT_NAME: 'Kampala Grill House',
   SUPPORT_LINE: 'Questions? Contact RelayEats support: 0700 123456.',
+  LOGO_URL: 'https://relayeats.app/email/relayeats-logo.png',
   RESTAURANT_CODE: 'kampala-grill-house',
   USERNAME: 'sarah',
   PLAN_NAME: 'Basic',

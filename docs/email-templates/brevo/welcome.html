@@ -13,9 +13,15 @@
         <td align="center" style="padding:32px 12px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e3e6ee;border-radius:16px;">
           <tr>
-            <td style="padding:28px 32px 6px 32px;">
-              <span style="font-size:18px;font-weight:800;color:#0f1b3d;letter-spacing:-0.2px;">RelayEats</span>
-              <span style="font-size:13px;color:#5b6478;">&nbsp;·&nbsp;{{ params.RESTAURANT_NAME }}</span>
+            <td style="padding:26px 32px 6px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="vertical-align:middle;">
+                    <img src="{{ params.LOGO_URL }}" width="125" height="36" alt="RelayEats" style="display:block;width:125px;height:36px;border:0;outline:none;text-decoration:none;font-size:18px;font-weight:800;color:#0f1b3d;" />
+                  </td>
+                  <td align="right" style="vertical-align:middle;font-size:13px;color:#5b6478;">{{ params.RESTAURANT_NAME }}</td>
+                </tr>
+              </table>
             </td>
           </tr>
           <tr>

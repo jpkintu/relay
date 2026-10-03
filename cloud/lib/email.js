@@ -75,10 +75,18 @@ async function sendWith(email, { to, subject, text, html, template }) {
 const validTemplate = (provider, id) =>
   provider === 'brevo' ? /^[0-9]{1,9}$/.test(id) : /^[A-Za-z0-9_-]{1,100}$/.test(id);
 
+// The logo at the top of every email: public/email/relayeats-logo.png on the
+// app's address (Email → app address), else on relayeats.app.
+const logoUrl = (appUrl) =>
+  `${String(appUrl || 'https://relayeats.app').replace(/\/+$/, '')}/email/relayeats-logo.png`;
+
 // One kind of email (lib/emailTemplates.js) with its variables: through the
 // template set for it in the console, else Relay's own copy.
 function messageOf(email, kind, to, variables) {
-  const built = require('./emailTemplates').render(kind, variables);
+  const built = require('./emailTemplates').render(kind, {
+    LOGO_URL: logoUrl(email.appUrl),
+    ...variables,
+  });
   const id = String(email.templates?.[kind] || '').trim();
   return {
     to,
